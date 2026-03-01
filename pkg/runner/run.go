@@ -1,0 +1,274 @@
+package runner
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+	"sync"
+
+	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/praetorian-inc/pius/pkg/plugins"
+)
+
+func newRunCmd() *cobra.Command {
+	var (
+		org         string
+		domain      string
+		asn         string
+		pluginsList string
+		disableList string
+		concurrency int
+		output      string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "run",
+		Short: "Discover assets for an organization",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			input := plugins.Input{
+				OrgName: org,
+				Domain:  domain,
+				ASN:     asn,
+				Meta:    make(map[string]string),
+			}
+
+			// Build plugin list (apply whitelist/blacklist)
+			selected := selectPlugins(pluginsList, disableList)
+
+			// Run the two-phase pipeline
+			findings, err := runPipeline(cmd.Context(), input, selected, concurrency)
+			if err != nil {
+				return err
+			}
+
+			// Output results
+			return printFindings(findings, output)
+		},
+	}
+
+	cmd.Flags().StringVarP(&org, "org", "o", "", "Organization name to search (required)")
+	cmd.Flags().StringVarP(&domain, "domain", "d", "", "Known domain hint (optional)")
+	cmd.Flags().StringVar(&asn, "asn", "", "Known ASN hint, e.g. AS12345 (optional)")
+	cmd.Flags().StringVar(&pluginsList, "plugins", "", "Comma-separated plugin whitelist (default: all)")
+	cmd.Flags().StringVar(&disableList, "disable", "", "Comma-separated plugin blacklist")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Max concurrent plugins")
+	cmd.Flags().StringVarP(&output, "output", "f", "terminal", "Output format: terminal|json|ndjson")
+	_ = cmd.MarkFlagRequired("org")
+
+	return cmd
+}
+
+// selectPlugins applies --plugins whitelist and --disable blacklist to return active plugins.
+func selectPlugins(whitelist, blacklist string) []plugins.Plugin {
+	if whitelist != "" {
+		names := strings.Split(whitelist, ",")
+		return plugins.Filter(trimAll(names))
+	}
+
+	all := plugins.All()
+	if blacklist == "" {
+		return all
+	}
+
+	disabled := make(map[string]bool)
+	for _, name := range strings.Split(blacklist, ",") {
+		disabled[strings.TrimSpace(name)] = true
+	}
+
+	result := make([]plugins.Plugin, 0, len(all))
+	for _, p := range all {
+		if !disabled[p.Name()] {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// runPipeline executes the two-phase discovery pipeline.
+//
+// Phase 1 (parallel): plugins with Phase()==1 discover RIR org handles
+// Phase 2 (parallel): plugins with Phase()==2 resolve handles to CIDRs (uses enriched Input.Meta)
+// Independent (parallel with all phases): plugins with Phase()==0
+func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Plugin, concurrency int) ([]plugins.Finding, error) {
+	var (
+		mu          sync.Mutex
+		allFindings []plugins.Finding
+	)
+
+	collect := func(findings []plugins.Finding) {
+		mu.Lock()
+		allFindings = append(allFindings, findings...)
+		mu.Unlock()
+	}
+
+	// Separate plugins by phase
+	var phase1, phase2, independent []plugins.Plugin
+	for _, p := range selected {
+		switch p.Phase() {
+		case 1:
+			phase1 = append(phase1, p)
+		case 2:
+			phase2 = append(phase2, p)
+		default:
+			independent = append(independent, p)
+		}
+	}
+
+	// Start independent plugins concurrently (no deps)
+	indepG, indepCtx := errgroup.WithContext(ctx)
+	indepG.SetLimit(concurrency)
+	for _, p := range independent {
+		p := p
+		if !p.Accepts(input) {
+			continue
+		}
+		indepG.Go(func() error {
+			f, err := p.Run(indepCtx, input)
+			if err != nil {
+				log.Printf("[pius] plugin %s: %v", p.Name(), err)
+				return nil
+			}
+			collect(f)
+			return nil
+		})
+	}
+
+	// Phase 1: discover handles
+	var handleFindings []plugins.Finding
+	var handleMu sync.Mutex
+
+	p1G, _ := errgroup.WithContext(ctx)
+	p1G.SetLimit(concurrency)
+	for _, p := range phase1 {
+		p := p
+		if !p.Accepts(input) {
+			continue
+		}
+		p1G.Go(func() error {
+			f, err := p.Run(ctx, input)
+			if err != nil {
+				log.Printf("[pius] plugin %s: %v", p.Name(), err)
+				return nil
+			}
+			handleMu.Lock()
+			handleFindings = append(handleFindings, f...)
+			handleMu.Unlock()
+			return nil
+		})
+	}
+	_ = p1G.Wait()
+
+	// Enrich input with discovered handles
+	enrichedInput := enrichWithHandles(input, handleFindings)
+
+	// Phase 2: resolve handles to CIDRs
+	p2G, _ := errgroup.WithContext(ctx)
+	p2G.SetLimit(concurrency)
+	for _, p := range phase2 {
+		p := p
+		if !p.Accepts(enrichedInput) {
+			continue
+		}
+		p2G.Go(func() error {
+			f, err := p.Run(ctx, enrichedInput)
+			if err != nil {
+				log.Printf("[pius] plugin %s: %v", p.Name(), err)
+				return nil
+			}
+			collect(f)
+			return nil
+		})
+	}
+	_ = p2G.Wait()
+
+	// Wait for independent plugins
+	_ = indepG.Wait()
+
+	// Filter out internal cidr-handle findings (not user-facing)
+	return filterOutput(allFindings), nil
+}
+
+// enrichWithHandles groups cidr-handle findings by registry and injects them into Input.Meta.
+func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.Input {
+	enriched := input
+	if enriched.Meta == nil {
+		enriched.Meta = make(map[string]string)
+	}
+
+	groups := make(map[string][]string)
+	for _, f := range findings {
+		if f.Type != plugins.FindingCIDRHandle {
+			continue
+		}
+		reg, _ := f.Data["registry"].(string)
+		if reg == "" {
+			for _, r := range []string{"arin", "ripe", "apnic", "afrinic"} {
+				groups[r] = append(groups[r], f.Value)
+			}
+			continue
+		}
+		groups[reg] = append(groups[reg], f.Value)
+	}
+
+	for reg, handles := range groups {
+		key := reg + "_handles"
+		existing := enriched.Meta[key]
+		if existing != "" {
+			enriched.Meta[key] = existing + "," + strings.Join(handles, ",")
+		} else {
+			enriched.Meta[key] = strings.Join(handles, ",")
+		}
+	}
+	return enriched
+}
+
+// filterOutput removes internal FindingCIDRHandle findings from final output.
+func filterOutput(findings []plugins.Finding) []plugins.Finding {
+	result := make([]plugins.Finding, 0, len(findings))
+	for _, f := range findings {
+		if f.Type != plugins.FindingCIDRHandle {
+			result = append(result, f)
+		}
+	}
+	return result
+}
+
+// printFindings outputs findings in the requested format.
+func printFindings(findings []plugins.Finding, format string) error {
+	switch format {
+	case "json":
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(findings)
+	case "ndjson":
+		enc := json.NewEncoder(os.Stdout)
+		for _, f := range findings {
+			if err := enc.Encode(f); err != nil {
+				return err
+			}
+		}
+		return nil
+	default: // terminal
+		if len(findings) == 0 {
+			fmt.Println("No assets found.")
+			return nil
+		}
+		for _, f := range findings {
+			fmt.Printf("[%s] %s (%s)\n", f.Type, f.Value, f.Source)
+		}
+		return nil
+	}
+}
+
+func trimAll(ss []string) []string {
+	result := make([]string, len(ss))
+	for i, s := range ss {
+		result[i] = strings.TrimSpace(s)
+	}
+	return result
+}
