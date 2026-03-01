@@ -64,19 +64,22 @@ func (c *Client) GetWithHeaders(ctx context.Context, url string, headers map[str
 			lastErr = err
 			continue
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
 			lastErr = fmt.Errorf("rate limited by %s", url)
 			continue
 		}
 		if resp.StatusCode >= 500 {
+			resp.Body.Close()
 			lastErr = fmt.Errorf("server error %d from %s", resp.StatusCode, url)
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
 			return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, url)
 		}
+		defer resp.Body.Close()
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {

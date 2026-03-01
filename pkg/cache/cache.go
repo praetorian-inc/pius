@@ -69,7 +69,9 @@ func (c *Cache) isStale(path string) bool {
 
 // download fetches the gzip URL and saves decompressed content to localPath atomically.
 func (c *Cache) download(ctx context.Context, url, localPath string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	dlCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}

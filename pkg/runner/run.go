@@ -120,7 +120,7 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	}
 
 	// Start independent plugins concurrently (no deps)
-	indepG, indepCtx := errgroup.WithContext(ctx)
+	var indepG errgroup.Group
 	indepG.SetLimit(concurrency)
 	for _, p := range independent {
 		p := p
@@ -128,7 +128,7 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 			continue
 		}
 		indepG.Go(func() error {
-			f, err := p.Run(indepCtx, input)
+			f, err := p.Run(ctx, input)
 			if err != nil {
 				log.Printf("[pius] plugin %s: %v", p.Name(), err)
 				return nil
@@ -142,7 +142,7 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	var handleFindings []plugins.Finding
 	var handleMu sync.Mutex
 
-	p1G, _ := errgroup.WithContext(ctx)
+	var p1G errgroup.Group
 	p1G.SetLimit(concurrency)
 	for _, p := range phase1 {
 		p := p
@@ -167,7 +167,7 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	enrichedInput := enrichWithHandles(input, handleFindings)
 
 	// Phase 2: resolve handles to CIDRs
-	p2G, _ := errgroup.WithContext(ctx)
+	var p2G errgroup.Group
 	p2G.SetLimit(concurrency)
 	for _, p := range phase2 {
 		p := p
@@ -196,8 +196,9 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 // enrichWithHandles groups cidr-handle findings by registry and injects them into Input.Meta.
 func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.Input {
 	enriched := input
-	if enriched.Meta == nil {
-		enriched.Meta = make(map[string]string)
+	enriched.Meta = make(map[string]string, len(input.Meta))
+	for k, v := range input.Meta {
+		enriched.Meta[k] = v
 	}
 
 	groups := make(map[string][]string)
