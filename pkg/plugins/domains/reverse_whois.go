@@ -42,7 +42,8 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 
 	body, err := p.client.Get(ctx, reqURL)
 	if err != nil {
-		return nil, nil
+		// Return sanitized error — strip URL which contains the API key.
+		return nil, fmt.Errorf("ViewDNS reverse WHOIS request failed for %q", input.OrgName)
 	}
 
 	var response struct {
@@ -53,7 +54,7 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 		} `json:"query"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("parse ViewDNS response for %q: %w", input.OrgName, err)
 	}
 
 	findings := make([]plugins.Finding, 0, len(response.Query.Domains))

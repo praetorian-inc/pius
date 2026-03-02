@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"time"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -35,8 +36,9 @@ func (p *EDGARPlugin) Accepts(input plugins.Input) bool {
 func (p *EDGARPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	// EDGAR full-text search
 	apiURL := fmt.Sprintf(
-		"https://efts.sec.gov/LATEST/search-index?q=%%22%s%%22&dateRange=custom&startdt=2020-01-01&enddt=2024-12-31&_source=period_of_report,entity_name,file_num,form_type",
+		"https://efts.sec.gov/LATEST/search-index?q=%%22%s%%22&dateRange=custom&startdt=2020-01-01&enddt=%s&_source=period_of_report,entity_name,file_num,form_type",
 		url.QueryEscape(input.OrgName),
+		time.Now().Format("2006-01-02"),
 	)
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{

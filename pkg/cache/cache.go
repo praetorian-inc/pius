@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	APNICOrgURL   = "http://ftp.apnic.net/apnic/whois/apnic.db.organisation.gz"
-	APNICInetURL  = "http://ftp.apnic.net/apnic/whois/apnic.db.inetnum.gz"
-	AFRINICAllURL = "http://ftp.afrinic.net/dbase/afrinic.db.gz"
+	APNICOrgURL   = "https://ftp.apnic.net/apnic/whois/apnic.db.organisation.gz"
+	APNICInetURL  = "https://ftp.apnic.net/apnic/whois/apnic.db.inetnum.gz"
+	AFRINICAllURL = "https://ftp.afrinic.net/dbase/afrinic.db.gz"
 	DefaultTTL    = 24 * time.Hour
 	CacheDirName  = ".pius/cache"
 )

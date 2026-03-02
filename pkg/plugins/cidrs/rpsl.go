@@ -64,3 +64,10 @@ func parseRPSLInetnums(filePath string, handles []string) (map[string][]ipRange,
 
 	return results, scanner.Err()
 }
+
+// ipRange represents an IP address range from an RPSL inetnum record.
+type ipRange struct {
+	start   string
+	end     string
+	netname string
+}

@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	defaultTimeout = 30 * time.Second
-	defaultRetries = 3
-	userAgent      = "pius/1.0 (github.com/praetorian-inc/pius)"
+	defaultTimeout  = 30 * time.Second
+	defaultRetries  = 3
+	maxResponseSize = 10 << 20 // 10 MB
+	userAgent       = "pius/1.0 (github.com/praetorian-inc/pius)"
 )
 
 // Client is a shared HTTP client with retry logic.
@@ -81,9 +82,12 @@ func (c *Client) GetWithHeaders(ctx context.Context, url string, headers map[str
 		}
 		defer resp.Body.Close()
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 		if err != nil {
 			return nil, fmt.Errorf("read response: %w", err)
+		}
+		if int64(len(body)) > maxResponseSize {
+			return nil, fmt.Errorf("response too large (>%d bytes) from %s", maxResponseSize, url)
 		}
 		return body, nil
 	}

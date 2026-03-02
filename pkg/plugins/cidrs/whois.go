@@ -52,15 +52,20 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	return findings, nil
 }
 
-// queryARIN queries multiple ARIN entity types
+// queryARIN queries multiple ARIN entity types with handle deduplication
 func (p *WhoisPlugin) queryARIN(ctx context.Context, org string) ([]plugins.Finding, error) {
+	seen := make(map[string]bool)
 	var findings []plugins.Finding
 
-	// Query orgs, customers, nets, asns entity types
-	findings = append(findings, p.queryArinEntity(ctx, "orgs", org)...)
-	findings = append(findings, p.queryArinEntity(ctx, "customers", org)...)
-	findings = append(findings, p.queryArinEntity(ctx, "nets", org)...)
-	findings = append(findings, p.queryArinEntity(ctx, "asns", org)...)
+	// Query all entity types, deduplicating by handle value
+	for _, entity := range []string{"orgs", "customers", "nets", "asns"} {
+		for _, f := range p.queryArinEntity(ctx, entity, org) {
+			if !seen[f.Value] {
+				seen[f.Value] = true
+				findings = append(findings, f)
+			}
+		}
+	}
 
 	return findings, nil
 }

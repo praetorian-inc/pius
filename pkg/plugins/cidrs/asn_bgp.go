@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -38,17 +37,11 @@ func (p *ASNBGPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 		return nil, nil
 	}
 
-	// Try bgp.tools first
-	cidrs, err := p.fetchFromBGPTools(ctx, input.ASN)
-	if err != nil || len(cidrs) == 0 {
-		// Fall back to RIPE RIS
-		cidrs, err = p.fetchFromRIPERIS(ctx, input.ASN)
-	}
+	cidrs, err := p.fetchFromRIPERIS(ctx, input.ASN)
 	if err != nil {
 		return nil, nil // Graceful degradation
 	}
 
-	// Convert to findings
 	var findings []plugins.Finding
 	for _, cidr := range cidrs {
 		findings = append(findings, plugins.Finding{
@@ -63,32 +56,6 @@ func (p *ASNBGPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 	}
 
 	return findings, nil
-}
-
-// fetchFromBGPTools queries bgp.tools prefix API
-func (p *ASNBGPPlugin) fetchFromBGPTools(ctx context.Context, asn string) ([]string, error) {
-	// Strip "AS" prefix if present
-	asnNumber := strings.TrimPrefix(asn, "AS")
-	apiURL := fmt.Sprintf("https://bgp.tools/prefix/%s.json", url.PathEscape(asnNumber))
-
-	body, err := p.client.Get(ctx, apiURL)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp BGPToolsResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, err
-	}
-
-	var cidrs []string
-	for _, prefix := range resp.Prefixes {
-		if prefix.Prefix != "" {
-			cidrs = append(cidrs, prefix.Prefix)
-		}
-	}
-
-	return cidrs, nil
 }
 
 // fetchFromRIPERIS queries RIPE RIS announced-prefixes API
@@ -113,13 +80,6 @@ func (p *ASNBGPPlugin) fetchFromRIPERIS(ctx context.Context, asn string) ([]stri
 	}
 
 	return cidrs, nil
-}
-
-// BGPToolsResponse represents bgp.tools prefix API response
-type BGPToolsResponse struct {
-	Prefixes []struct {
-		Prefix string `json:"prefix"`
-	} `json:"prefixes"`
 }
 
 // RIPERISResponse represents RIPE RIS announced-prefixes API response
