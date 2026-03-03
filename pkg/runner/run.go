@@ -283,7 +283,16 @@ func printFindings(findings []plugins.Finding, format string) error {
 			return nil
 		}
 		for _, f := range findings {
-			fmt.Printf("[%s] %s (%s)\n", f.Type, f.Value, f.Source)
+			line := fmt.Sprintf("[%s] %s (%s)", f.Type, f.Value, f.Source)
+			// Surface review flag and confidence for borderline findings
+			if needsReview, ok := f.Data["needs_review"].(bool); ok && needsReview {
+				if conf, ok := f.Data["confidence"].(float64); ok {
+					line += fmt.Sprintf(" ⚠ needs-review [confidence:%.2f]", conf)
+				} else {
+					line += " ⚠ needs-review"
+				}
+			}
+			fmt.Println(line)
 		}
 		return nil
 	}
