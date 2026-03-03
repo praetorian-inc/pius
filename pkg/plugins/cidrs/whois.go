@@ -17,14 +17,14 @@ func init() {
 	})
 }
 
-// WhoisPlugin discovers RIR org handles from company names via ARIN, RIPE, APNIC, AFRINIC WHOIS.
+// WhoisPlugin discovers RIR org handles from company names via ARIN, RIPE, and LACNIC WHOIS.
 // Phase 1 plugin: emits FindingCIDRHandle findings consumed by Phase 2.
 type WhoisPlugin struct {
 	client *client.Client
 }
 
 func (p *WhoisPlugin) Name() string        { return "whois" }
-func (p *WhoisPlugin) Description() string { return "ARIN/RIPE WHOIS: discovers org handles from company name" }
+func (p *WhoisPlugin) Description() string { return "ARIN/RIPE/LACNIC WHOIS: discovers org handles from company name" }
 func (p *WhoisPlugin) Category() string    { return "cidr" }
 func (p *WhoisPlugin) Phase() int          { return 1 }
 
@@ -48,6 +48,13 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 		slog.Warn("RIPE query failed", "plugin", "whois", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, ripeFindings...)
+
+	// Query LACNIC RDAP entity search (Latin America & Caribbean)
+	lacnicFindings, err := p.queryLACNIC(ctx, input.OrgName)
+	if err != nil {
+		slog.Warn("LACNIC query failed", "plugin", "whois", "org", input.OrgName, "error", err)
+	}
+	findings = append(findings, lacnicFindings...)
 
 	return findings, nil
 }
@@ -145,7 +152,7 @@ func (p *WhoisPlugin) queryArinEntity(ctx context.Context, entity, org string) [
 
 // queryRIPE queries RIPE search API
 func (p *WhoisPlugin) queryRIPE(ctx context.Context, org string) ([]plugins.Finding, error) {
-	apiURL := fmt.Sprintf("https://rest.db.ripe.net/search?query-string=%s", url.PathEscape(org))
+	apiURL := fmt.Sprintf("https://rest.db.ripe.net/search?query-string=%s", url.QueryEscape(org))
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
 		"Accept": "application/json",
@@ -179,6 +186,45 @@ func (p *WhoisPlugin) queryRIPE(ctx context.Context, org string) ([]plugins.Find
 				},
 			})
 		}
+	}
+
+	return findings, nil
+}
+
+// queryLACNIC queries LACNIC RDAP entity search API.
+// LACNIC covers Latin America and the Caribbean.
+// Search URL: https://rdap.lacnic.net/rdap/entities?fn={org}
+// Response key: "entities" (LACNIC uses non-standard key vs RDAP spec's "entitySearchResults")
+// Handle format: "BR-MERC-LACNIC", "MX-USCV4-LACNIC" (country-code prefix)
+func (p *WhoisPlugin) queryLACNIC(ctx context.Context, org string) ([]plugins.Finding, error) {
+	apiURL := fmt.Sprintf("https://rdap.lacnic.net/rdap/entities?fn=%s", url.QueryEscape(org))
+
+	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
+		"Accept": "application/rdap+json",
+	})
+	if err != nil {
+		return nil, nil // Graceful degradation
+	}
+
+	var resp LacnicSearchResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, nil
+	}
+
+	var findings []plugins.Finding
+	for _, entity := range resp.Entities {
+		if entity.Handle == "" {
+			continue
+		}
+		findings = append(findings, plugins.Finding{
+			Type:   plugins.FindingCIDRHandle,
+			Value:  entity.Handle,
+			Source: "whois",
+			Data: map[string]any{
+				"registry": "lacnic",
+				"org":      org,
+			},
+		})
 	}
 
 	return findings, nil
@@ -229,4 +275,13 @@ type RipeWhoisResponse struct {
 			} `json:"primary-key,omitempty"`
 		} `json:"object,omitempty"`
 	} `json:"objects,omitempty"`
+}
+
+// LACNIC response types
+// Note: LACNIC uses "entities" as the search results key (non-standard RDAP).
+
+type LacnicSearchResponse struct {
+	Entities []struct {
+		Handle string `json:"handle"`
+	} `json:"entities"`
 }
