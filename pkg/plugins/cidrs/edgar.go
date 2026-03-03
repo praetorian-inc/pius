@@ -6,11 +6,33 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
+
+// handlePattern matches potential RIR org handles in SEC EDGAR entity names.
+var handlePattern = regexp.MustCompile(`\b([A-Z]{2,8}-[0-9A-Z]+)\b`)
+
+// nonRIRPrefixes are known SEC/government/financial prefixes that match
+// handlePattern but are not RIR org handles.
+var nonRIRPrefixes = []string{
+	"SEC-", "EIN-", "CIK-", "SIC-", "IRS-", "NYSE-", "NASDAQ-",
+	"FCC-", "DOJ-", "FBI-", "CIA-", "EPA-", "FDA-", "SSN-", "TIN-",
+	"DEL-", "INC-", "FORM-", "SC-", "SR-", "US-", "CUSIP-",
+}
+
+// isLikelyRIRHandle returns true if the candidate is not a known non-RIR prefix.
+func isLikelyRIRHandle(handle string) bool {
+	for _, prefix := range nonRIRPrefixes {
+		if strings.HasPrefix(handle, prefix) {
+			return false
+		}
+	}
+	return true
+}
 
 func init() {
 	plugins.Register("edgar", func() plugins.Plugin {
@@ -53,11 +75,6 @@ func (p *EDGARPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 		return nil, nil
 	}
 
-	// Extract RIR handle patterns from entity names
-	// Handle pattern: 2-8 uppercase letters + hyphen + 1+ digits/letters
-	// Examples: ACME-123, ORG-ACME1-RIPE, ACME-NET-1
-	handlePattern := regexp.MustCompile(`\b([A-Z]{2,8}-[0-9A-Z]+)\b`)
-
 	var findings []plugins.Finding
 	seenHandles := make(map[string]bool)
 
@@ -68,7 +85,7 @@ func (p *EDGARPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 
 		matches := handlePattern.FindAllString(hit.Source.EntityName, -1)
 		for _, handle := range matches {
-			if seenHandles[handle] {
+			if seenHandles[handle] || !isLikelyRIRHandle(handle) {
 				continue
 			}
 			seenHandles[handle] = true
