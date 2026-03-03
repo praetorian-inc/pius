@@ -131,7 +131,7 @@ func TestSelectPlugins_WhitelistOnly(t *testing.T) {
 	plugins.Register("p2", func() plugins.Plugin { return &mockPlugin{name: "p2"} })
 	plugins.Register("p3", func() plugins.Plugin { return &mockPlugin{name: "p3"} })
 
-	result := selectPlugins("p1,p2", "")
+	result := selectPlugins("p1,p2", "", "all")
 	names := pluginNames(result)
 	assert.ElementsMatch(t, []string{"p1", "p2"}, names)
 }
@@ -143,7 +143,7 @@ func TestSelectPlugins_BlacklistOnly(t *testing.T) {
 	plugins.Register("p2", func() plugins.Plugin { return &mockPlugin{name: "p2"} })
 	plugins.Register("p3", func() plugins.Plugin { return &mockPlugin{name: "p3"} })
 
-	result := selectPlugins("", "p2")
+	result := selectPlugins("", "p2", "all")
 	names := pluginNames(result)
 	assert.ElementsMatch(t, []string{"p1", "p3"}, names)
 }
@@ -154,7 +154,7 @@ func TestSelectPlugins_WhitelistTakesPrecedenceOverBlacklist(t *testing.T) {
 	plugins.Register("p1", func() plugins.Plugin { return &mockPlugin{name: "p1"} })
 
 	// Even when p1 is also in the blacklist, whitelist wins
-	result := selectPlugins("p1", "p1")
+	result := selectPlugins("p1", "p1", "all")
 	names := pluginNames(result)
 	assert.Equal(t, []string{"p1"}, names)
 }
@@ -166,7 +166,7 @@ func TestSelectPlugins_DefaultReturnsAll(t *testing.T) {
 	plugins.Register("p2", func() plugins.Plugin { return &mockPlugin{name: "p2"} })
 	plugins.Register("p3", func() plugins.Plugin { return &mockPlugin{name: "p3"} })
 
-	result := selectPlugins("", "")
+	result := selectPlugins("", "", "all")
 	assert.Len(t, result, 3)
 }
 

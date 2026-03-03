@@ -25,12 +25,21 @@ func newRunCmd() *cobra.Command {
 		disableList string
 		concurrency int
 		output      string
+		mode        string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Discover assets for an organization",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate mode flag
+			switch mode {
+			case "passive", "active", "all":
+				// valid
+			default:
+				return fmt.Errorf("invalid --mode value %q: must be passive, active, or all", mode)
+			}
+
 			input := plugins.Input{
 				OrgName: org,
 				Domain:  domain,
@@ -38,8 +47,8 @@ func newRunCmd() *cobra.Command {
 				Meta:    make(map[string]string),
 			}
 
-			// Build plugin list (apply whitelist/blacklist)
-			selected := selectPlugins(pluginsList, disableList)
+			// Build plugin list (apply whitelist/blacklist/mode)
+			selected := selectPlugins(pluginsList, disableList, mode)
 
 			// Run the two-phase pipeline
 			findings, err := runPipeline(cmd.Context(), input, selected, concurrency)
@@ -59,34 +68,47 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&disableList, "disable", "", "Comma-separated plugin blacklist")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Max concurrent plugins")
 	cmd.Flags().StringVarP(&output, "output", "f", "terminal", "Output format: terminal|json|ndjson")
+	cmd.Flags().StringVar(&mode, "mode", "passive", "Plugin mode filter: passive|active|all")
 	_ = cmd.MarkFlagRequired("org")
 
 	return cmd
 }
 
-// selectPlugins applies --plugins whitelist and --disable blacklist to return active plugins.
-func selectPlugins(whitelist, blacklist string) []plugins.Plugin {
+// selectPlugins applies --plugins whitelist, --disable blacklist, and --mode filter to return active plugins.
+func selectPlugins(whitelist, blacklist, mode string) []plugins.Plugin {
+	var result []plugins.Plugin
+
 	if whitelist != "" {
 		names := strings.Split(whitelist, ",")
-		return plugins.Filter(trimAll(names))
-	}
-
-	all := plugins.All()
-	if blacklist == "" {
-		return all
-	}
-
-	disabled := make(map[string]bool)
-	for _, name := range strings.Split(blacklist, ",") {
-		disabled[strings.TrimSpace(name)] = true
-	}
-
-	result := make([]plugins.Plugin, 0, len(all))
-	for _, p := range all {
-		if !disabled[p.Name()] {
-			result = append(result, p)
+		result = plugins.Filter(trimAll(names))
+	} else {
+		result = plugins.All()
+		if blacklist != "" {
+			disabled := make(map[string]bool)
+			for _, name := range strings.Split(blacklist, ",") {
+				disabled[strings.TrimSpace(name)] = true
+			}
+			filtered := make([]plugins.Plugin, 0, len(result))
+			for _, p := range result {
+				if !disabled[p.Name()] {
+					filtered = append(filtered, p)
+				}
+			}
+			result = filtered
 		}
 	}
+
+	// Apply mode filter
+	if mode != "all" {
+		filtered := make([]plugins.Plugin, 0, len(result))
+		for _, p := range result {
+			if p.Mode() == mode {
+				filtered = append(filtered, p)
+			}
+		}
+		result = filtered
+	}
+
 	return result
 }
 

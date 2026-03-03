@@ -19,8 +19,8 @@ func newListCmd() *cobra.Command {
 				return
 			}
 
-			fmt.Printf("%-20s %-10s %-10s %s\n", "NAME", "CATEGORY", "PHASE", "DESCRIPTION")
-			fmt.Printf("%-20s %-10s %-10s %s\n", "----", "--------", "-----", "-----------")
+			fmt.Printf("%-20s %-10s %-10s %-10s %s\n", "NAME", "CATEGORY", "PHASE", "MODE", "DESCRIPTION")
+			fmt.Printf("%-20s %-10s %-10s %-10s %s\n", "----", "--------", "-----", "----", "-----------")
 
 			for _, name := range plugins.List() {
 				p, ok := plugins.Get(name)
@@ -28,8 +28,8 @@ func newListCmd() *cobra.Command {
 					continue
 				}
 				phaseStr := phaseLabel(p.Phase())
-				fmt.Printf("%-20s %-10s %-10s %s\n",
-					p.Name(), p.Category(), phaseStr, p.Description())
+				fmt.Printf("%-20s %-10s %-10s %-10s %s\n",
+					p.Name(), p.Category(), phaseStr, p.Mode(), p.Description())
 			}
 		},
 	}
