@@ -50,6 +50,7 @@ func (p *EDGARPlugin) Name() string        { return "edgar" }
 func (p *EDGARPlugin) Description() string { return "SEC EDGAR: discovers org handles from company filings" }
 func (p *EDGARPlugin) Category() string    { return "cidr" }
 func (p *EDGARPlugin) Phase() int          { return 1 }
+func (p *EDGARPlugin) Mode() string        { return plugins.ModePassive }
 
 func (p *EDGARPlugin) Accepts(input plugins.Input) bool {
 	return input.OrgName != ""

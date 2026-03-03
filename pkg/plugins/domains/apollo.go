@@ -62,6 +62,7 @@ func (p *ApolloPlugin) Description() string {
 }
 func (p *ApolloPlugin) Category() string { return "domain" }
 func (p *ApolloPlugin) Phase() int       { return 0 }
+func (p *ApolloPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *ApolloPlugin) Accepts(input plugins.Input) bool {
 	return input.OrgName != "" && os.Getenv("APOLLO_API_KEY") != ""

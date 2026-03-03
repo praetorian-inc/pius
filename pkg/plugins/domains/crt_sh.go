@@ -31,6 +31,7 @@ func (p *CRTShPlugin) Name() string        { return "crt-sh" }
 func (p *CRTShPlugin) Description() string { return "crt.sh: discovers domains via Certificate Transparency logs" }
 func (p *CRTShPlugin) Category() string    { return "domain" }
 func (p *CRTShPlugin) Phase() int          { return 0 }
+func (p *CRTShPlugin) Mode() string        { return plugins.ModePassive }
 
 // Accepts if we have a domain or org name to search
 func (p *CRTShPlugin) Accepts(input plugins.Input) bool {

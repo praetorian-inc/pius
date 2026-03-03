@@ -34,6 +34,7 @@ func (p *rpslPlugin) Name() string        { return p.cfg.name }
 func (p *rpslPlugin) Description() string { return p.cfg.description }
 func (p *rpslPlugin) Category() string    { return "cidr" }
 func (p *rpslPlugin) Phase() int          { return 2 }
+func (p *rpslPlugin) Mode() string        { return plugins.ModePassive }
 
 func (p *rpslPlugin) Accepts(input plugins.Input) bool {
 	return input.Meta != nil && input.Meta[p.cfg.metaKey] != "" && p.cache != nil

@@ -24,6 +24,7 @@ func (p *ReverseWhoisPlugin) Name() string        { return "reverse-whois" }
 func (p *ReverseWhoisPlugin) Description() string { return "ViewDNS Reverse WHOIS: discovers domain portfolio (requires VIEWDNS_API_KEY)" }
 func (p *ReverseWhoisPlugin) Category() string    { return "domain" }
 func (p *ReverseWhoisPlugin) Phase() int          { return 0 }
+func (p *ReverseWhoisPlugin) Mode() string        { return plugins.ModePassive }
 
 // Only runs if VIEWDNS_API_KEY is set
 func (p *ReverseWhoisPlugin) Accepts(input plugins.Input) bool {

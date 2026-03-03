@@ -26,6 +26,7 @@ func (p *ASNBGPPlugin) Name() string        { return "asn-bgp" }
 func (p *ASNBGPPlugin) Description() string { return "BGP routing tables: discovers CIDRs announced by an ASN" }
 func (p *ASNBGPPlugin) Category() string    { return "cidr" }
 func (p *ASNBGPPlugin) Phase() int          { return 0 } // Independent
+func (p *ASNBGPPlugin) Mode() string        { return plugins.ModePassive }
 
 func (p *ASNBGPPlugin) Accepts(input plugins.Input) bool {
 	// Can run if ASN is provided

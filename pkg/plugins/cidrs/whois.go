@@ -29,6 +29,7 @@ func (p *WhoisPlugin) Name() string        { return "whois" }
 func (p *WhoisPlugin) Description() string { return "ARIN/RIPE/APNIC/AFRINIC/LACNIC WHOIS: discovers org handles from company name" }
 func (p *WhoisPlugin) Category() string    { return "cidr" }
 func (p *WhoisPlugin) Phase() int          { return 1 }
+func (p *WhoisPlugin) Mode() string        { return plugins.ModePassive }
 
 func (p *WhoisPlugin) Accepts(input plugins.Input) bool {
 	return input.OrgName != ""

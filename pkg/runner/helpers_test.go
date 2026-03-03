@@ -20,6 +20,7 @@ func (m *mockPlugin) Name() string        { return m.name }
 func (m *mockPlugin) Description() string { return "mock" }
 func (m *mockPlugin) Category() string    { return "test" }
 func (m *mockPlugin) Phase() int          { return m.phase }
+func (m *mockPlugin) Mode() string        { return plugins.ModePassive }
 func (m *mockPlugin) Accepts(plugins.Input) bool {
 	return m.accepts
 }
@@ -39,6 +40,7 @@ func (m *capturingPlugin) Name() string        { return m.name }
 func (m *capturingPlugin) Description() string { return "capturing mock" }
 func (m *capturingPlugin) Category() string    { return "test" }
 func (m *capturingPlugin) Phase() int          { return m.phase }
+func (m *capturingPlugin) Mode() string        { return plugins.ModePassive }
 func (m *capturingPlugin) Accepts(input plugins.Input) bool {
 	return input.Meta != nil && input.Meta["arin_handles"] != ""
 }
@@ -56,6 +58,7 @@ func (e *errorPlugin) Name() string        { return e.name }
 func (e *errorPlugin) Description() string { return "error mock" }
 func (e *errorPlugin) Category() string    { return "test" }
 func (e *errorPlugin) Phase() int          { return 0 }
+func (e *errorPlugin) Mode() string        { return plugins.ModePassive }
 func (e *errorPlugin) Accepts(plugins.Input) bool { return true }
 func (e *errorPlugin) Run(_ context.Context, _ plugins.Input) ([]plugins.Finding, error) {
 	return nil, errors.New("intentional test error")

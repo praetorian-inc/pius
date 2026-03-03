@@ -24,6 +24,7 @@ func (p *PassiveDNSPlugin) Name() string        { return "passive-dns" }
 func (p *PassiveDNSPlugin) Description() string { return "SecurityTrails Passive DNS: discovers historical DNS data (requires SECURITYTRAILS_API_KEY)" }
 func (p *PassiveDNSPlugin) Category() string    { return "domain" }
 func (p *PassiveDNSPlugin) Phase() int          { return 0 }
+func (p *PassiveDNSPlugin) Mode() string        { return plugins.ModePassive }
 
 // Only runs if SECURITYTRAILS_API_KEY is set and we have a domain to search
 func (p *PassiveDNSPlugin) Accepts(input plugins.Input) bool {

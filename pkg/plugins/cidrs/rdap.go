@@ -42,6 +42,7 @@ func (p *rdapPlugin) Name() string        { return p.cfg.name }
 func (p *rdapPlugin) Description() string { return p.cfg.description }
 func (p *rdapPlugin) Category() string    { return "cidr" }
 func (p *rdapPlugin) Phase() int          { return 2 }
+func (p *rdapPlugin) Mode() string        { return plugins.ModePassive }
 
 func (p *rdapPlugin) Accepts(input plugins.Input) bool {
 	return input.Meta != nil && input.Meta[p.cfg.metaKey] != ""

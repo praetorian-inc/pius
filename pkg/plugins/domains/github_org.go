@@ -55,6 +55,7 @@ func (p *GitHubOrgPlugin) Description() string {
 }
 func (p *GitHubOrgPlugin) Category() string { return "domain" }
 func (p *GitHubOrgPlugin) Phase() int       { return 0 }
+func (p *GitHubOrgPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *GitHubOrgPlugin) Accepts(input plugins.Input) bool {
 	return input.OrgName != ""
