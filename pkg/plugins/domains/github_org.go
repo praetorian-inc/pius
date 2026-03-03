@@ -144,7 +144,7 @@ func (p *GitHubOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 		}
 
 		confidence := p.score(org, input)
-		if confidence < githubReviewThreshold {
+		if confidence < plugins.ConfidenceLow {
 			continue // below noise floor — discard
 		}
 
@@ -200,15 +200,11 @@ func (p *GitHubOrgPlugin) score(org *githubOrg, input plugins.Input) float64 {
 
 // buildFindings emits findings for a scored org.
 func (p *GitHubOrgPlugin) buildFindings(org *githubOrg, confidence float64, input plugins.Input) []plugins.Finding {
-	needsReview := confidence < githubEmitThreshold
-
 	commonData := map[string]any{
 		"org":          input.OrgName,
 		"github_login": org.Login,
 		"github_url":   org.HTMLURL,
 		"github_name":  org.Name,
-		"confidence":   confidence,
-		"needs_review": needsReview,
 	}
 
 	var findings []plugins.Finding
@@ -221,23 +217,20 @@ func (p *GitHubOrgPlugin) buildFindings(org *githubOrg, confidence float64, inpu
 			data[k] = v
 		}
 		data["field"] = "blog"
-		findings = append(findings, plugins.Finding{
-			Type:   plugins.FindingDomain,
-			Value:  blogDomain,
-			Source: "github-org",
-			Data:   data,
-		})
+		f := plugins.Finding{Type: plugins.FindingDomain, Value: blogDomain, Source: "github-org", Data: data}
+		plugins.SetConfidence(&f, confidence)
+		findings = append(findings, f)
 	}
 
 	// Always emit the GitHub org as a domain finding (github.com/{login})
-	// The login and confidence live in Data for agent/downstream use.
-	// Value is the org's github URL as a domain asset.
-	findings = append(findings, plugins.Finding{
+	orgFinding := plugins.Finding{
 		Type:   plugins.FindingDomain,
 		Value:  fmt.Sprintf("github.com/%s", org.Login),
 		Source: "github-org",
 		Data:   commonData,
-	})
+	}
+	plugins.SetConfidence(&orgFinding, confidence)
+	findings = append(findings, orgFinding)
 
 	return findings
 }

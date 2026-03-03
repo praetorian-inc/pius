@@ -65,14 +65,20 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 		domain := strings.ToLower(d.DomainName)
 		domain = strings.TrimSpace(domain)
 		domain = strings.TrimSuffix(domain, ".")
-		findings = append(findings, plugins.Finding{
+		f := plugins.Finding{
 			Type:   plugins.FindingDomain,
 			Value:  domain,
 			Source: p.Name(),
 			Data: map[string]any{
 				"org": input.OrgName,
 			},
-		})
+		}
+		// WHOIS registrant matching is reliable but not perfect: the org name
+		// query may match similarly-named registrants. Score at 0.75 — above
+		// the review threshold so output is clean, but confidence is available
+		// in Data for agent/downstream use.
+		plugins.SetConfidence(&f, 0.75)
+		findings = append(findings, f)
 	}
 	return findings, nil
 }
