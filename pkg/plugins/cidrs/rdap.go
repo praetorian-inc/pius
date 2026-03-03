@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
@@ -77,8 +78,8 @@ func (p *rdapPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 }
 
 func (p *rdapPlugin) fetchCIDRs(ctx context.Context, handle string) ([]string, error) {
-	url := fmt.Sprintf("%s/%s", p.cfg.baseURL, handle)
-	body, err := p.doer.GetWithHeaders(ctx, url, map[string]string{
+	reqURL := fmt.Sprintf("%s/%s", p.cfg.baseURL, url.PathEscape(handle))
+	body, err := p.doer.GetWithHeaders(ctx, reqURL, map[string]string{
 		"Accept": "application/rdap+json",
 	})
 	if err != nil {
