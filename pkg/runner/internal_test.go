@@ -170,6 +170,69 @@ func TestSelectPlugins_DefaultReturnsAll(t *testing.T) {
 	assert.Len(t, result, 3)
 }
 
+func TestSelectPlugins_ModePassiveOnly(t *testing.T) {
+	plugins.Reset()
+	t.Cleanup(plugins.Reset)
+	plugins.Register("p-passive", func() plugins.Plugin {
+		return &mockPlugin{name: "p-passive", mode: plugins.ModePassive}
+	})
+	plugins.Register("p-active", func() plugins.Plugin {
+		return &mockPlugin{name: "p-active", mode: plugins.ModeActive}
+	})
+
+	result := selectPlugins("", "", "passive")
+	names := pluginNames(result)
+	assert.ElementsMatch(t, []string{"p-passive"}, names)
+}
+
+func TestSelectPlugins_ModeActiveOnly(t *testing.T) {
+	plugins.Reset()
+	t.Cleanup(plugins.Reset)
+	plugins.Register("p-passive", func() plugins.Plugin {
+		return &mockPlugin{name: "p-passive", mode: plugins.ModePassive}
+	})
+	plugins.Register("p-active", func() plugins.Plugin {
+		return &mockPlugin{name: "p-active", mode: plugins.ModeActive}
+	})
+
+	result := selectPlugins("", "", "active")
+	names := pluginNames(result)
+	assert.ElementsMatch(t, []string{"p-active"}, names)
+}
+
+func TestSelectPlugins_ModeAllReturnsEverything(t *testing.T) {
+	plugins.Reset()
+	t.Cleanup(plugins.Reset)
+	plugins.Register("p-passive", func() plugins.Plugin {
+		return &mockPlugin{name: "p-passive", mode: plugins.ModePassive}
+	})
+	plugins.Register("p-active", func() plugins.Plugin {
+		return &mockPlugin{name: "p-active", mode: plugins.ModeActive}
+	})
+
+	result := selectPlugins("", "", "all")
+	assert.Len(t, result, 2)
+}
+
+func TestSelectPlugins_WhitelistWithModeFiltering(t *testing.T) {
+	plugins.Reset()
+	t.Cleanup(plugins.Reset)
+	plugins.Register("dns-brute", func() plugins.Plugin {
+		return &mockPlugin{name: "dns-brute", mode: plugins.ModeActive}
+	})
+	plugins.Register("crt-sh", func() plugins.Plugin {
+		return &mockPlugin{name: "crt-sh", mode: plugins.ModePassive}
+	})
+	plugins.Register("whois", func() plugins.Plugin {
+		return &mockPlugin{name: "whois", mode: plugins.ModePassive}
+	})
+
+	// Whitelist includes both passive and active plugins, but mode=passive filters to only passive
+	result := selectPlugins("dns-brute,crt-sh,whois", "", "passive")
+	names := pluginNames(result)
+	assert.ElementsMatch(t, []string{"crt-sh", "whois"}, names, "mode filter applies after whitelist selection")
+}
+
 func pluginNames(ps []plugins.Plugin) []string {
 	names := make([]string, len(ps))
 	for i, p := range ps {

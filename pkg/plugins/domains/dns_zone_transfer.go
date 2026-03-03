@@ -42,7 +42,7 @@ func (p *DNSZoneTransferPlugin) Accepts(input plugins.Input) bool {
 // Run attempts AXFR against each authoritative nameserver for the domain.
 // Extracts unique hostnames from A, AAAA, CNAME, MX, and SRV records.
 func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	domain := strings.TrimSuffix(input.Domain, ".")
+	domain := normalizeDomain(input.Domain)
 
 	nameservers := p.nameservers
 	if len(nameservers) == 0 {
@@ -65,8 +65,7 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 		}
 
 		for _, hostname := range records {
-			hostname = strings.TrimSuffix(hostname, ".")
-			hostname = strings.ToLower(hostname)
+			hostname = normalizeDomain(hostname)
 
 			// Skip the base domain itself, empty, and already-seen
 			if hostname == "" || hostname == domain || seen[hostname] {
@@ -90,16 +89,13 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 	return findings, nil
 }
 
+const defaultDNSResolver = "8.8.8.8:53"
+
 // lookupNS discovers authoritative nameservers for domain using system resolver.
 func lookupNS(ctx context.Context, domain string) ([]string, error) {
-	c := new(dns.Client)
-	m := new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(domain), dns.TypeNS)
-	m.RecursionDesired = true
-
-	r, _, err := c.ExchangeContext(ctx, m, "8.8.8.8:53")
+	r, err := queryDNS(ctx, domain, dns.TypeNS, defaultDNSResolver)
 	if err != nil {
-		return nil, fmt.Errorf("NS query: %w", err)
+		return nil, err
 	}
 
 	var nameservers []string
@@ -128,9 +124,14 @@ func attemptAXFR(ctx context.Context, domain, nameserver string) ([]string, erro
 	}
 
 	var hostnames []string
+	var firstError error
+
 	for envelope := range env {
 		if envelope.Error != nil {
 			slog.Debug("dns-zone-transfer: envelope error", "error", envelope.Error)
+			if firstError == nil {
+				firstError = envelope.Error
+			}
 			continue
 		}
 		for _, rr := range envelope.RR {
@@ -139,6 +140,18 @@ func attemptAXFR(ctx context.Context, domain, nameserver string) ([]string, erro
 				hostnames = append(hostnames, hostname)
 			}
 		}
+	}
+
+	// If we got records but also errors, return partial success (suppress error)
+	if len(hostnames) > 0 && firstError != nil {
+		slog.Warn("dns-zone-transfer: partial AXFR", "nameserver", nameserver,
+			"records", len(hostnames), "error", firstError)
+		return hostnames, nil
+	}
+
+	// If zero records and error occurred, propagate error
+	if len(hostnames) == 0 && firstError != nil {
+		return nil, fmt.Errorf("AXFR failed: %w", firstError)
 	}
 
 	return hostnames, nil

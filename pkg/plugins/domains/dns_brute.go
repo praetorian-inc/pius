@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	_ "embed"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -49,7 +50,7 @@ func (p *DNSBrutePlugin) Accepts(input plugins.Input) bool {
 // Run resolves each wordlist entry as {word}.{domain} concurrently.
 // Returns a Finding for each subdomain that resolves to at least one A or AAAA record.
 func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	domain := strings.TrimSuffix(input.Domain, ".")
+	domain := normalizeDomain(input.Domain)
 
 	var (
 		mu       sync.Mutex
@@ -73,7 +74,12 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 			defer func() { <-sem }() // release slot
 
 			fqdn := subdomain + "." + domain
-			if resolved := p.resolve(ctx, fqdn); resolved {
+			exists, err := p.resolve(ctx, fqdn)
+			if err != nil {
+				slog.Debug("dns-brute: resolve failed", "fqdn", fqdn, "error", err)
+				return
+			}
+			if exists {
 				mu.Lock()
 				findings = append(findings, plugins.Finding{
 					Type:   plugins.FindingDomain,
@@ -94,29 +100,29 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 }
 
 // resolve checks if fqdn has A or AAAA records.
-func (p *DNSBrutePlugin) resolve(ctx context.Context, fqdn string) bool {
-	c := new(dns.Client)
+// Returns (exists bool, err error).
+// If err != nil, query failed (network/timeout); caller should log/skip.
+// If err == nil && exists == false, domain legitimately does not exist.
+func (p *DNSBrutePlugin) resolve(ctx context.Context, fqdn string) (bool, error) {
 	// Try A record
-	m := new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(fqdn), dns.TypeA)
-	m.RecursionDesired = true
-
-	r, _, err := c.ExchangeContext(ctx, m, p.resolver)
-	if err == nil && r != nil && len(r.Answer) > 0 && r.Rcode == dns.RcodeSuccess {
-		return true
+	r, err := queryDNS(ctx, fqdn, dns.TypeA, p.resolver)
+	if err != nil {
+		return false, err
+	}
+	if r != nil && len(r.Answer) > 0 && r.Rcode == dns.RcodeSuccess {
+		return true, nil
 	}
 
 	// Try AAAA record
-	m = new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(fqdn), dns.TypeAAAA)
-	m.RecursionDesired = true
-
-	r, _, err = c.ExchangeContext(ctx, m, p.resolver)
-	if err == nil && r != nil && len(r.Answer) > 0 && r.Rcode == dns.RcodeSuccess {
-		return true
+	r, err = queryDNS(ctx, fqdn, dns.TypeAAAA, p.resolver)
+	if err != nil {
+		return false, err
+	}
+	if r != nil && len(r.Answer) > 0 && r.Rcode == dns.RcodeSuccess {
+		return true, nil
 	}
 
-	return false
+	return false, nil
 }
 
 // parseWordlist splits the embedded wordlist text into a slice of trimmed, non-empty lines.

@@ -11,6 +11,7 @@ import (
 type mockPlugin struct {
 	name     string
 	phase    int
+	mode     string
 	accepts  bool
 	findings []plugins.Finding
 	err      error
@@ -20,7 +21,12 @@ func (m *mockPlugin) Name() string        { return m.name }
 func (m *mockPlugin) Description() string { return "mock" }
 func (m *mockPlugin) Category() string    { return "test" }
 func (m *mockPlugin) Phase() int          { return m.phase }
-func (m *mockPlugin) Mode() string        { return plugins.ModePassive }
+func (m *mockPlugin) Mode() string {
+	if m.mode == "" {
+		return plugins.ModePassive
+	}
+	return m.mode
+}
 func (m *mockPlugin) Accepts(plugins.Input) bool {
 	return m.accepts
 }
