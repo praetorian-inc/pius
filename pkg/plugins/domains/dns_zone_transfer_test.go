@@ -120,6 +120,27 @@ func TestDNSZoneTransferPlugin_Run_Success(t *testing.T) {
 	assert.True(t, names["mail.example.com"])
 }
 
+func TestExtractHostname_AllRecordTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		rr       dns.RR
+		expected string
+	}{
+		{"A record", &dns.A{Hdr: dns.RR_Header{Name: "a.example.com."}}, "a.example.com."},
+		{"AAAA record", &dns.AAAA{Hdr: dns.RR_Header{Name: "aaaa.example.com."}}, "aaaa.example.com."},
+		{"CNAME record", &dns.CNAME{Hdr: dns.RR_Header{Name: "cname.example.com."}}, "cname.example.com."},
+		{"MX record", &dns.MX{Hdr: dns.RR_Header{Name: "mx.example.com."}}, "mx.example.com."},
+		{"SRV record", &dns.SRV{Hdr: dns.RR_Header{Name: "srv.example.com."}}, "srv.example.com."},
+		{"TXT record (unsupported)", &dns.TXT{Hdr: dns.RR_Header{Name: "txt.example.com."}}, ""},
+		{"SOA record (unsupported)", &dns.SOA{Hdr: dns.RR_Header{Name: "example.com."}}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, extractHostname(tt.rr))
+		})
+	}
+}
+
 func TestDNSZoneTransferPlugin_Run_Refused(t *testing.T) {
 	// Start a mock DNS server that refuses AXFR
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

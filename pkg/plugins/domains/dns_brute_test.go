@@ -28,6 +28,48 @@ func TestDNSBrutePlugin_Accepts(t *testing.T) {
 	assert.False(t, p.Accepts(plugins.Input{}))
 }
 
+func TestParseWordlist(t *testing.T) {
+	raw := "www\n  mail  \n\n# comment\napi\n"
+	words := parseWordlist(raw)
+	assert.Equal(t, []string{"www", "mail", "api"}, words)
+}
+
+func TestDNSBrutePlugin_Run_NoMatch(t *testing.T) {
+	// Start a local DNS server that returns NXDOMAIN for all queries
+	serveMux := dns.NewServeMux()
+	serveMux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Rcode = dns.RcodeNameError // NXDOMAIN
+		w.WriteMsg(m)
+	})
+
+	server := &dns.Server{
+		Addr:    "127.0.0.1:0",
+		Net:     "udp",
+		Handler: serveMux,
+	}
+
+	started := make(chan struct{})
+	server.NotifyStartedFunc = func() { close(started) }
+
+	go server.ListenAndServe()
+	defer server.Shutdown()
+	<-started
+
+	p := &DNSBrutePlugin{
+		resolver: server.PacketConn.LocalAddr().String(),
+		wordlist: []string{"www", "mail", "api"},
+	}
+
+	findings, err := p.Run(context.Background(), plugins.Input{
+		Domain: "nonexistent.example.com",
+	})
+
+	require.NoError(t, err)
+	assert.Empty(t, findings, "should return empty findings when no subdomains resolve")
+}
+
 func TestDNSBrutePlugin_Run(t *testing.T) {
 	// Start a local DNS server that responds to *.example.com
 	serveMux := dns.NewServeMux()
