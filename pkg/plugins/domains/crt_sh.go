@@ -16,7 +16,15 @@ func init() {
 }
 
 type CRTShPlugin struct {
-	client *client.Client
+	client  *client.Client
+	baseURL string // override for testing
+}
+
+func (p *CRTShPlugin) crtshBase() string {
+	if p.baseURL != "" {
+		return p.baseURL
+	}
+	return "https://crt.sh"
 }
 
 func (p *CRTShPlugin) Name() string        { return "crt-sh" }
@@ -36,7 +44,7 @@ func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 		query = input.OrgName
 	}
 
-	urlStr := fmt.Sprintf("https://crt.sh/?q=%s&output=json", url.QueryEscape(query))
+	urlStr := fmt.Sprintf("%s/?q=%s&output=json", p.crtshBase(), url.QueryEscape(query))
 	body, err := p.client.Get(ctx, urlStr)
 	if err != nil {
 		return nil, nil // Rate limit or network error — not critical

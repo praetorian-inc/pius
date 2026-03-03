@@ -16,65 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCache_IsStale_WhenFileMissing(t *testing.T) {
-	_, err := cache.New()
-	require.NoError(t, err)
-
-	// Non-existent file path - using temp dir since Dir() is not exported
-	tempDir := t.TempDir()
-	_ = filepath.Join(tempDir, "does-not-exist.rpsl")
-
-	// isStale is unexported, testing via GetOrDownload behavior
-	// If file missing, GetOrDownload should attempt download
-
-	t.Skip("isStale is unexported; test via GetOrDownload integration")
-}
-
-func TestCache_IsStale_WhenFileOld(t *testing.T) {
-	_, err := cache.New()
-	require.NoError(t, err)
-
-	// Create temp file - using temp dir since Dir() is not exported
-	tempDir := t.TempDir()
-	tempFile := filepath.Join(tempDir, "old-file.rpsl")
-	err = os.WriteFile(tempFile, []byte("old content"), 0644)
-	require.NoError(t, err)
-	defer os.Remove(tempFile)
-
-	// Set mtime to >24 hours ago
-	oldTime := time.Now().Add(-25 * time.Hour)
-	err = os.Chtimes(tempFile, oldTime, oldTime)
-	require.NoError(t, err)
-
-	// Verify file is old
-	info, err := os.Stat(tempFile)
-	require.NoError(t, err)
-	assert.True(t, time.Since(info.ModTime()) > 24*time.Hour, "file should be >24h old")
-
-	// isStale would return true, triggering re-download in GetOrDownload
-	t.Skip("isStale is unexported; verified file age calculation works")
-}
-
-func TestCache_IsStale_WhenFileFresh(t *testing.T) {
-	_, err := cache.New()
-	require.NoError(t, err)
-
-	// Create fresh file - using temp dir since Dir() is not exported
-	tempDir := t.TempDir()
-	freshFile := filepath.Join(tempDir, "fresh-file.rpsl")
-	err = os.WriteFile(freshFile, []byte("fresh content"), 0644)
-	require.NoError(t, err)
-	defer os.Remove(freshFile)
-
-	// Verify file is fresh (<24h)
-	info, err := os.Stat(freshFile)
-	require.NoError(t, err)
-	assert.True(t, time.Since(info.ModTime()) < 24*time.Hour, "file should be <24h old")
-
-	// isStale would return false, skipping download in GetOrDownload
-	t.Skip("isStale is unexported; verified file age calculation works")
-}
-
 func TestCache_Download_DecompressesGzip(t *testing.T) {
 	// Create gzip content
 	content := "This is test RPSL data\nwith multiple lines\n"

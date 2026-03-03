@@ -44,6 +44,16 @@ func NewAPI(dir, prefix string) (*APICache, error) {
 	return &APICache{dir: dir, ttl: DefaultTTL, prefix: prefix}, nil
 }
 
+// NewAPIWithTTL creates an APICache with a custom TTL. Primarily used in tests.
+func NewAPIWithTTL(dir, prefix string, ttl time.Duration) (*APICache, error) {
+	c, err := NewAPI(dir, prefix)
+	if err != nil {
+		return nil, err
+	}
+	c.ttl = ttl
+	return c, nil
+}
+
 // Get reads a cached value into v. Returns true if cache hit (fresh, valid JSON).
 // Returns false if the entry is missing, expired, or corrupt.
 func (c *APICache) Get(key string, v any) bool {
