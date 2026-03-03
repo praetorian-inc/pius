@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/url"
 
 	"github.com/praetorian-inc/pius/pkg/client"
@@ -38,14 +38,14 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	// Query ARIN WHOIS for all entity types
 	arinFindings, err := p.queryARIN(ctx, input.OrgName)
 	if err != nil {
-		log.Printf("[whois] ARIN query failed for %q: %v", input.OrgName, err)
+		slog.Warn("ARIN query failed", "plugin", "whois", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, arinFindings...)
 
 	// Query RIPE search
 	ripeFindings, err := p.queryRIPE(ctx, input.OrgName)
 	if err != nil {
-		log.Printf("[whois] RIPE query failed for %q: %v", input.OrgName, err)
+		slog.Warn("RIPE query failed", "plugin", "whois", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, ripeFindings...)
 

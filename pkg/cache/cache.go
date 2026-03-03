@@ -20,6 +20,10 @@ const (
 	CacheDirName  = ".pius/cache"
 )
 
+var downloadClient = &http.Client{
+	Timeout: 10 * time.Minute,
+}
+
 // Cache manages locally-cached RPSL database files with TTL.
 type Cache struct {
 	dir string
@@ -77,7 +81,7 @@ func (c *Cache) download(ctx context.Context, url, localPath string) error {
 	}
 	req.Header.Set("User-Agent", "pius/1.0")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := downloadClient.Do(req)
 	if err != nil {
 		return err
 	}

@@ -50,6 +50,11 @@ func (p *rdapPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 	handles := splitHandles(input.Meta[p.cfg.metaKey])
 	var findings []plugins.Finding
 	for _, handle := range handles {
+		select {
+		case <-ctx.Done():
+			return findings, ctx.Err()
+		default:
+		}
 		cidrs, err := p.fetchCIDRs(ctx, handle)
 		if err != nil {
 			// Log but don't fail all handles

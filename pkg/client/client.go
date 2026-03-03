@@ -80,9 +80,9 @@ func (c *Client) GetWithHeaders(ctx context.Context, url string, headers map[str
 			resp.Body.Close()
 			return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, url)
 		}
-		defer resp.Body.Close()
 
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
+		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("read response: %w", err)
 		}

@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -89,12 +90,20 @@ func selectPlugins(whitelist, blacklist string) []plugins.Plugin {
 	return result
 }
 
+const (
+	DefaultPipelineTimeout = 30 * time.Minute
+	maxFindings            = 100_000
+)
+
 // runPipeline executes the two-phase discovery pipeline.
 //
 // Phase 1 (parallel): plugins with Phase()==1 discover RIR org handles
 // Phase 2 (parallel): plugins with Phase()==2 resolve handles to CIDRs (uses enriched Input.Meta)
 // Independent (parallel with all phases): plugins with Phase()==0
 func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Plugin, concurrency int) ([]plugins.Finding, error) {
+	ctx, cancel := context.WithTimeout(ctx, DefaultPipelineTimeout)
+	defer cancel()
+
 	var (
 		mu          sync.Mutex
 		allFindings []plugins.Finding
@@ -102,8 +111,16 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 
 	collect := func(findings []plugins.Finding) {
 		mu.Lock()
+		defer mu.Unlock()
+		if len(allFindings) >= maxFindings {
+			slog.Warn("findings cap reached, dropping additional results", "cap", maxFindings)
+			return
+		}
+		remaining := maxFindings - len(allFindings)
+		if len(findings) > remaining {
+			findings = findings[:remaining]
+		}
 		allFindings = append(allFindings, findings...)
-		mu.Unlock()
 	}
 
 	// Separate plugins by phase
@@ -130,7 +147,7 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 		indepG.Go(func() error {
 			f, err := p.Run(ctx, input)
 			if err != nil {
-				log.Printf("[pius] plugin %s: %v", p.Name(), err)
+				slog.Warn("plugin error", "plugin", p.Name(), "error", err)
 				return nil
 			}
 			collect(f)
@@ -152,15 +169,17 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 		p1G.Go(func() error {
 			f, err := p.Run(ctx, input)
 			if err != nil {
-				log.Printf("[pius] plugin %s: %v", p.Name(), err)
+				slog.Warn("plugin error", "plugin", p.Name(), "error", err)
 				return nil
 			}
 			handleMu.Lock()
+			defer handleMu.Unlock()
 			handleFindings = append(handleFindings, f...)
-			handleMu.Unlock()
 			return nil
 		})
 	}
+	// Plugin errors are logged within goroutines and return nil;
+	// Wait() always returns nil under this pattern.
 	_ = p1G.Wait()
 
 	// Enrich input with discovered handles
@@ -177,16 +196,20 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 		p2G.Go(func() error {
 			f, err := p.Run(ctx, enrichedInput)
 			if err != nil {
-				log.Printf("[pius] plugin %s: %v", p.Name(), err)
+				slog.Warn("plugin error", "plugin", p.Name(), "error", err)
 				return nil
 			}
 			collect(f)
 			return nil
 		})
 	}
+	// Plugin errors are logged within goroutines and return nil;
+	// Wait() always returns nil under this pattern.
 	_ = p2G.Wait()
 
 	// Wait for independent plugins
+	// Plugin errors are logged within goroutines and return nil;
+	// Wait() always returns nil under this pattern.
 	_ = indepG.Wait()
 
 	// Filter out internal cidr-handle findings (not user-facing)

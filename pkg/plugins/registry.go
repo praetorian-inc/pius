@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 )
@@ -63,7 +64,7 @@ func List() []string {
 }
 
 // Filter returns new plugin instances for the given names.
-// Names not found in the registry are silently skipped.
+// Names not found in the registry are logged as warnings.
 func Filter(names []string) []Plugin {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -71,6 +72,8 @@ func Filter(names []string) []Plugin {
 	for _, name := range names {
 		if f, ok := registry[name]; ok {
 			result = append(result, f())
+		} else {
+			slog.Warn("unknown plugin name, skipping", "plugin", name)
 		}
 	}
 	return result
