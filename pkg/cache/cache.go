@@ -13,11 +13,12 @@ import (
 )
 
 const (
-	APNICOrgURL   = "https://ftp.apnic.net/apnic/whois/apnic.db.organisation.gz"
-	APNICInetURL  = "https://ftp.apnic.net/apnic/whois/apnic.db.inetnum.gz"
-	AFRINICAllURL = "https://ftp.afrinic.net/dbase/afrinic.db.gz"
-	DefaultTTL    = 24 * time.Hour
-	CacheDirName  = ".pius/cache"
+	APNICOrgURL          = "https://ftp.apnic.net/apnic/whois/apnic.db.organisation.gz"
+	APNICInetURL         = "https://ftp.apnic.net/apnic/whois/apnic.db.inetnum.gz"
+	AFRINICAllURL        = "https://ftp.afrinic.net/dbase/afrinic.db.gz"
+	DefaultTTL           = 24 * time.Hour
+	CacheDirName         = ".pius/cache"
+	maxDecompressedSize  = 2 << 30 // 2GB
 )
 
 var downloadClient = &http.Client{
@@ -104,10 +105,16 @@ func (c *Cache) download(ctx context.Context, url, localPath string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(f, gz); err != nil {
+	n, err := io.Copy(f, io.LimitReader(gz, maxDecompressedSize+1))
+	if err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return err
+	}
+	if n > maxDecompressedSize {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("decompressed RPSL file exceeds %d bytes", maxDecompressedSize)
 	}
 	f.Close()
 	return os.Rename(tmp, localPath)
