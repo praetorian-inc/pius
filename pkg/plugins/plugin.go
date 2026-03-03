@@ -17,6 +17,15 @@ const (
 	FindingDomain FindingType = "domain"
 )
 
+// Mode constants for plugin classification.
+const (
+	// ModePassive indicates read-only OSINT plugins (e.g., crt.sh, WHOIS).
+	ModePassive = "passive"
+
+	// ModeActive indicates plugins that send probes to targets (e.g., DNS brute-force, zone transfer).
+	ModeActive = "active"
+)
+
 // Input is the discovery request passed to each plugin.
 type Input struct {
 	// OrgName is the primary organization name to search for. Required.
@@ -70,6 +79,9 @@ type Plugin interface {
 	//   2 = Phase 2 (resolves handles to CIDRs, requires Meta enrichment from Phase 1)
 	//   0 = Independent (no dependencies, runs concurrently with all phases)
 	Phase() int
+
+	// Mode returns the execution mode: "passive" (read-only OSINT) or "active" (sends probes to targets).
+	Mode() string
 
 	// Accepts returns true if this plugin can process the given input.
 	// Use this for pre-filtering: check required fields, API key env vars, etc.

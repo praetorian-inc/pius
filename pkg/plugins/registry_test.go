@@ -21,6 +21,7 @@ func (m *mockPlugin) Name() string                                       { retur
 func (m *mockPlugin) Description() string                                { return "mock plugin" }
 func (m *mockPlugin) Category() string                                   { return m.category }
 func (m *mockPlugin) Phase() int                                         { return m.phase }
+func (m *mockPlugin) Mode() string                                       { return plugins.ModePassive }
 func (m *mockPlugin) Accepts(input plugins.Input) bool                   { return m.accepts }
 func (m *mockPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	return nil, nil
