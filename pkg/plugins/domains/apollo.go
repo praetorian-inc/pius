@@ -2,21 +2,17 @@ package domains
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
+	"github.com/praetorian-inc/pius/pkg/cache"
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
-
-const apolloCacheTTL = 24 * time.Hour
 
 func init() {
 	plugins.Register("apollo", func() plugins.Plugin {
@@ -34,7 +30,8 @@ func init() {
 // Results are cached in ~/.pius/cache/ with a 24-hour TTL to conserve API credits.
 type ApolloPlugin struct {
 	client  *client.Client
-	baseURL string // override for testing; empty means use real Apollo API
+	baseURL string       // override for testing; empty means use real Apollo API
+	apiCache *cache.APICache // injected in tests; nil = lazy init on first Run
 }
 
 func (p *ApolloPlugin) apolloBaseURL() string {
@@ -44,7 +41,22 @@ func (p *ApolloPlugin) apolloBaseURL() string {
 	return "https://api.apollo.io/api/v1/organizations/enrich"
 }
 
-func (p *ApolloPlugin) Name() string        { return "apollo" }
+// getCache returns the APICache, initializing it lazily on first use.
+// Returns nil if the cache directory cannot be created (non-fatal).
+func (p *ApolloPlugin) getCache() *cache.APICache {
+	if p.apiCache != nil {
+		return p.apiCache
+	}
+	c, err := cache.NewAPI("", "apollo")
+	if err != nil {
+		log.Printf("[apollo] cache init failed: %v", err)
+		return nil
+	}
+	p.apiCache = c
+	return c
+}
+
+func (p *ApolloPlugin) Name() string { return "apollo" }
 func (p *ApolloPlugin) Description() string {
 	return "Apollo.io: discovers org domains via organization enrichment API (requires APOLLO_API_KEY)"
 }
@@ -69,16 +81,20 @@ type apolloOrg struct {
 
 func (p *ApolloPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("APOLLO_API_KEY")
-
-	// Check cache first
 	cacheKey := strings.ToLower(input.OrgName + "|" + input.Domain)
-	if cached, ok := p.readCache(cacheKey); ok {
-		return cached, nil
+
+	// Check cache first — Apollo charges per request
+	c := p.getCache()
+	if c != nil {
+		var cached []plugins.Finding
+		if c.Get(cacheKey, &cached) {
+			return cached, nil
+		}
 	}
 
 	// Build query — domain is more precise than org name
-	var apiURL string
 	base := p.apolloBaseURL()
+	var apiURL string
 	if input.Domain != "" {
 		apiURL = fmt.Sprintf("%s?domain=%s", base, url.QueryEscape(input.Domain))
 	} else {
@@ -86,9 +102,9 @@ func (p *ApolloPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 	}
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
-		"X-Api-Key":    apiKey,
-		"Accept":       "application/json",
-		"Content-Type": "application/json",
+		"X-Api-Key":     apiKey,
+		"Accept":        "application/json",
+		"Content-Type":  "application/json",
 		"Cache-Control": "no-cache",
 	})
 	if err != nil {
@@ -114,8 +130,9 @@ func (p *ApolloPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 
 	findings := p.extractFindings(input.OrgName, &resp.Organization)
 
-	// Cache for next run
-	p.writeCache(cacheKey, findings)
+	if c != nil {
+		c.Set(cacheKey, findings)
+	}
 
 	return findings, nil
 }
@@ -164,7 +181,6 @@ func stripScheme(raw string) string {
 	if raw == "" {
 		return ""
 	}
-	// Add scheme if missing so url.Parse works correctly
 	if !strings.Contains(raw, "://") {
 		raw = "https://" + raw
 	}
@@ -174,74 +190,4 @@ func stripScheme(raw string) string {
 	}
 	host := strings.ToLower(u.Hostname())
 	return strings.TrimSuffix(host, ".")
-}
-
-// ── JSON file cache ───────────────────────────────────────────────────────────
-
-// apolloCacheEntry is what we persist to disk.
-type apolloCacheEntry struct {
-	Findings []plugins.Finding `json:"findings"`
-}
-
-func apolloCacheDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".pius", "cache")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
-
-func apolloCachePath(key string) (string, error) {
-	dir, err := apolloCacheDir()
-	if err != nil {
-		return "", err
-	}
-	h := sha256.Sum256([]byte(key))
-	return filepath.Join(dir, fmt.Sprintf("apollo-%x.json", h[:8])), nil
-}
-
-func (p *ApolloPlugin) readCache(key string) ([]plugins.Finding, bool) {
-	path, err := apolloCachePath(key)
-	if err != nil {
-		return nil, false
-	}
-	info, err := os.Stat(path)
-	if err != nil || time.Since(info.ModTime()) > apolloCacheTTL {
-		return nil, false
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
-	}
-	var entry apolloCacheEntry
-	if err := json.Unmarshal(data, &entry); err != nil {
-		return nil, false
-	}
-	return entry.Findings, true
-}
-
-func (p *ApolloPlugin) writeCache(key string, findings []plugins.Finding) {
-	path, err := apolloCachePath(key)
-	if err != nil {
-		log.Printf("[apollo] cache path error: %v", err)
-		return
-	}
-	data, err := json.Marshal(apolloCacheEntry{Findings: findings})
-	if err != nil {
-		return
-	}
-	// Atomic write via temp file + rename
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		log.Printf("[apollo] cache write error: %v", err)
-		return
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		log.Printf("[apollo] cache rename error: %v", err)
-		os.Remove(tmp)
-	}
 }
