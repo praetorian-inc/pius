@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -90,19 +91,78 @@ func (p *WaybackPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 	return findings, nil
 }
 
-// queryWayback queries the Wayback Machine CDX API and returns discovered hostnames.
-// The CDX API returns a JSON array of arrays: [["original"],["url1"],["url2"],...]
-// On error, returns nil (non-fatal).
+const (
+	waybackFanoutConcurrency = 10
+	waybackPerPrefixLimit    = 1000
+)
+
+// queryWayback discovers subdomains by fanning out 37 concurrent CDX queries
+// (a-z, 0-9, plus apex domain). Each prefix query targets subdomains starting
+// with that character, avoiding the SURT ordering problem where large domains
+// consume all result slots before subdomains appear.
 func (p *WaybackPlugin) queryWayback(ctx context.Context, domain string) ([]string, error) {
-	urlStr := fmt.Sprintf(
-		"%s/cdx/search/cdx?url=*.%s&output=json&fl=original&collapse=urlkey&limit=10000",
-		p.waybackBase(),
-		url.QueryEscape(domain),
+	// Build prefix list: a-z, 0-9, then empty string for apex domain
+	prefixes := make([]string, 0, 37)
+	for c := 'a'; c <= 'z'; c++ {
+		prefixes = append(prefixes, string(c))
+	}
+	for c := '0'; c <= '9'; c++ {
+		prefixes = append(prefixes, string(c))
+	}
+	prefixes = append(prefixes, "") // empty prefix = apex domain query
+
+	var (
+		mu       sync.Mutex
+		allHosts []string
 	)
+	sem := make(chan struct{}, waybackFanoutConcurrency)
+
+	var wg sync.WaitGroup
+	for _, prefix := range prefixes {
+		select {
+		case <-ctx.Done():
+			break
+		default:
+		}
+
+		wg.Add(1)
+		sem <- struct{}{} // acquire concurrency slot
+		go func(pfx string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			hosts, err := p.queryWaybackPrefix(ctx, domain, pfx)
+			if err != nil {
+				slog.Debug("wayback prefix query failed", "prefix", pfx, "domain", domain, "error", err)
+				return
+			}
+			mu.Lock()
+			allHosts = append(allHosts, hosts...)
+			mu.Unlock()
+		}(prefix)
+	}
+	wg.Wait()
+
+	return allHosts, nil
+}
+
+// queryWaybackPrefix queries the CDX API for a single prefix pattern.
+// If prefix is empty, queries the apex domain directly.
+// The CDX API returns a JSON array of arrays: [["original"],["url1"],["url2"],...]
+func (p *WaybackPlugin) queryWaybackPrefix(ctx context.Context, domain, prefix string) ([]string, error) {
+	var urlStr string
+	if prefix == "" {
+		// Apex domain query: url=domain.com (no wildcard)
+		urlStr = fmt.Sprintf("%s/cdx/search/cdx?url=%s&output=json&fl=original&collapse=urlkey&limit=100",
+			p.waybackBase(), url.QueryEscape(domain))
+	} else {
+		urlStr = fmt.Sprintf("%s/cdx/search/cdx?url=%s*.%s&output=json&fl=original&collapse=urlkey&limit=%d",
+			p.waybackBase(), url.QueryEscape(prefix), url.QueryEscape(domain), waybackPerPrefixLimit)
+	}
 
 	body, err := p.client.Get(ctx, urlStr)
 	if err != nil {
-		return nil, fmt.Errorf("wayback CDX request: %w", err)
+		return nil, fmt.Errorf("wayback CDX request (prefix=%q): %w", prefix, err)
 	}
 
 	var rows [][]string
@@ -124,7 +184,6 @@ func (p *WaybackPlugin) queryWayback(ctx context.Context, domain string) ([]stri
 			hosts = append(hosts, host)
 		}
 	}
-
 	return hosts, nil
 }
 
