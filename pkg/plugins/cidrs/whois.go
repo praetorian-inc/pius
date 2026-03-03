@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -17,14 +18,15 @@ func init() {
 	})
 }
 
-// WhoisPlugin discovers RIR org handles from company names via ARIN, RIPE, and LACNIC WHOIS.
+// WhoisPlugin discovers RIR org handles from company names.
+// Queries ARIN, RIPE, APNIC, AFRINIC, and LACNIC WHOIS/RDAP APIs.
 // Phase 1 plugin: emits FindingCIDRHandle findings consumed by Phase 2.
 type WhoisPlugin struct {
 	client *client.Client
 }
 
 func (p *WhoisPlugin) Name() string        { return "whois" }
-func (p *WhoisPlugin) Description() string { return "ARIN/RIPE/LACNIC WHOIS: discovers org handles from company name" }
+func (p *WhoisPlugin) Description() string { return "ARIN/RIPE/APNIC/AFRINIC/LACNIC WHOIS: discovers org handles from company name" }
 func (p *WhoisPlugin) Category() string    { return "cidr" }
 func (p *WhoisPlugin) Phase() int          { return 1 }
 
@@ -48,6 +50,20 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 		slog.Warn("RIPE query failed", "plugin", "whois", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, ripeFindings...)
+
+	// Query APNIC REST WHOIS (Asia-Pacific)
+	apnicFindings, err := p.queryAPNIC(ctx, input.OrgName)
+	if err != nil {
+		slog.Warn("APNIC query failed", "plugin", "whois", "org", input.OrgName, "error", err)
+	}
+	findings = append(findings, apnicFindings...)
+
+	// Query AFRINIC RDAP entity search (Africa)
+	afrinicFindings, err := p.queryAFRINIC(ctx, input.OrgName)
+	if err != nil {
+		slog.Warn("AFRINIC query failed", "plugin", "whois", "org", input.OrgName, "error", err)
+	}
+	findings = append(findings, afrinicFindings...)
 
 	// Query LACNIC RDAP entity search (Latin America & Caribbean)
 	lacnicFindings, err := p.queryLACNIC(ctx, input.OrgName)
@@ -191,10 +207,89 @@ func (p *WhoisPlugin) queryRIPE(ctx context.Context, org string) ([]plugins.Find
 	return findings, nil
 }
 
+// queryAPNIC queries APNIC REST WHOIS for organisation handles.
+// URL: https://wq.apnic.net/query?searchtext={org}&type=organisation
+// Response: JSON array where each item has objectType and primaryKey.
+// Handle format: "ORG-STCS1-AP", "ORG-GA71-AP" (Asia-Pacific suffix)
+func (p *WhoisPlugin) queryAPNIC(ctx context.Context, org string) ([]plugins.Finding, error) {
+	apiURL := fmt.Sprintf("https://wq.apnic.net/query?searchtext=%s&type=organisation", url.QueryEscape(org))
+
+	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
+		"Accept": "application/json",
+	})
+	if err != nil {
+		return nil, nil
+	}
+
+	var items []ApnicQueryItem
+	if err := json.Unmarshal(body, &items); err != nil {
+		return nil, nil
+	}
+
+	var findings []plugins.Finding
+	for _, item := range items {
+		if item.ObjectType != "organisation" || item.PrimaryKey == "" {
+			continue
+		}
+		findings = append(findings, plugins.Finding{
+			Type:   plugins.FindingCIDRHandle,
+			Value:  item.PrimaryKey,
+			Source: "whois",
+			Data: map[string]any{
+				"registry": "apnic",
+				"org":      org,
+			},
+		})
+	}
+
+	return findings, nil
+}
+
+// queryAFRINIC queries AFRINIC RDAP entity search for organisation handles.
+// URL: https://rdap.afrinic.net/rdap/entities?fn={org}
+// Response: standard RDAP entitySearchResults[].handle
+// Handle format: "ORG-AS2-AFRINIC", "ORG-MC12-AFRINIC" (Africa suffix)
+// Only ORG- prefixed handles are emitted; individual contacts (e.g. "ATD1-AFRINIC") are skipped.
+func (p *WhoisPlugin) queryAFRINIC(ctx context.Context, org string) ([]plugins.Finding, error) {
+	apiURL := fmt.Sprintf("https://rdap.afrinic.net/rdap/entities?fn=%s", url.QueryEscape(org))
+
+	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
+		"Accept": "application/rdap+json",
+	})
+	if err != nil {
+		return nil, nil
+	}
+
+	var resp RdapEntitySearchResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, nil
+	}
+
+	var findings []plugins.Finding
+	for _, entity := range resp.EntitySearchResults {
+		handle := entity.Handle
+		// Only emit organisation handles (ORG- prefix); skip individual contacts
+		if handle == "" || !strings.HasPrefix(strings.ToUpper(handle), "ORG-") {
+			continue
+		}
+		findings = append(findings, plugins.Finding{
+			Type:   plugins.FindingCIDRHandle,
+			Value:  handle,
+			Source: "whois",
+			Data: map[string]any{
+				"registry": "afrinic",
+				"org":      org,
+			},
+		})
+	}
+
+	return findings, nil
+}
+
 // queryLACNIC queries LACNIC RDAP entity search API.
 // LACNIC covers Latin America and the Caribbean.
-// Search URL: https://rdap.lacnic.net/rdap/entities?fn={org}
-// Response key: "entities" (LACNIC uses non-standard key vs RDAP spec's "entitySearchResults")
+// URL: https://rdap.lacnic.net/rdap/entities?fn={org}
+// Response key: "entities" (LACNIC non-standard; RDAP spec uses "entitySearchResults")
 // Handle format: "BR-MERC-LACNIC", "MX-USCV4-LACNIC" (country-code prefix)
 func (p *WhoisPlugin) queryLACNIC(ctx context.Context, org string) ([]plugins.Finding, error) {
 	apiURL := fmt.Sprintf("https://rdap.lacnic.net/rdap/entities?fn=%s", url.QueryEscape(org))
@@ -230,7 +325,7 @@ func (p *WhoisPlugin) queryLACNIC(ctx context.Context, org string) ([]plugins.Fi
 	return findings, nil
 }
 
-// ARIN response types (ported from collect_cidr/collect-cidr.go lines 40-90)
+// ── ARIN response types ───────────────────────────────────────────────────────
 
 type ArinRef struct {
 	Handle string `json:"@handle"`
@@ -261,7 +356,7 @@ type ArinAsnsResponse struct {
 	} `json:"asns"`
 }
 
-// RIPE response types (ported from collect_cidr/collect-cidr.go lines 25-37)
+// ── RIPE response types ───────────────────────────────────────────────────────
 
 type RipeWhoisResponse struct {
 	Objects struct {
@@ -277,8 +372,25 @@ type RipeWhoisResponse struct {
 	} `json:"objects,omitempty"`
 }
 
-// LACNIC response types
-// Note: LACNIC uses "entities" as the search results key (non-standard RDAP).
+// ── APNIC response types ──────────────────────────────────────────────────────
+// wq.apnic.net returns a top-level JSON array of mixed object types.
+
+type ApnicQueryItem struct {
+	ObjectType string `json:"objectType"`
+	PrimaryKey string `json:"primaryKey"`
+}
+
+// ── AFRINIC response types ────────────────────────────────────────────────────
+// Standard RDAP entitySearchResults (used by AFRINIC and APNIC RDAP).
+
+type RdapEntitySearchResponse struct {
+	EntitySearchResults []struct {
+		Handle string `json:"handle"`
+	} `json:"entitySearchResults"`
+}
+
+// ── LACNIC response types ─────────────────────────────────────────────────────
+// LACNIC uses non-standard "entities" key (not "entitySearchResults").
 
 type LacnicSearchResponse struct {
 	Entities []struct {
