@@ -272,6 +272,28 @@ func TestURLScanPlugin_APIKeyHeader(t *testing.T) {
 	assert.Equal(t, "test-api-key-12345", receivedAPIKey, "API-Key header should be set when env var is present")
 }
 
+// TestURLScanPlugin_QueryUsesApexDomain verifies that the search query sent to
+// URLScan.io uses page.apexDomain: (not domain:) so results are scoped to real
+// subdomains of the target rather than unrelated pages that merely mention it.
+func TestURLScanPlugin_QueryUsesApexDomain(t *testing.T) {
+	var receivedQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedQuery = r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(urlscanResponse{Results: []urlscanResult{}})
+	}))
+	defer srv.Close()
+
+	p := &URLScanPlugin{client: client.New(), baseURL: srv.URL}
+	_, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+	require.NoError(t, err)
+	assert.True(t,
+		len(receivedQuery) > 0 && receivedQuery[:len("page.apexDomain:")] == "page.apexDomain:",
+		"query should start with page.apexDomain: but got %q", receivedQuery,
+	)
+}
+
 // TestURLScanPlugin_NoAPIKeyHeader verifies that when URLSCAN_API_KEY is not
 // set, no API-Key header is sent.
 func TestURLScanPlugin_NoAPIKeyHeader(t *testing.T) {

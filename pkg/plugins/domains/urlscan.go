@@ -69,7 +69,7 @@ type urlscanTask struct {
 // Run queries URLScan.io and returns subdomain findings for the input domain.
 func (p *URLScanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	reqURL := fmt.Sprintf(
-		"%s/api/v1/search/?q=domain:%s&size=100",
+		"%s/api/v1/search/?q=page.apexDomain:%s&size=100",
 		p.urlscanBase(),
 		url.QueryEscape(input.Domain),
 	)
