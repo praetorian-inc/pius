@@ -24,6 +24,7 @@ type rdapConfig struct {
 	baseURL     string // e.g. "https://rdap.arin.net/registry/entity" (no trailing slash)
 	metaKey     string // "arin_handles" or "ripe_handles"
 	registry    string // "arin" or "ripe" (for Finding.Data)
+	mode        string // plugins.ModePassive or plugins.ModeActive
 }
 
 // rdapPlugin is a Phase 2 CIDR plugin that resolves RIR org handles
@@ -42,7 +43,7 @@ func (p *rdapPlugin) Name() string        { return p.cfg.name }
 func (p *rdapPlugin) Description() string { return p.cfg.description }
 func (p *rdapPlugin) Category() string    { return "cidr" }
 func (p *rdapPlugin) Phase() int          { return 2 }
-func (p *rdapPlugin) Mode() string        { return plugins.ModePassive }
+func (p *rdapPlugin) Mode() string        { return p.cfg.mode }
 
 func (p *rdapPlugin) Accepts(input plugins.Input) bool {
 	return input.Meta != nil && input.Meta[p.cfg.metaKey] != ""

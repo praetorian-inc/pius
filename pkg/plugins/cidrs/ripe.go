@@ -10,6 +10,7 @@ func init() {
 			baseURL:     "https://rdap.db.ripe.net/entity",
 			metaKey:     "ripe_handles",
 			registry:    "ripe",
+			mode:        plugins.ModePassive,
 		})
 	})
 }

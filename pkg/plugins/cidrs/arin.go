@@ -10,6 +10,7 @@ func init() {
 			baseURL:     "https://rdap.arin.net/registry/entity",
 			metaKey:     "arin_handles",
 			registry:    "arin",
+			mode:        plugins.ModePassive,
 		})
 	})
 }

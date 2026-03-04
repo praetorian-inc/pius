@@ -19,6 +19,7 @@ func init() {
 			cacheURL:    cache.APNICInetURL,
 			metaKey:     "apnic_handles",
 			registry:    "apnic",
+			mode:        plugins.ModePassive,
 		}, c)
 	})
 }

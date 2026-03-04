@@ -19,6 +19,7 @@ func init() {
 			cacheURL:    cache.AFRINICAllURL,
 			metaKey:     "afrinic_handles",
 			registry:    "afrinic",
+			mode:        plugins.ModePassive,
 		}, c)
 	})
 }

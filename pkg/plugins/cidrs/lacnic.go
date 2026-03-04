@@ -10,6 +10,7 @@ func init() {
 			baseURL:     "https://rdap.lacnic.net/rdap/entity",
 			metaKey:     "lacnic_handles",
 			registry:    "lacnic",
+			mode:        plugins.ModePassive,
 		})
 	})
 }
