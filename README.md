@@ -172,7 +172,7 @@ pius run --org "Acme Corp" --domain acme.com
               │
    ┌──────────┴─────────────────────────────┐
    │ Phase 2 (concurrent)                   │
-   │  arin   ripe   apnic   afrinic  lacnic  │
+   │  arin   ripe   apnic   afrinic  lacnic │
    └──────────┬─────────────────────────────┘
               │ Emits CIDR blocks
               ▼
