@@ -61,13 +61,13 @@ func newRunCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&org, "org", "o", "", "Organization name to search (required)")
+	cmd.Flags().StringVar(&org, "org", "", "Organization name to search (required)")
 	cmd.Flags().StringVarP(&domain, "domain", "d", "", "Known domain hint (optional)")
 	cmd.Flags().StringVar(&asn, "asn", "", "Known ASN hint, e.g. AS12345 (optional)")
 	cmd.Flags().StringVar(&pluginsList, "plugins", "", "Comma-separated plugin whitelist (default: all)")
 	cmd.Flags().StringVar(&disableList, "disable", "", "Comma-separated plugin blacklist")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Max concurrent plugins")
-	cmd.Flags().StringVarP(&output, "output", "f", "terminal", "Output format: terminal|json|ndjson")
+	cmd.Flags().StringVarP(&output, "output", "o", "terminal", "Output format: terminal|json|ndjson")
 	cmd.Flags().StringVar(&mode, "mode", "passive", "Plugin mode filter: passive|active|all")
 	_ = cmd.MarkFlagRequired("org")
 
