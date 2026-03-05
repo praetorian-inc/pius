@@ -45,14 +45,14 @@ func (p *PassiveDNSPlugin) Run(ctx context.Context, input plugins.Input) ([]plug
 		"Content-Type": "application/json",
 	})
 	if err != nil {
-		return nil, fmt.Errorf("SecurityTrails API request: %w", err)
+		return nil, fmt.Errorf("passive-dns: SecurityTrails request: %w", err)
 	}
 
 	var response struct {
 		Subdomains []string `json:"subdomains"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("parse SecurityTrails response: %w", err)
+		return nil, fmt.Errorf("passive-dns: parse response: %w", err)
 	}
 
 	findings := make([]plugins.Finding, 0, len(response.Subdomains))

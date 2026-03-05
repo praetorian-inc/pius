@@ -250,11 +250,11 @@ func (p *GLEIFPlugin) searchByName(ctx context.Context, name string) ([]leiRecor
 		p.gleifBase(), url.QueryEscape(name))
 	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("gleif search: %w", err)
+		return nil, fmt.Errorf("gleif: search: %w", err)
 	}
 	var resp leiSearchResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("gleif search parse: %w", err)
+		return nil, fmt.Errorf("gleif: search parse: %w", err)
 	}
 	return resp.Data, nil
 }
@@ -263,13 +263,13 @@ func (p *GLEIFPlugin) getRecord(ctx context.Context, lei string) (*leiRecord, er
 	u := fmt.Sprintf("%s/lei-records/%s", p.gleifBase(), url.PathEscape(lei))
 	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("gleif get record %s: %w", lei, err)
+		return nil, fmt.Errorf("gleif: get record %s: %w", lei, err)
 	}
 	var resp struct {
 		Data leiRecord `json:"data"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("gleif get record parse: %w", err)
+		return nil, fmt.Errorf("gleif: get record parse: %w", err)
 	}
 	return &resp.Data, nil
 }
@@ -278,11 +278,11 @@ func (p *GLEIFPlugin) getDirectParent(ctx context.Context, lei string) (string, 
 	u := fmt.Sprintf("%s/lei-records/%s/direct-parent-relationship", p.gleifBase(), url.PathEscape(lei))
 	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
 	if err != nil {
-		return "", fmt.Errorf("gleif direct parent of %s: %w", lei, err)
+		return "", fmt.Errorf("gleif: direct parent of %s: %w", lei, err)
 	}
 	var resp leiRelationshipResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("gleif direct parent parse: %w", err)
+		return "", fmt.Errorf("gleif: direct parent parse: %w", err)
 	}
 	return resp.Data.Attributes.Relationship.EndNode.ID, nil
 }
@@ -291,11 +291,11 @@ func (p *GLEIFPlugin) getUltimateParent(ctx context.Context, lei string) (string
 	u := fmt.Sprintf("%s/lei-records/%s/ultimate-parent-relationship", p.gleifBase(), url.PathEscape(lei))
 	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
 	if err != nil {
-		return "", fmt.Errorf("gleif ultimate parent of %s: %w", lei, err)
+		return "", fmt.Errorf("gleif: ultimate parent of %s: %w", lei, err)
 	}
 	var resp leiRelationshipResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("gleif ultimate parent parse: %w", err)
+		return "", fmt.Errorf("gleif: ultimate parent parse: %w", err)
 	}
 	return resp.Data.Attributes.Relationship.EndNode.ID, nil
 }
@@ -307,11 +307,11 @@ func (p *GLEIFPlugin) getChildren(ctx context.Context, lei string) ([]leiRecord,
 			p.gleifBase(), url.PathEscape(lei), page)
 		body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
 		if err != nil {
-			return all, fmt.Errorf("gleif children page %d of %s: %w", page, lei, err)
+			return all, fmt.Errorf("gleif: children page %d of %s: %w", page, lei, err)
 		}
 		var resp leiChildrenResponse
 		if err := json.Unmarshal(body, &resp); err != nil {
-			return all, fmt.Errorf("gleif children parse: %w", err)
+			return all, fmt.Errorf("gleif: children parse: %w", err)
 		}
 		all = append(all, resp.Data...)
 		if resp.Meta.Pagination.CurrentPage >= resp.Meta.Pagination.LastPage {
