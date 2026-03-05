@@ -50,6 +50,12 @@ func newRunCmd() *cobra.Command {
 			// Build plugin list (apply whitelist/blacklist/mode)
 			selected := selectPlugins(pluginsList, disableList, mode)
 
+			if len(selected) == 0 {
+				fmt.Fprintf(os.Stderr, "No plugins selected for mode %q.\n", mode)
+				return nil
+			}
+			fmt.Fprintf(os.Stderr, "Running %d plugin(s) in %q mode...\n", len(selected), mode)
+
 			// Run the two-phase pipeline
 			findings, err := runPipeline(cmd.Context(), input, selected, concurrency)
 			if err != nil {
@@ -61,17 +67,31 @@ func newRunCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&org, "org", "o", "", "Organization name to search (required)")
+	cmd.Flags().StringVar(&org, "org", "", "Organization name to search (required)")
 	cmd.Flags().StringVarP(&domain, "domain", "d", "", "Known domain hint (optional)")
 	cmd.Flags().StringVar(&asn, "asn", "", "Known ASN hint, e.g. AS12345 (optional)")
 	cmd.Flags().StringVar(&pluginsList, "plugins", "", "Comma-separated plugin whitelist (default: all)")
 	cmd.Flags().StringVar(&disableList, "disable", "", "Comma-separated plugin blacklist")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Max concurrent plugins")
-	cmd.Flags().StringVarP(&output, "output", "f", "terminal", "Output format: terminal|json|ndjson")
+	cmd.Flags().StringVarP(&output, "output", "o", "terminal", "Output format: terminal|json|ndjson")
 	cmd.Flags().StringVar(&mode, "mode", "passive", "Plugin mode filter: passive|active|all")
 	_ = cmd.MarkFlagRequired("org")
 
 	return cmd
+}
+
+// colorEnabled reports whether terminal color/decoration output is active.
+// It respects the NO_COLOR convention (https://no-color.org) and checks
+// whether stdout is a character device (TTY).
+func colorEnabled() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 // selectPlugins applies --plugins whitelist, --disable blacklist, and --mode filter to return active plugins.
@@ -308,7 +328,11 @@ func printFindings(findings []plugins.Finding, format string) error {
 			line := fmt.Sprintf("[%s] %s (%s)", f.Type, f.Value, f.Source)
 			// Surface review flag and confidence for borderline findings
 			if plugins.NeedsReview(f) {
-				line += fmt.Sprintf(" ⚠ needs-review [confidence:%.2f]", plugins.Confidence(f))
+				if colorEnabled() {
+					line += fmt.Sprintf(" ⚠ needs-review [confidence:%.2f]", plugins.Confidence(f))
+				} else {
+					line += fmt.Sprintf(" [needs-review confidence:%.2f]", plugins.Confidence(f))
+				}
 			}
 			fmt.Println(line)
 		}

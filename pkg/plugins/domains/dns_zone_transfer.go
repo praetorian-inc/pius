@@ -107,7 +107,7 @@ func lookupNS(ctx context.Context, domain string) ([]string, error) {
 	}
 
 	if len(nameservers) == 0 {
-		return nil, fmt.Errorf("no NS records found for %s", domain)
+		return nil, fmt.Errorf("dns-zone-transfer: no NS records for %s", domain)
 	}
 	return nameservers, nil
 }
@@ -120,7 +120,7 @@ func attemptAXFR(ctx context.Context, domain, nameserver string) ([]string, erro
 
 	env, err := t.In(m, nameserver)
 	if err != nil {
-		return nil, fmt.Errorf("AXFR initiation: %w", err)
+		return nil, fmt.Errorf("dns-zone-transfer: AXFR initiation: %w", err)
 	}
 
 	var hostnames []string
@@ -151,7 +151,7 @@ func attemptAXFR(ctx context.Context, domain, nameserver string) ([]string, erro
 
 	// If zero records and error occurred, propagate error
 	if len(hostnames) == 0 && firstError != nil {
-		return nil, fmt.Errorf("AXFR failed: %w", firstError)
+		return nil, fmt.Errorf("dns-zone-transfer: AXFR failed: %w", firstError)
 	}
 
 	return hostnames, nil

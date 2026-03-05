@@ -62,9 +62,8 @@ type Finding struct {
 	Data map[string]any
 }
 
-// Plugin is the interface that all Pius data source plugins must implement.
-// Each plugin is self-contained and self-registering via Go init() functions.
-type Plugin interface {
+// Descriptor identifies and describes a plugin.
+type Descriptor interface {
 	// Name returns the unique identifier for this plugin (e.g., "arin", "crt-sh").
 	Name() string
 
@@ -73,7 +72,10 @@ type Plugin interface {
 
 	// Category returns the type of assets this plugin discovers: "cidr" or "domain".
 	Category() string
+}
 
+// Classifier routes a plugin through the two-phase pipeline.
+type Classifier interface {
 	// Phase returns the pipeline phase this plugin belongs to:
 	//   1 = Phase 1 (discovers RIR org handles, emits FindingCIDRHandle)
 	//   2 = Phase 2 (resolves handles to CIDRs, requires Meta enrichment from Phase 1)
@@ -82,7 +84,10 @@ type Plugin interface {
 
 	// Mode returns the execution mode: "passive" (read-only OSINT) or "active" (sends probes to targets).
 	Mode() string
+}
 
+// Runner executes plugin logic against a given input.
+type Runner interface {
 	// Accepts returns true if this plugin can process the given input.
 	// Use this for pre-filtering: check required fields, API key env vars, etc.
 	// Plugins requiring missing API keys must return false here.
@@ -93,4 +98,12 @@ type Plugin interface {
 	// On partial success (some results found, some failed), return what was found with nil error.
 	// Return (nil, nil) if the plugin has nothing to contribute (not an error condition).
 	Run(ctx context.Context, input Input) ([]Finding, error)
+}
+
+// Plugin composes Descriptor, Classifier, and Runner into the full plugin contract.
+// Each plugin is self-contained and self-registering via Go init() functions.
+type Plugin interface {
+	Descriptor
+	Classifier
+	Runner
 }
