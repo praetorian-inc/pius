@@ -117,14 +117,18 @@ func (p *CrunchbasePlugin) Run(ctx context.Context, input plugins.Input) ([]plug
 		}
 	}
 
-	// Step 1: Resolve org name to permalink via autocomplete
-	permalink, err := p.autocomplete(ctx, input.OrgName, apiKey)
+	// Step 1: Resolve to permalink — prefer domain (precise) over org name (fuzzy)
+	query := input.OrgName
+	if input.Domain != "" {
+		query = input.Domain
+	}
+	permalink, err := p.autocomplete(ctx, query, apiKey)
 	if err != nil {
-		log.Printf("[crunchbase] autocomplete failed for %q: %v", input.OrgName, err)
+		log.Printf("[crunchbase] autocomplete failed for %q: %v", query, err)
 		return nil, nil // graceful degradation
 	}
 	if permalink == "" {
-		log.Printf("[crunchbase] no autocomplete match for %q", input.OrgName)
+		log.Printf("[crunchbase] no autocomplete match for %q", query)
 		return nil, nil
 	}
 

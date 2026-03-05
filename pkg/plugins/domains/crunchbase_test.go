@@ -557,6 +557,79 @@ func TestCrunchbasePlugin_Deduplicate_Empty(t *testing.T) {
 	assert.Empty(t, p.deduplicate(nil))
 }
 
+func TestCrunchbasePlugin_Run_PrefersDomainOverOrgName(t *testing.T) {
+	t.Setenv("CRUNCHBASE_API_KEY", "test-key")
+
+	var receivedQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.URL.Path == "/autocompletes":
+			receivedQuery = r.URL.RawQuery
+			resp := cbAutocompleteResponse{
+				Entities: []cbAutocompleteEntity{
+					{Identifier: cbIdentifier{Permalink: "praetorian", EntityType: "organization"}},
+				},
+			}
+			json.NewEncoder(w).Encode(resp)
+
+		default:
+			resp := cbEntityResponse{
+				Properties: cbOrgProperties{
+					Identifier: cbIdentifier{Permalink: "praetorian", EntityType: "organization"},
+					WebsiteURL: strPtr("https://praetorian.com"),
+				},
+			}
+			json.NewEncoder(w).Encode(resp)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestCrunchbasePlugin(t, srv.URL)
+	_, _ = p.Run(context.Background(), plugins.Input{OrgName: "Praetorian", Domain: "praetorian.com"})
+
+	// When both OrgName and Domain are provided, autocomplete should receive the domain
+	assert.Contains(t, receivedQuery, "query=praetorian.com")
+	assert.NotContains(t, receivedQuery, "query=Praetorian")
+}
+
+func TestCrunchbasePlugin_Run_FallsBackToOrgName(t *testing.T) {
+	t.Setenv("CRUNCHBASE_API_KEY", "test-key")
+
+	var receivedQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.URL.Path == "/autocompletes":
+			receivedQuery = r.URL.RawQuery
+			resp := cbAutocompleteResponse{
+				Entities: []cbAutocompleteEntity{
+					{Identifier: cbIdentifier{Permalink: "acme", EntityType: "organization"}},
+				},
+			}
+			json.NewEncoder(w).Encode(resp)
+
+		default:
+			resp := cbEntityResponse{
+				Properties: cbOrgProperties{
+					Identifier: cbIdentifier{Permalink: "acme", EntityType: "organization"},
+					WebsiteURL: strPtr("https://acme.com"),
+				},
+			}
+			json.NewEncoder(w).Encode(resp)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestCrunchbasePlugin(t, srv.URL)
+	_, _ = p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
+
+	// When only OrgName is provided (no domain), autocomplete should receive the org name
+	assert.Contains(t, receivedQuery, "query=Acme")
+}
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 func TestCrunchbasePlugin_IsRegistered(t *testing.T) {
