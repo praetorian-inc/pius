@@ -52,7 +52,7 @@ Unlike ad-hoc scripts, Pius is built for production use — concurrent plugin ex
 
 | Feature | Description |
 |---------|-------------|
-| **15 Discovery Plugins** | 8 domain plugins + 7 CIDR plugins covering certificate transparency, passive DNS, WHOIS, RDAP, RPSL, and BGP tables |
+| **16 Discovery Plugins** | 9 domain plugins + 7 CIDR plugins covering certificate transparency, passive DNS, WHOIS, RDAP, RPSL, and BGP tables |
 | **All 5 RIRs** | ARIN (North America), RIPE (Europe/Middle East), APNIC (Asia-Pacific), AFRINIC (Africa), LACNIC (Latin America) |
 | **Three-Phase Pipeline** | Phase 1 discovers RIR org handles; Phase 2 resolves handles to CIDRs; Phase 0 runs independently |
 | **Confidence Scoring** | Ambiguous name-to-asset mappings are scored and flagged for review rather than silently dropped |
@@ -125,6 +125,7 @@ All domain plugins run in Phase 0 (independent, concurrent). They emit discovere
 | `reverse-whois` | ViewDNS reverse WHOIS | `VIEWDNS_API_KEY` | Passive | 0.75 confidence; registrant email matching |
 | `dns-brute` | Local DNS resolver | None | **Active** | 50 concurrent goroutines; embedded wordlist |
 | `dns-zone-transfer` | DNS AXFR | None | **Active** | Extracts A, AAAA, CNAME, MX, SRV records |
+| `doh-enum` | DNS-over-HTTPS resolvers | AWS credentials (optional) | **Active** | 50 concurrent workers; round-robin endpoint rotation; optional API Gateway deployment for IP diversity |
 
 ### CIDR Plugins
 
@@ -156,7 +157,8 @@ pius run --org "Acme Corp" --domain acme.com
    │ Phase 0 (concurrent, independent)      │
    │  crt-sh   apollo   github-org   gleif  │
    │  passive-dns   reverse-whois           │
-   │  dns-brute*   dns-zone-transfer*       │
+   │  dns-brute*  dns-zone-transfer*        │
+   │  doh-enum*                             │
    │  asn-bgp                               │
    └──────────┬─────────────────────────────┘
               │ Emits domains + CIDRs directly
@@ -244,6 +246,29 @@ pius run --org "Acme Corp" --mode passive --plugins whois,arin,ripe,apnic,afrini
 pius run --org "Acme Corp" --asn AS12345 --plugins asn-bgp
 ```
 
+### DoH Subdomain Enumeration
+
+```bash
+# Basic DoH enumeration with default resolvers (Cloudflare, Google, AdGuard)
+pius run --domain acme.com --mode active --plugins doh-enum --doh-wordlist /path/to/wordlist.txt
+
+# Use custom DoH servers
+pius run --domain acme.com --mode active --plugins doh-enum \
+  --doh-wordlist /path/to/wordlist.txt \
+  --doh-servers "https://dns.google.com/dns-query,https://cloudflare-dns.com/dns-query"
+
+# Deploy API Gateways across 8 AWS regions for IP rotation (requires AWS credentials)
+pius run --domain acme.com --mode active --plugins doh-enum \
+  --doh-wordlist /path/to/wordlist.txt \
+  --doh-servers "https://dns.google.com/dns-query,https://cloudflare-dns.com/dns-query" \
+  --doh-deploy-gateways
+
+# Use pre-existing API Gateway URLs
+pius run --domain acme.com --mode active --plugins doh-enum \
+  --doh-wordlist /path/to/wordlist.txt \
+  --doh-gateways "https://abc123.execute-api.us-east-1.amazonaws.com/pius"
+```
+
 ### Output Formats
 
 ```bash
@@ -291,6 +316,7 @@ Plugins that require API keys check for them in `Accepts()` before running. If t
 | `GITHUB_TOKEN` | `github-org` | No | Raises rate limit from 60 to 5000 req/hr |
 | `SECURITYTRAILS_API_KEY` | `passive-dns` | Yes | SecurityTrails API key |
 | `VIEWDNS_API_KEY` | `reverse-whois` | Yes | ViewDNS.info API key |
+| AWS credentials | `doh-enum` | No | Required only when using `--doh-deploy-gateways` |
 
 ### Cache
 
@@ -323,6 +349,10 @@ run flags:
       --concurrency int     Max concurrent plugins (default: 5)
   -f, --output string       Output format: terminal, json, ndjson (default: terminal)
       --mode string         Plugin mode: passive, active, all (default: passive)
+      --doh-wordlist string   Path to subdomain wordlist for DoH enumeration
+      --doh-servers string    Comma-separated DoH server URLs
+      --doh-gateways string   Comma-separated AWS API Gateway URLs for DoH
+      --doh-deploy-gateways   Auto-deploy AWS API Gateways for IP rotation
 ```
 
 **Exit Codes:**
@@ -374,7 +404,7 @@ Yes. The following plugins require no authentication and run with only `--org`:
 - `asn-bgp` (needs `--asn`)
 - `github-org` (optional `GITHUB_TOKEN`)
 
-Active plugins (`dns-brute`, `dns-zone-transfer`) also require no auth but must be enabled with `--mode active`.
+Active plugins (`dns-brute`, `dns-zone-transfer`, `doh-enum`) also require no auth but must be enabled with `--mode active`. Note: `doh-enum` requires `--doh-wordlist`; AWS credentials are only needed for `--doh-deploy-gateways`.
 
 ### What is the difference between RDAP and RPSL plugins?
 
