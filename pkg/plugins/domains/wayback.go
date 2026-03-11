@@ -67,11 +67,11 @@ func (p *WaybackPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 
 	allHosts := append(wbHosts, ccHosts...)
 	for _, host := range allHosts {
-		host = normalizeHost(host)
+		host = normalizeDomain(host)
 		if host == "" {
 			continue
 		}
-		if !isSubdomainOf(host, input.Domain) {
+		if !matchesDomain(host, input.Domain) {
 			continue
 		}
 		if seen[host] {
@@ -121,7 +121,8 @@ func (p *WaybackPlugin) queryWayback(ctx context.Context, domain string) ([]stri
 	for _, prefix := range prefixes {
 		select {
 		case <-ctx.Done():
-			break
+			wg.Wait()
+			return allHosts, nil
 		default:
 		}
 
@@ -271,19 +272,4 @@ func extractHost(rawURL string) string {
 		return ""
 	}
 	return parsed.Hostname()
-}
-
-// normalizeHost lowercases, trims whitespace, and removes trailing dots from a hostname.
-func normalizeHost(host string) string {
-	host = strings.ToLower(host)
-	host = strings.TrimSpace(host)
-	host = strings.TrimSuffix(host, ".")
-	return host
-}
-
-// isSubdomainOf returns true if host equals domain or is a subdomain of domain.
-func isSubdomainOf(host, domain string) bool {
-	domain = strings.ToLower(domain)
-	host = strings.ToLower(host)
-	return host == domain || strings.HasSuffix(host, "."+domain)
 }
