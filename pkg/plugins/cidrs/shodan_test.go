@@ -54,6 +54,12 @@ func TestShodanPlugin_Accepts(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "accepts with CIDR and api key",
+			apiKey:   "test-key",
+			input:    plugins.Input{CIDR: "192.0.2.0/24"},
+			expected: true,
+		},
+		{
 			name:     "rejects without api key",
 			apiKey:   "",
 			input:    plugins.Input{OrgName: "Acme Corp"},
@@ -111,9 +117,14 @@ func TestShodanPlugin_BuildQueries(t *testing.T) {
 			expected: []string{"asn:AS12345"},
 		},
 		{
+			name:     "CIDR only",
+			input:    plugins.Input{CIDR: "192.0.2.0/24"},
+			expected: []string{"net:192.0.2.0/24"},
+		},
+		{
 			name:     "all fields",
-			input:    plugins.Input{OrgName: "Acme", ASN: "AS123", Domain: "acme.com"},
-			expected: []string{`org:"Acme"`, "asn:AS123", "hostname:acme.com"},
+			input:    plugins.Input{OrgName: "Acme", ASN: "AS123", CIDR: "10.0.0.0/8", Domain: "acme.com"},
+			expected: []string{`org:"Acme"`, "asn:AS123", "net:10.0.0.0/8", "hostname:acme.com"},
 		},
 		{
 			name:     "empty input",

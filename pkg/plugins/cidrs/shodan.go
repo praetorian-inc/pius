@@ -45,7 +45,7 @@ func (p *ShodanPlugin) Accepts(input plugins.Input) bool {
 	if os.Getenv("SHODAN_API_KEY") == "" {
 		return false
 	}
-	return input.OrgName != "" || input.Domain != "" || input.ASN != ""
+	return input.OrgName != "" || input.Domain != "" || input.ASN != "" || input.CIDR != ""
 }
 
 func (p *ShodanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
@@ -90,6 +90,11 @@ func (p *ShodanPlugin) buildQueries(input plugins.Input) []string {
 			asn = "AS" + asn
 		}
 		queries = append(queries, fmt.Sprintf("asn:%s", asn))
+	}
+
+	// CIDR/net query for IP range
+	if input.CIDR != "" {
+		queries = append(queries, fmt.Sprintf("net:%s", input.CIDR))
 	}
 
 	// Hostname query for domain
