@@ -137,11 +137,14 @@ const (
 	maxFindings            = 100_000
 )
 
-// runPipeline executes the two-phase discovery pipeline.
+// runPipeline executes the multi-phase discovery pipeline.
 //
+// Phase 0 (parallel with all): independent plugins (no dependencies)
 // Phase 1 (parallel): plugins with Phase()==1 discover RIR org handles
 // Phase 2 (parallel): plugins with Phase()==2 resolve handles to CIDRs (uses enriched Input.Meta)
-// Independent (parallel with all phases): plugins with Phase()==0
+// Phase 3 (parallel): domain enrichment plugins (e.g., dns-permutation) that
+//
+//	consume domains discovered by Phase 0 plugins via Meta["discovered_domains"]
 func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Plugin, concurrency int) ([]plugins.Finding, error) {
 	ctx, cancel := context.WithTimeout(ctx, DefaultPipelineTimeout)
 	defer cancel()
@@ -166,13 +169,15 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	}
 
 	// Separate plugins by phase
-	var phase1, phase2, independent []plugins.Plugin
+	var phase1, phase2, phase3, independent []plugins.Plugin
 	for _, p := range selected {
 		switch p.Phase() {
 		case 1:
 			phase1 = append(phase1, p)
 		case 2:
 			phase2 = append(phase2, p)
+		case 3:
+			phase3 = append(phase3, p)
 		default:
 			independent = append(independent, p)
 		}
@@ -249,10 +254,35 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	// Wait() always returns nil under this pattern.
 	_ = p2G.Wait()
 
-	// Wait for independent plugins
+	// Wait for independent plugins (must complete before Phase 3)
 	// Plugin errors are logged within goroutines and return nil;
 	// Wait() always returns nil under this pattern.
 	_ = indepG.Wait()
+
+	// Phase 3: domain enrichment (e.g., dns-permutation)
+	// Enrich input with discovered domains from Phase 0 plugins.
+	if len(phase3) > 0 {
+		domainEnrichedInput := enrichWithDomains(enrichedInput, allFindings)
+
+		var p3G errgroup.Group
+		p3G.SetLimit(concurrency)
+		for _, p := range phase3 {
+			p := p
+			if !p.Accepts(domainEnrichedInput) {
+				continue
+			}
+			p3G.Go(func() error {
+				f, err := p.Run(ctx, domainEnrichedInput)
+				if err != nil {
+					slog.Warn("plugin error", "plugin", p.Name(), "error", err)
+					return nil
+				}
+				collect(f)
+				return nil
+			})
+		}
+		_ = p3G.Wait()
+	}
 
 	// Filter out internal cidr-handle findings (not user-facing)
 	return filterOutput(allFindings), nil
@@ -289,6 +319,34 @@ func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.
 		} else {
 			enriched.Meta[key] = strings.Join(handles, ",")
 		}
+	}
+	return enriched
+}
+
+// enrichWithDomains collects FindingDomain values from findings and injects them
+// into Input.Meta["discovered_domains"] as a comma-separated list for Phase 3 plugins.
+func enrichWithDomains(input plugins.Input, findings []plugins.Finding) plugins.Input {
+	enriched := input
+	enriched.Meta = make(map[string]string, len(input.Meta))
+	for k, v := range input.Meta {
+		enriched.Meta[k] = v
+	}
+
+	seen := make(map[string]bool)
+	var domains []string
+	for _, f := range findings {
+		if f.Type != plugins.FindingDomain {
+			continue
+		}
+		d := strings.ToLower(strings.TrimSpace(f.Value))
+		if d != "" && !seen[d] {
+			seen[d] = true
+			domains = append(domains, d)
+		}
+	}
+
+	if len(domains) > 0 {
+		enriched.Meta["discovered_domains"] = strings.Join(domains, ",")
 	}
 	return enriched
 }
