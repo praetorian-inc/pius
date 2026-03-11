@@ -12,6 +12,11 @@ var rootCmd = &cobra.Command{
 	Long:  "Pius discovers CIDR blocks and domains associated with an organization using multiple OSINT data sources.",
 }
 
+// SetVersion sets the version string displayed by --version.
+func SetVersion(v string) {
+	rootCmd.Version = v
+}
+
 // Execute runs the root command.
 func Execute() error {
 	return rootCmd.Execute()
