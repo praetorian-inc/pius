@@ -82,49 +82,49 @@ func TestShodanPlugin_Accepts(t *testing.T) {
 	}
 }
 
-func TestShodanPlugin_BuildQuery(t *testing.T) {
+func TestShodanPlugin_BuildQueries(t *testing.T) {
 	p := &ShodanPlugin{}
 
 	tests := []struct {
 		name     string
 		input    plugins.Input
-		expected string
+		expected []string
 	}{
 		{
 			name:     "org only",
 			input:    plugins.Input{OrgName: "Acme Corp"},
-			expected: `org:"Acme Corp"`,
+			expected: []string{`org:"Acme Corp"`},
 		},
 		{
 			name:     "domain only",
 			input:    plugins.Input{Domain: "example.com"},
-			expected: "hostname:example.com",
+			expected: []string{"hostname:example.com"},
 		},
 		{
 			name:     "ASN only with prefix",
 			input:    plugins.Input{ASN: "AS12345"},
-			expected: "asn:AS12345",
+			expected: []string{"asn:AS12345"},
 		},
 		{
 			name:     "ASN only without prefix",
 			input:    plugins.Input{ASN: "12345"},
-			expected: "asn:AS12345",
+			expected: []string{"asn:AS12345"},
 		},
 		{
 			name:     "all fields",
 			input:    plugins.Input{OrgName: "Acme", ASN: "AS123", Domain: "acme.com"},
-			expected: `org:"Acme" asn:AS123 hostname:acme.com`,
+			expected: []string{`org:"Acme"`, "asn:AS123", "hostname:acme.com"},
 		},
 		{
 			name:     "empty input",
 			input:    plugins.Input{},
-			expected: "",
+			expected: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := p.buildQuery(tt.input)
+			got := p.buildQueries(tt.input)
 			assert.Equal(t, tt.expected, got)
 		})
 	}

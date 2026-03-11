@@ -54,49 +54,50 @@ func (p *ShodanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 		return nil, nil
 	}
 
-	// Build query based on available input
-	query := p.buildQuery(input)
-	if query == "" {
+	// Build individual queries for each filter
+	queries := p.buildQueries(input)
+	if len(queries) == 0 {
 		return nil, nil
 	}
 
-	results, err := p.search(ctx, apiKey, query)
-	if err != nil {
-		return nil, nil // Graceful degradation on API errors
+	// Run separate queries and merge results (Shodan uses AND for combined filters)
+	var allMatches []ShodanMatch
+	for _, query := range queries {
+		results, err := p.search(ctx, apiKey, query)
+		if err != nil {
+			continue // Graceful degradation on API errors
+		}
+		allMatches = append(allMatches, results.Matches...)
 	}
 
-	return p.processResults(results, input), nil
+	return p.processResults(&ShodanSearchResponse{Matches: allMatches}, input), nil
 }
 
-// buildQuery constructs a Shodan search query from input
-func (p *ShodanPlugin) buildQuery(input plugins.Input) string {
-	var parts []string
+// buildQueries constructs individual Shodan search queries from input
+// Each filter is run as a separate query since Shodan uses AND for combined filters
+func (p *ShodanPlugin) buildQueries(input plugins.Input) []string {
+	var queries []string
 
-	// Prefer org name for broadest results
+	// Org name query for broadest results
 	if input.OrgName != "" {
-		parts = append(parts, fmt.Sprintf("org:\"%s\"", input.OrgName))
+		queries = append(queries, fmt.Sprintf("org:\"%s\"", input.OrgName))
 	}
 
-	// Add ASN if available
+	// ASN query
 	if input.ASN != "" {
 		asn := input.ASN
 		if !strings.HasPrefix(strings.ToUpper(asn), "AS") {
 			asn = "AS" + asn
 		}
-		parts = append(parts, fmt.Sprintf("asn:%s", asn))
+		queries = append(queries, fmt.Sprintf("asn:%s", asn))
 	}
 
-	// Add domain hostname search
+	// Hostname query for domain
 	if input.Domain != "" {
-		parts = append(parts, fmt.Sprintf("hostname:%s", input.Domain))
+		queries = append(queries, fmt.Sprintf("hostname:%s", input.Domain))
 	}
 
-	if len(parts) == 0 {
-		return ""
-	}
-
-	// Join with OR for broader coverage
-	return strings.Join(parts, " ")
+	return queries
 }
 
 // search performs the Shodan API search
