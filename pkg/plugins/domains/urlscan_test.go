@@ -170,7 +170,7 @@ func TestURLScanPlugin_SubdomainFiltering(t *testing.T) {
 
 	for _, f := range findings {
 		assert.True(t,
-			f.Value == "praetorian.com" || isSubdomainOf(f.Value, "praetorian.com"),
+			matchesDomain(f.Value, "praetorian.com"),
 			"finding %q should be praetorian.com or a subdomain of it", f.Value,
 		)
 	}
@@ -208,7 +208,7 @@ func TestURLScanPlugin_Normalization(t *testing.T) {
 	values := make(map[string]bool)
 	for _, f := range findings {
 		values[f.Value] = true
-		assert.Equal(t, f.Value, normalizeHost(f.Value), "finding %q should already be normalized", f.Value)
+		assert.Equal(t, f.Value, normalizeDomain(f.Value), "finding %q should already be normalized", f.Value)
 	}
 	assert.True(t, values["www.praetorian.com"], "WWW.PRAETORIAN.COM should normalize to www.praetorian.com")
 	assert.True(t, values["api.praetorian.com"], "API.PRAETORIAN.COM. should normalize to api.praetorian.com")

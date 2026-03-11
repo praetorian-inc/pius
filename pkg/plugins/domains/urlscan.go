@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -96,11 +95,11 @@ func (p *URLScanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 
 	for _, result := range response.Results {
 		for _, raw := range []string{result.Page.Domain, result.Task.Domain} {
-			host := normalizeHost(raw)
+			host := normalizeDomain(raw)
 			if host == "" {
 				continue
 			}
-			if host != input.Domain && !isSubdomainOf(host, input.Domain) {
+			if !matchesDomain(host, input.Domain) {
 				continue
 			}
 			if seen[host] {
@@ -119,17 +118,4 @@ func (p *URLScanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 	}
 
 	return findings, nil
-}
-
-// normalizeHost lowercases and strips a trailing dot from a hostname.
-func normalizeHost(host string) string {
-	host = strings.ToLower(strings.TrimSpace(host))
-	host = strings.TrimSuffix(host, ".")
-	return host
-}
-
-// isSubdomainOf reports whether candidate is a subdomain of parent.
-// e.g. isSubdomainOf("api.example.com", "example.com") == true
-func isSubdomainOf(candidate, parent string) bool {
-	return strings.HasSuffix(candidate, "."+parent)
 }
