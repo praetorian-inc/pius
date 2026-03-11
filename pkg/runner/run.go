@@ -18,14 +18,18 @@ import (
 
 func newRunCmd() *cobra.Command {
 	var (
-		org         string
-		domain      string
-		asn         string
-		pluginsList string
-		disableList string
-		concurrency int
-		output      string
-		mode        string
+		org               string
+		domain            string
+		asn               string
+		pluginsList       string
+		disableList       string
+		concurrency       int
+		output            string
+		mode              string
+		dohWordlist       string
+		dohServers        string
+		dohGateways       string
+		dohDeployGateways bool
 	)
 
 	cmd := &cobra.Command{
@@ -45,6 +49,20 @@ func newRunCmd() *cobra.Command {
 				Domain:  domain,
 				ASN:     asn,
 				Meta:    make(map[string]string),
+			}
+
+			// Populate DoH enumeration options into Meta
+			if dohWordlist != "" {
+				input.Meta["doh_wordlist"] = dohWordlist
+			}
+			if dohServers != "" {
+				input.Meta["doh_servers"] = dohServers
+			}
+			if dohGateways != "" {
+				input.Meta["doh_gateways"] = dohGateways
+			}
+			if dohDeployGateways {
+				input.Meta["doh_deploy_gateways"] = "true"
 			}
 
 			// Build plugin list (apply whitelist/blacklist/mode)
@@ -75,6 +93,10 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Max concurrent plugins")
 	cmd.Flags().StringVarP(&output, "output", "o", "terminal", "Output format: terminal|json|ndjson")
 	cmd.Flags().StringVar(&mode, "mode", "passive", "Plugin mode filter: passive|active|all")
+	cmd.Flags().StringVar(&dohWordlist, "doh-wordlist", "", "Path to subdomain wordlist for DoH enumeration (default: embedded)")
+	cmd.Flags().StringVar(&dohServers, "doh-servers", "", "Comma-separated DoH server URLs")
+	cmd.Flags().StringVar(&dohGateways, "doh-gateways", "", "Comma-separated AWS API Gateway URLs for DoH")
+	cmd.Flags().BoolVar(&dohDeployGateways, "doh-deploy-gateways", false, "Auto-deploy AWS API Gateways pointing to DoH servers")
 	_ = cmd.MarkFlagRequired("org")
 
 	return cmd
