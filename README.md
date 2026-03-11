@@ -249,23 +249,23 @@ pius run --org "Acme Corp" --asn AS12345 --plugins asn-bgp
 ### DoH Subdomain Enumeration
 
 ```bash
-# Basic DoH enumeration with default resolvers (Cloudflare, Google, AdGuard)
+# Basic DoH enumeration with embedded wordlist (Cloudflare, Google, AdGuard resolvers)
+pius run --domain acme.com --mode active --plugins doh-enum
+
+# Use a custom wordlist
 pius run --domain acme.com --mode active --plugins doh-enum --doh-wordlist /path/to/wordlist.txt
 
 # Use custom DoH servers
 pius run --domain acme.com --mode active --plugins doh-enum \
-  --doh-wordlist /path/to/wordlist.txt \
   --doh-servers "https://dns.google.com/dns-query,https://cloudflare-dns.com/dns-query"
 
 # Deploy API Gateways across 8 AWS regions for IP rotation (requires AWS credentials)
 pius run --domain acme.com --mode active --plugins doh-enum \
-  --doh-wordlist /path/to/wordlist.txt \
   --doh-servers "https://dns.google.com/dns-query,https://cloudflare-dns.com/dns-query" \
   --doh-deploy-gateways
 
 # Use pre-existing API Gateway URLs
 pius run --domain acme.com --mode active --plugins doh-enum \
-  --doh-wordlist /path/to/wordlist.txt \
   --doh-gateways "https://abc123.execute-api.us-east-1.amazonaws.com/pius"
 ```
 
@@ -404,7 +404,7 @@ Yes. The following plugins require no authentication and run with only `--org`:
 - `asn-bgp` (needs `--asn`)
 - `github-org` (optional `GITHUB_TOKEN`)
 
-Active plugins (`dns-brute`, `dns-zone-transfer`, `doh-enum`) also require no auth but must be enabled with `--mode active`. Note: `doh-enum` requires `--doh-wordlist`; AWS credentials are only needed for `--doh-deploy-gateways`.
+Active plugins (`dns-brute`, `dns-zone-transfer`, `doh-enum`) also require no auth but must be enabled with `--mode active`. Note: `doh-enum` uses an embedded wordlist by default; AWS credentials are only needed for `--doh-deploy-gateways`.
 
 ### What is the difference between RDAP and RPSL plugins?
 
