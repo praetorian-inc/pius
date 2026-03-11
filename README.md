@@ -52,7 +52,7 @@ Unlike ad-hoc scripts, Pius is built for production use — concurrent plugin ex
 
 | Feature | Description |
 |---------|-------------|
-| **15 Discovery Plugins** | 8 domain plugins + 7 CIDR plugins covering certificate transparency, passive DNS, WHOIS, RDAP, RPSL, and BGP tables |
+| **16 Discovery Plugins** | 9 domain plugins + 7 CIDR plugins covering certificate transparency, passive DNS, DNSDB, WHOIS, RDAP, RPSL, and BGP tables |
 | **All 5 RIRs** | ARIN (North America), RIPE (Europe/Middle East), APNIC (Asia-Pacific), AFRINIC (Africa), LACNIC (Latin America) |
 | **Three-Phase Pipeline** | Phase 1 discovers RIR org handles; Phase 2 resolves handles to CIDRs; Phase 0 runs independently |
 | **Confidence Scoring** | Ambiguous name-to-asset mappings are scored and flagged for review rather than silently dropped |
@@ -123,6 +123,7 @@ All domain plugins run in Phase 0 (independent, concurrent). They emit discovere
 | `gleif` | GLEIF LEI corporate registry | None | Passive | Discovers parent/subsidiary domains |
 | `passive-dns` | SecurityTrails passive DNS | `SECURITYTRAILS_API_KEY` | Passive | Historical subdomain records |
 | `reverse-whois` | ViewDNS reverse WHOIS | `VIEWDNS_API_KEY` | Passive | 0.75 confidence; registrant email matching |
+| `dnsdb` | Farsight DNSDB passive DNS database | `DNSDB_API_KEY` | Passive | Batch regex queries; see [DNSDB Plugin](#dnsdb-plugin) |
 | `dns-brute` | Local DNS resolver | None | **Active** | 50 concurrent goroutines; embedded wordlist |
 | `dns-zone-transfer` | DNS AXFR | None | **Active** | Extracts A, AAAA, CNAME, MX, SRV records |
 
@@ -141,6 +142,34 @@ CIDR discovery uses a two-phase pipeline: Phase 1 discovers RIR organization han
 | `apnic` | 2 (resolution) | APNIC RPSL database | Cached gzip file | Asia-Pacific |
 | `afrinic` | 2 (resolution) | AFRINIC RPSL database | Cached gzip file | Africa |
 
+### DNSDB Plugin
+
+The `dnsdb` plugin queries [Farsight DNSDB](https://www.dnsdb.info/) — a passive DNS database containing billions of historical DNS records. It can discover subdomains that no longer exist in active DNS, making it one of the highest-value sources for attack surface discovery.
+
+**Batch regex queries**: Unlike other domain plugins that process one domain at a time, the DNSDB plugin accepts multiple seed domains via `--domains` and batches them into regex-based API queries to minimise credit consumption. For example, instead of 3 separate API calls for `acme.com`, `acme.org`, and `acme.net`, it issues a single regex query matching all three TLDs.
+
+**How batching works**:
+
+1. Each seed domain is split into its registrable name and public suffix (e.g., `acme.com` → name=`acme`, suffix=`com`)
+2. Names appearing under multiple TLDs are grouped together (e.g., `acme` under `[com, org]` → regex: `\.acme\.(com|org)\.$/ANY`)
+3. Remaining single-TLD domains are grouped by TLD (e.g., `[alpha, beta]` under `com` → regex: `\.(alpha|beta)\.com\.$/ANY`)
+4. Large groups are split into batches of 50 to avoid URL length issues
+
+**Usage**:
+
+```bash
+# Single domain
+pius run --org "Acme Corp" --domains "acme.com"
+
+# Multiple domains (batched into efficient regex queries)
+pius run --org "Acme Corp" --domains "acme.com,acme.org,beta.com,gamma.net"
+
+# Read domains from a file (one per line)
+pius run --org "Acme Corp" --domains @domains.txt
+```
+
+**Credit efficiency**: A typical organization with 10 seed domains across 3 TLDs might require only 2-3 API credits instead of 10, depending on how domains group.
+
 ## How It Works
 
 Pius uses a three-phase concurrent pipeline to discover organizational assets:
@@ -155,7 +184,7 @@ pius run --org "Acme Corp" --domain acme.com
    ┌──────────┴─────────────────────────────┐
    │ Phase 0 (concurrent, independent)      │
    │  crt-sh   apollo   github-org   gleif  │
-   │  passive-dns   reverse-whois           │
+   │  passive-dns   reverse-whois   dnsdb   │
    │  dns-brute*   dns-zone-transfer*       │
    │  asn-bgp                               │
    └──────────┬─────────────────────────────┘
@@ -291,6 +320,7 @@ Plugins that require API keys check for them in `Accepts()` before running. If t
 | `GITHUB_TOKEN` | `github-org` | No | Raises rate limit from 60 to 5000 req/hr |
 | `SECURITYTRAILS_API_KEY` | `passive-dns` | Yes | SecurityTrails API key |
 | `VIEWDNS_API_KEY` | `reverse-whois` | Yes | ViewDNS.info API key |
+| `DNSDB_API_KEY` | `dnsdb` | Yes | Farsight DNSDB API key; also requires `--domains` |
 
 ### Cache
 
@@ -318,6 +348,7 @@ run flags:
   -o, --org string          Organization name to search (required)
   -d, --domain string       Known domain hint (optional)
       --asn string          Known ASN hint, e.g. AS12345 (optional)
+      --domains string      Seed domains for batch plugins (comma-separated or @file)
       --plugins string      Comma-separated plugin whitelist (default: all)
       --disable string      Comma-separated plugin blacklist
       --concurrency int     Max concurrent plugins (default: 5)

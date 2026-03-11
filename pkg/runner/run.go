@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"bufio"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,6 +21,7 @@ func newRunCmd() *cobra.Command {
 	var (
 		org         string
 		domain      string
+		domainsList string
 		asn         string
 		pluginsList string
 		disableList string
@@ -40,9 +42,30 @@ func newRunCmd() *cobra.Command {
 				return fmt.Errorf("invalid --mode value %q: must be passive, active, or all", mode)
 			}
 
+			// Parse domains list (comma-separated or @file)
+			var domains []string
+			if domainsList != "" {
+				if strings.HasPrefix(domainsList, "@") {
+					filePath := strings.TrimPrefix(domainsList, "@")
+					var err error
+					domains, err = readDomainsFile(filePath)
+					if err != nil {
+						return fmt.Errorf("read domains file: %w", err)
+					}
+				} else {
+					for _, d := range strings.Split(domainsList, ",") {
+						d = strings.TrimSpace(d)
+						if d != "" {
+							domains = append(domains, d)
+						}
+					}
+				}
+			}
+
 			input := plugins.Input{
 				OrgName: org,
 				Domain:  domain,
+				Domains: domains,
 				ASN:     asn,
 				Meta:    make(map[string]string),
 			}
@@ -69,6 +92,7 @@ func newRunCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&org, "org", "", "Organization name to search (required)")
 	cmd.Flags().StringVarP(&domain, "domain", "d", "", "Known domain hint (optional)")
+	cmd.Flags().StringVar(&domainsList, "domains", "", "Comma-separated seed domains for batch plugins, or @file to read from file (optional)")
 	cmd.Flags().StringVar(&asn, "asn", "", "Known ASN hint, e.g. AS12345 (optional)")
 	cmd.Flags().StringVar(&pluginsList, "plugins", "", "Comma-separated plugin whitelist (default: all)")
 	cmd.Flags().StringVar(&disableList, "disable", "", "Comma-separated plugin blacklist")
@@ -346,4 +370,24 @@ func trimAll(ss []string) []string {
 		result[i] = strings.TrimSpace(s)
 	}
 	return result
+}
+
+// readDomainsFile reads one domain per line from a file, skipping blank lines and comments.
+func readDomainsFile(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var domains []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		domains = append(domains, line)
+	}
+	return domains, scanner.Err()
 }
