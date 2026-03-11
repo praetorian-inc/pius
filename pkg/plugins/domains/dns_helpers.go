@@ -29,8 +29,17 @@ func queryDNS(ctx context.Context, fqdn string, qtype uint16, resolver string) (
 // normalizeDomain ensures domain is in canonical form:
 // - No trailing dot
 // - Lowercase
+// - Trimmed whitespace
 func normalizeDomain(domain string) string {
+	domain = strings.TrimSpace(domain)
 	domain = strings.TrimSuffix(domain, ".")
 	domain = strings.ToLower(domain)
 	return domain
+}
+
+// matchesDomain returns true if host equals domain or is a subdomain of domain.
+func matchesDomain(host, domain string) bool {
+	host = strings.ToLower(host)
+	domain = strings.ToLower(domain)
+	return host == domain || strings.HasSuffix(host, "."+domain)
 }
