@@ -3,6 +3,7 @@ package domains
 import (
 	"bufio"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,9 @@ import (
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
+
+//go:embed wordlists/subdomains.txt
+var defaultDoHWordlist string
 
 const (
 	dohEnumConcurrency    = 50
@@ -314,14 +318,28 @@ func (p *DoHEnumPlugin) resolveEndpoints(ctx context.Context, meta map[string]st
 }
 
 // resolveWordlist returns the wordlist to use for enumeration.
-// meta["doh_wordlist"] must be set to a file path; it is required.
+// If meta["doh_wordlist"] is set, loads from that file path; otherwise uses the embedded default.
 func (p *DoHEnumPlugin) resolveWordlist(meta map[string]string) ([]string, error) {
 	if meta != nil {
 		if path, ok := meta["doh_wordlist"]; ok && path != "" {
 			return loadWordlistFile(path)
 		}
 	}
-	return nil, fmt.Errorf("doh_wordlist is required: provide a wordlist file path via --doh-wordlist")
+	// Use embedded default wordlist
+	return parseDoHWordlist(defaultDoHWordlist), nil
+}
+
+// parseDoHWordlist splits raw wordlist text into trimmed, non-empty, non-comment lines.
+func parseDoHWordlist(raw string) []string {
+	var words []string
+	scanner := bufio.NewScanner(strings.NewReader(raw))
+	for scanner.Scan() {
+		word := strings.TrimSpace(scanner.Text())
+		if word != "" && !strings.HasPrefix(word, "#") {
+			words = append(words, word)
+		}
+	}
+	return words
 }
 
 // loadWordlistFile reads a wordlist from a file path.
