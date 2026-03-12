@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	piuscache "github.com/praetorian-inc/pius/pkg/cache"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,10 +16,14 @@ import (
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
-func newWikidataPlugin(baseURL string) *WikidataPlugin {
+func newWikidataPlugin(t *testing.T, baseURL string) *WikidataPlugin {
+	t.Helper()
+	c, err := piuscache.NewAPI(t.TempDir(), "wikidata")
+	require.NoError(t, err)
 	return &WikidataPlugin{
 		httpClient: http.DefaultClient,
 		baseURL:    baseURL,
+		apiCache:   c,
 	}
 }
 
@@ -77,12 +82,12 @@ func wikidataSubsidiaryResponse(subsidiaries ...struct {
 // ── Interface tests ──────────────────────────────────────────────────────────
 
 func TestWikidataPlugin_Name(t *testing.T) {
-	p := newWikidataPlugin("")
+	p := newWikidataPlugin(t, "")
 	assert.Equal(t, "wikidata", p.Name())
 }
 
 func TestWikidataPlugin_Description(t *testing.T) {
-	p := newWikidataPlugin("")
+	p := newWikidataPlugin(t, "")
 	desc := p.Description()
 	assert.Contains(t, desc, "Wikidata")
 	assert.Contains(t, desc, "SPARQL")
@@ -90,22 +95,22 @@ func TestWikidataPlugin_Description(t *testing.T) {
 }
 
 func TestWikidataPlugin_Category(t *testing.T) {
-	p := newWikidataPlugin("")
+	p := newWikidataPlugin(t, "")
 	assert.Equal(t, "domain", p.Category())
 }
 
 func TestWikidataPlugin_Phase(t *testing.T) {
-	p := newWikidataPlugin("")
+	p := newWikidataPlugin(t, "")
 	assert.Equal(t, 0, p.Phase())
 }
 
 func TestWikidataPlugin_Mode(t *testing.T) {
-	p := newWikidataPlugin("")
+	p := newWikidataPlugin(t, "")
 	assert.Equal(t, plugins.ModePassive, p.Mode())
 }
 
 func TestWikidataPlugin_Accepts(t *testing.T) {
-	p := newWikidataPlugin("")
+	p := newWikidataPlugin(t, "")
 
 	tests := []struct {
 		name     string
@@ -140,7 +145,7 @@ func TestWikidataPlugin_Accepts(t *testing.T) {
 // ── Run() tests ──────────────────────────────────────────────────────────────
 
 func TestWikidataPlugin_Run_EmptyOrgName(t *testing.T) {
-	p := newWikidataPlugin("http://should-not-be-called")
+	p := newWikidataPlugin(t, "http://should-not-be-called")
 	findings, err := p.Run(context.Background(), plugins.Input{})
 	require.NoError(t, err)
 	assert.Empty(t, findings)
@@ -153,7 +158,7 @@ func TestWikidataPlugin_Run_NoEntityFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newWikidataPlugin(srv.URL)
+	p := newWikidataPlugin(t, srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "NonExistentCorp12345"})
 	require.NoError(t, err)
 	assert.Empty(t, findings)
@@ -186,7 +191,7 @@ func TestWikidataPlugin_Run_WithSubsidiariesAndWebsites(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newWikidataPlugin(srv.URL)
+	p := newWikidataPlugin(t, srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Microsoft"})
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(findings), 3) // At least 3 domain findings
@@ -230,7 +235,7 @@ func TestWikidataPlugin_Run_SubsidiaryWithoutWebsite(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newWikidataPlugin(srv.URL)
+	p := newWikidataPlugin(t, srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Apple Inc"})
 	require.NoError(t, err)
 
@@ -271,7 +276,7 @@ func TestWikidataPlugin_Run_Deduplication(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newWikidataPlugin(srv.URL)
+	p := newWikidataPlugin(t, srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Microsoft"})
 	require.NoError(t, err)
 
@@ -307,7 +312,7 @@ func TestWikidataPlugin_Run_ConfidenceScoring(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newWikidataPlugin(srv.URL)
+	p := newWikidataPlugin(t, srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Microsoft"})
 	require.NoError(t, err)
 
@@ -331,7 +336,7 @@ func TestWikidataPlugin_Run_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newWikidataPlugin(srv.URL)
+	p := newWikidataPlugin(t, srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Microsoft"})
 	require.NoError(t, err) // Plugin should handle errors gracefully
 	assert.Empty(t, findings)
@@ -344,7 +349,7 @@ func TestWikidataPlugin_Run_InvalidJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newWikidataPlugin(srv.URL)
+	p := newWikidataPlugin(t, srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Microsoft"})
 	require.NoError(t, err) // Plugin should handle errors gracefully
 	assert.Empty(t, findings)
@@ -363,7 +368,7 @@ func TestWikidataPlugin_Run_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	p := newWikidataPlugin(srv.URL)
+	p := newWikidataPlugin(t, srv.URL)
 	findings, err := p.Run(ctx, plugins.Input{OrgName: "Microsoft"})
 	// Either nil error or context error
 	if err != nil {
@@ -395,7 +400,7 @@ func TestWikidataPlugin_Run_ExcludesOrgFromFindings(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newWikidataPlugin(srv.URL)
+	p := newWikidataPlugin(t, srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Microsoft"})
 	require.NoError(t, err)
 

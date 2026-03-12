@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/praetorian-inc/pius/pkg/cache"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
@@ -31,9 +32,11 @@ func init() {
 //
 // Phase 0 (independent): requires only OrgName.
 // Free public endpoint — no API key required.
+// Results are cached in ~/.pius/cache/ with a 24-hour TTL.
 type WikidataPlugin struct {
-	httpClient httpDoer  // for testing
-	baseURL    string    // override for testing; default "https://query.wikidata.org/sparql"
+	httpClient httpDoer         // for testing
+	baseURL    string           // override for testing; default "https://query.wikidata.org/sparql"
+	apiCache   *cache.APICache  // injected in tests; nil = lazy init on first Run
 }
 
 // httpDoer allows mocking HTTP requests in tests.
@@ -60,6 +63,21 @@ func (p *WikidataPlugin) sparqlEndpoint() string {
 	return "https://query.wikidata.org/sparql"
 }
 
+// getCache returns the APICache, initializing it lazily on first use.
+// Returns nil if the cache directory cannot be created (non-fatal).
+func (p *WikidataPlugin) getCache() *cache.APICache {
+	if p.apiCache != nil {
+		return p.apiCache
+	}
+	c, err := cache.NewAPI("", "wikidata")
+	if err != nil {
+		slog.Debug("wikidata: cache init failed", "error", err)
+		return nil
+	}
+	p.apiCache = c
+	return c
+}
+
 // sparqlResponse represents the JSON response from Wikidata SPARQL endpoint.
 type sparqlResponse struct {
 	Results struct {
@@ -82,6 +100,17 @@ type sparqlValue struct {
 func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	if input.OrgName == "" {
 		return nil, nil
+	}
+
+	// Check cache first — reduce load on Wikidata public endpoint
+	cacheKey := strings.ToLower(input.OrgName)
+	c := p.getCache()
+	if c != nil {
+		var cached []plugins.Finding
+		if c.Get(cacheKey, &cached) {
+			slog.Debug("wikidata: cache hit", "org", input.OrgName)
+			return cached, nil
+		}
 	}
 
 	// First, find the Wikidata entity ID for the organization
@@ -150,6 +179,11 @@ func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 			plugins.SetConfidence(&f, 0.55)
 			findings = append(findings, f)
 		}
+	}
+
+	// Cache results for 24 hours
+	if c != nil {
+		c.Set(cacheKey, findings)
 	}
 
 	return findings, nil
