@@ -52,7 +52,7 @@ Unlike ad-hoc scripts, Pius is built for production use — concurrent plugin ex
 
 | Feature | Description |
 |---------|-------------|
-| **16 Discovery Plugins** | 9 domain plugins + 7 CIDR plugins covering certificate transparency, passive DNS, WHOIS, RDAP, RPSL, and BGP tables |
+| **17 Discovery Plugins** | 10 domain plugins + 7 CIDR plugins covering certificate transparency, passive DNS, WHOIS, RDAP, RPSL, BGP tables, and favicon hashing |
 | **All 5 RIRs** | ARIN (North America), RIPE (Europe/Middle East), APNIC (Asia-Pacific), AFRINIC (Africa), LACNIC (Latin America) |
 | **Three-Phase Pipeline** | Phase 1 discovers RIR org handles; Phase 2 resolves handles to CIDRs; Phase 0 runs independently |
 | **Confidence Scoring** | Ambiguous name-to-asset mappings are scored and flagged for review rather than silently dropped |
@@ -126,6 +126,7 @@ All domain plugins run in Phase 0 (independent, concurrent). They emit discovere
 | `dns-brute` | Local DNS resolver | None | **Active** | 50 concurrent goroutines; embedded wordlist |
 | `dns-zone-transfer` | DNS AXFR | None | **Active** | Extracts A, AAAA, CNAME, MX, SRV records |
 | `doh-enum` | DNS-over-HTTPS resolvers | AWS credentials (optional) | **Active** | 50 concurrent workers; round-robin endpoint rotation; optional API Gateway deployment for IP diversity |
+| `favicon-hash` | Shodan + FOFA favicon search | `SHODAN_API_KEY`, `FOFA_API_KEY` (optional) | **Active** | MurmurHash3 of favicon; discovers origin IPs behind CDNs |
 
 ### CIDR Plugins
 
@@ -158,7 +159,7 @@ pius run --org "Acme Corp" --domain acme.com
    │  crt-sh   apollo   github-org   gleif  │
    │  passive-dns   reverse-whois           │
    │  dns-brute*  dns-zone-transfer*        │
-   │  doh-enum*                             │
+   │  doh-enum*  favicon-hash*              │
    │  asn-bgp                               │
    └──────────┬─────────────────────────────┘
               │ Emits domains + CIDRs directly
@@ -316,6 +317,8 @@ Plugins that require API keys check for them in `Accepts()` before running. If t
 | `GITHUB_TOKEN` | `github-org` | No | Raises rate limit from 60 to 5000 req/hr |
 | `SECURITYTRAILS_API_KEY` | `passive-dns` | Yes | SecurityTrails API key |
 | `VIEWDNS_API_KEY` | `reverse-whois` | Yes | ViewDNS.info API key |
+| `SHODAN_API_KEY` | `favicon-hash` | Yes | Shodan API key |
+| `FOFA_API_KEY` | `favicon-hash` | No | FOFA API key; enables additional scanner |
 | AWS credentials | `doh-enum` | No | Required only when using `--doh-deploy-gateways` |
 
 ### Cache
@@ -366,7 +369,7 @@ run flags:
 
 ### Which plugins run by default?
 
-All passive plugins that accept the provided input run by default. Passive plugins with API key requirements (apollo, passive-dns, reverse-whois) are silently skipped if their environment variable is not set. Active plugins (dns-brute, dns-zone-transfer) only run with `--mode active` or `--mode all`.
+All passive plugins that accept the provided input run by default. Passive plugins with API key requirements (apollo, passive-dns, reverse-whois) are silently skipped if their environment variable is not set. Active plugins (dns-brute, dns-zone-transfer, doh-enum, favicon-hash) only run with `--mode active` or `--mode all`.
 
 ### How does the three-phase pipeline work?
 
@@ -404,7 +407,7 @@ Yes. The following plugins require no authentication and run with only `--org`:
 - `asn-bgp` (needs `--asn`)
 - `github-org` (optional `GITHUB_TOKEN`)
 
-Active plugins (`dns-brute`, `dns-zone-transfer`, `doh-enum`) also require no auth but must be enabled with `--mode active`. Note: `doh-enum` uses an embedded wordlist by default; AWS credentials are only needed for `--doh-deploy-gateways`.
+Active plugins (`dns-brute`, `dns-zone-transfer`, `doh-enum`) also require no auth but must be enabled with `--mode active`. Note: `doh-enum` uses an embedded wordlist by default; AWS credentials are only needed for `--doh-deploy-gateways`. The `favicon-hash` plugin requires `SHODAN_API_KEY`.
 
 ### What is the difference between RDAP and RPSL plugins?
 
