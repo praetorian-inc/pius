@@ -2,8 +2,10 @@ package domains
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"time"
 
@@ -19,7 +21,7 @@ func init() {
 }
 
 // ReverseIPPlugin discovers hostnames via reverse IP lookups (PTR records)
-// and passive DNS services like HackerTarget.
+// and passive DNS services like HackerTarget and ViewDNS.
 //
 // Phase 3: Consumes CIDRs discovered by Phase 2 RDAP plugins (arin, ripe, apnic, afrinic, lacnic).
 // Reads CIDRs from Input.Meta["cidrs"] and performs reverse lookups on each IP.
@@ -27,11 +29,12 @@ func init() {
 // For small CIDRs (/24 and smaller), iterates all IPs.
 // For larger CIDRs, samples representative IPs to avoid excessive queries.
 type ReverseIPPlugin struct {
-	client     *client.Client
-	baseURL    string // override for testing
-	resolver   string // DNS resolver override for testing
-	maxResults int    // max hostnames to return (default 500)
-	maxIPs     int    // max IPs to query per CIDR (default 256)
+	client        *client.Client
+	baseURL       string // HackerTarget override for testing
+	viewDNSURL    string // ViewDNS override for testing
+	resolver      string // DNS resolver override for testing
+	maxResults    int    // max hostnames to return (default 500)
+	maxIPs        int    // max IPs to query per CIDR (default 256)
 }
 
 // Confidence thresholds for domain matching
@@ -43,7 +46,7 @@ const (
 
 func (p *ReverseIPPlugin) Name() string { return "reverse-ip" }
 func (p *ReverseIPPlugin) Description() string {
-	return "Reverse IP: discovers hostnames via PTR records and HackerTarget from discovered CIDRs (Phase 3)"
+	return "Reverse IP: discovers hostnames via PTR records, HackerTarget, and ViewDNS (optional, requires VIEWDNS_API_KEY) from discovered CIDRs (Phase 3)"
 }
 func (p *ReverseIPPlugin) Category() string { return "domain" }
 func (p *ReverseIPPlugin) Phase() int       { return 3 }
@@ -54,6 +57,13 @@ func (p *ReverseIPPlugin) hackerTargetBase() string {
 		return p.baseURL
 	}
 	return "https://api.hackertarget.com"
+}
+
+func (p *ReverseIPPlugin) viewDNSBase() string {
+	if p.viewDNSURL != "" {
+		return p.viewDNSURL
+	}
+	return "https://api.viewdns.info"
 }
 
 func (p *ReverseIPPlugin) dnsResolver() string {
@@ -99,6 +109,9 @@ func (p *ReverseIPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	if len(allIPs) == 0 {
 		return nil, nil
 	}
+
+	// Check for ViewDNS API key
+	viewDNSKey := os.Getenv("VIEWDNS_API_KEY")
 
 	seen := make(map[string]bool)
 	var findings []plugins.Finding
@@ -170,6 +183,38 @@ func (p *ReverseIPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 						"org":         input.OrgName,
 						"ip":          ip,
 						"method":      "hackertarget",
+						"base_domain": input.Domain,
+						"is_cdn":      isCDN,
+					},
+				}
+				plugins.SetConfidence(&f, confidence)
+				findings = append(findings, f)
+			}
+		}
+
+		// ViewDNS reverse IP lookup (optional, requires VIEWDNS_API_KEY, skip for CDN IPs)
+		if viewDNSKey != "" && !isCDN {
+			vdHosts := p.viewDNSLookup(ctx, ip, viewDNSKey)
+			for _, host := range vdHosts {
+				host = normalizeDomain(host)
+				if host == "" || seen[host] {
+					continue
+				}
+				seen[host] = true
+
+				confidence := calculateConfidence(host, input.Domain, input.OrgName, isCDN)
+				if confidence < 0.30 {
+					continue
+				}
+
+				f := plugins.Finding{
+					Type:   plugins.FindingDomain,
+					Value:  host,
+					Source: p.Name(),
+					Data: map[string]any{
+						"org":         input.OrgName,
+						"ip":          ip,
+						"method":      "viewdns",
 						"base_domain": input.Domain,
 						"is_cdn":      isCDN,
 					},
@@ -278,6 +323,42 @@ func (p *ReverseIPPlugin) hackerTargetLookup(ctx context.Context, ip string) []s
 		// Basic hostname validation
 		if strings.Contains(line, ".") && !strings.Contains(line, " ") {
 			hosts = append(hosts, line)
+		}
+	}
+	return hosts
+}
+
+// viewDNSLookup queries ViewDNS reverse IP API (requires VIEWDNS_API_KEY)
+func (p *ReverseIPPlugin) viewDNSLookup(ctx context.Context, ip string, apiKey string) []string {
+	// Validate IP
+	if net.ParseIP(ip) == nil {
+		return nil
+	}
+
+	url := p.viewDNSBase() + "/reverseip/?host=" + ip + "&apikey=" + apiKey + "&output=json"
+	body, err := p.client.Get(ctx, url)
+	if err != nil {
+		return nil
+	}
+
+	// Parse JSON response
+	var response struct {
+		Response struct {
+			DomainCount string `json:"domain_count"`
+			Domains     []struct {
+				Name         string `json:"name"`
+				LastResolved string `json:"last_resolved"`
+			} `json:"domains"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil
+	}
+
+	var hosts []string
+	for _, d := range response.Response.Domains {
+		if d.Name != "" {
+			hosts = append(hosts, d.Name)
 		}
 	}
 	return hosts

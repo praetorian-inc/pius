@@ -19,6 +19,8 @@ func TestReverseIPPlugin_Metadata(t *testing.T) {
 	assert.Equal(t, "reverse-ip", p.Name())
 	assert.Contains(t, p.Description(), "Reverse IP")
 	assert.Contains(t, p.Description(), "PTR")
+	assert.Contains(t, p.Description(), "HackerTarget")
+	assert.Contains(t, p.Description(), "ViewDNS")
 	assert.Equal(t, "domain", p.Category())
 	assert.Equal(t, 3, p.Phase()) // Phase 3: consumes CIDRs from Phase 2
 	assert.Equal(t, plugins.ModePassive, p.Mode())
@@ -170,6 +172,135 @@ func TestReverseIPPlugin_HackerTargetResponseParsing(t *testing.T) {
 			}
 
 			hosts := p.hackerTargetLookup(context.Background(), "192.0.2.1")
+			assert.Equal(t, tt.expected, hosts)
+		})
+	}
+}
+
+func TestReverseIPPlugin_ViewDNSLookup(t *testing.T) {
+	// Mock ViewDNS API
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.URL.Path, "/reverseip/")
+		ip := r.URL.Query().Get("host")
+		apiKey := r.URL.Query().Get("apikey")
+
+		// Check API key is passed
+		assert.NotEmpty(t, apiKey)
+
+		if ip == "192.0.2.1" {
+			w.Write([]byte(`{
+				"query": {"tool": "reverseip_PRO", "host": "192.0.2.1"},
+				"response": {
+					"domain_count": "3",
+					"domains": [
+						{"name": "www.example.com", "last_resolved": "2024-06-19"},
+						{"name": "api.example.com", "last_resolved": "2024-06-19"},
+						{"name": "mail.example.com", "last_resolved": "2024-06-19"}
+					]
+				}
+			}`))
+		} else if ip == "192.0.2.99" {
+			// Empty result
+			w.Write([]byte(`{
+				"query": {"tool": "reverseip_PRO", "host": "192.0.2.99"},
+				"response": {
+					"domain_count": "0",
+					"domains": []
+				}
+			}`))
+		} else {
+			w.Write([]byte(`{"error": "invalid request"}`))
+		}
+	}))
+	defer server.Close()
+
+	p := &ReverseIPPlugin{
+		client:     client.New(),
+		viewDNSURL: server.URL,
+	}
+
+	t.Run("successful lookup", func(t *testing.T) {
+		hosts := p.viewDNSLookup(context.Background(), "192.0.2.1", "test-api-key")
+		assert.Len(t, hosts, 3)
+		assert.Contains(t, hosts, "www.example.com")
+		assert.Contains(t, hosts, "api.example.com")
+		assert.Contains(t, hosts, "mail.example.com")
+	})
+
+	t.Run("no results", func(t *testing.T) {
+		hosts := p.viewDNSLookup(context.Background(), "192.0.2.99", "test-api-key")
+		assert.Empty(t, hosts)
+	})
+
+	t.Run("invalid IP", func(t *testing.T) {
+		hosts := p.viewDNSLookup(context.Background(), "not-an-ip", "test-api-key")
+		assert.Empty(t, hosts)
+	})
+}
+
+func TestReverseIPPlugin_ViewDNSResponseParsing(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		expected []string
+	}{
+		{
+			name: "valid response with domains",
+			response: `{
+				"response": {
+					"domain_count": "2",
+					"domains": [
+						{"name": "www.example.com", "last_resolved": "2024-06-19"},
+						{"name": "api.example.com", "last_resolved": "2024-06-19"}
+					]
+				}
+			}`,
+			expected: []string{"www.example.com", "api.example.com"},
+		},
+		{
+			name: "empty domains array",
+			response: `{
+				"response": {
+					"domain_count": "0",
+					"domains": []
+				}
+			}`,
+			expected: nil,
+		},
+		{
+			name:     "invalid JSON",
+			response: "not valid json",
+			expected: nil,
+		},
+		{
+			name: "domains with empty names filtered",
+			response: `{
+				"response": {
+					"domain_count": "3",
+					"domains": [
+						{"name": "www.example.com", "last_resolved": "2024-06-19"},
+						{"name": "", "last_resolved": "2024-06-19"},
+						{"name": "api.example.com", "last_resolved": "2024-06-19"}
+					]
+				}
+			}`,
+			expected: []string{"www.example.com", "api.example.com"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(tt.response))
+			}))
+			defer server.Close()
+
+			p := &ReverseIPPlugin{
+				client:     client.New(),
+				viewDNSURL: server.URL,
+			}
+
+			hosts := p.viewDNSLookup(context.Background(), "192.0.2.1", "test-api-key")
 			assert.Equal(t, tt.expected, hosts)
 		})
 	}
