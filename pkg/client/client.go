@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -62,8 +63,9 @@ func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
 }
 
 // GetWithHeaders performs an HTTP GET with custom headers, retrying on 429/5xx.
+// On failure, all retry errors are aggregated for better debugging of intermittent issues.
 func (c *Client) GetWithHeaders(ctx context.Context, url string, headers map[string]string) ([]byte, error) {
-	var lastErr error
+	var retryErrs []error
 	for attempt := 0; attempt < c.retries; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(math.Pow(2, float64(attempt))) * time.Second
@@ -85,18 +87,18 @@ func (c *Client) GetWithHeaders(ctx context.Context, url string, headers map[str
 
 		resp, err := c.http.Do(req)
 		if err != nil {
-			lastErr = err
+			retryErrs = append(retryErrs, fmt.Errorf("attempt %d: %w", attempt+1, err))
 			continue
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			resp.Body.Close()
-			lastErr = fmt.Errorf("rate limited by %s", sanitizeURL(url))
+			retryErrs = append(retryErrs, fmt.Errorf("attempt %d: rate limited by %s", attempt+1, sanitizeURL(url)))
 			continue
 		}
 		if resp.StatusCode >= 500 {
 			resp.Body.Close()
-			lastErr = fmt.Errorf("server error %d from %s", resp.StatusCode, sanitizeURL(url))
+			retryErrs = append(retryErrs, fmt.Errorf("attempt %d: server error %d from %s", attempt+1, resp.StatusCode, sanitizeURL(url)))
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
@@ -114,5 +116,5 @@ func (c *Client) GetWithHeaders(ctx context.Context, url string, headers map[str
 		}
 		return body, nil
 	}
-	return nil, fmt.Errorf("after %d attempts: %w", c.retries, lastErr)
+	return nil, fmt.Errorf("after %d attempts: %w", c.retries, errors.Join(retryErrs...))
 }

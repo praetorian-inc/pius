@@ -159,8 +159,67 @@ func selectPlugins(whitelist, blacklist, mode string) []plugins.Plugin {
 
 const (
 	DefaultPipelineTimeout = 30 * time.Minute
-	maxFindings            = 100_000
+	// maxFindings caps results to prevent OOM on extremely broad scans.
+	// Tuned based on typical org discovery yielding 10-50k findings.
+	maxFindings = 100_000
 )
+
+// findingsCollector provides thread-safe collection of findings with a cap.
+type findingsCollector struct {
+	mu       sync.Mutex
+	findings []plugins.Finding
+	cap      int
+}
+
+func newFindingsCollector(cap int) *findingsCollector {
+	return &findingsCollector{cap: cap}
+}
+
+func (c *findingsCollector) add(findings []plugins.Finding) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.findings) >= c.cap {
+		slog.Warn("findings cap reached, dropping additional results", "cap", c.cap)
+		return
+	}
+	remaining := c.cap - len(c.findings)
+	if len(findings) > remaining {
+		findings = findings[:remaining]
+	}
+	c.findings = append(c.findings, findings...)
+}
+
+func (c *findingsCollector) all() []plugins.Finding {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.findings
+}
+
+// phasedPlugins holds plugins grouped by execution phase.
+type phasedPlugins struct {
+	independent []plugins.Plugin // Phase 0: no dependencies
+	phase1      []plugins.Plugin // Phase 1: discover RIR handles
+	phase2      []plugins.Plugin // Phase 2: resolve handles to CIDRs
+	phase3      []plugins.Plugin // Phase 3: consume discovered CIDRs/domains
+}
+
+// partitionByPhase separates plugins into execution phases.
+func partitionByPhase(selected []plugins.Plugin) phasedPlugins {
+	var p phasedPlugins
+	for _, plugin := range selected {
+		switch plugin.Phase() {
+		case 1:
+			p.phase1 = append(p.phase1, plugin)
+		case 2:
+			p.phase2 = append(p.phase2, plugin)
+		case 3:
+			p.phase3 = append(p.phase3, plugin)
+		default:
+			p.independent = append(p.independent, plugin)
+		}
+	}
+	return p
+}
 
 // runPipeline executes the multi-phase discovery pipeline.
 //
@@ -174,150 +233,105 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	ctx, cancel := context.WithTimeout(ctx, DefaultPipelineTimeout)
 	defer cancel()
 
-	var (
-		mu          sync.Mutex
-		allFindings []plugins.Finding
-	)
+	collector := newFindingsCollector(maxFindings)
+	phased := partitionByPhase(selected)
 
-	collect := func(findings []plugins.Finding) {
-		mu.Lock()
-		defer mu.Unlock()
-		if len(allFindings) >= maxFindings {
-			slog.Warn("findings cap reached, dropping additional results", "cap", maxFindings)
-			return
-		}
-		remaining := maxFindings - len(allFindings)
-		if len(findings) > remaining {
-			findings = findings[:remaining]
-		}
-		allFindings = append(allFindings, findings...)
-	}
+	// Start independent plugins concurrently (no deps).
+	// These run in parallel with Phase 1 and 2 for efficiency.
+	independentDone := runPluginsAsync(ctx, phased.independent, input, concurrency, collector)
 
-	// Separate plugins by phase
-	var phase1, phase2, phase3, independent []plugins.Plugin
-	for _, p := range selected {
-		switch p.Phase() {
-		case 1:
-			phase1 = append(phase1, p)
-		case 2:
-			phase2 = append(phase2, p)
-		case 3:
-			phase3 = append(phase3, p)
-		default:
-			independent = append(independent, p)
-		}
-	}
-
-	// Start independent plugins concurrently (no deps)
-	var indepG errgroup.Group
-	indepG.SetLimit(concurrency)
-	for _, p := range independent {
-		p := p
-		if !p.Accepts(input) {
-			continue
-		}
-		indepG.Go(func() error {
-			f, err := p.Run(ctx, input)
-			if err != nil {
-				slog.Warn("plugin error", "plugin", p.Name(), "error", err)
-				return nil
-			}
-			collect(f)
-			return nil
-		})
-	}
-
-	// Phase 1: discover handles
-	var handleFindings []plugins.Finding
-	var handleMu sync.Mutex
-
-	var p1G errgroup.Group
-	p1G.SetLimit(concurrency)
-	for _, p := range phase1 {
-		p := p
-		if !p.Accepts(input) {
-			continue
-		}
-		p1G.Go(func() error {
-			f, err := p.Run(ctx, input)
-			if err != nil {
-				slog.Warn("plugin error", "plugin", p.Name(), "error", err)
-				return nil
-			}
-			handleMu.Lock()
-			defer handleMu.Unlock()
-			handleFindings = append(handleFindings, f...)
-			return nil
-		})
-	}
-	// Plugin errors are logged within goroutines and return nil;
-	// Wait() always returns nil under this pattern.
-	_ = p1G.Wait()
-
-	// Enrich input with discovered handles
+	// Phase 1: discover RIR handles
+	handleFindings := runPhaseWithResults(ctx, phased.phase1, input, concurrency)
 	enrichedInput := enrichWithHandles(input, handleFindings)
 
 	// Phase 2: resolve handles to CIDRs
-	var phase2Findings []plugins.Finding
-	var phase2Mu sync.Mutex
+	phase2Findings := runPhaseWithResults(ctx, phased.phase2, enrichedInput, concurrency)
+	collector.add(phase2Findings)
 
-	var p2G errgroup.Group
-	p2G.SetLimit(concurrency)
-	for _, p := range phase2 {
-		p := p
-		if !p.Accepts(enrichedInput) {
+	// Wait for independent plugins (must complete before Phase 3 for domain enrichment)
+	<-independentDone
+
+	// Phase 3: consume discovered CIDRs and domains
+	if len(phased.phase3) > 0 {
+		phase3Input := enrichWithCIDRs(enrichedInput, phase2Findings)
+		phase3Input = enrichWithDomains(phase3Input, collector.all())
+		runPlugins(ctx, phased.phase3, phase3Input, concurrency, collector)
+	}
+
+	// Filter out internal cidr-handle findings (not user-facing)
+	return filterOutput(collector.all()), nil
+}
+
+// runPluginsAsync starts plugins concurrently and returns a channel that closes when done.
+// This allows the caller to continue with other work while plugins run.
+func runPluginsAsync(ctx context.Context, pluginList []plugins.Plugin, input plugins.Input, concurrency int, collector *findingsCollector) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runPlugins(ctx, pluginList, input, concurrency, collector)
+	}()
+	return done
+}
+
+// runPlugins executes plugins concurrently and collects findings.
+// Plugin errors are logged but don't fail the pipeline, ensuring partial success:
+// if 20 plugins run and 3 fail, we return results from the 17 successful plugins.
+func runPlugins(ctx context.Context, pluginList []plugins.Plugin, input plugins.Input, concurrency int, collector *findingsCollector) {
+	var group errgroup.Group
+	group.SetLimit(concurrency)
+
+	for _, p := range pluginList {
+		p := p // capture loop variable
+		if !p.Accepts(input) {
 			continue
 		}
-		p2G.Go(func() error {
-			f, err := p.Run(ctx, enrichedInput)
+		group.Go(func() error {
+			findings, err := p.Run(ctx, input)
+			if err != nil {
+				slog.Warn("plugin error", "plugin", p.Name(), "error", err)
+				return nil // continue with other plugins
+			}
+			collector.add(findings)
+			return nil
+		})
+	}
+
+	// Wait() always returns nil because plugin errors are logged but return nil.
+	// This ensures partial success - one failing plugin doesn't break the pipeline.
+	_ = group.Wait()
+}
+
+// runPhaseWithResults executes plugins and returns their combined findings.
+// Used for phases that need to pass results to subsequent phases.
+func runPhaseWithResults(ctx context.Context, pluginList []plugins.Plugin, input plugins.Input, concurrency int) []plugins.Finding {
+	var (
+		mu       sync.Mutex
+		findings []plugins.Finding
+	)
+
+	var group errgroup.Group
+	group.SetLimit(concurrency)
+
+	for _, p := range pluginList {
+		p := p // capture loop variable
+		if !p.Accepts(input) {
+			continue
+		}
+		group.Go(func() error {
+			f, err := p.Run(ctx, input)
 			if err != nil {
 				slog.Warn("plugin error", "plugin", p.Name(), "error", err)
 				return nil
 			}
-			phase2Mu.Lock()
-			phase2Findings = append(phase2Findings, f...)
-			phase2Mu.Unlock()
-			collect(f)
+			mu.Lock()
+			findings = append(findings, f...)
+			mu.Unlock()
 			return nil
 		})
 	}
-	// Plugin errors are logged within goroutines and return nil;
-	// Wait() always returns nil under this pattern.
-	_ = p2G.Wait()
 
-	// Wait for independent plugins (must complete before Phase 3 for domain enrichment)
-	// Plugin errors are logged within goroutines and return nil;
-	// Wait() always returns nil under this pattern.
-	_ = indepG.Wait()
-
-	// Phase 3: consume discovered CIDRs and domains
-	// Enrich with CIDRs from Phase 2 and domains from Phase 0.
-	if len(phase3) > 0 {
-		phase3Input := enrichWithCIDRs(enrichedInput, phase2Findings)
-		phase3Input = enrichWithDomains(phase3Input, allFindings)
-
-		var p3G errgroup.Group
-		p3G.SetLimit(concurrency)
-		for _, p := range phase3 {
-			p := p
-			if !p.Accepts(phase3Input) {
-				continue
-			}
-			p3G.Go(func() error {
-				f, err := p.Run(ctx, phase3Input)
-				if err != nil {
-					slog.Warn("plugin error", "plugin", p.Name(), "error", err)
-					return nil
-				}
-				collect(f)
-				return nil
-			})
-		}
-		_ = p3G.Wait()
-	}
-
-	// Filter out internal cidr-handle findings (not user-facing)
-	return filterOutput(allFindings), nil
+	_ = group.Wait()
+	return findings
 }
 
 // enrichWithHandles groups cidr-handle findings by registry and injects them into Input.Meta.

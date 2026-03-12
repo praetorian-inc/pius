@@ -105,18 +105,24 @@ func (c *Cache) download(ctx context.Context, url, localPath string) error {
 	if err != nil {
 		return err
 	}
+	defer f.Close() // Guaranteed cleanup regardless of exit path
+
 	n, err := io.Copy(f, io.LimitReader(gz, maxDecompressedSize+1))
 	if err != nil {
-		f.Close()
 		os.Remove(tmp)
 		return err
 	}
 	if n > maxDecompressedSize {
-		f.Close()
 		os.Remove(tmp)
 		return fmt.Errorf("decompressed RPSL file exceeds %d bytes", maxDecompressedSize)
 	}
-	f.Close()
+
+	// Explicitly close before rename to ensure data is flushed
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+
 	return os.Rename(tmp, localPath)
 }
 
