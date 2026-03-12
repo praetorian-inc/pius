@@ -52,7 +52,7 @@ Unlike ad-hoc scripts, Pius is built for production use — concurrent plugin ex
 
 | Feature | Description |
 |---------|-------------|
-| **15 Discovery Plugins** | 8 domain plugins + 7 CIDR plugins covering certificate transparency, passive DNS, WHOIS, RDAP, RPSL, and BGP tables |
+| **16 Discovery Plugins** | 9 domain plugins + 7 CIDR plugins covering certificate transparency, passive DNS, WHOIS, RDAP, RPSL, and BGP tables |
 | **All 5 RIRs** | ARIN (North America), RIPE (Europe/Middle East), APNIC (Asia-Pacific), AFRINIC (Africa), LACNIC (Latin America) |
 | **Three-Phase Pipeline** | Phase 1 discovers RIR org handles; Phase 2 resolves handles to CIDRs; Phase 0 runs independently |
 | **Confidence Scoring** | Ambiguous name-to-asset mappings are scored and flagged for review rather than silently dropped |
@@ -123,6 +123,7 @@ All domain plugins run in Phase 0 (independent, concurrent). They emit discovere
 | `gleif` | GLEIF LEI corporate registry | None | Passive | Discovers parent/subsidiary domains |
 | `passive-dns` | SecurityTrails passive DNS | `SECURITYTRAILS_API_KEY` | Passive | Historical subdomain records |
 | `reverse-whois` | ViewDNS reverse WHOIS | `VIEWDNS_API_KEY` | Passive | 0.75 confidence; registrant email matching |
+| `censys-org` | Censys Platform API v3 | `CENSYS_API_TOKEN` | **Active** | Searches host/cert data by org; emits domains + CIDRs; requires Starter+ plan; caches 24h |
 | `dns-brute` | Local DNS resolver | None | **Active** | 50 concurrent goroutines; embedded wordlist |
 | `dns-zone-transfer` | DNS AXFR | None | **Active** | Extracts A, AAAA, CNAME, MX, SRV records |
 
@@ -156,8 +157,8 @@ pius run --org "Acme Corp" --domain acme.com
    │ Phase 0 (concurrent, independent)      │
    │  crt-sh   apollo   github-org   gleif  │
    │  passive-dns   reverse-whois           │
-   │  dns-brute*   dns-zone-transfer*       │
-   │  asn-bgp                               │
+   │  censys-org*   dns-brute*              │
+   │  dns-zone-transfer*   asn-bgp          │
    └──────────┬─────────────────────────────┘
               │ Emits domains + CIDRs directly
    ┌──────────┴─────────────────────────────┐
@@ -288,6 +289,7 @@ Plugins that require API keys check for them in `Accepts()` before running. If t
 | Variable | Plugin | Required | Notes |
 |----------|--------|----------|-------|
 | `APOLLO_API_KEY` | `apollo` | Yes | Apollo.io API key |
+| `CENSYS_API_TOKEN` | `censys-org` | Yes | Censys Personal Access Token ([generate here](https://search.censys.io/account/api)); requires Starter+ plan |
 | `GITHUB_TOKEN` | `github-org` | No | Raises rate limit from 60 to 5000 req/hr |
 | `SECURITYTRAILS_API_KEY` | `passive-dns` | Yes | SecurityTrails API key |
 | `VIEWDNS_API_KEY` | `reverse-whois` | Yes | ViewDNS.info API key |
@@ -298,7 +300,7 @@ Pius caches data under `~/.pius/cache/` automatically. No configuration is neede
 
 | Cache Type | Used By | TTL | Format |
 |-----------|---------|-----|--------|
-| API response cache | `apollo`, `github-org` | 24 hours | JSON per key |
+| API response cache | `apollo`, `censys-org`, `github-org` | 24 hours | JSON per key |
 | RPSL registry database | `apnic`, `afrinic` | 24 hours | Decompressed gzip |
 
 To clear the cache:
