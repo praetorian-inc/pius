@@ -308,3 +308,107 @@ func TestRunPipeline_PluginErrorNonPropagation(t *testing.T) {
 	assert.Equal(t, plugins.FindingDomain, findings[0].Type)
 	assert.Equal(t, "example.com", findings[0].Value)
 }
+
+// ── enrichWithDomains ────────────────────────────────────────────────────────
+
+func TestEnrichWithDomains_CollectsDomainFindings(t *testing.T) {
+	input := plugins.Input{OrgName: "Acme", Meta: make(map[string]string)}
+	findings := []plugins.Finding{
+		{Type: plugins.FindingDomain, Value: "api.example.com"},
+		{Type: plugins.FindingDomain, Value: "mail.example.com"},
+		{Type: plugins.FindingCIDR, Value: "192.168.1.0/24"}, // ignored
+	}
+	result := enrichWithDomains(input, findings)
+	assert.Equal(t, "api.example.com,mail.example.com", result.Meta["discovered_domains"])
+}
+
+func TestEnrichWithDomains_DeduplicatesDomains(t *testing.T) {
+	input := plugins.Input{OrgName: "Acme", Meta: make(map[string]string)}
+	findings := []plugins.Finding{
+		{Type: plugins.FindingDomain, Value: "api.example.com"},
+		{Type: plugins.FindingDomain, Value: "API.EXAMPLE.COM"}, // duplicate (case)
+		{Type: plugins.FindingDomain, Value: "api.example.com"}, // exact dup
+	}
+	result := enrichWithDomains(input, findings)
+	assert.Equal(t, "api.example.com", result.Meta["discovered_domains"])
+}
+
+func TestEnrichWithDomains_NoDomains(t *testing.T) {
+	input := plugins.Input{OrgName: "Acme", Meta: make(map[string]string)}
+	findings := []plugins.Finding{
+		{Type: plugins.FindingCIDR, Value: "192.168.1.0/24"},
+	}
+	result := enrichWithDomains(input, findings)
+	assert.Empty(t, result.Meta["discovered_domains"])
+}
+
+func TestEnrichWithDomains_PreservesExistingMeta(t *testing.T) {
+	input := plugins.Input{
+		OrgName: "Acme",
+		Meta:    map[string]string{"arin_handles": "ACME-1"},
+	}
+	findings := []plugins.Finding{
+		{Type: plugins.FindingDomain, Value: "api.example.com"},
+	}
+	result := enrichWithDomains(input, findings)
+	assert.Equal(t, "ACME-1", result.Meta["arin_handles"])
+	assert.Equal(t, "api.example.com", result.Meta["discovered_domains"])
+}
+
+// ── Phase 3 pipeline integration ─────────────────────────────────────────────
+
+func TestRunPipeline_Phase3ReceivesDiscoveredDomains(t *testing.T) {
+	ctx := context.Background()
+	input := plugins.Input{OrgName: "TestOrg", Meta: make(map[string]string)}
+
+	// Phase 0: emits domain findings
+	phase0 := &mockPlugin{
+		name:    "mock-domain-discovery",
+		phase:   0,
+		accepts: true,
+		findings: []plugins.Finding{
+			{Type: plugins.FindingDomain, Value: "api.example.com", Source: "mock-domain-discovery"},
+			{Type: plugins.FindingDomain, Value: "mail.example.com", Source: "mock-domain-discovery"},
+		},
+	}
+
+	// Phase 3: captures its input for inspection
+	phase3 := &phase3CapturingPlugin{
+		name:  "mock-phase3",
+		phase: 3,
+		findings: []plugins.Finding{
+			{Type: plugins.FindingDomain, Value: "dev-api.example.com", Source: "mock-phase3"},
+		},
+	}
+
+	findings, err := runPipeline(ctx, input, []plugins.Plugin{phase0, phase3}, 5)
+
+	require.NoError(t, err)
+	// Phase 3 must have received the enriched input with discovered domains
+	assert.Contains(t, phase3.capturedInput.Meta["discovered_domains"], "api.example.com")
+	assert.Contains(t, phase3.capturedInput.Meta["discovered_domains"], "mail.example.com")
+	// Phase 3 result and Phase 0 results should both appear
+	values := make(map[string]bool)
+	for _, f := range findings {
+		values[f.Value] = true
+	}
+	assert.True(t, values["api.example.com"])
+	assert.True(t, values["mail.example.com"])
+	assert.True(t, values["dev-api.example.com"])
+}
+
+func TestRunPipeline_Phase3SkippedWhenNoDomains(t *testing.T) {
+	ctx := context.Background()
+	input := plugins.Input{OrgName: "TestOrg", Meta: make(map[string]string)}
+
+	// Phase 3 that requires discovered_domains (should not run)
+	phase3 := &phase3CapturingPlugin{
+		name:  "mock-phase3",
+		phase: 3,
+	}
+
+	findings, err := runPipeline(ctx, input, []plugins.Plugin{phase3}, 5)
+	require.NoError(t, err)
+	assert.Empty(t, findings)
+	assert.Empty(t, phase3.capturedInput.Meta, "Phase 3 should not have been called")
+}

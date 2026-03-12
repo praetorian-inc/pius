@@ -41,6 +41,8 @@ func phaseLabel(phase int) string {
 		return "phase-1"
 	case 2:
 		return "phase-2"
+	case 3:
+		return "phase-3"
 	default:
 		return "independent"
 	}
