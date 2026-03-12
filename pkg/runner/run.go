@@ -18,14 +18,19 @@ import (
 
 func newRunCmd() *cobra.Command {
 	var (
-		org         string
-		domain      string
-		asn         string
-		pluginsList string
-		disableList string
-		concurrency int
-		output      string
-		mode        string
+		org               string
+		domain            string
+		asn               string
+		cidr              string
+		pluginsList       string
+		disableList       string
+		concurrency       int
+		output            string
+		mode              string
+		dohWordlist       string
+		dohServers        string
+		dohGateways       string
+		dohDeployGateways bool
 	)
 
 	cmd := &cobra.Command{
@@ -44,7 +49,22 @@ func newRunCmd() *cobra.Command {
 				OrgName: org,
 				Domain:  domain,
 				ASN:     asn,
+				CIDR:    cidr,
 				Meta:    make(map[string]string),
+			}
+
+			// Populate DoH enumeration options into Meta
+			if dohWordlist != "" {
+				input.Meta["doh_wordlist"] = dohWordlist
+			}
+			if dohServers != "" {
+				input.Meta["doh_servers"] = dohServers
+			}
+			if dohGateways != "" {
+				input.Meta["doh_gateways"] = dohGateways
+			}
+			if dohDeployGateways {
+				input.Meta["doh_deploy_gateways"] = "true"
 			}
 
 			// Build plugin list (apply whitelist/blacklist/mode)
@@ -70,11 +90,16 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&org, "org", "", "Organization name to search (required)")
 	cmd.Flags().StringVarP(&domain, "domain", "d", "", "Known domain hint (optional)")
 	cmd.Flags().StringVar(&asn, "asn", "", "Known ASN hint, e.g. AS12345 (optional)")
+	cmd.Flags().StringVar(&cidr, "cidr", "", "Known CIDR range, e.g. 192.0.2.0/24 (optional)")
 	cmd.Flags().StringVar(&pluginsList, "plugins", "", "Comma-separated plugin whitelist (default: all)")
 	cmd.Flags().StringVar(&disableList, "disable", "", "Comma-separated plugin blacklist")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Max concurrent plugins")
 	cmd.Flags().StringVarP(&output, "output", "o", "terminal", "Output format: terminal|json|ndjson")
 	cmd.Flags().StringVar(&mode, "mode", "passive", "Plugin mode filter: passive|active|all")
+	cmd.Flags().StringVar(&dohWordlist, "doh-wordlist", "", "Path to subdomain wordlist for DoH enumeration (default: embedded)")
+	cmd.Flags().StringVar(&dohServers, "doh-servers", "", "Comma-separated DoH server URLs")
+	cmd.Flags().StringVar(&dohGateways, "doh-gateways", "", "Comma-separated AWS API Gateway URLs for DoH")
+	cmd.Flags().BoolVar(&dohDeployGateways, "doh-deploy-gateways", false, "Auto-deploy AWS API Gateways pointing to DoH servers")
 	_ = cmd.MarkFlagRequired("org")
 
 	return cmd
@@ -142,9 +167,9 @@ const (
 // Phase 0 (parallel with all): independent plugins (no dependencies)
 // Phase 1 (parallel): plugins with Phase()==1 discover RIR org handles
 // Phase 2 (parallel): plugins with Phase()==2 resolve handles to CIDRs (uses enriched Input.Meta)
-// Phase 3 (parallel): domain enrichment plugins (e.g., dns-permutation) that
+// Phase 3 (parallel): plugins with Phase()==3 consume discovered CIDRs via Meta["cidrs"]
 //
-//	consume domains discovered by Phase 0 plugins via Meta["discovered_domains"]
+//	and/or discovered domains via Meta["discovered_domains"]
 func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Plugin, concurrency int) ([]plugins.Finding, error) {
 	ctx, cancel := context.WithTimeout(ctx, DefaultPipelineTimeout)
 	defer cancel()
@@ -233,6 +258,9 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	enrichedInput := enrichWithHandles(input, handleFindings)
 
 	// Phase 2: resolve handles to CIDRs
+	var phase2Findings []plugins.Finding
+	var phase2Mu sync.Mutex
+
 	var p2G errgroup.Group
 	p2G.SetLimit(concurrency)
 	for _, p := range phase2 {
@@ -246,6 +274,9 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 				slog.Warn("plugin error", "plugin", p.Name(), "error", err)
 				return nil
 			}
+			phase2Mu.Lock()
+			phase2Findings = append(phase2Findings, f...)
+			phase2Mu.Unlock()
 			collect(f)
 			return nil
 		})
@@ -254,25 +285,26 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	// Wait() always returns nil under this pattern.
 	_ = p2G.Wait()
 
-	// Wait for independent plugins (must complete before Phase 3)
+	// Wait for independent plugins (must complete before Phase 3 for domain enrichment)
 	// Plugin errors are logged within goroutines and return nil;
 	// Wait() always returns nil under this pattern.
 	_ = indepG.Wait()
 
-	// Phase 3: domain enrichment (e.g., dns-permutation)
-	// Enrich input with discovered domains from Phase 0 plugins.
+	// Phase 3: consume discovered CIDRs and domains
+	// Enrich with CIDRs from Phase 2 and domains from Phase 0.
 	if len(phase3) > 0 {
-		domainEnrichedInput := enrichWithDomains(enrichedInput, allFindings)
+		phase3Input := enrichWithCIDRs(enrichedInput, phase2Findings)
+		phase3Input = enrichWithDomains(phase3Input, allFindings)
 
 		var p3G errgroup.Group
 		p3G.SetLimit(concurrency)
 		for _, p := range phase3 {
 			p := p
-			if !p.Accepts(domainEnrichedInput) {
+			if !p.Accepts(phase3Input) {
 				continue
 			}
 			p3G.Go(func() error {
-				f, err := p.Run(ctx, domainEnrichedInput)
+				f, err := p.Run(ctx, phase3Input)
 				if err != nil {
 					slog.Warn("plugin error", "plugin", p.Name(), "error", err)
 					return nil
@@ -319,6 +351,32 @@ func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.
 		} else {
 			enriched.Meta[key] = strings.Join(handles, ",")
 		}
+	}
+	return enriched
+}
+
+// enrichWithCIDRs extracts CIDR findings and injects them into Input.Meta["cidrs"].
+func enrichWithCIDRs(input plugins.Input, findings []plugins.Finding) plugins.Input {
+	enriched := input
+	enriched.Meta = make(map[string]string, len(input.Meta))
+	for k, v := range input.Meta {
+		enriched.Meta[k] = v
+	}
+
+	var cidrs []string
+	seen := make(map[string]bool)
+	for _, f := range findings {
+		if f.Type != plugins.FindingCIDR {
+			continue
+		}
+		if !seen[f.Value] {
+			seen[f.Value] = true
+			cidrs = append(cidrs, f.Value)
+		}
+	}
+
+	if len(cidrs) > 0 {
+		enriched.Meta["cidrs"] = strings.Join(cidrs, ",")
 	}
 	return enriched
 }
