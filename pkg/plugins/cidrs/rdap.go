@@ -90,7 +90,7 @@ func (p *rdapPlugin) fetchCIDRs(ctx context.Context, handle string) ([]string, e
 
 	var resp rdapEntityResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse RDAP response: %w", err)
+		return nil, fmt.Errorf("%s: parse response: %w", p.cfg.name, err)
 	}
 
 	var cidrs []string
