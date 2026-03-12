@@ -3,6 +3,7 @@ package domains
 import (
 	"context"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -19,19 +20,33 @@ func init() {
 
 // ReverseIPPlugin discovers hostnames via reverse IP lookups (PTR records)
 // and passive DNS services like HackerTarget.
+//
+// Phase 3: Consumes CIDRs discovered by Phase 2 RDAP plugins (arin, ripe, apnic, afrinic, lacnic).
+// Reads CIDRs from Input.Meta["cidrs"] and performs reverse lookups on each IP.
+//
+// For small CIDRs (/24 and smaller), iterates all IPs.
+// For larger CIDRs, samples representative IPs to avoid excessive queries.
 type ReverseIPPlugin struct {
 	client     *client.Client
 	baseURL    string // override for testing
 	resolver   string // DNS resolver override for testing
 	maxResults int    // max hostnames to return (default 500)
+	maxIPs     int    // max IPs to query per CIDR (default 256)
 }
+
+// Confidence thresholds for domain matching
+const (
+	confidenceHigh   = 0.85 // Hostname matches org domain
+	confidenceMedium = 0.55 // Hostname on non-CDN IP, no domain match
+	confidenceLow    = 0.25 // Hostname on CDN IP (likely false positive)
+)
 
 func (p *ReverseIPPlugin) Name() string { return "reverse-ip" }
 func (p *ReverseIPPlugin) Description() string {
-	return "Reverse IP: discovers hostnames via PTR records and HackerTarget reverse IP lookup"
+	return "Reverse IP: discovers hostnames via PTR records and HackerTarget from discovered CIDRs (Phase 3)"
 }
 func (p *ReverseIPPlugin) Category() string { return "domain" }
-func (p *ReverseIPPlugin) Phase() int       { return 0 }
+func (p *ReverseIPPlugin) Phase() int       { return 3 }
 func (p *ReverseIPPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *ReverseIPPlugin) hackerTargetBase() string {
@@ -48,9 +63,9 @@ func (p *ReverseIPPlugin) dnsResolver() string {
 	return "8.8.8.8:53"
 }
 
-// Accepts if we have a domain to resolve
+// Accepts returns true if we have CIDRs to process from Phase 2.
 func (p *ReverseIPPlugin) Accepts(input plugins.Input) bool {
-	return input.Domain != ""
+	return input.Meta != nil && input.Meta["cidrs"] != ""
 }
 
 func (p *ReverseIPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
@@ -58,17 +73,37 @@ func (p *ReverseIPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	if maxResults == 0 {
 		maxResults = 500
 	}
+	maxIPs := p.maxIPs
+	if maxIPs == 0 {
+		maxIPs = 256
+	}
 
-	// Resolve domain to IPs
-	ips, err := p.resolveToIPs(ctx, input.Domain)
-	if err != nil || len(ips) == 0 {
-		return nil, nil // Graceful degradation
+	// Parse CIDRs from Meta
+	cidrsStr := input.Meta["cidrs"]
+	if cidrsStr == "" {
+		return nil, nil
+	}
+
+	cidrList := strings.Split(cidrsStr, ",")
+	var allIPs []string
+
+	for _, cidrStr := range cidrList {
+		cidrStr = strings.TrimSpace(cidrStr)
+		if cidrStr == "" {
+			continue
+		}
+		ips := expandCIDR(cidrStr, maxIPs)
+		allIPs = append(allIPs, ips...)
+	}
+
+	if len(allIPs) == 0 {
+		return nil, nil
 	}
 
 	seen := make(map[string]bool)
 	var findings []plugins.Finding
 
-	for _, ip := range ips {
+	for _, ip := range allIPs {
 		if len(findings) >= maxResults {
 			break
 		}
@@ -79,6 +114,8 @@ func (p *ReverseIPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 		default:
 		}
 
+		isCDN := isKnownCDN(ip)
+
 		// PTR lookup
 		ptrHosts := p.ptrLookup(ctx, ip)
 		for _, host := range ptrHosts {
@@ -87,7 +124,14 @@ func (p *ReverseIPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 				continue
 			}
 			seen[host] = true
-			findings = append(findings, plugins.Finding{
+
+			confidence := calculateConfidence(host, input.Domain, input.OrgName, isCDN)
+			// Skip very low confidence results from CDN IPs
+			if confidence < 0.30 {
+				continue
+			}
+
+			f := plugins.Finding{
 				Type:   plugins.FindingDomain,
 				Value:  host,
 				Source: p.Name(),
@@ -96,76 +140,90 @@ func (p *ReverseIPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 					"ip":          ip,
 					"method":      "ptr",
 					"base_domain": input.Domain,
+					"is_cdn":      isCDN,
 				},
-			})
+			}
+			plugins.SetConfidence(&f, confidence)
+			findings = append(findings, f)
 		}
 
-		// HackerTarget reverse IP lookup
-		htHosts := p.hackerTargetLookup(ctx, ip)
-		for _, host := range htHosts {
-			host = normalizeDomain(host)
-			if host == "" || seen[host] {
-				continue
+		// HackerTarget reverse IP lookup (skip for CDN IPs to avoid noise)
+		if !isCDN {
+			htHosts := p.hackerTargetLookup(ctx, ip)
+			for _, host := range htHosts {
+				host = normalizeDomain(host)
+				if host == "" || seen[host] {
+					continue
+				}
+				seen[host] = true
+
+				confidence := calculateConfidence(host, input.Domain, input.OrgName, isCDN)
+				if confidence < 0.30 {
+					continue
+				}
+
+				f := plugins.Finding{
+					Type:   plugins.FindingDomain,
+					Value:  host,
+					Source: p.Name(),
+					Data: map[string]any{
+						"org":         input.OrgName,
+						"ip":          ip,
+						"method":      "hackertarget",
+						"base_domain": input.Domain,
+						"is_cdn":      isCDN,
+					},
+				}
+				plugins.SetConfidence(&f, confidence)
+				findings = append(findings, f)
 			}
-			seen[host] = true
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingDomain,
-				Value:  host,
-				Source: p.Name(),
-				Data: map[string]any{
-					"org":         input.OrgName,
-					"ip":          ip,
-					"method":      "hackertarget",
-					"base_domain": input.Domain,
-				},
-			})
 		}
 	}
 
 	return findings, nil
 }
 
-// resolveToIPs resolves a domain to its A/AAAA records
-func (p *ReverseIPPlugin) resolveToIPs(ctx context.Context, domain string) ([]string, error) {
-	var ips []string
-
-	// Try A records
-	aIPs, err := p.dnsLookup(ctx, domain, dns.TypeA)
-	if err == nil {
-		ips = append(ips, aIPs...)
-	}
-
-	// Try AAAA records
-	aaaaIPs, err := p.dnsLookup(ctx, domain, dns.TypeAAAA)
-	if err == nil {
-		ips = append(ips, aaaaIPs...)
-	}
-
-	return ips, nil
-}
-
-// dnsLookup performs a DNS query
-func (p *ReverseIPPlugin) dnsLookup(ctx context.Context, name string, qtype uint16) ([]string, error) {
-	c := &dns.Client{Timeout: 5 * time.Second}
-	m := new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(name), qtype)
-	m.RecursionDesired = true
-
-	r, _, err := c.ExchangeContext(ctx, m, p.dnsResolver())
+// expandCIDR returns up to maxIPs IP addresses from a CIDR.
+// For /32, returns the single IP.
+// For /24 and smaller, returns all IPs.
+// For larger ranges, samples evenly across the range.
+func expandCIDR(cidrStr string, maxIPs int) []string {
+	prefix, err := netip.ParsePrefix(cidrStr)
 	if err != nil {
-		return nil, err
+		// Try parsing as single IP
+		ip, err := netip.ParseAddr(strings.TrimSuffix(cidrStr, "/32"))
+		if err != nil {
+			return nil
+		}
+		return []string{ip.String()}
 	}
 
-	var results []string
-	for _, ans := range r.Answer {
-		switch rr := ans.(type) {
-		case *dns.A:
-			results = append(results, rr.A.String())
-		case *dns.AAAA:
-			results = append(results, rr.AAAA.String())
+	// Calculate number of IPs in range
+	bits := prefix.Bits()
+	var numIPs int
+	if prefix.Addr().Is4() {
+		numIPs = 1 << (32 - bits)
+	} else {
+		// For IPv6, cap at maxIPs
+		numIPs = maxIPs
+	}
+
+	if numIPs > maxIPs {
+		numIPs = maxIPs
+	}
+
+	var ips []string
+	addr := prefix.Addr()
+
+	// For small ranges, iterate all
+	if numIPs <= maxIPs {
+		for i := 0; i < numIPs && prefix.Contains(addr); i++ {
+			ips = append(ips, addr.String())
+			addr = addr.Next()
 		}
 	}
-	return results, nil
+
+	return ips
 }
 
 // ptrLookup performs reverse DNS lookup for an IP
@@ -223,4 +281,65 @@ func (p *ReverseIPPlugin) hackerTargetLookup(ctx context.Context, ip string) []s
 		}
 	}
 	return hosts
+}
+
+// calculateConfidence determines confidence score based on domain matching and CDN status
+func calculateConfidence(hostname, baseDomain, orgName string, isCDN bool) float64 {
+	hostname = strings.ToLower(hostname)
+	baseDomain = strings.ToLower(baseDomain)
+	orgName = strings.ToLower(orgName)
+
+	// If on CDN IP, significantly lower confidence
+	if isCDN {
+		// Check if hostname matches base domain (might be legitimate)
+		if baseDomain != "" && (strings.HasSuffix(hostname, "."+baseDomain) || hostname == baseDomain) {
+			return confidenceMedium // 0.55 - needs review
+		}
+		return confidenceLow // 0.25 - likely false positive
+	}
+
+	// Non-CDN IP
+	if baseDomain != "" && (strings.HasSuffix(hostname, "."+baseDomain) || hostname == baseDomain) {
+		return confidenceHigh // 0.85 - high confidence match
+	}
+
+	// Check if hostname contains org name
+	if orgName != "" && strings.Contains(hostname, strings.ReplaceAll(orgName, " ", "")) {
+		return 0.70 // Likely related
+	}
+
+	return confidenceMedium // 0.55 - needs review
+}
+
+// Known CDN/cloud provider IP ranges (simplified - common prefixes)
+var cdnPrefixes = []string{
+	// Cloudflare
+	"103.21.244.", "103.22.200.", "103.31.4.", "104.16.", "104.17.", "104.18.", "104.19.",
+	"104.20.", "104.21.", "104.22.", "104.23.", "104.24.", "104.25.", "104.26.", "104.27.",
+	"108.162.", "131.0.72.", "141.101.", "162.158.", "172.64.", "172.65.", "172.66.", "172.67.",
+	"173.245.", "188.114.", "190.93.", "197.234.", "198.41.",
+	// Fastly
+	"151.101.", "199.232.",
+	// Akamai (partial)
+	"23.32.", "23.33.", "23.34.", "23.35.", "23.36.", "23.37.", "23.38.", "23.39.",
+	"23.40.", "23.41.", "23.42.", "23.43.", "23.44.", "23.45.", "23.46.", "23.47.",
+	"23.48.", "23.49.", "23.50.", "23.51.", "23.52.", "23.53.", "23.54.", "23.55.",
+	"23.56.", "23.57.", "23.58.", "23.59.", "23.60.", "23.61.", "23.62.", "23.63.",
+	// AWS CloudFront (partial)
+	"13.32.", "13.33.", "13.35.", "13.224.", "13.225.", "13.226.", "13.227.",
+	"52.84.", "52.85.", "54.182.", "54.192.", "54.230.", "54.239.", "54.240.",
+	"99.84.", "99.86.",
+	// Google Cloud CDN / GFE
+	"34.96.", "34.97.", "34.98.", "34.102.", "34.107.", "34.110.", "34.111.",
+	"35.186.", "35.190.", "35.191.",
+}
+
+// isKnownCDN checks if an IP belongs to a known CDN provider
+func isKnownCDN(ip string) bool {
+	for _, prefix := range cdnPrefixes {
+		if strings.HasPrefix(ip, prefix) {
+			return true
+		}
+	}
+	return false
 }

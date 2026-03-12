@@ -137,10 +137,11 @@ const (
 	maxFindings            = 100_000
 )
 
-// runPipeline executes the two-phase discovery pipeline.
+// runPipeline executes the three-phase discovery pipeline.
 //
 // Phase 1 (parallel): plugins with Phase()==1 discover RIR org handles
 // Phase 2 (parallel): plugins with Phase()==2 resolve handles to CIDRs (uses enriched Input.Meta)
+// Phase 3 (parallel): plugins with Phase()==3 consume discovered CIDRs (uses enriched Input.Meta["cidrs"])
 // Independent (parallel with all phases): plugins with Phase()==0
 func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Plugin, concurrency int) ([]plugins.Finding, error) {
 	ctx, cancel := context.WithTimeout(ctx, DefaultPipelineTimeout)
@@ -166,13 +167,15 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	}
 
 	// Separate plugins by phase
-	var phase1, phase2, independent []plugins.Plugin
+	var phase1, phase2, phase3, independent []plugins.Plugin
 	for _, p := range selected {
 		switch p.Phase() {
 		case 1:
 			phase1 = append(phase1, p)
 		case 2:
 			phase2 = append(phase2, p)
+		case 3:
+			phase3 = append(phase3, p)
 		default:
 			independent = append(independent, p)
 		}
@@ -228,6 +231,9 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	enrichedInput := enrichWithHandles(input, handleFindings)
 
 	// Phase 2: resolve handles to CIDRs
+	var phase2Findings []plugins.Finding
+	var phase2Mu sync.Mutex
+
 	var p2G errgroup.Group
 	p2G.SetLimit(concurrency)
 	for _, p := range phase2 {
@@ -241,6 +247,9 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 				slog.Warn("plugin error", "plugin", p.Name(), "error", err)
 				return nil
 			}
+			phase2Mu.Lock()
+			phase2Findings = append(phase2Findings, f...)
+			phase2Mu.Unlock()
 			collect(f)
 			return nil
 		})
@@ -248,6 +257,30 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	// Plugin errors are logged within goroutines and return nil;
 	// Wait() always returns nil under this pattern.
 	_ = p2G.Wait()
+
+	// Phase 3: consume discovered CIDRs (e.g., reverse-ip lookups)
+	if len(phase3) > 0 {
+		cidrEnrichedInput := enrichWithCIDRs(enrichedInput, phase2Findings)
+
+		var p3G errgroup.Group
+		p3G.SetLimit(concurrency)
+		for _, p := range phase3 {
+			p := p
+			if !p.Accepts(cidrEnrichedInput) {
+				continue
+			}
+			p3G.Go(func() error {
+				f, err := p.Run(ctx, cidrEnrichedInput)
+				if err != nil {
+					slog.Warn("plugin error", "plugin", p.Name(), "error", err)
+					return nil
+				}
+				collect(f)
+				return nil
+			})
+		}
+		_ = p3G.Wait()
+	}
 
 	// Wait for independent plugins
 	// Plugin errors are logged within goroutines and return nil;
@@ -289,6 +322,32 @@ func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.
 		} else {
 			enriched.Meta[key] = strings.Join(handles, ",")
 		}
+	}
+	return enriched
+}
+
+// enrichWithCIDRs extracts CIDR findings and injects them into Input.Meta["cidrs"].
+func enrichWithCIDRs(input plugins.Input, findings []plugins.Finding) plugins.Input {
+	enriched := input
+	enriched.Meta = make(map[string]string, len(input.Meta))
+	for k, v := range input.Meta {
+		enriched.Meta[k] = v
+	}
+
+	var cidrs []string
+	seen := make(map[string]bool)
+	for _, f := range findings {
+		if f.Type != plugins.FindingCIDR {
+			continue
+		}
+		if !seen[f.Value] {
+			seen[f.Value] = true
+			cidrs = append(cidrs, f.Value)
+		}
+	}
+
+	if len(cidrs) > 0 {
+		enriched.Meta["cidrs"] = strings.Join(cidrs, ",")
 	}
 	return enriched
 }

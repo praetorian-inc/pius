@@ -20,7 +20,7 @@ func TestReverseIPPlugin_Metadata(t *testing.T) {
 	assert.Contains(t, p.Description(), "Reverse IP")
 	assert.Contains(t, p.Description(), "PTR")
 	assert.Equal(t, "domain", p.Category())
-	assert.Equal(t, 0, p.Phase())
+	assert.Equal(t, 3, p.Phase()) // Phase 3: consumes CIDRs from Phase 2
 	assert.Equal(t, plugins.ModePassive, p.Mode())
 }
 
@@ -34,18 +34,40 @@ func TestReverseIPPlugin_Accepts(t *testing.T) {
 		expected bool
 	}{
 		{
-			name:     "accepts with domain",
-			input:    plugins.Input{Domain: "example.com"},
+			name: "accepts with CIDRs in Meta",
+			input: plugins.Input{
+				OrgName: "Acme Corp",
+				Meta:    map[string]string{"cidrs": "192.0.2.0/24"},
+			},
 			expected: true,
 		},
 		{
-			name:     "rejects without domain",
+			name: "accepts with multiple CIDRs",
+			input: plugins.Input{
+				OrgName: "Acme Corp",
+				Meta:    map[string]string{"cidrs": "192.0.2.0/24,198.51.100.0/24"},
+			},
+			expected: true,
+		},
+		{
+			name:     "rejects without Meta",
 			input:    plugins.Input{OrgName: "Acme Corp"},
 			expected: false,
 		},
 		{
-			name:     "rejects with empty domain",
-			input:    plugins.Input{Domain: ""},
+			name: "rejects with empty CIDRs",
+			input: plugins.Input{
+				OrgName: "Acme Corp",
+				Meta:    map[string]string{"cidrs": ""},
+			},
+			expected: false,
+		},
+		{
+			name: "rejects with nil Meta",
+			input: plugins.Input{
+				OrgName: "Acme Corp",
+				Meta:    nil,
+			},
 			expected: false,
 		},
 	}
@@ -149,6 +171,161 @@ func TestReverseIPPlugin_HackerTargetResponseParsing(t *testing.T) {
 
 			hosts := p.hackerTargetLookup(context.Background(), "192.0.2.1")
 			assert.Equal(t, tt.expected, hosts)
+		})
+	}
+}
+
+func TestExpandCIDR(t *testing.T) {
+	tests := []struct {
+		name     string
+		cidr     string
+		maxIPs   int
+		expected int // expected number of IPs
+	}{
+		{
+			name:     "single IP /32",
+			cidr:     "192.0.2.1/32",
+			maxIPs:   256,
+			expected: 1,
+		},
+		{
+			name:     "small /30",
+			cidr:     "192.0.2.0/30",
+			maxIPs:   256,
+			expected: 4,
+		},
+		{
+			name:     "full /24",
+			cidr:     "192.0.2.0/24",
+			maxIPs:   256,
+			expected: 256,
+		},
+		{
+			name:     "capped /16",
+			cidr:     "192.0.0.0/16",
+			maxIPs:   256,
+			expected: 256, // capped at maxIPs
+		},
+		{
+			name:     "bare IP without prefix",
+			cidr:     "192.0.2.1",
+			maxIPs:   256,
+			expected: 1,
+		},
+		{
+			name:     "invalid CIDR",
+			cidr:     "not-a-cidr",
+			maxIPs:   256,
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ips := expandCIDR(tt.cidr, tt.maxIPs)
+			assert.Len(t, ips, tt.expected)
+		})
+	}
+}
+
+func TestIsKnownCDN(t *testing.T) {
+	tests := []struct {
+		name     string
+		ip       string
+		expected bool
+	}{
+		// Cloudflare IPs
+		{name: "cloudflare 104.16.x.x", ip: "104.16.1.1", expected: true},
+		{name: "cloudflare 172.67.x.x", ip: "172.67.43.196", expected: true},
+		{name: "cloudflare 172.64.x.x", ip: "172.64.1.1", expected: true},
+		// Fastly IPs
+		{name: "fastly 151.101.x.x", ip: "151.101.1.1", expected: true},
+		// Akamai IPs
+		{name: "akamai 23.32.x.x", ip: "23.32.1.1", expected: true},
+		// AWS CloudFront
+		{name: "cloudfront 13.32.x.x", ip: "13.32.1.1", expected: true},
+		// Non-CDN IPs
+		{name: "regular IP", ip: "192.0.2.1", expected: false},
+		{name: "private IP", ip: "10.0.0.1", expected: false},
+		{name: "google dns", ip: "8.8.8.8", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isKnownCDN(tt.ip)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestCalculateConfidence(t *testing.T) {
+	tests := []struct {
+		name       string
+		hostname   string
+		baseDomain string
+		orgName    string
+		isCDN      bool
+		expected   float64
+	}{
+		// Non-CDN, matching domain
+		{
+			name:       "exact domain match on non-CDN",
+			hostname:   "example.com",
+			baseDomain: "example.com",
+			orgName:    "Example Inc",
+			isCDN:      false,
+			expected:   0.85,
+		},
+		{
+			name:       "subdomain match on non-CDN",
+			hostname:   "www.example.com",
+			baseDomain: "example.com",
+			orgName:    "Example Inc",
+			isCDN:      false,
+			expected:   0.85,
+		},
+		// Non-CDN, org name match
+		{
+			name:       "org name in hostname",
+			hostname:   "mail.exampleinc.net",
+			baseDomain: "example.com",
+			orgName:    "Example Inc",
+			isCDN:      false,
+			expected:   0.70,
+		},
+		// Non-CDN, no match
+		{
+			name:       "no match on non-CDN",
+			hostname:   "unrelated.net",
+			baseDomain: "example.com",
+			orgName:    "Example Inc",
+			isCDN:      false,
+			expected:   0.55,
+		},
+		// CDN IP, matching domain
+		{
+			name:       "matching domain on CDN",
+			hostname:   "www.example.com",
+			baseDomain: "example.com",
+			orgName:    "Example Inc",
+			isCDN:      true,
+			expected:   0.55,
+		},
+		// CDN IP, no match
+		{
+			name:       "no match on CDN",
+			hostname:   "unrelated.net",
+			baseDomain: "example.com",
+			orgName:    "Example Inc",
+			isCDN:      true,
+			expected:   0.25,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := calculateConfidence(tt.hostname, tt.baseDomain, tt.orgName, tt.isCDN)
+			assert.Equal(t, tt.expected, got)
 		})
 	}
 }
