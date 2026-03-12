@@ -21,6 +21,7 @@ func newRunCmd() *cobra.Command {
 		org               string
 		domain            string
 		asn               string
+		cidr              string
 		pluginsList       string
 		disableList       string
 		concurrency       int
@@ -48,6 +49,7 @@ func newRunCmd() *cobra.Command {
 				OrgName: org,
 				Domain:  domain,
 				ASN:     asn,
+				CIDR:    cidr,
 				Meta:    make(map[string]string),
 			}
 
@@ -88,6 +90,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&org, "org", "", "Organization name to search (required)")
 	cmd.Flags().StringVarP(&domain, "domain", "d", "", "Known domain hint (optional)")
 	cmd.Flags().StringVar(&asn, "asn", "", "Known ASN hint, e.g. AS12345 (optional)")
+	cmd.Flags().StringVar(&cidr, "cidr", "", "Known CIDR range, e.g. 192.0.2.0/24 (optional)")
 	cmd.Flags().StringVar(&pluginsList, "plugins", "", "Comma-separated plugin whitelist (default: all)")
 	cmd.Flags().StringVar(&disableList, "disable", "", "Comma-separated plugin blacklist")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Max concurrent plugins")

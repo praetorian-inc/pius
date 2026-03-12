@@ -40,6 +40,9 @@ type Input struct {
 	// ASN is an optional known Autonomous System Number (e.g., "AS12345").
 	ASN string
 
+	// CIDR is an optional known IP range (e.g., "192.0.2.0/24").
+	CIDR string
+
 	// Meta carries phase enrichment data between pipeline phases.
 	// Phase 1 plugins populate Meta["arin_handles"], Meta["ripe_handles"],
 	// Meta["apnic_handles"], Meta["afrinic_handles"] with comma-separated handles.
