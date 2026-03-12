@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -28,6 +29,28 @@ func New() *Client {
 		http:    &http.Client{Timeout: defaultTimeout},
 		retries: defaultRetries,
 	}
+}
+
+// sanitizeURL redacts sensitive query parameters (API keys, tokens) from URLs
+// to prevent accidental credential exposure in error messages and logs.
+func sanitizeURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "[invalid URL]"
+	}
+	q := parsed.Query()
+	redacted := false
+	for _, key := range []string{"key", "apikey", "api_key", "token", "access_token"} {
+		if q.Has(key) {
+			q.Set(key, "REDACTED")
+			redacted = true
+		}
+	}
+	if !redacted {
+		return rawURL // Return original if nothing to redact
+	}
+	parsed.RawQuery = q.Encode()
+	return parsed.String()
 }
 
 // Get performs an HTTP GET request with retry on transient failures.
@@ -68,17 +91,17 @@ func (c *Client) GetWithHeaders(ctx context.Context, url string, headers map[str
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			resp.Body.Close()
-			lastErr = fmt.Errorf("rate limited by %s", url)
+			lastErr = fmt.Errorf("rate limited by %s", sanitizeURL(url))
 			continue
 		}
 		if resp.StatusCode >= 500 {
 			resp.Body.Close()
-			lastErr = fmt.Errorf("server error %d from %s", resp.StatusCode, url)
+			lastErr = fmt.Errorf("server error %d from %s", resp.StatusCode, sanitizeURL(url))
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, url)
+			return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, sanitizeURL(url))
 		}
 
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
@@ -87,7 +110,7 @@ func (c *Client) GetWithHeaders(ctx context.Context, url string, headers map[str
 			return nil, fmt.Errorf("read response: %w", err)
 		}
 		if int64(len(body)) > maxResponseSize {
-			return nil, fmt.Errorf("response too large (>%d bytes) from %s", maxResponseSize, url)
+			return nil, fmt.Errorf("response too large (>%d bytes) from %s", maxResponseSize, sanitizeURL(url))
 		}
 		return body, nil
 	}
