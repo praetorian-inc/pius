@@ -1,0 +1,14 @@
+# Build artifacts
+bin/
+pius
+pius-latest
+pius-test
+pius.exe
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Claude Code internals
+.claude/hooks/
+.claude/.output/
