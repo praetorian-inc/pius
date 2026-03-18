@@ -76,8 +76,10 @@ func TestGoogleDorksPlugin_Name(t *testing.T) {
 func TestGoogleDorksPlugin_Accepts(t *testing.T) {
 	p := newGoogleDorksPlugin("")
 	assert.True(t, p.Accepts(plugins.Input{Domain: "acme.com"}))
+	assert.True(t, p.Accepts(plugins.Input{OrgName: "Acme Corp"}))
+	assert.True(t, p.Accepts(plugins.Input{Domain: "acme.com", OrgName: "Acme Corp"}))
+	assert.False(t, p.Accepts(plugins.Input{}))
 	assert.False(t, p.Accepts(plugins.Input{Domain: ""}))
-	assert.False(t, p.Accepts(plugins.Input{OrgName: "Acme Corp"}))
 }
 
 func TestGoogleDorksPlugin_Category_Phase_Mode(t *testing.T) {
@@ -90,11 +92,32 @@ func TestGoogleDorksPlugin_Category_Phase_Mode(t *testing.T) {
 
 // ── Run() tests ───────────────────────────────────────────────────────────────
 
-func TestGoogleDorksPlugin_Run_EmptyDomain(t *testing.T) {
+func TestGoogleDorksPlugin_Run_BothEmpty(t *testing.T) {
 	p := newGoogleDorksPlugin("http://should-not-be-called")
-	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
+	findings, err := p.Run(context.Background(), plugins.Input{})
 	require.NoError(t, err)
 	assert.Empty(t, findings)
+}
+
+func TestGoogleDorksPlugin_Run_OrgNameOnly(t *testing.T) {
+	subsidiaries := map[string]string{
+		"SubsidiaryA": "subsidiary-a.com",
+	}
+	srv := subsidiaryServer(subsidiaries)
+	defer srv.Close()
+
+	p := newGoogleDorksPlugin(srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+
+	f := findings[0]
+	assert.Equal(t, plugins.FindingDomain, f.Type)
+	assert.Equal(t, "subsidiary-a.com", f.Value)
+	assert.Equal(t, "google-dorks", f.Source)
+	assert.Equal(t, "SubsidiaryA", f.Data["subsidiary"])
+	// Domain is empty in preseed mode — that's expected
+	assert.Equal(t, "", f.Data["domain"])
 }
 
 func TestGoogleDorksPlugin_Run_FindsSubsidiaries(t *testing.T) {

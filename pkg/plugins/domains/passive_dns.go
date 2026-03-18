@@ -28,7 +28,7 @@ func (p *PassiveDNSPlugin) Mode() string        { return plugins.ModePassive }
 
 // Only runs if SECURITYTRAILS_API_KEY is set and we have a domain to search
 func (p *PassiveDNSPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("SECURITYTRAILS_API_KEY") != "" && input.Domain != ""
+	return os.Getenv("SECURITYTRAILS_API_KEY") != "" && isDomainName(input.Domain)
 }
 
 func (p *PassiveDNSPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {

@@ -36,7 +36,7 @@ func (p *DNSZoneTransferPlugin) Mode() string     { return plugins.ModeActive }
 
 // Accepts requires a Domain input.
 func (p *DNSZoneTransferPlugin) Accepts(input plugins.Input) bool {
-	return input.Domain != ""
+	return isDomainName(input.Domain)
 }
 
 // Run attempts AXFR against each authoritative nameserver for the domain.

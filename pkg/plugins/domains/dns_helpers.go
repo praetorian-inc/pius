@@ -2,7 +2,11 @@ package domains
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"log/slog"
+	"net"
 	"strings"
 	"time"
 
@@ -33,4 +37,96 @@ func normalizeDomain(domain string) string {
 	domain = strings.TrimSuffix(domain, ".")
 	domain = strings.ToLower(domain)
 	return domain
+}
+
+// resolveIPs returns the A and AAAA record IPs for an FQDN, or empty if NXDOMAIN.
+func resolveIPs(ctx context.Context, fqdn string, resolver string) ([]string, error) {
+	var ips []string
+
+	r, err := queryDNS(ctx, fqdn, dns.TypeA, resolver)
+	if err != nil {
+		return nil, err
+	}
+	if r != nil && r.Rcode == dns.RcodeSuccess {
+		for _, ans := range r.Answer {
+			if a, ok := ans.(*dns.A); ok {
+				ips = append(ips, a.A.String())
+			}
+		}
+	}
+
+	r, err = queryDNS(ctx, fqdn, dns.TypeAAAA, resolver)
+	if err != nil {
+		return nil, err
+	}
+	if r != nil && r.Rcode == dns.RcodeSuccess {
+		for _, ans := range r.Answer {
+			if aaaa, ok := ans.(*dns.AAAA); ok {
+				ips = append(ips, aaaa.AAAA.String())
+			}
+		}
+	}
+
+	return ips, nil
+}
+
+// detectWildcard queries a random non-existent subdomain to detect wildcard DNS.
+// Returns the set of IPs the wildcard resolves to (empty if no wildcard).
+func detectWildcard(ctx context.Context, base string, resolver string) map[string]bool {
+	randomLabel := randomHex(16)
+	fqdn := randomLabel + "." + base
+
+	ips, err := resolveIPs(ctx, fqdn, resolver)
+	if err != nil || len(ips) == 0 {
+		return nil
+	}
+
+	slog.Info("wildcard detected", "base", base, "ips", ips)
+	wildcardSet := make(map[string]bool, len(ips))
+	for _, ip := range ips {
+		wildcardSet[ip] = true
+	}
+	return wildcardSet
+}
+
+// isWildcardMatch returns true if all resolved IPs match the wildcard IP set.
+func isWildcardMatch(ips []string, wildcardIPs map[string]bool) bool {
+	if len(wildcardIPs) == 0 || len(ips) == 0 {
+		return false
+	}
+	for _, ip := range ips {
+		if !wildcardIPs[ip] {
+			return false
+		}
+	}
+	return true
+}
+
+// randomHex returns a random hex string of the specified byte length.
+func randomHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// isDomainName returns true when s looks like a domain name rather than
+// an IP address or CIDR block. It is intentionally lenient — the DNS
+// layer will reject truly invalid names.
+func isDomainName(s string) bool {
+	if s == "" {
+		return false
+	}
+	// Reject CIDR notation (e.g. "10.0.0.0/8")
+	if strings.Contains(s, "/") {
+		return false
+	}
+	// Reject plain IPv4/IPv6 (net.ParseIP succeeds)
+	if net.ParseIP(s) != nil {
+		return false
+	}
+	// Reject bracketed IPv6 like "[::1]"
+	if net.ParseIP(strings.Trim(s, "[]")) != nil {
+		return false
+	}
+	return true
 }
