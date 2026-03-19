@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -65,6 +66,16 @@ func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
 // GetWithHeaders performs an HTTP GET with custom headers, retrying on 429/5xx.
 // On failure, all retry errors are aggregated for better debugging of intermittent issues.
 func (c *Client) GetWithHeaders(ctx context.Context, url string, headers map[string]string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, url, nil, headers)
+}
+
+// PostWithHeaders performs an HTTP POST with custom headers, retrying on 429/5xx.
+func (c *Client) PostWithHeaders(ctx context.Context, url string, body []byte, headers map[string]string) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, url, body, headers)
+}
+
+// do is the shared retry loop for GET and POST requests.
+func (c *Client) do(ctx context.Context, method, url string, body []byte, headers map[string]string) ([]byte, error) {
 	var retryErrs []error
 	for attempt := 0; attempt < c.retries; attempt++ {
 		if attempt > 0 {
@@ -76,7 +87,12 @@ func (c *Client) GetWithHeaders(ctx context.Context, url string, headers map[str
 			}
 		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		var bodyReader io.Reader
+		if body != nil {
+			bodyReader = bytes.NewReader(body)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
 		}
@@ -106,15 +122,15 @@ func (c *Client) GetWithHeaders(ctx context.Context, url string, headers map[str
 			return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, sanitizeURL(url))
 		}
 
-		body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("read response: %w", err)
 		}
-		if int64(len(body)) > maxResponseSize {
+		if int64(len(respBody)) > maxResponseSize {
 			return nil, fmt.Errorf("response too large (>%d bytes) from %s", maxResponseSize, sanitizeURL(url))
 		}
-		return body, nil
+		return respBody, nil
 	}
 	return nil, fmt.Errorf("after %d attempts: %w", c.retries, errors.Join(retryErrs...))
 }

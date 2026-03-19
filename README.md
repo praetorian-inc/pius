@@ -2,7 +2,7 @@
 
 # Pius - Attack Surface Discovery & OSINT Reconnaissance Tool
 
-> Discover domains, subdomains, and IP ranges (CIDRs) owned by any organization using certificate transparency, RIR registries, passive DNS, and 23 extensible plugins.
+> Discover domains, subdomains, and IP ranges (CIDRs) owned by any organization using certificate transparency, RIR registries, passive DNS, and 24 extensible plugins.
 
 [![CI](https://github.com/praetorian-inc/pius/actions/workflows/ci.yaml/badge.svg)](https://github.com/praetorian-inc/pius/actions/workflows/ci.yaml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/praetorian-inc/pius)](go.mod)
@@ -10,7 +10,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/praetorian-inc/pius)](https://goreportcard.com/report/github.com/praetorian-inc/pius)
 [![GitHub Release](https://img.shields.io/github/v/release/praetorian-inc/pius?include_prereleases&sort=semver)](https://github.com/praetorian-inc/pius/releases)
 
-**Pius** is an open-source attack surface discovery tool written in Go. Given a company name, it maps the complete external attack surface: domains, subdomains, and IP ranges (CIDRs). Pius queries certificate transparency logs, all five regional Internet registries (ARIN, RIPE, APNIC, AFRINIC, LACNIC), passive DNS databases, WHOIS/RDAP, BGP tables, and more through 23 discovery plugins.
+**Pius** is an open-source attack surface discovery tool written in Go. Given a company name, it maps the complete external attack surface: domains, subdomains, and IP ranges (CIDRs). Pius queries certificate transparency logs, all five regional Internet registries (ARIN, RIPE, APNIC, AFRINIC, LACNIC), passive DNS databases, WHOIS/RDAP, BGP tables, and more through 24 discovery plugins.
 
 Built for penetration testers, bug bounty hunters, and security teams who need reliable, repeatable asset discovery. Unlike ad-hoc reconnaissance scripts, Pius is production-grade: concurrent plugin execution, a three-phase discovery pipeline, multi-tier caching, confidence scoring for ambiguous results, graceful degradation, and passive-first OSINT defaults.
 
@@ -63,7 +63,7 @@ Pius fills the gap between subdomain enumeration tools (like subfinder) and full
 
 | Feature | Description |
 |---------|-------------|
-| **23 Discovery Plugins** | 14 domain plugins + 9 CIDR plugins covering certificate transparency, passive DNS, WHOIS, RDAP, RPSL, BGP tables, favicon hashing, and subdomain permutation |
+| **24 Discovery Plugins** | 15 domain plugins + 9 CIDR plugins covering certificate transparency, passive DNS, WHOIS, RDAP, RPSL, BGP tables, favicon hashing, and subdomain permutation |
 | **All 5 RIRs** | ARIN (North America), RIPE (Europe/Middle East), APNIC (Asia-Pacific), AFRINIC (Africa), LACNIC (Latin America) |
 | **Three-Phase Pipeline** | Phase 0 runs independently, Phase 1 discovers RIR org handles, Phase 2 resolves handles to CIDRs; late-stage plugins enrich results using discovered assets |
 | **Confidence Scoring** | Ambiguous name-to-asset mappings are scored and flagged for review rather than silently dropped |
@@ -142,6 +142,7 @@ All domain plugins run in Phase 0 (independent, concurrent). They emit discovere
 | `google-dorks` | Google Knowledge Graph | None | Passive | Carousel scraping for subsidiary companies |
 | `reverse-ip` | PTR records, HackerTarget, ViewDNS | `VIEWDNS_API_KEY` (optional) | Passive | Phase 3; consumes CIDRs from Phase 2 |
 | `wikidata` | Wikidata SPARQL | None | Passive | P749/P355/P127 corporate relationships; 24h cache |
+| `censys-org` | Censys Platform API v3 | `CENSYS_API_TOKEN`, `CENSYS_ORG_ID` | **Active** | Searches host/cert data by org; emits domains + CIDRs; requires Starter+ plan; caches 24h |
 
 ### CIDR Plugins
 
@@ -348,6 +349,8 @@ Plugins that require API keys check for them in `Accepts()` before running. If t
 | `SHODAN_API_KEY` | `favicon-hash` | Yes | Shodan API key |
 | `FOFA_API_KEY` | `favicon-hash` | No | FOFA API key; enables additional scanner |
 | `VIEWDNS_API_KEY` | `reverse-ip` | No | ViewDNS.info API key; enables additional reverse IP source |
+| `CENSYS_API_TOKEN` | `censys-org` | Yes | Censys Platform API Personal Access Token (Starter+ plan) |
+| `CENSYS_ORG_ID` | `censys-org` | Yes | Censys workspace organization UUID |
 | AWS credentials | `doh-enum` | No | Required only when using `--doh-deploy-gateways` |
 
 ### Cache
@@ -356,7 +359,7 @@ Pius caches data under `~/.pius/cache/` automatically. No configuration is neede
 
 | Cache Type | Used By | TTL | Format |
 |-----------|---------|-----|--------|
-| API response cache | `apollo`, `github-org` | 24 hours | JSON per key |
+| API response cache | `apollo`, `github-org`, `censys-org` | 24 hours | JSON per key |
 | RPSL registry database | `apnic`, `afrinic` | 24 hours | Decompressed gzip |
 
 To clear the cache:
