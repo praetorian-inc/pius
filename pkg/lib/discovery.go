@@ -59,6 +59,7 @@ func piusParams(defaultMode string) []capability.Parameter {
 		capability.String("binaryedge_api_key", "BinaryEdge API key"),
 		capability.String("apollo_api_key", "Apollo.io API key"),
 		capability.String("censys_api_key", "Censys API key"),
+		capability.String("censys_org_id", "Censys organization ID"),
 		capability.String("viewdns_api_key", "ViewDNS API key"),
 
 		// --- Per-plugin configuration ---

@@ -97,6 +97,7 @@ var piusCredentialMapping = map[string]string{
 	"binaryedge_api_key":     "BINARYEDGE_API_KEY",
 	"apollo_api_key":         "APOLLO_API_KEY",
 	"censys_api_key":         "CENSYS_API_KEY",
+	"censys_org_id":          "CENSYS_ORG_ID",
 	"viewdns_api_key":        "VIEWDNS_API_KEY",
 	"github_token":           "GITHUB_TOKEN",
 }

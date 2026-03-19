@@ -27,8 +27,8 @@ func TestDiscovery_Input(t *testing.T) {
 func TestDiscovery_Parameters(t *testing.T) {
 	d := &Discovery{}
 	params := d.Parameters()
-	// 4 base + 12 API key + 6 plugin config parameters = 22 total
-	assert.Len(t, params, 22)
+	// 4 base + 13 API key + 6 plugin config parameters = 23 total
+	assert.Len(t, params, 23)
 
 	names := make([]string, len(params))
 	for i, p := range params {
@@ -39,12 +39,12 @@ func TestDiscovery_Parameters(t *testing.T) {
 	assert.Contains(t, names, "disable")
 	assert.Contains(t, names, "concurrency")
 
-	// Verify all 12 API key parameters
+	// Verify all 13 API key parameters
 	apiKeys := []string{
 		"shodan_api_key", "dnsdb_api_key", "crunchbase_api_key",
 		"opencorporates_api_key", "proxycurl_api_key", "diffbot_api_key",
 		"securitytrails_api_key", "virustotal_api_key", "binaryedge_api_key",
-		"apollo_api_key", "censys_api_key", "viewdns_api_key",
+		"apollo_api_key", "censys_api_key", "censys_org_id", "viewdns_api_key",
 	}
 	for _, key := range apiKeys {
 		assert.Contains(t, names, key)
@@ -128,8 +128,8 @@ func TestDomainDiscovery_Input(t *testing.T) {
 func TestDomainDiscovery_Parameters(t *testing.T) {
 	d := &DomainDiscovery{}
 	params := d.Parameters()
-	// 4 base + 12 API key + 6 plugin config parameters = 22 total
-	assert.Len(t, params, 22)
+	// 4 base + 13 API key + 6 plugin config parameters = 23 total
+	assert.Len(t, params, 23)
 
 	// Verify default mode is "all" (not "passive" like preseed variant)
 	for _, p := range params {
