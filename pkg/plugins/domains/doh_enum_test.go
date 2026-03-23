@@ -220,6 +220,44 @@ func TestDoHEnumPlugin_Run_CustomWordlist(t *testing.T) {
 }
 
 // ============================================================================
+// detectWildcardDoH tests
+// ============================================================================
+
+func TestDoHEnumPlugin_DetectWildcardDoH(t *testing.T) {
+	// Server that resolves ALL subdomains (wildcard behavior)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/dns-json")
+		name := r.URL.Query().Get("name")
+		resp := dohResponse{
+			Status: 0,
+			Answer: []struct {
+				Name string `json:"name"`
+				Type int    `json:"type"`
+				Data string `json:"data"`
+			}{{Name: name, Type: 1, Data: "1.2.3.4"}},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := &DoHEnumPlugin{doer: srv.Client()}
+	endpoints := []DoHEndpoint{{URL: srv.URL, Name: "test"}}
+
+	assert.True(t, p.detectWildcardDoH(context.Background(), "example.com", endpoints))
+}
+
+func TestDoHEnumPlugin_DetectWildcardDoH_NoWildcard(t *testing.T) {
+	// Server that returns NXDOMAIN for everything
+	srv := mockDoHServer(t, map[string]bool{})
+	defer srv.Close()
+
+	p := &DoHEnumPlugin{doer: srv.Client()}
+	endpoints := []DoHEndpoint{{URL: srv.URL, Name: "test"}}
+
+	assert.False(t, p.detectWildcardDoH(context.Background(), "example.com", endpoints))
+}
+
+// ============================================================================
 // resolveEndpoints priority tests
 // ============================================================================
 

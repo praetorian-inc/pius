@@ -35,7 +35,7 @@ func (p *CRTShPlugin) Mode() string        { return plugins.ModePassive }
 
 // Accepts if we have a domain or org name to search
 func (p *CRTShPlugin) Accepts(input plugins.Input) bool {
-	return input.Domain != "" || input.OrgName != ""
+	return isDomainName(input.Domain) || input.OrgName != ""
 }
 
 func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {

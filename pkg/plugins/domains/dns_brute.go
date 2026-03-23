@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -44,7 +45,7 @@ func (p *DNSBrutePlugin) Mode() string        { return plugins.ModeActive }
 
 // Accepts requires a Domain input -- brute-forcing needs a base domain.
 func (p *DNSBrutePlugin) Accepts(input plugins.Input) bool {
-	return input.Domain != ""
+	return isDomainName(input.Domain)
 }
 
 // Run resolves each wordlist entry as {word}.{domain} concurrently.
@@ -52,12 +53,26 @@ func (p *DNSBrutePlugin) Accepts(input plugins.Input) bool {
 func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	domain := normalizeDomain(input.Domain)
 
+	// Detect wildcard DNS — if the domain resolves everything, skip brute-force.
+	wildcardIPs := detectWildcard(ctx, domain, p.resolver)
+	if len(wildcardIPs) > 0 {
+		slog.Info("dns-brute: wildcard detected, skipping", "domain", domain)
+		return nil, nil
+	}
+
 	var (
 		mu       sync.Mutex
 		findings []plugins.Finding
 	)
 
-	sem := make(chan struct{}, dnsBruteConcurrency)
+	concurrency := dnsBruteConcurrency
+	if v, ok := input.Meta["dns_brute_concurrency"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			concurrency = n
+		}
+	}
+
+	sem := make(chan struct{}, concurrency)
 
 	var wg sync.WaitGroup
 	for _, word := range p.wordlist {

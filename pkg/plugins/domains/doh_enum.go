@@ -68,7 +68,7 @@ func (p *DoHEnumPlugin) Mode() string        { return plugins.ModeActive }
 
 // Accepts requires a Domain to enumerate.
 func (p *DoHEnumPlugin) Accepts(input plugins.Input) bool {
-	return input.Domain != ""
+	return isDomainName(input.Domain)
 }
 
 // Run executes the three-stage pipeline: generate FQDNs → DoH query → collect findings.
@@ -92,6 +92,11 @@ func (p *DoHEnumPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 
 	if len(endpoints) == 0 {
 		endpoints = defaultDoHEndpoints
+	}
+
+	// Detect wildcard DNS — if domain resolves everything, skip enumeration.
+	if p.detectWildcardDoH(ctx, domain, endpoints) {
+		return nil, nil
 	}
 
 	// Stage 1: generator → subdomainCh
@@ -158,6 +163,28 @@ func (p *DoHEnumPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 	}
 
 	return findings, nil
+}
+
+// detectWildcardDoH queries a random non-existent subdomain via DoH to detect wildcard DNS.
+// Returns true if the domain has wildcard DNS (the random subdomain resolves).
+func (p *DoHEnumPlugin) detectWildcardDoH(ctx context.Context, domain string, endpoints []DoHEndpoint) bool {
+	randomLabel := randomHex(16)
+	fqdn := randomLabel + "." + domain
+
+	for _, ep := range endpoints {
+		exists, err := p.queryDoH(ctx, fqdn, ep)
+		if err != nil {
+			continue
+		}
+		if exists {
+			slog.Info("doh-enum: wildcard detected", "domain", domain)
+			return true
+		}
+		// If we got a clean NXDOMAIN, no wildcard
+		return false
+	}
+	// All endpoints failed — assume no wildcard (fail open)
+	return false
 }
 
 // queryWithRetry performs a DoH JSON query for fqdn, retrying with different
@@ -326,20 +353,7 @@ func (p *DoHEnumPlugin) resolveWordlist(meta map[string]string) ([]string, error
 		}
 	}
 	// Use embedded default wordlist
-	return parseDoHWordlist(defaultDoHWordlist), nil
-}
-
-// parseDoHWordlist splits raw wordlist text into trimmed, non-empty, non-comment lines.
-func parseDoHWordlist(raw string) []string {
-	var words []string
-	scanner := bufio.NewScanner(strings.NewReader(raw))
-	for scanner.Scan() {
-		word := strings.TrimSpace(scanner.Text())
-		if word != "" && !strings.HasPrefix(word, "#") {
-			words = append(words, word)
-		}
-	}
-	return words
+	return parseWordlist(defaultDoHWordlist), nil
 }
 
 // loadWordlistFile reads a wordlist from a file path.

@@ -45,7 +45,7 @@ func (p *FaviconHashPlugin) Phase() int       { return 0 }
 func (p *FaviconHashPlugin) Mode() string     { return plugins.ModeActive }
 
 func (p *FaviconHashPlugin) Accepts(input plugins.Input) bool {
-	return input.Domain != "" && os.Getenv("SHODAN_API_KEY") != ""
+	return isDomainName(input.Domain) && os.Getenv("SHODAN_API_KEY") != ""
 }
 
 func (p *FaviconHashPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {

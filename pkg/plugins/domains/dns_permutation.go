@@ -2,14 +2,11 @@ package domains
 
 import (
 	"context"
-	"crypto/rand"
 	_ "embed"
-	"encoding/hex"
 	"log/slog"
 	"strings"
 	"sync"
 
-	"github.com/miekg/dns"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
@@ -70,7 +67,7 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 
 	for base, subs := range byBase {
 		// Detect wildcard DNS for this base domain.
-		wildcardIPs := p.detectWildcard(ctx, base)
+		wildcardIPs := detectWildcard(ctx, base, p.resolver)
 
 		// Generate all permutation candidates for this base domain.
 		candidates := p.generateCandidates(subs, base)
@@ -106,7 +103,7 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				ips, err := p.resolveIPs(ctx, fqdn)
+				ips, err := resolveIPs(ctx, fqdn, p.resolver)
 				if err != nil {
 					slog.Debug("dns-permutation: resolve failed", "fqdn", fqdn, "error", err)
 					return
@@ -320,72 +317,4 @@ func splitDomains(csv string) []string {
 	return result
 }
 
-// detectWildcard queries a random non-existent subdomain to detect wildcard DNS.
-// Returns the set of IPs the wildcard resolves to (empty if no wildcard).
-func (p *DNSPermutationPlugin) detectWildcard(ctx context.Context, base string) map[string]bool {
-	randomLabel := randomHex(16)
-	fqdn := randomLabel + "." + base
 
-	ips, err := p.resolveIPs(ctx, fqdn)
-	if err != nil || len(ips) == 0 {
-		return nil
-	}
-
-	slog.Info("dns-permutation: wildcard detected", "base", base, "ips", ips)
-	wildcardSet := make(map[string]bool, len(ips))
-	for _, ip := range ips {
-		wildcardSet[ip] = true
-	}
-	return wildcardSet
-}
-
-// isWildcardMatch returns true if all resolved IPs match the wildcard IP set.
-func isWildcardMatch(ips []string, wildcardIPs map[string]bool) bool {
-	if len(wildcardIPs) == 0 {
-		return false
-	}
-	for _, ip := range ips {
-		if !wildcardIPs[ip] {
-			return false
-		}
-	}
-	return true
-}
-
-// resolveIPs returns the A and AAAA record IPs for an FQDN, or empty if NXDOMAIN.
-func (p *DNSPermutationPlugin) resolveIPs(ctx context.Context, fqdn string) ([]string, error) {
-	var ips []string
-
-	r, err := queryDNS(ctx, fqdn, dns.TypeA, p.resolver)
-	if err != nil {
-		return nil, err
-	}
-	if r != nil && r.Rcode == dns.RcodeSuccess {
-		for _, ans := range r.Answer {
-			if a, ok := ans.(*dns.A); ok {
-				ips = append(ips, a.A.String())
-			}
-		}
-	}
-
-	r, err = queryDNS(ctx, fqdn, dns.TypeAAAA, p.resolver)
-	if err != nil {
-		return nil, err
-	}
-	if r != nil && r.Rcode == dns.RcodeSuccess {
-		for _, ans := range r.Answer {
-			if aaaa, ok := ans.(*dns.AAAA); ok {
-				ips = append(ips, aaaa.AAAA.String())
-			}
-		}
-	}
-
-	return ips, nil
-}
-
-// randomHex returns a random hex string of the specified byte length.
-func randomHex(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,7 +53,7 @@ func (p *GoogleDorksPlugin) Phase() int       { return 0 }
 func (p *GoogleDorksPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *GoogleDorksPlugin) Accepts(input plugins.Input) bool {
-	return input.Domain != ""
+	return isDomainName(input.Domain) || input.OrgName != ""
 }
 
 func (p *GoogleDorksPlugin) googleBase() string {
@@ -79,7 +80,7 @@ func (p *GoogleDorksPlugin) makeFinding(subsidiaryName, domainValue, inputDomain
 
 // Run discovers subsidiaries of the input domain via the Google Knowledge Graph carousel.
 func (p *GoogleDorksPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	if input.Domain == "" {
+	if input.Domain == "" && input.OrgName == "" {
 		return nil, nil
 	}
 
@@ -117,8 +118,16 @@ func (p *GoogleDorksPlugin) Run(ctx context.Context, input plugins.Input) ([]plu
 	}
 
 	names := extractCarouselNames(doc.Selection)
-	if len(names) > maxSubsidiaries {
-		names = names[:maxSubsidiaries]
+
+	maxSubs := maxSubsidiaries
+	if v, ok := input.Meta["google_dorks_max_subsidiaries"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxSubs = n
+		}
+	}
+
+	if len(names) > maxSubs {
+		names = names[:maxSubs]
 	}
 
 	// Step 2: Resolve each subsidiary name to a domain.
