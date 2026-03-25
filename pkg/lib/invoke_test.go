@@ -55,9 +55,11 @@ func TestInvoke_EmitsDomains(t *testing.T) {
 	asset1 := emitted[0].(capmodel.Asset)
 	assert.Equal(t, "acme.com", asset1.DNS)
 	assert.Equal(t, "acme.com", asset1.Name)
+	assert.Equal(t, []string{"pius_crt-sh"}, asset1.Origins)
 
 	asset2 := emitted[1].(capmodel.Asset)
 	assert.Equal(t, "api.acme.com", asset2.DNS)
+	assert.Equal(t, []string{"pius_crt-sh"}, asset2.Origins)
 }
 
 func TestInvoke_EmitsCIDRs(t *testing.T) {
@@ -85,6 +87,35 @@ func TestInvoke_EmitsCIDRs(t *testing.T) {
 
 	asset := emitted[0].(capmodel.Asset)
 	assert.Equal(t, "203.0.113.0/24", asset.DNS)
+	assert.Equal(t, []string{"pius_arin"}, asset.Origins)
+}
+
+func TestInvoke_EmptySource_OmitsOrigins(t *testing.T) {
+	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
+		return []plugins.Finding{
+			{Type: plugins.FindingDomain, Value: "acme.com", Source: ""},
+		}, nil
+	})
+	defer restore()
+
+	d := &Discovery{}
+	var emitted []any
+	emitter := capability.EmitterFunc(func(models ...any) error {
+		emitted = append(emitted, models...)
+		return nil
+	})
+
+	err := d.Invoke(
+		capability.ExecutionContext{},
+		capmodel.Preseed{Type: "whois+company", Title: "Acme Corp", Value: "Acme Corp"},
+		emitter,
+	)
+	require.NoError(t, err)
+	require.Len(t, emitted, 1)
+
+	asset := emitted[0].(capmodel.Asset)
+	assert.Equal(t, "acme.com", asset.DNS)
+	assert.Nil(t, asset.Origins)
 }
 
 func TestInvoke_MixedFindings(t *testing.T) {
