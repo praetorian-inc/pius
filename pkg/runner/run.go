@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
+	"github.com/praetorian-inc/pius/pkg/plugins/domains"
 )
 
 func newRunCmd() *cobra.Command {
@@ -259,7 +260,15 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	}
 
 	// Filter out internal cidr-handle findings (not user-facing)
-	return filterOutput(collector.all()), nil
+	filtered := filterOutput(collector.all())
+
+	// Filter out domain findings under wildcard DNS zones. For each unique
+	// parent domain among the findings, probe once for wildcard DNS and drop
+	// all findings under wildcard parents. This catches passive plugins
+	// (crt-sh, passive-dns) that have no wildcard awareness.
+	filtered = domains.FilterWildcardDomains(ctx, filtered)
+
+	return filtered, nil
 }
 
 // runPluginsAsync starts plugins concurrently and returns a channel that closes when done.

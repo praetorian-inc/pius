@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
 // queryDNS performs a DNS query of the specified type against the resolver.
@@ -107,6 +108,72 @@ func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// FilterWildcardDomains removes domain findings whose parent zone has wildcard
+// DNS. It extracts the unique parent domain of each finding, probes each parent
+// once with a random subdomain, and drops all findings under wildcard parents.
+//
+// For example, given findings [admin.dev.example.com, api.dev.example.com,
+// www.example.com], it probes <random>.dev.example.com and <random>.example.com.
+// If dev.example.com is a wildcard, both admin and api findings are dropped,
+// but www.example.com is kept.
+func FilterWildcardDomains(ctx context.Context, findings []plugins.Finding) []plugins.Finding {
+	// Extract unique parent domains from all domain findings.
+	parents := make(map[string]bool)
+	for _, f := range findings {
+		if f.Type != plugins.FindingDomain {
+			continue
+		}
+		parent := extractParent(normalizeDomain(f.Value))
+		if parent != "" {
+			parents[parent] = false // false = not yet checked
+		}
+	}
+
+	if len(parents) == 0 {
+		return findings
+	}
+
+	// Probe each unique parent once for wildcard DNS.
+	wildcardParents := make(map[string]bool)
+	for parent := range parents {
+		if ips := detectWildcard(ctx, parent, dnsDefaultResolver); len(ips) > 0 {
+			slog.Info("wildcard detected, filtering subdomains", "parent", parent)
+			wildcardParents[parent] = true
+		}
+	}
+
+	if len(wildcardParents) == 0 {
+		return findings
+	}
+
+	// Filter findings whose parent is a wildcard zone.
+	result := make([]plugins.Finding, 0, len(findings))
+	for _, f := range findings {
+		if f.Type != plugins.FindingDomain {
+			result = append(result, f)
+			continue
+		}
+		parent := extractParent(normalizeDomain(f.Value))
+		if wildcardParents[parent] {
+			slog.Debug("filtered wildcard domain", "domain", f.Value, "parent", parent)
+			continue
+		}
+		result = append(result, f)
+	}
+
+	return result
+}
+
+// extractParent returns the parent domain of an FQDN by stripping the leftmost label.
+// e.g., "admin.dev.example.com" → "dev.example.com", "example.com" → ""
+func extractParent(fqdn string) string {
+	idx := strings.Index(fqdn, ".")
+	if idx < 0 || idx == len(fqdn)-1 {
+		return ""
+	}
+	return fqdn[idx+1:]
 }
 
 // isDomainName returns true when s looks like a domain name rather than
