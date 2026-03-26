@@ -55,11 +55,11 @@ func TestInvoke_EmitsDomains(t *testing.T) {
 	asset1 := emitted[0].(capmodel.Asset)
 	assert.Equal(t, "acme.com", asset1.DNS)
 	assert.Equal(t, "acme.com", asset1.Name)
-	assert.Equal(t, []string{"pius_crt-sh"}, asset1.Origins)
+	assert.Equal(t, []string{"pius_crt-sh"}, asset1.Capability)
 
 	asset2 := emitted[1].(capmodel.Asset)
 	assert.Equal(t, "api.acme.com", asset2.DNS)
-	assert.Equal(t, []string{"pius_crt-sh"}, asset2.Origins)
+	assert.Equal(t, []string{"pius_crt-sh"}, asset2.Capability)
 }
 
 func TestInvoke_EmitsCIDRs(t *testing.T) {
@@ -87,7 +87,7 @@ func TestInvoke_EmitsCIDRs(t *testing.T) {
 
 	asset := emitted[0].(capmodel.Asset)
 	assert.Equal(t, "203.0.113.0/24", asset.DNS)
-	assert.Equal(t, []string{"pius_arin"}, asset.Origins)
+	assert.Equal(t, []string{"pius_arin"}, asset.Capability)
 }
 
 func TestInvoke_EmptySource_OmitsOrigins(t *testing.T) {
@@ -115,7 +115,7 @@ func TestInvoke_EmptySource_OmitsOrigins(t *testing.T) {
 
 	asset := emitted[0].(capmodel.Asset)
 	assert.Equal(t, "acme.com", asset.DNS)
-	assert.Nil(t, asset.Origins)
+	assert.Nil(t, asset.Capability)
 }
 
 func TestInvoke_MixedFindings(t *testing.T) {
