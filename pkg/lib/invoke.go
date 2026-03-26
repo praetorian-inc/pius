@@ -63,17 +63,24 @@ func (d *Discovery) Invoke(ctx capability.ExecutionContext, input capmodel.Prese
 
 // emitFinding converts a pius Finding to a capmodel type and emits it.
 func emitFinding(output capability.Emitter, f plugins.Finding) error {
+	var capability []string
+	if f.Source != "" {
+		capability = []string{fmt.Sprintf("pius_%s", f.Source)}
+	}
+
 	switch f.Type {
 	case plugins.FindingDomain:
 		return output.Emit(capmodel.Asset{
-			DNS:  f.Value,
-			Name: f.Value,
+			DNS:        f.Value,
+			Name:       f.Value,
+			Capability: capability,
 		})
 	// CIDRs use the DNS field for consistency with how collect_cidr stores CIDRs as Assets.
 	case plugins.FindingCIDR:
 		return output.Emit(capmodel.Asset{
-			DNS:  f.Value,
-			Name: f.Value,
+			DNS:        f.Value,
+			Name:       f.Value,
+			Capability: capability,
 		})
 	default:
 		// Skip internal finding types (e.g., cidr-handle)
