@@ -262,14 +262,11 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	// Filter out internal cidr-handle findings (not user-facing)
 	filtered := filterOutput(collector.all())
 
-	// Filter out domain findings that resolve to wildcard IPs.
-	// Passive plugins (crt-sh, passive-dns) discover real historical subdomains
-	// but have no way to know whether a zone uses wildcard DNS. If the input
-	// domain has a wildcard, all subdomains resolve identically and emitting
-	// them would cause downstream tools to generate thousands of false positives.
-	if input.Domain != "" {
-		filtered = domains.FilterWildcardDomains(ctx, input.Domain, filtered)
-	}
+	// Filter out domain findings under wildcard DNS zones. For each unique
+	// parent domain among the findings, probe once for wildcard DNS and drop
+	// all findings under wildcard parents. This catches passive plugins
+	// (crt-sh, passive-dns) that have no wildcard awareness.
+	filtered = domains.FilterWildcardDomains(ctx, filtered)
 
 	return filtered, nil
 }
