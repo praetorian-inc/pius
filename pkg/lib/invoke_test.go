@@ -65,7 +65,7 @@ func TestInvoke_EmitsDomains(t *testing.T) {
 func TestInvoke_EmitsCIDRs(t *testing.T) {
 	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
 		return []plugins.Finding{
-			{Type: plugins.FindingCIDR, Value: "203.0.113.0/24", Source: "arin"},
+			{Type: plugins.FindingCIDR, Value: "203.0.113.0/24", Source: "arin", Data: map[string]any{"org": "Acme Corp"}},
 		}, nil
 	})
 	defer restore()
@@ -85,9 +85,11 @@ func TestInvoke_EmitsCIDRs(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, emitted, 1)
 
-	asset := emitted[0].(capmodel.Asset)
-	assert.Equal(t, "203.0.113.0/24", asset.DNS)
-	assert.Equal(t, []string{"pius_arin"}, asset.Capability)
+	preseed := emitted[0].(capmodel.Preseed)
+	assert.Equal(t, "cidr", preseed.Type)
+	assert.Equal(t, "203.0.113.0/24", preseed.Value)
+	assert.Equal(t, "Acme Corp", preseed.Title)
+	assert.Equal(t, []string{"pius_arin"}, preseed.Capability)
 }
 
 func TestInvoke_EmptySource_OmitsOrigins(t *testing.T) {
