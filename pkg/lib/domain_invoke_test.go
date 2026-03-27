@@ -126,8 +126,9 @@ func TestDomainInvoke_EmitsCIDRs(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, emitted, 1)
 
-	asset := emitted[0].(capmodel.Asset)
-	assert.Equal(t, "198.51.100.0/24", asset.DNS)
+	preseed := emitted[0].(capmodel.Preseed)
+	assert.Equal(t, "cidr", preseed.Type)
+	assert.Equal(t, "198.51.100.0/24", preseed.Value)
 }
 
 func TestDomainInvoke_FiltersCIDRHandles(t *testing.T) {

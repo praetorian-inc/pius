@@ -75,11 +75,16 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			Name:       f.Value,
 			Capability: capability,
 		})
-	// CIDRs use the DNS field for consistency with how collect_cidr stores CIDRs as Assets.
+	// CIDRs are emitted as Preseeds with the org name as the title.
 	case plugins.FindingCIDR:
-		return output.Emit(capmodel.Asset{
-			DNS:        f.Value,
-			Name:       f.Value,
+		title, ok := f.Data["org"].(string)
+		if !ok {
+			title = ""
+		}
+		return output.Emit(capmodel.Preseed{
+			Type:       string(f.Type),
+			Value:      f.Value,
+			Title:      title,
 			Capability: capability,
 		})
 	default:
