@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
 // queryDNS performs a DNS query of the specified type against the resolver.
@@ -107,6 +108,42 @@ func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// FilterWildcardDomains removes domain findings that resolve to the same IPs
+// as a random non-existent subdomain of baseDomain (i.e., wildcard DNS).
+// This prevents passive plugins (crt-sh, passive-dns) from emitting subdomains
+// that all resolve identically via wildcard CNAME/A records.
+func FilterWildcardDomains(ctx context.Context, baseDomain string, findings []plugins.Finding) []plugins.Finding {
+	wildcardIPs := detectWildcard(ctx, baseDomain, dnsDefaultResolver)
+	if len(wildcardIPs) == 0 {
+		return findings
+	}
+
+	slog.Info("filtering wildcard domain findings", "base", baseDomain)
+
+	result := make([]plugins.Finding, 0, len(findings))
+	for _, f := range findings {
+		if f.Type != plugins.FindingDomain {
+			result = append(result, f)
+			continue
+		}
+
+		ips, err := resolveIPs(ctx, f.Value, dnsDefaultResolver)
+		if err != nil || len(ips) == 0 {
+			result = append(result, f)
+			continue
+		}
+
+		if isWildcardMatch(ips, wildcardIPs) {
+			slog.Debug("filtered wildcard domain", "domain", f.Value, "source", f.Source)
+			continue
+		}
+
+		result = append(result, f)
+	}
+
+	return result
 }
 
 // isDomainName returns true when s looks like a domain name rather than

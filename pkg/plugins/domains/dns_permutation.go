@@ -56,7 +56,18 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 	}
 
 	// Group seeds by base domain for wildcard detection.
-	byBase := groupByBaseDomain(seeds)
+	// When input.Domain is set, use it as the authoritative base domain
+	// instead of guessing from FQDN labels. guessBaseDomain takes the last
+	// 2 labels which is wrong for deeper zones — e.g., it would map
+	// api.dev.example.com to example.com instead of dev.example.com,
+	// causing wildcard detection to check the wrong level.
+	var byBase map[string][]string
+	if input.Domain != "" {
+		base := normalizeDomain(input.Domain)
+		byBase = map[string][]string{base: seeds}
+	} else {
+		byBase = groupByBaseDomain(seeds)
+	}
 
 	var (
 		mu       sync.Mutex
