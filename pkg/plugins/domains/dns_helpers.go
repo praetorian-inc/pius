@@ -167,13 +167,25 @@ func FilterWildcardDomains(ctx context.Context, findings []plugins.Finding) []pl
 }
 
 // extractParent returns the parent domain of an FQDN by stripping the leftmost label.
-// e.g., "admin.dev.example.com" → "dev.example.com", "example.com" → ""
+// Returns "" if the result would be a TLD or single label (fewer than 2 labels),
+// to avoid probing .com, .net, etc. for wildcard DNS.
+//
+// e.g., "admin.dev.example.com" → "dev.example.com"
+//
+//	"dev.example.com" → "example.com"
+//	"example.com" → "" (parent would be "com", a TLD)
+//	"com" → ""
 func extractParent(fqdn string) string {
 	idx := strings.Index(fqdn, ".")
 	if idx < 0 || idx == len(fqdn)-1 {
 		return ""
 	}
-	return fqdn[idx+1:]
+	parent := fqdn[idx+1:]
+	// Ensure parent has at least 2 labels (not a TLD like "com" or "co.uk")
+	if !strings.Contains(parent, ".") {
+		return ""
+	}
+	return parent
 }
 
 // isDomainName returns true when s looks like a domain name rather than

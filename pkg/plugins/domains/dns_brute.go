@@ -18,8 +18,11 @@ var defaultWordlist string
 
 const (
 	dnsBruteConcurrency = 50
-	dnsDefaultResolver  = "8.8.8.8:53"
 )
+
+// dnsDefaultResolver is the DNS resolver used for wildcard detection and brute-force.
+// It is a var (not const) to allow test overrides.
+var dnsDefaultResolver = "8.8.8.8:53"
 
 func init() {
 	plugins.Register("dns-brute", func() plugins.Plugin {
