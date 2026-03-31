@@ -12,6 +12,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/praetorian-inc/pius/pkg/plugins"
+	"golang.org/x/net/publicsuffix"
 )
 
 // queryDNS performs a DNS query of the specified type against the resolver.
@@ -167,13 +168,14 @@ func FilterWildcardDomains(ctx context.Context, findings []plugins.Finding) []pl
 }
 
 // extractParent returns the parent domain of an FQDN by stripping the leftmost label.
-// Returns "" if the result would be a TLD or single label (fewer than 2 labels),
-// to avoid probing .com, .net, etc. for wildcard DNS.
+// Returns "" if the result would be a public suffix (TLD) like "com", "co.uk", or
+// "com.au", to avoid probing TLDs for wildcard DNS.
 //
 // e.g., "admin.dev.example.com" → "dev.example.com"
 //
 //	"dev.example.com" → "example.com"
-//	"example.com" → "" (parent would be "com", a TLD)
+//	"example.com" → "" (parent "com" is a public suffix)
+//	"sub.co.uk" → "" (parent "co.uk" is a public suffix)
 //	"com" → ""
 func extractParent(fqdn string) string {
 	idx := strings.Index(fqdn, ".")
@@ -181,8 +183,9 @@ func extractParent(fqdn string) string {
 		return ""
 	}
 	parent := fqdn[idx+1:]
-	// Ensure parent has at least 2 labels (not a TLD like "com" or "co.uk")
-	if !strings.Contains(parent, ".") {
+	// Skip if the parent is a public suffix (e.g., "com", "co.uk", "com.au").
+	// EffectiveTLDPlusOne returns an error for public suffixes themselves.
+	if _, err := publicsuffix.EffectiveTLDPlusOne(parent); err != nil {
 		return ""
 	}
 	return parent
