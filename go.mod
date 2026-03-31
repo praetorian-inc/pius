@@ -10,7 +10,7 @@ require (
 	github.com/aws/smithy-go v1.24.2
 	github.com/chromedp/chromedp v0.14.2
 	github.com/miekg/dns v1.1.72
-	github.com/praetorian-inc/capability-sdk v0.0.0-20260327154537-3c2a2774381a
+	github.com/praetorian-inc/capability-sdk v0.0.0-20260327190348-f1423fe9c678
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/twmb/murmur3 v1.1.8

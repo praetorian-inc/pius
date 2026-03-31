@@ -89,7 +89,7 @@ func TestInvoke_EmitsCIDRs(t *testing.T) {
 	assert.Equal(t, "cidr", preseed.Type)
 	assert.Equal(t, "203.0.113.0/24", preseed.Value)
 	assert.Equal(t, "Acme Corp", preseed.Title)
-	assert.Equal(t, []string{"pius_arin"}, preseed.Capability)
+	assert.Equal(t, "pius_arin", preseed.Capability)
 }
 
 func TestInvoke_EmptySource_OmitsOrigins(t *testing.T) {
