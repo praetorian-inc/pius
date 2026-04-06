@@ -8,24 +8,24 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// ── whois ──────────────────────────────────────────────────────────────────
+// ── reverse-rir ────────────────────────────────────────────────────────────
 
-func TestWhoisPlugin_Accepts(t *testing.T) {
-	p, ok := plugins.Get("whois")
+func TestReverseRIRPlugin_Accepts(t *testing.T) {
+	p, ok := plugins.Get("reverse-rir")
 	if !ok {
-		t.Skip("whois plugin not registered")
+		t.Skip("reverse-rir plugin not registered")
 	}
 	assert.True(t, p.Accepts(plugins.Input{OrgName: "Acme Corp"}))
 	assert.False(t, p.Accepts(plugins.Input{OrgName: ""}))
 	assert.False(t, p.Accepts(plugins.Input{}))
 }
 
-func TestWhoisPlugin_Metadata(t *testing.T) {
-	p, ok := plugins.Get("whois")
+func TestReverseRIRPlugin_Metadata(t *testing.T) {
+	p, ok := plugins.Get("reverse-rir")
 	if !ok {
-		t.Skip("whois plugin not registered")
+		t.Skip("reverse-rir plugin not registered")
 	}
-	assert.Equal(t, "whois", p.Name())
+	assert.Equal(t, "reverse-rir", p.Name())
 	assert.Equal(t, 1, p.Phase())
 	assert.Equal(t, "cidr", p.Category())
 	assert.NotEmpty(t, p.Description())

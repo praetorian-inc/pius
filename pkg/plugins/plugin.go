@@ -15,6 +15,11 @@ const (
 
 	// FindingDomain is a discovered domain name (e.g., "example.com")
 	FindingDomain FindingType = "domain"
+
+	// FindingPreseed is a discovered organizational seed (company name, email, person name).
+	// Data["preseed_type"] carries the preseed classification (e.g., "whois+company").
+	// Data["preseed_title"] carries a human-readable label (often the same as Value).
+	FindingPreseed FindingType = "preseed"
 )
 
 // Mode constants for plugin classification.

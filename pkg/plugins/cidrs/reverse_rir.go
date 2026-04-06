@@ -13,63 +13,63 @@ import (
 )
 
 func init() {
-	plugins.Register("whois", func() plugins.Plugin {
-		return &WhoisPlugin{client: client.New()}
+	plugins.Register("reverse-rir", func() plugins.Plugin {
+		return &ReverseRIRPlugin{client: client.New()}
 	})
 }
 
-// WhoisPlugin discovers RIR org handles from company names.
+// ReverseRIRPlugin discovers RIR org handles from company names.
 // Queries ARIN, RIPE, APNIC, AFRINIC, and LACNIC WHOIS/RDAP APIs.
 // Phase 1 plugin: emits FindingCIDRHandle findings consumed by Phase 2.
-type WhoisPlugin struct {
+type ReverseRIRPlugin struct {
 	client *client.Client
 }
 
-func (p *WhoisPlugin) Name() string        { return "whois" }
-func (p *WhoisPlugin) Description() string { return "ARIN/RIPE/APNIC/AFRINIC/LACNIC WHOIS: discovers org handles from company name" }
-func (p *WhoisPlugin) Category() string    { return "cidr" }
-func (p *WhoisPlugin) Phase() int          { return 1 }
-func (p *WhoisPlugin) Mode() string        { return plugins.ModePassive }
+func (p *ReverseRIRPlugin) Name() string        { return "reverse-rir" }
+func (p *ReverseRIRPlugin) Description() string { return "Reverse RIR lookup: discovers org handles from company name via ARIN/RIPE/APNIC/AFRINIC/LACNIC" }
+func (p *ReverseRIRPlugin) Category() string    { return "cidr" }
+func (p *ReverseRIRPlugin) Phase() int          { return 1 }
+func (p *ReverseRIRPlugin) Mode() string        { return plugins.ModePassive }
 
-func (p *WhoisPlugin) Accepts(input plugins.Input) bool {
+func (p *ReverseRIRPlugin) Accepts(input plugins.Input) bool {
 	return input.OrgName != ""
 }
 
-func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
+func (p *ReverseRIRPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	var findings []plugins.Finding
 
 	// Query ARIN WHOIS for all entity types
 	arinFindings, err := p.queryARIN(ctx, input.OrgName)
 	if err != nil {
-		slog.Warn("ARIN query failed", "plugin", "whois", "org", input.OrgName, "error", err)
+		slog.Warn("ARIN query failed", "plugin", "reverse-rir", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, arinFindings...)
 
 	// Query RIPE search
 	ripeFindings, err := p.queryRIPE(ctx, input.OrgName)
 	if err != nil {
-		slog.Warn("RIPE query failed", "plugin", "whois", "org", input.OrgName, "error", err)
+		slog.Warn("RIPE query failed", "plugin", "reverse-rir", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, ripeFindings...)
 
 	// Query APNIC REST WHOIS (Asia-Pacific)
 	apnicFindings, err := p.queryAPNIC(ctx, input.OrgName)
 	if err != nil {
-		slog.Warn("APNIC query failed", "plugin", "whois", "org", input.OrgName, "error", err)
+		slog.Warn("APNIC query failed", "plugin", "reverse-rir", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, apnicFindings...)
 
 	// Query AFRINIC RDAP entity search (Africa)
 	afrinicFindings, err := p.queryAFRINIC(ctx, input.OrgName)
 	if err != nil {
-		slog.Warn("AFRINIC query failed", "plugin", "whois", "org", input.OrgName, "error", err)
+		slog.Warn("AFRINIC query failed", "plugin", "reverse-rir", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, afrinicFindings...)
 
 	// Query LACNIC RDAP entity search (Latin America & Caribbean)
 	lacnicFindings, err := p.queryLACNIC(ctx, input.OrgName)
 	if err != nil {
-		slog.Warn("LACNIC query failed", "plugin", "whois", "org", input.OrgName, "error", err)
+		slog.Warn("LACNIC query failed", "plugin", "reverse-rir", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, lacnicFindings...)
 
@@ -77,7 +77,7 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 }
 
 // queryARIN queries multiple ARIN entity types with handle deduplication
-func (p *WhoisPlugin) queryARIN(ctx context.Context, org string) ([]plugins.Finding, error) {
+func (p *ReverseRIRPlugin) queryARIN(ctx context.Context, org string) ([]plugins.Finding, error) {
 	seen := make(map[string]bool)
 	var findings []plugins.Finding
 
@@ -95,7 +95,7 @@ func (p *WhoisPlugin) queryARIN(ctx context.Context, org string) ([]plugins.Find
 }
 
 // queryArinEntity queries a specific ARIN entity type
-func (p *WhoisPlugin) queryArinEntity(ctx context.Context, entity, org string) []plugins.Finding {
+func (p *ReverseRIRPlugin) queryArinEntity(ctx context.Context, entity, org string) []plugins.Finding {
 	apiURL := fmt.Sprintf("https://whois.arin.net/rest/%s;name=*%s*", entity, url.PathEscape(org))
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
@@ -156,7 +156,7 @@ func (p *WhoisPlugin) queryArinEntity(ctx context.Context, entity, org string) [
 		findings = append(findings, plugins.Finding{
 			Type:   plugins.FindingCIDRHandle,
 			Value:  handle,
-			Source: "whois",
+			Source: "reverse-rir",
 			Data: map[string]any{
 				"registry": "arin",
 				"org":      org,
@@ -168,7 +168,7 @@ func (p *WhoisPlugin) queryArinEntity(ctx context.Context, entity, org string) [
 }
 
 // queryRIPE queries RIPE search API
-func (p *WhoisPlugin) queryRIPE(ctx context.Context, org string) ([]plugins.Finding, error) {
+func (p *ReverseRIRPlugin) queryRIPE(ctx context.Context, org string) ([]plugins.Finding, error) {
 	apiURL := fmt.Sprintf("https://rest.db.ripe.net/search?query-string=%s", url.QueryEscape(org))
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
@@ -196,7 +196,7 @@ func (p *WhoisPlugin) queryRIPE(ctx context.Context, org string) ([]plugins.Find
 			findings = append(findings, plugins.Finding{
 				Type:   plugins.FindingCIDRHandle,
 				Value:  value,
-				Source: "whois",
+				Source: "reverse-rir",
 				Data: map[string]any{
 					"registry": "ripe",
 					"org":      org,
@@ -212,7 +212,7 @@ func (p *WhoisPlugin) queryRIPE(ctx context.Context, org string) ([]plugins.Find
 // URL: https://wq.apnic.net/query?searchtext={org}&type=organisation
 // Response: JSON array where each item has objectType and primaryKey.
 // Handle format: "ORG-STCS1-AP", "ORG-GA71-AP" (Asia-Pacific suffix)
-func (p *WhoisPlugin) queryAPNIC(ctx context.Context, org string) ([]plugins.Finding, error) {
+func (p *ReverseRIRPlugin) queryAPNIC(ctx context.Context, org string) ([]plugins.Finding, error) {
 	apiURL := fmt.Sprintf("https://wq.apnic.net/query?searchtext=%s&type=organisation", url.QueryEscape(org))
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
@@ -235,7 +235,7 @@ func (p *WhoisPlugin) queryAPNIC(ctx context.Context, org string) ([]plugins.Fin
 		findings = append(findings, plugins.Finding{
 			Type:   plugins.FindingCIDRHandle,
 			Value:  item.PrimaryKey,
-			Source: "whois",
+			Source: "reverse-rir",
 			Data: map[string]any{
 				"registry": "apnic",
 				"org":      org,
@@ -251,7 +251,7 @@ func (p *WhoisPlugin) queryAPNIC(ctx context.Context, org string) ([]plugins.Fin
 // Response: standard RDAP entitySearchResults[].handle
 // Handle format: "ORG-AS2-AFRINIC", "ORG-MC12-AFRINIC" (Africa suffix)
 // Only ORG- prefixed handles are emitted; individual contacts (e.g. "ATD1-AFRINIC") are skipped.
-func (p *WhoisPlugin) queryAFRINIC(ctx context.Context, org string) ([]plugins.Finding, error) {
+func (p *ReverseRIRPlugin) queryAFRINIC(ctx context.Context, org string) ([]plugins.Finding, error) {
 	apiURL := fmt.Sprintf("https://rdap.afrinic.net/rdap/entities?fn=%s", url.QueryEscape(org))
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
@@ -276,7 +276,7 @@ func (p *WhoisPlugin) queryAFRINIC(ctx context.Context, org string) ([]plugins.F
 		findings = append(findings, plugins.Finding{
 			Type:   plugins.FindingCIDRHandle,
 			Value:  handle,
-			Source: "whois",
+			Source: "reverse-rir",
 			Data: map[string]any{
 				"registry": "afrinic",
 				"org":      org,
@@ -292,7 +292,7 @@ func (p *WhoisPlugin) queryAFRINIC(ctx context.Context, org string) ([]plugins.F
 // URL: https://rdap.lacnic.net/rdap/entities?fn={org}
 // Response key: "entities" (LACNIC non-standard; RDAP spec uses "entitySearchResults")
 // Handle format: "BR-MERC-LACNIC", "MX-USCV4-LACNIC" (country-code prefix)
-func (p *WhoisPlugin) queryLACNIC(ctx context.Context, org string) ([]plugins.Finding, error) {
+func (p *ReverseRIRPlugin) queryLACNIC(ctx context.Context, org string) ([]plugins.Finding, error) {
 	apiURL := fmt.Sprintf("https://rdap.lacnic.net/rdap/entities?fn=%s", url.QueryEscape(org))
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
@@ -315,7 +315,7 @@ func (p *WhoisPlugin) queryLACNIC(ctx context.Context, org string) ([]plugins.Fi
 		findings = append(findings, plugins.Finding{
 			Type:   plugins.FindingCIDRHandle,
 			Value:  entity.Handle,
-			Source: "whois",
+			Source: "reverse-rir",
 			Data: map[string]any{
 				"registry": "lacnic",
 				"org":      org,
