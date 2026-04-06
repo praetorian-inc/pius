@@ -14,9 +14,9 @@ import (
 func TestEnrichWithHandles_SingleRegistry(t *testing.T) {
 	input := plugins.Input{OrgName: "Acme", Meta: make(map[string]string)}
 	findings := []plugins.Finding{
-		{Type: plugins.FindingCIDRHandle, Value: "ACME-1", Source: "whois",
+		{Type: plugins.FindingCIDRHandle, Value: "ACME-1", Source: "reverse-rir",
 			Data: map[string]any{"registry": "arin"}},
-		{Type: plugins.FindingCIDRHandle, Value: "ACME-2", Source: "whois",
+		{Type: plugins.FindingCIDRHandle, Value: "ACME-2", Source: "reverse-rir",
 			Data: map[string]any{"registry": "arin"}},
 	}
 	result := enrichWithHandles(input, findings)
@@ -29,11 +29,11 @@ func TestEnrichWithHandles_SingleRegistry(t *testing.T) {
 func TestEnrichWithHandles_MultipleRegistries(t *testing.T) {
 	input := plugins.Input{OrgName: "Acme", Meta: make(map[string]string)}
 	findings := []plugins.Finding{
-		{Type: plugins.FindingCIDRHandle, Value: "ACME-ARIN", Source: "whois",
+		{Type: plugins.FindingCIDRHandle, Value: "ACME-ARIN", Source: "reverse-rir",
 			Data: map[string]any{"registry": "arin"}},
-		{Type: plugins.FindingCIDRHandle, Value: "ORG-RIPE", Source: "whois",
+		{Type: plugins.FindingCIDRHandle, Value: "ORG-RIPE", Source: "reverse-rir",
 			Data: map[string]any{"registry": "ripe"}},
-		{Type: plugins.FindingCIDRHandle, Value: "APNIC-1", Source: "whois",
+		{Type: plugins.FindingCIDRHandle, Value: "APNIC-1", Source: "reverse-rir",
 			Data: map[string]any{"registry": "apnic"}},
 	}
 	result := enrichWithHandles(input, findings)
@@ -68,7 +68,7 @@ func TestEnrichWithHandles_PreservesExistingMeta(t *testing.T) {
 		Meta:    map[string]string{"arin_handles": "EXISTING-1"},
 	}
 	findings := []plugins.Finding{
-		{Type: plugins.FindingCIDRHandle, Value: "NEW-1", Source: "whois",
+		{Type: plugins.FindingCIDRHandle, Value: "NEW-1", Source: "reverse-rir",
 			Data: map[string]any{"registry": "arin"}},
 	}
 	result := enrichWithHandles(input, findings)
@@ -223,14 +223,14 @@ func TestSelectPlugins_WhitelistWithModeFiltering(t *testing.T) {
 	plugins.Register("crt-sh", func() plugins.Plugin {
 		return &mockPlugin{name: "crt-sh", mode: plugins.ModePassive}
 	})
-	plugins.Register("whois", func() plugins.Plugin {
-		return &mockPlugin{name: "whois", mode: plugins.ModePassive}
+	plugins.Register("reverse-rir", func() plugins.Plugin {
+		return &mockPlugin{name: "reverse-rir", mode: plugins.ModePassive}
 	})
 
 	// Whitelist includes both passive and active plugins, but mode=passive filters to only passive
-	result := selectPlugins("dns-brute,crt-sh,whois", "", "passive")
+	result := selectPlugins("dns-brute,crt-sh,reverse-rir", "", "passive")
 	names := pluginNames(result)
-	assert.ElementsMatch(t, []string{"crt-sh", "whois"}, names, "mode filter applies after whitelist selection")
+	assert.ElementsMatch(t, []string{"crt-sh", "reverse-rir"}, names, "mode filter applies after whitelist selection")
 }
 
 func pluginNames(ps []plugins.Plugin) []string {

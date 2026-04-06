@@ -162,7 +162,7 @@ func TestList_ReturnsSortedNames(t *testing.T) {
 	defer plugins.Reset()
 
 	// Register in non-alphabetical order
-	plugins.Register("whois", func() plugins.Plugin { return &mockPlugin{name: "whois"} })
+	plugins.Register("reverse-rir", func() plugins.Plugin { return &mockPlugin{name: "reverse-rir"} })
 	plugins.Register("arin", func() plugins.Plugin { return &mockPlugin{name: "arin"} })
 	plugins.Register("crt-sh", func() plugins.Plugin { return &mockPlugin{name: "crt-sh"} })
 	plugins.Register("ripe", func() plugins.Plugin { return &mockPlugin{name: "ripe"} })
@@ -170,7 +170,7 @@ func TestList_ReturnsSortedNames(t *testing.T) {
 	result := plugins.List()
 
 	// Should be sorted alphabetically
-	expected := []string{"arin", "crt-sh", "ripe", "whois"}
+	expected := []string{"arin", "crt-sh", "reverse-rir", "ripe"}
 	assert.Equal(t, expected, result, "plugin names should be sorted alphabetically")
 }
 

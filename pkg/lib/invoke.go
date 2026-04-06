@@ -89,6 +89,18 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			Title:      title,
 			Capability: preseedCapability,
 		})
+	case plugins.FindingPreseed:
+		preseedType, _ := f.Data["preseed_type"].(string)
+		title, _ := f.Data["preseed_title"].(string)
+		if preseedType == "" {
+			return nil
+		}
+		return output.Emit(capmodel.Preseed{
+			Type:       preseedType,
+			Value:      f.Value,
+			Title:      title,
+			Capability: preseedCapability,
+		})
 	default:
 		// Skip internal finding types (e.g., cidr-handle)
 		return nil
