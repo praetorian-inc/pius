@@ -51,14 +51,15 @@ func matchesDomain(host, domain string) bool {
 }
 
 // resolveIPs returns the A and AAAA record IPs for an FQDN, or empty if NXDOMAIN.
+// A and AAAA are queried independently so a failure in one does not discard the other.
 func resolveIPs(ctx context.Context, fqdn string, resolver string) ([]string, error) {
 	var ips []string
+	var firstErr error
 
 	r, err := queryDNS(ctx, fqdn, dns.TypeA, resolver)
 	if err != nil {
-		return nil, err
-	}
-	if r != nil && r.Rcode == dns.RcodeSuccess {
+		firstErr = err
+	} else if r != nil && r.Rcode == dns.RcodeSuccess {
 		for _, ans := range r.Answer {
 			if a, ok := ans.(*dns.A); ok {
 				ips = append(ips, a.A.String())
@@ -68,9 +69,10 @@ func resolveIPs(ctx context.Context, fqdn string, resolver string) ([]string, er
 
 	r, err = queryDNS(ctx, fqdn, dns.TypeAAAA, resolver)
 	if err != nil {
-		return nil, err
-	}
-	if r != nil && r.Rcode == dns.RcodeSuccess {
+		if firstErr != nil {
+			return nil, firstErr
+		}
+	} else if r != nil && r.Rcode == dns.RcodeSuccess {
 		for _, ans := range r.Answer {
 			if aaaa, ok := ans.(*dns.AAAA); ok {
 				ips = append(ips, aaaa.AAAA.String())
@@ -81,22 +83,29 @@ func resolveIPs(ctx context.Context, fqdn string, resolver string) ([]string, er
 	return ips, nil
 }
 
-// detectWildcard queries a random non-existent subdomain to detect wildcard DNS.
-// Returns the set of IPs the wildcard resolves to (empty if no wildcard).
-func detectWildcard(ctx context.Context, base string, resolver string) map[string]bool {
-	randomLabel := randomHex(16)
-	fqdn := randomLabel + "." + base
+const wildcardProbeCount = 3
 
-	ips, err := resolveIPs(ctx, fqdn, resolver)
-	if err != nil || len(ips) == 0 {
+// detectWildcard probes multiple random subdomains to detect wildcard DNS.
+// Returns the union of IPs observed across all probes (empty if no wildcard).
+func detectWildcard(ctx context.Context, base string, resolver string) map[string]bool {
+	wildcardSet := make(map[string]bool)
+
+	for i := 0; i < wildcardProbeCount; i++ {
+		fqdn := randomHex(16) + "." + base
+		ips, err := resolveIPs(ctx, fqdn, resolver)
+		if err != nil || len(ips) == 0 {
+			continue
+		}
+		for _, ip := range ips {
+			wildcardSet[ip] = true
+		}
+	}
+
+	if len(wildcardSet) == 0 {
 		return nil
 	}
 
-	slog.Info("wildcard detected", "base", base, "ips", ips)
-	wildcardSet := make(map[string]bool, len(ips))
-	for _, ip := range ips {
-		wildcardSet[ip] = true
-	}
+	slog.Info("wildcard detected", "base", base, "ips_count", len(wildcardSet))
 	return wildcardSet
 }
 
@@ -122,7 +131,7 @@ func randomHex(n int) string {
 
 // FilterWildcardDomains removes domain findings whose parent zone has wildcard
 // DNS. It extracts the unique parent domain of each finding, probes each parent
-// once with a random subdomain, and drops all findings under wildcard parents.
+// with multiple random subdomains, and drops all findings under wildcard parents.
 //
 // For example, given findings [admin.dev.example.com, api.dev.example.com,
 // www.example.com], it probes <random>.dev.example.com and <random>.example.com.
@@ -145,7 +154,7 @@ func FilterWildcardDomains(ctx context.Context, findings []plugins.Finding) []pl
 		return findings
 	}
 
-	// Probe each unique parent once for wildcard DNS.
+	// Probe each unique parent for wildcard DNS.
 	wildcardParents := make(map[string]bool)
 	for parent := range parents {
 		if ips := detectWildcard(ctx, parent, dnsDefaultResolver); len(ips) > 0 {
