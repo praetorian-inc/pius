@@ -159,7 +159,7 @@ func selectPlugins(whitelist, blacklist, mode string) []plugins.Plugin {
 }
 
 const (
-	DefaultPipelineTimeout = 30 * time.Minute
+	DefaultPipelineTimeout = 60 * time.Minute
 	// maxFindings caps results to prevent OOM on extremely broad scans.
 	// Tuned based on typical org discovery yielding 10-50k findings.
 	maxFindings = 100_000

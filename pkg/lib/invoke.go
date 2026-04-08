@@ -43,8 +43,7 @@ func (d *Discovery) Invoke(ctx capability.ExecutionContext, input capmodel.Prese
 	}
 
 	// capability.ExecutionContext carries no context.Context, so we create one here.
-	// 30m matches the compute server's per-job timeout for long-running discovery.
-	runCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	runCtx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
 
 	findings, err := RunFunc(runCtx, cfg)

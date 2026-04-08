@@ -40,7 +40,7 @@ func (d *DomainDiscovery) Invoke(ctx capability.ExecutionContext, input capmodel
 		cfg.Disable = strings.Split(disableParam, ",")
 	}
 
-	runCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	runCtx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
 
 	findings, err := RunFunc(runCtx, cfg)
