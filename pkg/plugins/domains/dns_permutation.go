@@ -55,6 +55,13 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 		return nil, nil
 	}
 
+	// Filter out high-entropy and OOB/canary domains before permutation.
+	// These generate thousands of bogus assets that cause scanning storms.
+	seeds = FilterJunkDomains(seeds)
+	if len(seeds) == 0 {
+		return nil, nil
+	}
+
 	// Group seeds by base domain for wildcard detection.
 	byBase := groupByBaseDomain(seeds)
 

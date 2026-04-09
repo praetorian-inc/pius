@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"strings"
 	"time"
@@ -207,6 +208,107 @@ func extractParent(fqdn string) string {
 		return ""
 	}
 	return parent
+}
+
+// knownOOBPatterns contains substrings found in common out-of-band interaction
+// and canary token domain names. Domains containing these should not be permuted.
+var knownOOBPatterns = []string{
+	"oob.",
+	"interact.",
+	"interactsh.",
+	"burpcollaborator",
+	"canarytokens",
+	"dnslog.",
+	"bxss.",
+	"ceye.",
+	"pingb.",
+	"oast.",
+}
+
+const (
+	// maxLabelLength is the threshold above which a DNS label is considered junk.
+	// Real subdomain labels rarely exceed this length.
+	maxLabelLength = 40
+
+	// entropyThreshold is the Shannon entropy above which a label is likely random.
+	// Normal hostnames (e.g., "staging", "api-v2") have entropy well below this.
+	// Random tokens (e.g., "jvoind698msu93mkf5na9l2igbihsccp5d1buy") exceed it.
+	entropyThreshold = 3.5
+
+	// minEntropyLength is the minimum label length for entropy checking.
+	// Short labels can have high entropy without being random (e.g., "xyz").
+	minEntropyLength = 10
+)
+
+// shannonEntropy calculates the Shannon entropy of a string in bits per character.
+func shannonEntropy(s string) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+	freq := make(map[rune]float64)
+	for _, c := range s {
+		freq[c]++
+	}
+	length := float64(len(s))
+	var entropy float64
+	for _, count := range freq {
+		p := count / length
+		if p > 0 {
+			entropy -= p * math.Log2(p)
+		}
+	}
+	return entropy
+}
+
+// isJunkLabel returns true if a DNS label looks like a random token or canary
+// string that should not be permuted.
+func isJunkLabel(label string) bool {
+	if len(label) > maxLabelLength {
+		return true
+	}
+	if len(label) >= minEntropyLength && shannonEntropy(label) > entropyThreshold {
+		return true
+	}
+	return false
+}
+
+// containsOOBPattern returns true if the FQDN contains a known OOB/canary pattern.
+func containsOOBPattern(fqdn string) bool {
+	lower := strings.ToLower(fqdn)
+	for _, pattern := range knownOOBPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// FilterJunkDomains removes domains that contain high-entropy labels or known
+// OOB/canary patterns. This prevents permutation of random tokens and interaction
+// server domains that would generate thousands of bogus assets.
+func FilterJunkDomains(domains []string) []string {
+	result := make([]string, 0, len(domains))
+	for _, d := range domains {
+		d = normalizeDomain(d)
+		if containsOOBPattern(d) {
+			slog.Info("filtered OOB/canary domain", "domain", d)
+			continue
+		}
+		base := guessBaseDomain(d)
+		labels := extractLabels(d, base)
+		junk := false
+		for _, label := range labels {
+			if isJunkLabel(label) {
+				slog.Info("filtered high-entropy domain", "domain", d, "label", label)
+				junk = true
+				break
+			}
+		}
+		if !junk {
+			result = append(result, d)
+		}
+	}
+	return result
 }
 
 // isDomainName returns true when s looks like a domain name rather than

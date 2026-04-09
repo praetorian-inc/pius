@@ -14,7 +14,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
-	"github.com/praetorian-inc/pius/pkg/plugins/domains"
+	domainspkg "github.com/praetorian-inc/pius/pkg/plugins/domains"
 )
 
 func newRunCmd() *cobra.Command {
@@ -266,7 +266,7 @@ func runPipeline(ctx context.Context, input plugins.Input, selected []plugins.Pl
 	// parent domain among the findings, probe once for wildcard DNS and drop
 	// all findings under wildcard parents. This catches passive plugins
 	// (crt-sh, passive-dns) that have no wildcard awareness.
-	filtered = domains.FilterWildcardDomains(ctx, filtered)
+	filtered = domainspkg.FilterWildcardDomains(ctx, filtered)
 
 	return filtered, nil
 }
@@ -425,6 +425,11 @@ func enrichWithDomains(input plugins.Input, findings []plugins.Finding) plugins.
 			domains = append(domains, d)
 		}
 	}
+
+	// Filter out high-entropy and OOB/canary domains before passing to Phase 3.
+	// This is defense-in-depth — dns-permutation also filters, but this protects
+	// all Phase 3 consumers and prevents the domains from being permuted at all.
+	domains = domainspkg.FilterJunkDomains(domains)
 
 	if len(domains) > 0 {
 		enriched.Meta["discovered_domains"] = strings.Join(domains, ",")
