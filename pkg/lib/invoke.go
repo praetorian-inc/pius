@@ -69,12 +69,16 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 		preseedCapability = fmt.Sprintf("pius_%s", f.Source)
 	}
 
+	confidence, needsReview := extractConfidence(f)
+
 	switch f.Type {
 	case plugins.FindingDomain:
 		return output.Emit(capmodel.Asset{
-			DNS:        f.Value,
-			Name:       f.Value,
-			Capability: assetCapability,
+			DNS:         f.Value,
+			Name:        f.Value,
+			Capability:  assetCapability,
+			Confidence:  confidence,
+			NeedsReview: needsReview,
 		})
 	// CIDRs are emitted as Preseeds with the org name as the title.
 	case plugins.FindingCIDR:
@@ -83,10 +87,12 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			title = ""
 		}
 		return output.Emit(capmodel.Preseed{
-			Type:       string(f.Type),
-			Value:      f.Value,
-			Title:      title,
-			Capability: preseedCapability,
+			Type:        string(f.Type),
+			Value:       f.Value,
+			Title:       title,
+			Capability:  preseedCapability,
+			Confidence:  confidence,
+			NeedsReview: needsReview,
 		})
 	case plugins.FindingPreseed:
 		preseedType, _ := f.Data["preseed_type"].(string)
@@ -95,15 +101,28 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			return nil
 		}
 		return output.Emit(capmodel.Preseed{
-			Type:       preseedType,
-			Value:      f.Value,
-			Title:      title,
-			Capability: preseedCapability,
+			Type:        preseedType,
+			Value:       f.Value,
+			Title:       title,
+			Capability:  preseedCapability,
+			Confidence:  confidence,
+			NeedsReview: needsReview,
 		})
 	default:
 		// Skip internal finding types (e.g., cidr-handle)
 		return nil
 	}
+}
+
+// extractConfidence returns pointers to the confidence and needs_review values
+// from a Finding's Data map, or nils if the finding was not scored.
+func extractConfidence(f plugins.Finding) (*float64, *bool) {
+	c, ok := f.Data["confidence"].(float64)
+	if !ok {
+		return nil, nil
+	}
+	nr, _ := f.Data["needs_review"].(bool)
+	return &c, &nr
 }
 
 // piusCredentialMapping maps capability parameter names to the environment

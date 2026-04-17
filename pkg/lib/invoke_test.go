@@ -322,3 +322,161 @@ func TestInvoke_BridgesCredentialsDuringExecution(t *testing.T) {
 	// Verify env var is cleaned up after Invoke returns
 	assert.Empty(t, os.Getenv("SHODAN_API_KEY"))
 }
+
+// --- Confidence score tests ---
+
+func TestExtractConfidence_Scored(t *testing.T) {
+	f := plugins.Finding{
+		Data: map[string]any{
+			"confidence":   0.72,
+			"needs_review": true,
+		},
+	}
+	c, nr := extractConfidence(f)
+	require.NotNil(t, c)
+	require.NotNil(t, nr)
+	assert.Equal(t, 0.72, *c)
+	assert.Equal(t, true, *nr)
+}
+
+func TestExtractConfidence_HighConfidence(t *testing.T) {
+	f := plugins.Finding{
+		Data: map[string]any{
+			"confidence":   0.90,
+			"needs_review": false,
+		},
+	}
+	c, nr := extractConfidence(f)
+	require.NotNil(t, c)
+	require.NotNil(t, nr)
+	assert.Equal(t, 0.90, *c)
+	assert.Equal(t, false, *nr)
+}
+
+func TestExtractConfidence_Unscored(t *testing.T) {
+	f := plugins.Finding{Data: map[string]any{"org": "Acme"}}
+	c, nr := extractConfidence(f)
+	assert.Nil(t, c)
+	assert.Nil(t, nr)
+}
+
+func TestExtractConfidence_NilData(t *testing.T) {
+	f := plugins.Finding{}
+	c, nr := extractConfidence(f)
+	assert.Nil(t, c)
+	assert.Nil(t, nr)
+}
+
+func TestInvoke_DomainWithConfidence(t *testing.T) {
+	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
+		return []plugins.Finding{
+			{
+				Type: plugins.FindingDomain, Value: "acme.com", Source: "github-org",
+				Data: map[string]any{"confidence": 0.55, "needs_review": true},
+			},
+		}, nil
+	})
+	defer restore()
+
+	d := &Discovery{}
+	var emitted []any
+	emitter := capability.EmitterFunc(func(models ...any) error {
+		emitted = append(emitted, models...)
+		return nil
+	})
+
+	err := d.Invoke(capability.ExecutionContext{}, capmodel.Preseed{Value: "Acme Corp"}, emitter)
+	require.NoError(t, err)
+	require.Len(t, emitted, 1)
+
+	asset := emitted[0].(capmodel.Asset)
+	require.NotNil(t, asset.Confidence)
+	require.NotNil(t, asset.NeedsReview)
+	assert.Equal(t, 0.55, *asset.Confidence)
+	assert.Equal(t, true, *asset.NeedsReview)
+}
+
+func TestInvoke_DomainWithoutConfidence(t *testing.T) {
+	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
+		return []plugins.Finding{
+			{Type: plugins.FindingDomain, Value: "acme.com", Source: "crt-sh"},
+		}, nil
+	})
+	defer restore()
+
+	d := &Discovery{}
+	var emitted []any
+	emitter := capability.EmitterFunc(func(models ...any) error {
+		emitted = append(emitted, models...)
+		return nil
+	})
+
+	err := d.Invoke(capability.ExecutionContext{}, capmodel.Preseed{Value: "Acme Corp"}, emitter)
+	require.NoError(t, err)
+	require.Len(t, emitted, 1)
+
+	asset := emitted[0].(capmodel.Asset)
+	assert.Nil(t, asset.Confidence)
+	assert.Nil(t, asset.NeedsReview)
+}
+
+func TestInvoke_CIDRWithConfidence(t *testing.T) {
+	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
+		return []plugins.Finding{
+			{
+				Type: plugins.FindingCIDR, Value: "203.0.113.0/24", Source: "arin",
+				Data: map[string]any{"org": "Acme Corp", "confidence": 0.40, "needs_review": true},
+			},
+		}, nil
+	})
+	defer restore()
+
+	d := &Discovery{}
+	var emitted []any
+	emitter := capability.EmitterFunc(func(models ...any) error {
+		emitted = append(emitted, models...)
+		return nil
+	})
+
+	err := d.Invoke(capability.ExecutionContext{}, capmodel.Preseed{Value: "Acme Corp"}, emitter)
+	require.NoError(t, err)
+	require.Len(t, emitted, 1)
+
+	preseed := emitted[0].(capmodel.Preseed)
+	require.NotNil(t, preseed.Confidence)
+	require.NotNil(t, preseed.NeedsReview)
+	assert.Equal(t, 0.40, *preseed.Confidence)
+	assert.Equal(t, true, *preseed.NeedsReview)
+}
+
+func TestInvoke_PreseedWithConfidence(t *testing.T) {
+	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
+		return []plugins.Finding{
+			{
+				Type: plugins.FindingPreseed, Value: "sub.acme.com", Source: "gleif",
+				Data: map[string]any{
+					"preseed_type": "whois", "preseed_title": "subsidiary",
+					"confidence": 0.65, "needs_review": false,
+				},
+			},
+		}, nil
+	})
+	defer restore()
+
+	d := &Discovery{}
+	var emitted []any
+	emitter := capability.EmitterFunc(func(models ...any) error {
+		emitted = append(emitted, models...)
+		return nil
+	})
+
+	err := d.Invoke(capability.ExecutionContext{}, capmodel.Preseed{Value: "Acme Corp"}, emitter)
+	require.NoError(t, err)
+	require.Len(t, emitted, 1)
+
+	preseed := emitted[0].(capmodel.Preseed)
+	require.NotNil(t, preseed.Confidence)
+	require.NotNil(t, preseed.NeedsReview)
+	assert.Equal(t, 0.65, *preseed.Confidence)
+	assert.Equal(t, false, *preseed.NeedsReview)
+}
