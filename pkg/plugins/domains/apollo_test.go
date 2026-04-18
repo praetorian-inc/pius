@@ -218,7 +218,7 @@ func TestApolloPlugin_Run_ExtractsDomains(t *testing.T) {
 		assert.Contains(t, r.URL.RawQuery, "organization_name=")
 		assert.Equal(t, "test-key", r.Header.Get("X-Api-Key"))
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(mockApolloResponse(
+		_, _ = w.Write(mockApolloResponse(
 			"acme.com", "https://www.acme.com", "https://blog.acme.io",
 			[]string{"acme-corp.com", "acmeinc.com"},
 		))
@@ -252,7 +252,7 @@ func TestApolloPlugin_Run_PrefersDomainOverOrgName(t *testing.T) {
 		primary := "praetorian.com"
 		resp := apolloResponse{Organization: apolloOrg{PrimaryDomain: &primary}}
 		data, _ := json.Marshal(resp)
-		w.Write(data)
+		_, _ = w.Write(data)
 	}))
 	defer srv.Close()
 
@@ -268,7 +268,7 @@ func TestApolloPlugin_Run_GracefulOnBadCredentials(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"error":"Invalid access credentials"}`))
+		_, _ = w.Write([]byte(`{"error":"Invalid access credentials"}`))
 	}))
 	defer srv.Close()
 
@@ -283,7 +283,7 @@ func TestApolloPlugin_Run_GracefulOnInsufficientCredits(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"error":"You have insufficient credits"}`))
+		_, _ = w.Write([]byte(`{"error":"You have insufficient credits"}`))
 	}))
 	defer srv.Close()
 
@@ -303,7 +303,7 @@ func TestApolloPlugin_Run_UsesCacheOnSecondCall(t *testing.T) {
 		primary := "acme.com"
 		resp := apolloResponse{Organization: apolloOrg{PrimaryDomain: &primary}}
 		data, _ := json.Marshal(resp)
-		w.Write(data)
+		_, _ = w.Write(data)
 	}))
 	defer srv.Close()
 
@@ -325,7 +325,7 @@ func TestApolloPlugin_Run_EmptyResponseNoFindings(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"organization":{}}`))
+		_, _ = w.Write([]byte(`{"organization":{}}`))
 	}))
 	defer srv.Close()
 
@@ -352,7 +352,7 @@ func TestApolloPlugin_Run_PersonnelDomainsNull(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"organization":{"primary_domain":"acme.com","personnel_domains":null}}`))
+		_, _ = w.Write([]byte(`{"organization":{"primary_domain":"acme.com","personnel_domains":null}}`))
 	}))
 	defer srv.Close()
 

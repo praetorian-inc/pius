@@ -66,12 +66,12 @@ func newMockResolver(handler func(w dns.ResponseWriter, r *dns.Msg)) *mockResolv
 		Handler:    mux,
 	}
 
-	go m.server.ActivateAndServe()
+	go func() { _ = m.server.ActivateAndServe() }()
 	return m
 }
 
 func (m *mockResolver) close() {
-	m.server.Shutdown()
+	_ = m.server.Shutdown()
 }
 
 func TestFilterWildcardDomains_WildcardParent(t *testing.T) {
@@ -92,7 +92,7 @@ func TestFilterWildcardDomains_WildcardParent(t *testing.T) {
 		if len(msg.Answer) == 0 {
 			msg.Rcode = dns.RcodeNameError
 		}
-		w.WriteMsg(msg)
+		_ = w.WriteMsg(msg)
 	})
 	defer mock.close()
 
@@ -131,7 +131,7 @@ func TestFilterWildcardDomains_NoWildcard(t *testing.T) {
 		msg := new(dns.Msg)
 		msg.SetReply(r)
 		msg.Rcode = dns.RcodeNameError
-		w.WriteMsg(msg)
+		_ = w.WriteMsg(msg)
 	})
 	defer mock.close()
 
@@ -161,7 +161,7 @@ func TestFilterWildcardDomains_TLDNotProbed(t *testing.T) {
 			Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
 			A:   net.ParseIP("1.2.3.4"),
 		})
-		w.WriteMsg(msg)
+		_ = w.WriteMsg(msg)
 	})
 	defer mock.close()
 

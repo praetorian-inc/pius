@@ -22,7 +22,7 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 
 	fnErr := fn()
 
-	w.Close()
+	_ = w.Close()
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
 	os.Stdout = old

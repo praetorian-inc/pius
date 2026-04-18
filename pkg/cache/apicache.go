@@ -91,7 +91,7 @@ func (c *APICache) Set(key string, v any) {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		log.Printf("[apicache] rename error for key %q: %v", key, err)
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 	}
 }
 

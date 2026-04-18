@@ -18,7 +18,7 @@ import (
 func mockURLScanServer(response urlscanResponse) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 }
 
@@ -250,18 +250,18 @@ func TestURLScanPlugin_APIKeyHeader(t *testing.T) {
 	originalKey := os.Getenv("URLSCAN_API_KEY")
 	defer func() {
 		if originalKey == "" {
-			os.Unsetenv("URLSCAN_API_KEY")
+			_ = os.Unsetenv("URLSCAN_API_KEY")
 		} else {
-			os.Setenv("URLSCAN_API_KEY", originalKey)
+			_ = os.Setenv("URLSCAN_API_KEY", originalKey)
 		}
 	}()
-	os.Setenv("URLSCAN_API_KEY", "test-api-key-12345")
+	_ = os.Setenv("URLSCAN_API_KEY", "test-api-key-12345")
 
 	var receivedAPIKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedAPIKey = r.Header.Get("API-Key")
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(urlscanResponse{Results: []urlscanResult{}})
+		_ = json.NewEncoder(w).Encode(urlscanResponse{Results: []urlscanResult{}})
 	}))
 	defer srv.Close()
 
@@ -280,7 +280,7 @@ func TestURLScanPlugin_QueryUsesApexDomain(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedQuery = r.URL.Query().Get("q")
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(urlscanResponse{Results: []urlscanResult{}})
+		_ = json.NewEncoder(w).Encode(urlscanResponse{Results: []urlscanResult{}})
 	}))
 	defer srv.Close()
 
@@ -300,18 +300,18 @@ func TestURLScanPlugin_NoAPIKeyHeader(t *testing.T) {
 	originalKey := os.Getenv("URLSCAN_API_KEY")
 	defer func() {
 		if originalKey == "" {
-			os.Unsetenv("URLSCAN_API_KEY")
+			_ = os.Unsetenv("URLSCAN_API_KEY")
 		} else {
-			os.Setenv("URLSCAN_API_KEY", originalKey)
+			_ = os.Setenv("URLSCAN_API_KEY", originalKey)
 		}
 	}()
-	os.Unsetenv("URLSCAN_API_KEY")
+	_ = os.Unsetenv("URLSCAN_API_KEY")
 
 	var receivedAPIKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedAPIKey = r.Header.Get("API-Key")
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(urlscanResponse{Results: []urlscanResult{}})
+		_ = json.NewEncoder(w).Encode(urlscanResponse{Results: []urlscanResult{}})
 	}))
 	defer srv.Close()
 

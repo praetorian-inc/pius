@@ -391,7 +391,7 @@ func TestCensysOrgPlugin_Run_ExtractsDomains(t *testing.T) {
 
 		// Verify request body
 		var req censysSearchRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		assert.Contains(t, req.Query, "Acme Corp")
 		assert.Equal(t, 100, req.PageSize)
 
@@ -403,7 +403,7 @@ func TestCensysOrgPlugin_Run_ExtractsDomains(t *testing.T) {
 				bgpPrefix:  "198.51.100.0/22",
 			}),
 		}
-		w.Write(mockCensysSearchResponse(hits))
+		_, _ = w.Write(mockCensysSearchResponse(hits))
 	}))
 	defer srv.Close()
 
@@ -435,9 +435,9 @@ func TestCensysOrgPlugin_Run_IncludesDomainInQuery(t *testing.T) {
 
 	var receivedBody censysSearchRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&receivedBody)
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(mockCensysSearchResponse(nil))
+		_, _ = w.Write(mockCensysSearchResponse(nil))
 	}))
 	defer srv.Close()
 
@@ -453,7 +453,7 @@ func TestCensysOrgPlugin_Run_GracefulOnForbidden(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"title":"Forbidden","status":403,"detail":"requires organization ID"}`))
+		_, _ = w.Write([]byte(`{"title":"Forbidden","status":403,"detail":"requires organization ID"}`))
 	}))
 	defer srv.Close()
 
@@ -468,7 +468,7 @@ func TestCensysOrgPlugin_Run_GracefulOnUnauthorized(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"title":"Unauthorized","status":401}`))
+		_, _ = w.Write([]byte(`{"title":"Unauthorized","status":401}`))
 	}))
 	defer srv.Close()
 
@@ -486,7 +486,7 @@ func TestCensysOrgPlugin_Run_UsesCacheOnSecondCall(t *testing.T) {
 		callCount++
 		w.Header().Set("Content-Type", "application/json")
 		hits := []censysSearchHit{makeHit([]string{"acme.com"}, nil, nil)}
-		w.Write(mockCensysSearchResponse(hits))
+		_, _ = w.Write(mockCensysSearchResponse(hits))
 	}))
 	defer srv.Close()
 
@@ -508,7 +508,7 @@ func TestCensysOrgPlugin_Run_EmptyResponseNoFindings(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(mockCensysSearchResponse(nil))
+		_, _ = w.Write(mockCensysSearchResponse(nil))
 	}))
 	defer srv.Close()
 
@@ -535,7 +535,7 @@ func TestCensysOrgPlugin_Run_GracefulOnMalformedJSON(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{invalid json`))
+		_, _ = w.Write([]byte(`{invalid json`))
 	}))
 	defer srv.Close()
 
@@ -550,7 +550,7 @@ func TestCensysOrgPlugin_Run_GracefulOnNilResult(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":422,"title":"Unprocessable Entity"}`))
+		_, _ = w.Write([]byte(`{"status":422,"title":"Unprocessable Entity"}`))
 	}))
 	defer srv.Close()
 

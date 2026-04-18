@@ -17,7 +17,7 @@ import (
 func mockCRTShServer(entries []map[string]string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(entries)
+		_ = json.NewEncoder(w).Encode(entries)
 	}))
 }
 
@@ -124,7 +124,7 @@ func TestCRTShPlugin_PrefersDomainOverOrgName(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedQuery = r.URL.Query().Get("q")
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte("[]"))
+		_, _ = w.Write([]byte("[]"))
 	}))
 	defer srv.Close()
 

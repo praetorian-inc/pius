@@ -76,10 +76,10 @@ func TestShodanPlugin_Accepts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.apiKey != "" {
-				os.Setenv("SHODAN_API_KEY", tt.apiKey)
-				defer os.Unsetenv("SHODAN_API_KEY")
+				_ = os.Setenv("SHODAN_API_KEY", tt.apiKey)
+				defer func() { _ = os.Unsetenv("SHODAN_API_KEY") }()
 			} else {
-				os.Unsetenv("SHODAN_API_KEY")
+				_ = os.Unsetenv("SHODAN_API_KEY")
 			}
 
 			got := p.Accepts(tt.input)
@@ -166,12 +166,12 @@ func TestShodanPlugin_Run(t *testing.T) {
 		assert.Contains(t, r.URL.Path, "/shodan/host/search")
 		assert.Contains(t, r.URL.RawQuery, "key=test-key")
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(mockResponse))
+		_, _ = w.Write([]byte(mockResponse))
 	}))
 	defer server.Close()
 
-	os.Setenv("SHODAN_API_KEY", "test-key")
-	defer os.Unsetenv("SHODAN_API_KEY")
+	_ = os.Setenv("SHODAN_API_KEY", "test-key")
+	defer func() { _ = os.Unsetenv("SHODAN_API_KEY") }()
 
 	p := &ShodanPlugin{
 		client:  client.New(),
@@ -204,7 +204,7 @@ func TestShodanPlugin_Run(t *testing.T) {
 }
 
 func TestShodanPlugin_Run_NoAPIKey(t *testing.T) {
-	os.Unsetenv("SHODAN_API_KEY")
+	_ = os.Unsetenv("SHODAN_API_KEY")
 
 	p := &ShodanPlugin{client: client.New()}
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Test"})
@@ -219,8 +219,8 @@ func TestShodanPlugin_Run_APIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	os.Setenv("SHODAN_API_KEY", "test-key")
-	defer os.Unsetenv("SHODAN_API_KEY")
+	_ = os.Setenv("SHODAN_API_KEY", "test-key")
+	defer func() { _ = os.Unsetenv("SHODAN_API_KEY") }()
 
 	p := &ShodanPlugin{
 		client:  client.New(),

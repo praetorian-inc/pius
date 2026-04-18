@@ -87,12 +87,13 @@ func TestReverseIPPlugin_HackerTargetLookup(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.URL.Path, "/reverseiplookup/")
 		ip := r.URL.Query().Get("q")
-		if ip == "192.0.2.1" {
-			w.Write([]byte("www.example.com\napi.example.com\nmail.example.com"))
-		} else if ip == "192.0.2.99" {
-			w.Write([]byte("API count exceeded - 100 per day"))
-		} else {
-			w.Write([]byte(""))
+		switch ip {
+		case "192.0.2.1":
+			_, _ = w.Write([]byte("www.example.com\napi.example.com\nmail.example.com"))
+		case "192.0.2.99":
+			_, _ = w.Write([]byte("API count exceeded - 100 per day"))
+		default:
+			_, _ = w.Write([]byte(""))
 		}
 	}))
 	defer server.Close()
@@ -162,7 +163,7 @@ func TestReverseIPPlugin_HackerTargetResponseParsing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Write([]byte(tt.response))
+				_, _ = w.Write([]byte(tt.response))
 			}))
 			defer server.Close()
 
@@ -187,8 +188,9 @@ func TestReverseIPPlugin_ViewDNSLookup(t *testing.T) {
 		// Check API key is passed
 		assert.NotEmpty(t, apiKey)
 
-		if ip == "192.0.2.1" {
-			w.Write([]byte(`{
+		switch ip {
+		case "192.0.2.1":
+			_, _ = w.Write([]byte(`{
 				"query": {"tool": "reverseip_PRO", "host": "192.0.2.1"},
 				"response": {
 					"domain_count": "3",
@@ -199,17 +201,17 @@ func TestReverseIPPlugin_ViewDNSLookup(t *testing.T) {
 					]
 				}
 			}`))
-		} else if ip == "192.0.2.99" {
+		case "192.0.2.99":
 			// Empty result
-			w.Write([]byte(`{
+			_, _ = w.Write([]byte(`{
 				"query": {"tool": "reverseip_PRO", "host": "192.0.2.99"},
 				"response": {
 					"domain_count": "0",
 					"domains": []
 				}
 			}`))
-		} else {
-			w.Write([]byte(`{"error": "invalid request"}`))
+		default:
+			_, _ = w.Write([]byte(`{"error": "invalid request"}`))
 		}
 	}))
 	defer server.Close()
@@ -291,7 +293,7 @@ func TestReverseIPPlugin_ViewDNSResponseParsing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Write([]byte(tt.response))
+				_, _ = w.Write([]byte(tt.response))
 			}))
 			defer server.Close()
 

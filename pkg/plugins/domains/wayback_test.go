@@ -103,49 +103,10 @@ func mockWaybackServerWithPrefixes(defaultURLs []string, prefixURLs map[string][
 		for _, u := range urlsToReturn {
 			rows = append(rows, []string{u})
 		}
-		json.NewEncoder(w).Encode(rows)
+		_ = json.NewEncoder(w).Encode(rows)
 	}))
 }
 
-// mockWaybackServerWithPages returns a Wayback mock server that supports paging.
-// numPages is the page count returned by showNumPages. pageURLs maps page index → urls for that page.
-// When numPages <= 0, the showNumPages query returns 0 and all requests return the full urls list.
-// Kept for compatibility with tests that haven't been updated to fan-out style.
-func mockWaybackServerWithPages(defaultURLs []string, numPages int, pageURLs map[int][]string) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-
-		// showNumPages=true → return plain integer page count
-		if q.Get("showNumPages") == "true" {
-			w.Header().Set("Content-Type", "text/plain")
-			fmt.Fprintf(w, "%d", numPages)
-			return
-		}
-
-		// page=N → return urls for that specific page
-		if pageStr := q.Get("page"); pageStr != "" {
-			var page int
-			fmt.Sscanf(pageStr, "%d", &page)
-			w.Header().Set("Content-Type", "application/json")
-			rows := [][]string{{"original"}}
-			if pageURLs != nil {
-				for _, u := range pageURLs[page] {
-					rows = append(rows, []string{u})
-				}
-			}
-			json.NewEncoder(w).Encode(rows)
-			return
-		}
-
-		// Default: return the full urls list (limit= query, no paging)
-		w.Header().Set("Content-Type", "application/json")
-		rows := [][]string{{"original"}}
-		for _, u := range defaultURLs {
-			rows = append(rows, []string{u})
-		}
-		json.NewEncoder(w).Encode(rows)
-	}))
-}
 
 // mockCommonCrawlServer returns an httptest server that serves Common Crawl NDJSON responses.
 func mockCommonCrawlServer(urls []string) *httptest.Server {
@@ -153,7 +114,7 @@ func mockCommonCrawlServer(urls []string) *httptest.Server {
 		// collinfo.json request
 		if strings.Contains(r.URL.Path, "collinfo") {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]map[string]string{
+			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"cdx-api": r.Host + "/CC-MAIN-2026-01-index"},
 			})
 			return
@@ -161,7 +122,7 @@ func mockCommonCrawlServer(urls []string) *httptest.Server {
 		// CDX index query — returns NDJSON
 		w.Header().Set("Content-Type", "text/plain")
 		for _, u := range urls {
-			fmt.Fprintf(w, `{"url":"%s","status":"200"}%s`, u, "\n")
+			_, _ = fmt.Fprintf(w, `{"url":"%s","status":"200"}%s`, u, "\n")
 		}
 	}))
 }

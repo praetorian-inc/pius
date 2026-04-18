@@ -242,21 +242,21 @@ func TestDNSPermutationPlugin_Run(t *testing.T) {
 				m.Rcode = dns.RcodeNameError
 			}
 		}
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 	})
 	// Handle wildcard check (random subdomain) → NXDOMAIN
 	serveMux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
 		m := new(dns.Msg)
 		m.SetReply(r)
 		m.Rcode = dns.RcodeNameError
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 	})
 
 	server := &dns.Server{Addr: "127.0.0.1:0", Net: "udp", Handler: serveMux}
 	started := make(chan struct{})
 	server.NotifyStartedFunc = func() { close(started) }
-	go server.ListenAndServe()
-	defer server.Shutdown()
+	go func() { _ = server.ListenAndServe() }()
+	defer func() { _ = server.Shutdown() }()
 	<-started
 
 	p := &DNSPermutationPlugin{
@@ -290,14 +290,14 @@ func TestDNSPermutationPlugin_Run_NoMatch(t *testing.T) {
 		m := new(dns.Msg)
 		m.SetReply(r)
 		m.Rcode = dns.RcodeNameError
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 	})
 
 	server := &dns.Server{Addr: "127.0.0.1:0", Net: "udp", Handler: serveMux}
 	started := make(chan struct{})
 	server.NotifyStartedFunc = func() { close(started) }
-	go server.ListenAndServe()
-	defer server.Shutdown()
+	go func() { _ = server.ListenAndServe() }()
+	defer func() { _ = server.Shutdown() }()
 	<-started
 
 	p := &DNSPermutationPlugin{
@@ -328,14 +328,14 @@ func TestDNSPermutationPlugin_Run_WildcardFiltering(t *testing.T) {
 				})
 			}
 		}
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 	})
 
 	server := &dns.Server{Addr: "127.0.0.1:0", Net: "udp", Handler: serveMux}
 	started := make(chan struct{})
 	server.NotifyStartedFunc = func() { close(started) }
-	go server.ListenAndServe()
-	defer server.Shutdown()
+	go func() { _ = server.ListenAndServe() }()
+	defer func() { _ = server.Shutdown() }()
 	<-started
 
 	p := &DNSPermutationPlugin{
@@ -375,20 +375,20 @@ func TestDNSPermutationPlugin_Run_ExcludesSeeds(t *testing.T) {
 				})
 			}
 		}
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 	})
 	serveMux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
 		m := new(dns.Msg)
 		m.SetReply(r)
 		m.Rcode = dns.RcodeNameError
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 	})
 
 	server := &dns.Server{Addr: "127.0.0.1:0", Net: "udp", Handler: serveMux}
 	started := make(chan struct{})
 	server.NotifyStartedFunc = func() { close(started) }
-	go server.ListenAndServe()
-	defer server.Shutdown()
+	go func() { _ = server.ListenAndServe() }()
+	defer func() { _ = server.Shutdown() }()
 	<-started
 
 	p := &DNSPermutationPlugin{
