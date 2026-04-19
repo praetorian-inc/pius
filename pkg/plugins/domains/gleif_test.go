@@ -113,7 +113,7 @@ func TestGLEIFPlugin_Run_EmptyOrgName(t *testing.T) {
 func TestGLEIFPlugin_Run_NoMatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(gleifSearchResp()) // empty data array
+		_, _ = w.Write(gleifSearchResp()) // empty data array
 	}))
 	defer srv.Close()
 
@@ -132,11 +132,11 @@ func TestGLEIFPlugin_Run_TopLevelWithSubsidiaries(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(r.URL.Path, "/lei-records") && r.URL.Query().Get("filter[entity.legalName]") != "":
-			w.Write(gleifSearchResp(primary))
+			_, _ = w.Write(gleifSearchResp(primary))
 		case r.URL.Path == "/lei-records/LEI001":
-			w.Write(gleifRecordResp(primary))
+			_, _ = w.Write(gleifRecordResp(primary))
 		case strings.Contains(r.URL.Path, "/direct-children"):
-			w.Write(gleifChildrenResp(1, 1, childA, childB))
+			_, _ = w.Write(gleifChildrenResp(1, 1, childA, childB))
 		default:
 			http.NotFound(w, r)
 		}
@@ -167,18 +167,18 @@ func TestGLEIFPlugin_Run_WithDirectParent(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			w.Write(gleifSearchResp(primary))
+			_, _ = w.Write(gleifSearchResp(primary))
 		case r.URL.Path == "/lei-records/LEI001":
-			w.Write(gleifRecordResp(primary))
+			_, _ = w.Write(gleifRecordResp(primary))
 		case r.URL.Path == "/lei-records/LEI001/direct-parent-relationship":
-			w.Write(gleifRelationshipResp("LEI_PARENT"))
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
 		case r.URL.Path == "/lei-records/LEI001/ultimate-parent-relationship":
 			// Same as direct parent → no separate ultimate finding
-			w.Write(gleifRelationshipResp("LEI_PARENT"))
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
 		case r.URL.Path == "/lei-records/LEI_PARENT":
-			w.Write(gleifRecordResp(parent))
+			_, _ = w.Write(gleifRecordResp(parent))
 		case strings.Contains(r.URL.Path, "/direct-children"):
-			w.Write(gleifChildrenResp(1, 1)) // no children
+			_, _ = w.Write(gleifChildrenResp(1, 1)) // no children
 		default:
 			http.NotFound(w, r)
 		}
@@ -203,19 +203,19 @@ func TestGLEIFPlugin_Run_WithUltimateParent(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			w.Write(gleifSearchResp(primary))
+			_, _ = w.Write(gleifSearchResp(primary))
 		case r.URL.Path == "/lei-records/LEI001":
-			w.Write(gleifRecordResp(primary))
+			_, _ = w.Write(gleifRecordResp(primary))
 		case r.URL.Path == "/lei-records/LEI001/direct-parent-relationship":
-			w.Write(gleifRelationshipResp("LEI_PARENT"))
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
 		case r.URL.Path == "/lei-records/LEI001/ultimate-parent-relationship":
-			w.Write(gleifRelationshipResp("LEI_ULTIMATE"))
+			_, _ = w.Write(gleifRelationshipResp("LEI_ULTIMATE"))
 		case r.URL.Path == "/lei-records/LEI_PARENT":
-			w.Write(gleifRecordResp(directParent))
+			_, _ = w.Write(gleifRecordResp(directParent))
 		case r.URL.Path == "/lei-records/LEI_ULTIMATE":
-			w.Write(gleifRecordResp(ultimateParent))
+			_, _ = w.Write(gleifRecordResp(ultimateParent))
 		case strings.Contains(r.URL.Path, "/direct-children"):
-			w.Write(gleifChildrenResp(1, 1))
+			_, _ = w.Write(gleifChildrenResp(1, 1))
 		default:
 			http.NotFound(w, r)
 		}
@@ -252,15 +252,15 @@ func TestGLEIFPlugin_Run_PaginatedChildren(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			w.Write(gleifSearchResp(primary))
+			_, _ = w.Write(gleifSearchResp(primary))
 		case r.URL.Path == "/lei-records/LEI001":
-			w.Write(gleifRecordResp(primary))
+			_, _ = w.Write(gleifRecordResp(primary))
 		case strings.Contains(r.URL.Path, "/direct-children"):
 			pageNum := r.URL.Query().Get("page[number]")
 			if pageNum == "2" {
-				w.Write(gleifChildrenResp(2, 2, page2Children...))
+				_, _ = w.Write(gleifChildrenResp(2, 2, page2Children...))
 			} else {
-				w.Write(gleifChildrenResp(1, 2, page1Children...))
+				_, _ = w.Write(gleifChildrenResp(1, 2, page1Children...))
 			}
 		default:
 			http.NotFound(w, r)
@@ -286,11 +286,11 @@ func TestGLEIFPlugin_Run_MultipleNameMatches(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			w.Write(gleifSearchResp(primary, match2, match3))
+			_, _ = w.Write(gleifSearchResp(primary, match2, match3))
 		case r.URL.Path == "/lei-records/LEI001":
-			w.Write(gleifRecordResp(primary))
+			_, _ = w.Write(gleifRecordResp(primary))
 		case strings.Contains(r.URL.Path, "/direct-children"):
-			w.Write(gleifChildrenResp(1, 1))
+			_, _ = w.Write(gleifChildrenResp(1, 1))
 		default:
 			http.NotFound(w, r)
 		}
@@ -318,11 +318,11 @@ func TestGLEIFPlugin_Run_Deduplication(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			w.Write(gleifSearchResp(primary, nameMatch))
+			_, _ = w.Write(gleifSearchResp(primary, nameMatch))
 		case r.URL.Path == "/lei-records/LEI001":
-			w.Write(gleifRecordResp(primary))
+			_, _ = w.Write(gleifRecordResp(primary))
 		case strings.Contains(r.URL.Path, "/direct-children"):
-			w.Write(gleifChildrenResp(1, 1, child))
+			_, _ = w.Write(gleifChildrenResp(1, 1, child))
 		default:
 			http.NotFound(w, r)
 		}
@@ -351,16 +351,16 @@ func TestGLEIFPlugin_Run_ContextCanceled(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		requestCount++
 		if r.URL.Query().Get("filter[entity.legalName]") != "" {
-			w.Write(gleifSearchResp(primary))
+			_, _ = w.Write(gleifSearchResp(primary))
 			return
 		}
 		if r.URL.Path == "/lei-records/LEI001" {
-			w.Write(gleifRecordResp(primary))
+			_, _ = w.Write(gleifRecordResp(primary))
 			return
 		}
 		if strings.Contains(r.URL.Path, "/direct-children") {
 			// First page; report 2 pages so it will try to paginate
-			w.Write(gleifChildrenResp(1, 2, page1...))
+			_, _ = w.Write(gleifChildrenResp(1, 2, page1...))
 			return
 		}
 		http.NotFound(w, r)

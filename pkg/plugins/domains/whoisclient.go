@@ -56,7 +56,7 @@ func whoisRaw(ctx context.Context, domain, server string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_ = conn.SetDeadline(time.Now().Add(queryTimeout))
 

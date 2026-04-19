@@ -66,7 +66,7 @@ func TestDNSZoneTransferPlugin_Run_Success(t *testing.T) {
 			m := new(dns.Msg)
 			m.SetReply(r)
 			m.Answer = records
-			w.WriteMsg(m)
+			_ = w.WriteMsg(m)
 		}
 	})
 
@@ -80,7 +80,7 @@ func TestDNSZoneTransferPlugin_Run_Success(t *testing.T) {
 				Ns:  "ns1.example.com.",
 			})
 		}
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 	})
 
 	server := &dns.Server{
@@ -91,8 +91,8 @@ func TestDNSZoneTransferPlugin_Run_Success(t *testing.T) {
 
 	started := make(chan struct{})
 	server.NotifyStartedFunc = func() { close(started) }
-	go server.ActivateAndServe()
-	defer server.Shutdown()
+	go func() { _ = server.ActivateAndServe() }()
+	defer func() { _ = server.Shutdown() }()
 	<-started
 
 	addr := listener.Addr().String()
@@ -151,7 +151,7 @@ func TestDNSZoneTransferPlugin_Run_Refused(t *testing.T) {
 		m := new(dns.Msg)
 		m.SetReply(r)
 		m.Rcode = dns.RcodeRefused
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 	})
 
 	server := &dns.Server{
@@ -162,8 +162,8 @@ func TestDNSZoneTransferPlugin_Run_Refused(t *testing.T) {
 
 	started := make(chan struct{})
 	server.NotifyStartedFunc = func() { close(started) }
-	go server.ActivateAndServe()
-	defer server.Shutdown()
+	go func() { _ = server.ActivateAndServe() }()
+	defer func() { _ = server.Shutdown() }()
 	<-started
 
 	addr := listener.Addr().String()

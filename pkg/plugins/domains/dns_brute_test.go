@@ -41,7 +41,7 @@ func TestDNSBrutePlugin_Run_NoMatch(t *testing.T) {
 		m := new(dns.Msg)
 		m.SetReply(r)
 		m.Rcode = dns.RcodeNameError // NXDOMAIN
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 	})
 
 	server := &dns.Server{
@@ -53,8 +53,8 @@ func TestDNSBrutePlugin_Run_NoMatch(t *testing.T) {
 	started := make(chan struct{})
 	server.NotifyStartedFunc = func() { close(started) }
 
-	go server.ListenAndServe()
-	defer server.Shutdown()
+	go func() { _ = server.ListenAndServe() }()
+	defer func() { _ = server.Shutdown() }()
 	<-started
 
 	p := &DNSBrutePlugin{
@@ -84,14 +84,14 @@ func TestDNSBrutePlugin_Run_WildcardSkip(t *testing.T) {
 				})
 			}
 		}
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 	})
 
 	server := &dns.Server{Addr: "127.0.0.1:0", Net: "udp", Handler: serveMux}
 	started := make(chan struct{})
 	server.NotifyStartedFunc = func() { close(started) }
-	go server.ListenAndServe()
-	defer server.Shutdown()
+	go func() { _ = server.ListenAndServe() }()
+	defer func() { _ = server.Shutdown() }()
 	<-started
 
 	p := &DNSBrutePlugin{
@@ -128,7 +128,7 @@ func TestDNSBrutePlugin_Run(t *testing.T) {
 				m.Rcode = dns.RcodeNameError
 			}
 		}
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 	})
 
 	server := &dns.Server{
@@ -141,8 +141,8 @@ func TestDNSBrutePlugin_Run(t *testing.T) {
 	started := make(chan struct{})
 	server.NotifyStartedFunc = func() { close(started) }
 
-	go server.ListenAndServe()
-	defer server.Shutdown()
+	go func() { _ = server.ListenAndServe() }()
+	defer func() { _ = server.Shutdown() }()
 	<-started
 
 	p := &DNSBrutePlugin{

@@ -86,7 +86,7 @@ func (c *Cache) download(ctx context.Context, url, localPath string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
@@ -97,7 +97,7 @@ func (c *Cache) download(ctx context.Context, url, localPath string) error {
 	if err != nil {
 		return fmt.Errorf("gzip reader: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	// Write atomically via temp file
 	tmp := localPath + ".tmp"
@@ -105,21 +105,21 @@ func (c *Cache) download(ctx context.Context, url, localPath string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close() // Guaranteed cleanup regardless of exit path
+	defer func() { _ = f.Close() }() // Guaranteed cleanup regardless of exit path
 
 	n, err := io.Copy(f, io.LimitReader(gz, maxDecompressedSize+1))
 	if err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	if n > maxDecompressedSize {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("decompressed RPSL file exceeds %d bytes", maxDecompressedSize)
 	}
 
 	// Explicitly close before rename to ensure data is flushed
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("close temp file: %w", err)
 	}
 

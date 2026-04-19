@@ -30,7 +30,7 @@ func TestCache_Download_DecompressesGzip(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/gzip")
 		w.WriteHeader(http.StatusOK)
-		w.Write(gzipBuf.Bytes())
+		_, _ = w.Write(gzipBuf.Bytes())
 	}))
 	defer server.Close()
 
@@ -41,7 +41,7 @@ func TestCache_Download_DecompressesGzip(t *testing.T) {
 	ctx := context.Background()
 	localPath, err := c.GetOrDownload(ctx, server.URL)
 	require.NoError(t, err)
-	defer os.Remove(localPath)
+	defer func() { _ = os.Remove(localPath) }()
 
 	// Verify decompressed content
 	got, err := os.ReadFile(localPath)
@@ -62,14 +62,14 @@ func TestCache_Download_FallbackToStaleOnError(t *testing.T) {
 	// First, create a stale cache file by downloading successfully
 	successServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gzw := gzip.NewWriter(w)
-		gzw.Write([]byte("stale but valid data"))
-		gzw.Close()
+		_, _ = gzw.Write([]byte("stale but valid data"))
+		_ = gzw.Close()
 	}))
 
 	// Download to create cache file
 	localPath, err := c.GetOrDownload(context.Background(), successServer.URL)
 	require.NoError(t, err)
-	defer os.Remove(localPath)
+	defer func() { _ = os.Remove(localPath) }()
 	successServer.Close()
 
 	// Make the file stale (>24h old)
@@ -100,8 +100,8 @@ func TestCache_GetOrDownload_SkipsDownloadWhenFresh(t *testing.T) {
 
 		// Serve gzipped content
 		gzw := gzip.NewWriter(w)
-		gzw.Write([]byte("fresh data"))
-		gzw.Close()
+		_, _ = gzw.Write([]byte("fresh data"))
+		_ = gzw.Close()
 	}))
 	defer server.Close()
 
@@ -113,7 +113,7 @@ func TestCache_GetOrDownload_SkipsDownloadWhenFresh(t *testing.T) {
 	// First call: should download
 	path1, err := c.GetOrDownload(ctx, server.URL)
 	require.NoError(t, err)
-	defer os.Remove(path1)
+	defer func() { _ = os.Remove(path1) }()
 	assert.Equal(t, 1, requestCount, "should make HTTP request on first call")
 
 	// Second call: file is fresh (<24h), should NOT download
@@ -126,8 +126,8 @@ func TestCache_GetOrDownload_SkipsDownloadWhenFresh(t *testing.T) {
 func TestCache_GetOrDownload_RefreshesStaleCache(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gzw := gzip.NewWriter(w)
-		gzw.Write([]byte("refreshed data"))
-		gzw.Close()
+		_, _ = gzw.Write([]byte("refreshed data"))
+		_ = gzw.Close()
 	}))
 	defer server.Close()
 
@@ -139,7 +139,7 @@ func TestCache_GetOrDownload_RefreshesStaleCache(t *testing.T) {
 	// Download initial file
 	path, err := c.GetOrDownload(ctx, server.URL)
 	require.NoError(t, err)
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 
 	// Make file stale
 	oldTime := time.Now().Add(-25 * time.Hour)
@@ -171,8 +171,8 @@ func TestCache_CacheFilename_ConsistentHash(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gzw := gzip.NewWriter(w)
-		gzw.Write([]byte("data"))
-		gzw.Close()
+		_, _ = gzw.Write([]byte("data"))
+		_ = gzw.Close()
 	}))
 	defer server.Close()
 
@@ -181,14 +181,14 @@ func TestCache_CacheFilename_ConsistentHash(t *testing.T) {
 	// Download twice with same URL
 	path1, err := c.GetOrDownload(ctx, server.URL)
 	require.NoError(t, err)
-	defer os.Remove(path1)
+	defer func() { _ = os.Remove(path1) }()
 
 	// Clear file to force re-download
-	os.Remove(path1)
+	_ = os.Remove(path1)
 
 	path2, err := c.GetOrDownload(ctx, server.URL)
 	require.NoError(t, err)
-	defer os.Remove(path2)
+	defer func() { _ = os.Remove(path2) }()
 
 	assert.Equal(t, path1, path2, "same URL should produce same local path")
 }
@@ -203,12 +203,12 @@ func TestCache_AtomicWrite_NoPartialFiles(t *testing.T) {
 	// Server that closes connection mid-response
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gzw := gzip.NewWriter(w)
-		gzw.Write([]byte("partial"))
+		_, _ = gzw.Write([]byte("partial"))
 		// Close without finishing gzip stream
 		hj, ok := w.(http.Hijacker)
 		if ok {
 			conn, _, _ := hj.Hijack()
-			conn.Close()
+			_ = conn.Close()
 		}
 	}))
 	defer server.Close()

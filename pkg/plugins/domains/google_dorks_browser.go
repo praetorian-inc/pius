@@ -117,7 +117,7 @@ func (p *GoogleDorksPlugin) fetchSimpleHTML(ctx context.Context, searchURL strin
 	if err != nil {
 		return "", fmt.Errorf("google search: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("google returned status %d", resp.StatusCode)

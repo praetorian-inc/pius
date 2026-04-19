@@ -277,7 +277,7 @@ func (p *DoHEnumPlugin) queryDoH(ctx context.Context, fqdn string, endpoint DoHE
 	if err != nil {
 		return false, fmt.Errorf("http request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return false, &dohRateLimitError{msg: fmt.Sprintf("rate limited by %s", endpoint.URL)}
@@ -362,7 +362,7 @@ func loadWordlistFile(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open wordlist %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var words []string
 	scanner := bufio.NewScanner(f)

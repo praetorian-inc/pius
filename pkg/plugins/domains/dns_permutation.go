@@ -98,10 +98,8 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 		// Resolve each candidate concurrently.
 		var wg sync.WaitGroup
 		for _, candidate := range unique {
-			select {
-			case <-ctx.Done():
+			if ctx.Err() != nil {
 				break
-			default:
 			}
 
 			wg.Add(1)

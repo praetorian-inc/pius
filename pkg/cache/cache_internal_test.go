@@ -19,7 +19,7 @@ func TestCache_IsStale_WhenFileMissing(t *testing.T) {
 func TestCache_IsStale_WhenFileOld(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "*.rpsl")
 	require.NoError(t, err)
-	f.Close()
+	_ = f.Close()
 
 	// Backdate mtime by 2×TTL
 	old := time.Now().Add(-2 * DefaultTTL)
@@ -32,7 +32,7 @@ func TestCache_IsStale_WhenFileOld(t *testing.T) {
 func TestCache_IsStale_WhenFileFresh(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "*.rpsl")
 	require.NoError(t, err)
-	f.Close()
+	_ = f.Close()
 	// File was just created — mtime is now, well within TTL
 
 	c := &Cache{dir: t.TempDir(), ttl: DefaultTTL}
