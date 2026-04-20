@@ -85,11 +85,10 @@ func TestInvoke_EmitsCIDRs(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, emitted, 1)
 
-	preseed := emitted[0].(capmodel.Preseed)
-	assert.Equal(t, "cidr", preseed.Type)
-	assert.Equal(t, "203.0.113.0/24", preseed.Value)
-	assert.Equal(t, "Acme Corp", preseed.Title)
-	assert.Equal(t, "pius_arin", preseed.Capability)
+	asset := emitted[0].(capmodel.Asset)
+	assert.Equal(t, "203.0.113.0/24", asset.DNS)
+	assert.Equal(t, "203.0.113.0/24", asset.Name)
+	assert.Equal(t, []string{"pius_arin"}, asset.Capability)
 }
 
 func TestInvoke_EmptySource_OmitsOrigins(t *testing.T) {
@@ -143,7 +142,86 @@ func TestInvoke_MixedFindings(t *testing.T) {
 		emitter,
 	)
 	require.NoError(t, err)
-	assert.Len(t, emitted, 2) // cidr-handle should be filtered
+	require.Len(t, emitted, 2) // cidr-handle should be filtered
+
+	// Both domain and CIDR are emitted as capmodel.Asset
+	domainAsset := emitted[0].(capmodel.Asset)
+	assert.Equal(t, "acme.com", domainAsset.DNS)
+	assert.Equal(t, []string{"pius_crt-sh"}, domainAsset.Capability)
+
+	cidrAsset := emitted[1].(capmodel.Asset)
+	assert.Equal(t, "10.0.0.0/24", cidrAsset.DNS)
+	assert.Equal(t, "10.0.0.0/24", cidrAsset.Name)
+	assert.Equal(t, []string{"pius_arin"}, cidrAsset.Capability)
+}
+
+func TestInvoke_CIDREmptySource_OmitsCapability(t *testing.T) {
+	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
+		return []plugins.Finding{
+			{Type: plugins.FindingCIDR, Value: "198.51.100.0/16", Source: ""},
+		}, nil
+	})
+	defer restore()
+
+	d := &Discovery{}
+	var emitted []any
+	emitter := capability.EmitterFunc(func(models ...any) error {
+		emitted = append(emitted, models...)
+		return nil
+	})
+
+	err := d.Invoke(
+		capability.ExecutionContext{},
+		capmodel.Preseed{Type: "whois+company", Title: "Acme Corp", Value: "Acme Corp"},
+		emitter,
+	)
+	require.NoError(t, err)
+	require.Len(t, emitted, 1)
+
+	asset := emitted[0].(capmodel.Asset)
+	assert.Equal(t, "198.51.100.0/16", asset.DNS)
+	assert.Equal(t, "198.51.100.0/16", asset.Name)
+	assert.Nil(t, asset.Capability)
+}
+
+func TestInvoke_MultipleCIDRsFromDifferentSources(t *testing.T) {
+	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
+		return []plugins.Finding{
+			{Type: plugins.FindingCIDR, Value: "203.0.113.0/24", Source: "arin"},
+			{Type: plugins.FindingCIDR, Value: "192.0.2.0/24", Source: "shodan"},
+			{Type: plugins.FindingCIDR, Value: "2001:db8::/32", Source: "rdap"},
+		}, nil
+	})
+	defer restore()
+
+	d := &Discovery{}
+	var emitted []any
+	emitter := capability.EmitterFunc(func(models ...any) error {
+		emitted = append(emitted, models...)
+		return nil
+	})
+
+	err := d.Invoke(
+		capability.ExecutionContext{},
+		capmodel.Preseed{Type: "whois+company", Title: "Acme Corp", Value: "Acme Corp"},
+		emitter,
+	)
+	require.NoError(t, err)
+	require.Len(t, emitted, 3)
+
+	for i, expected := range []struct {
+		dns        string
+		capability string
+	}{
+		{"203.0.113.0/24", "pius_arin"},
+		{"192.0.2.0/24", "pius_shodan"},
+		{"2001:db8::/32", "pius_rdap"},
+	} {
+		asset := emitted[i].(capmodel.Asset)
+		assert.Equal(t, expected.dns, asset.DNS, "emission %d DNS", i)
+		assert.Equal(t, expected.dns, asset.Name, "emission %d Name", i)
+		assert.Equal(t, []string{expected.capability}, asset.Capability, "emission %d Capability", i)
+	}
 }
 
 func TestInvoke_NoFindings(t *testing.T) {

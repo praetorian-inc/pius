@@ -76,17 +76,11 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			Name:       f.Value,
 			Capability: assetCapability,
 		})
-	// CIDRs are emitted as Preseeds with the org name as the title.
 	case plugins.FindingCIDR:
-		title, ok := f.Data["org"].(string)
-		if !ok {
-			title = ""
-		}
-		return output.Emit(capmodel.Preseed{
-			Type:       string(f.Type),
-			Value:      f.Value,
-			Title:      title,
-			Capability: preseedCapability,
+		return output.Emit(capmodel.Asset{
+			DNS:        f.Value,
+			Name:       f.Value,
+			Capability: assetCapability,
 		})
 	case plugins.FindingPreseed:
 		preseedType, _ := f.Data["preseed_type"].(string)
