@@ -33,7 +33,7 @@ func (m *mockHTTPDoer) GetWithHeaders(ctx context.Context, url string, headers m
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
@@ -61,7 +61,7 @@ func TestRDAPPlugin_FetchCIDRs_IPv4(t *testing.T) {
 	}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/rdap+json")
-		fmt.Fprint(w, rdapJSON)
+		_, _ = fmt.Fprint(w, rdapJSON)
 	}))
 	defer srv.Close()
 
@@ -86,7 +86,7 @@ func TestRDAPPlugin_FetchCIDRs_IPv6(t *testing.T) {
 		}]
 	}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, rdapJSON)
+		_, _ = fmt.Fprint(w, rdapJSON)
 	}))
 	defer srv.Close()
 
@@ -102,7 +102,7 @@ func TestRDAPPlugin_FetchCIDRs_IPv6(t *testing.T) {
 
 func TestRDAPPlugin_Run_EmitsFindingCIDR(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"handle":"ACME-1","networks":[{"cidr0_cidrs":[{"v4prefix":"203.0.113.0","length":24}]}]}`)
+		_, _ = fmt.Fprint(w, `{"handle":"ACME-1","networks":[{"cidr0_cidrs":[{"v4prefix":"203.0.113.0","length":24}]}]}`)
 	}))
 	defer srv.Close()
 
@@ -128,7 +128,7 @@ func TestRDAPPlugin_Run_MultipleHandles(t *testing.T) {
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
-		fmt.Fprintf(w, `{"handle":"H%d","networks":[{"cidr0_cidrs":[{"v4prefix":"10.%d.0.0","length":16}]}]}`, callCount, callCount)
+		_, _ = fmt.Fprintf(w, `{"handle":"H%d","networks":[{"cidr0_cidrs":[{"v4prefix":"10.%d.0.0","length":16}]}]}`, callCount, callCount)
 	}))
 	defer srv.Close()
 
@@ -154,7 +154,7 @@ func TestRDAPPlugin_Run_ContinuesOnFailedHandle(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound) // first handle fails
 			return
 		}
-		fmt.Fprint(w, `{"networks":[{"cidr0_cidrs":[{"v4prefix":"10.0.0.0","length":8}]}]}`)
+		_, _ = fmt.Fprint(w, `{"networks":[{"cidr0_cidrs":[{"v4prefix":"10.0.0.0","length":8}]}]}`)
 	}))
 	defer srv.Close()
 

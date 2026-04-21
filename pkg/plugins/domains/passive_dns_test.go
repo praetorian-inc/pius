@@ -37,9 +37,9 @@ func TestPassiveDNSPlugin_Accepts(t *testing.T) {
 	originalKey := os.Getenv("SECURITYTRAILS_API_KEY")
 	defer func() {
 		if originalKey == "" {
-			os.Unsetenv("SECURITYTRAILS_API_KEY")
+			_ = os.Unsetenv("SECURITYTRAILS_API_KEY")
 		} else {
-			os.Setenv("SECURITYTRAILS_API_KEY", originalKey)
+			_ = os.Setenv("SECURITYTRAILS_API_KEY", originalKey)
 		}
 	}()
 
@@ -79,9 +79,9 @@ func TestPassiveDNSPlugin_Accepts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.apiKey == "" {
-				os.Unsetenv("SECURITYTRAILS_API_KEY")
+				_ = os.Unsetenv("SECURITYTRAILS_API_KEY")
 			} else {
-				os.Setenv("SECURITYTRAILS_API_KEY", tt.apiKey)
+				_ = os.Setenv("SECURITYTRAILS_API_KEY", tt.apiKey)
 			}
 
 			result := p.Accepts(tt.input)

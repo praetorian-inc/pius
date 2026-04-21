@@ -10,8 +10,6 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const dnsZoneTransferTimeout = 10 // seconds per nameserver attempt
-
 func init() {
 	plugins.Register("dns-zone-transfer", func() plugins.Plugin {
 		return &DNSZoneTransferPlugin{}

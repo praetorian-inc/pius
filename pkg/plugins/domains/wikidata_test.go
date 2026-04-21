@@ -154,7 +154,7 @@ func TestWikidataPlugin_Run_EmptyOrgName(t *testing.T) {
 func TestWikidataPlugin_Run_NoEntityFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/sparql-results+json")
-		w.Write(wikidataEmptyResponse())
+		_, _ = w.Write(wikidataEmptyResponse())
 	}))
 	defer srv.Close()
 
@@ -173,13 +173,13 @@ func TestWikidataPlugin_Run_WithSubsidiariesAndWebsites(t *testing.T) {
 
 		// First request: company lookup
 		if strings.Contains(query, "rdfs:label") && strings.Contains(query, "wdt:P31") {
-			w.Write(wikidataCompanyResponse("Q2283"))
+			_, _ = w.Write(wikidataCompanyResponse("Q2283"))
 			return
 		}
 
 		// Second request: subsidiaries
 		if strings.Contains(query, "P749") || strings.Contains(query, "P355") {
-			w.Write(wikidataSubsidiaryResponse(
+			_, _ = w.Write(wikidataSubsidiaryResponse(
 				struct{ id, label, website, relation string }{"Q18593264", "LinkedIn", "https://www.linkedin.com", "subsidiary (P749)"},
 				struct{ id, label, website, relation string }{"Q42904", "GitHub", "https://github.com", "subsidiary (P749)"},
 				struct{ id, label, website, relation string }{"Q191789", "Skype", "https://www.skype.com", "owned-by (P127)"},
@@ -219,13 +219,13 @@ func TestWikidataPlugin_Run_SubsidiaryWithoutWebsite(t *testing.T) {
 		query := r.URL.Query().Get("query")
 
 		if strings.Contains(query, "rdfs:label") && strings.Contains(query, "wdt:P31") {
-			w.Write(wikidataCompanyResponse("Q312"))
+			_, _ = w.Write(wikidataCompanyResponse("Q312"))
 			return
 		}
 
 		if strings.Contains(query, "P749") {
 			// Subsidiary without website
-			w.Write(wikidataSubsidiaryResponse(
+			_, _ = w.Write(wikidataSubsidiaryResponse(
 				struct{ id, label, website, relation string }{"Q123456", "Apple Subsidiary LLC", "", "subsidiary (P749)"},
 			))
 			return
@@ -258,13 +258,13 @@ func TestWikidataPlugin_Run_Deduplication(t *testing.T) {
 		query := r.URL.Query().Get("query")
 
 		if strings.Contains(query, "rdfs:label") && strings.Contains(query, "wdt:P31") {
-			w.Write(wikidataCompanyResponse("Q2283"))
+			_, _ = w.Write(wikidataCompanyResponse("Q2283"))
 			return
 		}
 
 		if strings.Contains(query, "P749") {
 			// Same subsidiary appears via different relationships
-			w.Write(wikidataSubsidiaryResponse(
+			_, _ = w.Write(wikidataSubsidiaryResponse(
 				struct{ id, label, website, relation string }{"Q42904", "GitHub", "https://github.com", "subsidiary (P749)"},
 				struct{ id, label, website, relation string }{"Q42904", "GitHub", "https://github.com", "subsidiary (P355)"},
 				struct{ id, label, website, relation string }{"Q42904", "GitHub", "https://github.com", "owned-by (P127)"},
@@ -296,12 +296,12 @@ func TestWikidataPlugin_Run_ConfidenceScoring(t *testing.T) {
 		query := r.URL.Query().Get("query")
 
 		if strings.Contains(query, "rdfs:label") && strings.Contains(query, "wdt:P31") {
-			w.Write(wikidataCompanyResponse("Q2283"))
+			_, _ = w.Write(wikidataCompanyResponse("Q2283"))
 			return
 		}
 
 		if strings.Contains(query, "P749") {
-			w.Write(wikidataSubsidiaryResponse(
+			_, _ = w.Write(wikidataSubsidiaryResponse(
 				struct{ id, label, website, relation string }{"Q42904", "GitHub", "https://github.com", "subsidiary (P749)"},
 				struct{ id, label, website, relation string }{"Q123", "NoWebsite Corp", "", "subsidiary (P749)"},
 			))
@@ -320,10 +320,11 @@ func TestWikidataPlugin_Run_ConfidenceScoring(t *testing.T) {
 		conf, ok := f.Data["confidence"].(float64)
 		require.True(t, ok, "confidence should be set")
 
-		if f.Type == plugins.FindingDomain {
+		switch f.Type {
+		case plugins.FindingDomain:
 			// Domain findings from website should have high confidence
 			assert.Equal(t, plugins.ConfidenceHigh, conf, "domain findings should have high confidence")
-		} else if f.Type == plugins.FindingCIDRHandle {
+		case plugins.FindingCIDRHandle:
 			// Subsidiary name findings should have medium confidence
 			assert.Equal(t, 0.55, conf, "subsidiary name findings should have medium confidence")
 		}
@@ -345,7 +346,7 @@ func TestWikidataPlugin_Run_HTTPError(t *testing.T) {
 func TestWikidataPlugin_Run_InvalidJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/sparql-results+json")
-		w.Write([]byte("not valid json"))
+		_, _ = w.Write([]byte("not valid json"))
 	}))
 	defer srv.Close()
 
@@ -358,10 +359,7 @@ func TestWikidataPlugin_Run_InvalidJSON(t *testing.T) {
 func TestWikidataPlugin_Run_ContextCanceled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Slow response that should be interrupted
-		select {
-		case <-r.Context().Done():
-			return
-		}
+		<-r.Context().Done()
 	}))
 	defer srv.Close()
 
@@ -383,13 +381,13 @@ func TestWikidataPlugin_Run_ExcludesOrgFromFindings(t *testing.T) {
 		query := r.URL.Query().Get("query")
 
 		if strings.Contains(query, "rdfs:label") && strings.Contains(query, "wdt:P31") {
-			w.Write(wikidataCompanyResponse("Q2283"))
+			_, _ = w.Write(wikidataCompanyResponse("Q2283"))
 			return
 		}
 
 		if strings.Contains(query, "P749") {
 			// Include the parent org name in subsidiaries (should be excluded)
-			w.Write(wikidataSubsidiaryResponse(
+			_, _ = w.Write(wikidataSubsidiaryResponse(
 				struct{ id, label, website, relation string }{"Q2283", "Microsoft", "https://microsoft.com", "subsidiary (P749)"},
 				struct{ id, label, website, relation string }{"Q42904", "GitHub", "https://github.com", "subsidiary (P749)"},
 			))

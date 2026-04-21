@@ -13,7 +13,7 @@ func parseRPSLInetnums(filePath string, handles []string) (map[string][]ipRange,
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Normalize handles for matching
 	handleSet := make(map[string]bool)
@@ -41,7 +41,7 @@ func parseRPSLInetnums(filePath string, handles []string) (map[string][]ipRange,
 				})
 			}
 			// Reset for next record
-			currentInetnum, currentOrg, currentNetname = "", "", ""
+			currentOrg, currentNetname = "", ""
 			inetnumStart, inetnumEnd = "", ""
 			continue
 		}

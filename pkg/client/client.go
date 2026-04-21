@@ -108,22 +108,22 @@ func (c *Client) do(ctx context.Context, method, url string, body []byte, header
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			retryErrs = append(retryErrs, fmt.Errorf("attempt %d: rate limited by %s", attempt+1, sanitizeURL(url)))
 			continue
 		}
 		if resp.StatusCode >= 500 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			retryErrs = append(retryErrs, fmt.Errorf("attempt %d: server error %d from %s", attempt+1, resp.StatusCode, sanitizeURL(url)))
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, sanitizeURL(url))
 		}
 
 		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("read response: %w", err)
 		}

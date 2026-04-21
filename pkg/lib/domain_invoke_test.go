@@ -126,9 +126,10 @@ func TestDomainInvoke_EmitsCIDRs(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, emitted, 1)
 
-	preseed := emitted[0].(capmodel.Preseed)
-	assert.Equal(t, "cidr", preseed.Type)
-	assert.Equal(t, "198.51.100.0/24", preseed.Value)
+	asset := emitted[0].(capmodel.Asset)
+	assert.Equal(t, "198.51.100.0/24", asset.DNS)
+	assert.Equal(t, "198.51.100.0/24", asset.Name)
+	assert.Equal(t, []string{"pius_arin"}, asset.Capability)
 }
 
 func TestDomainInvoke_FiltersCIDRHandles(t *testing.T) {
@@ -154,7 +155,16 @@ func TestDomainInvoke_FiltersCIDRHandles(t *testing.T) {
 		emitter,
 	)
 	require.NoError(t, err)
-	assert.Len(t, emitted, 2, "cidr-handle must be filtered out")
+	require.Len(t, emitted, 2, "cidr-handle must be filtered out")
+
+	// Both domain and CIDR are emitted as capmodel.Asset
+	domainAsset := emitted[0].(capmodel.Asset)
+	assert.Equal(t, "sub.example.com", domainAsset.DNS)
+
+	cidrAsset := emitted[1].(capmodel.Asset)
+	assert.Equal(t, "10.0.0.0/8", cidrAsset.DNS)
+	assert.Equal(t, "10.0.0.0/8", cidrAsset.Name)
+	assert.Equal(t, []string{"pius_arin"}, cidrAsset.Capability)
 }
 
 func TestDomainInvoke_PipelineError(t *testing.T) {

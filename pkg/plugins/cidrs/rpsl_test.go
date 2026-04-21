@@ -14,7 +14,7 @@ func writeTempRPSL(t *testing.T, content string) string {
 	require.NoError(t, err)
 	_, err = f.WriteString(content)
 	require.NoError(t, err)
-	f.Close()
+	_ = f.Close()
 	return f.Name()
 }
 

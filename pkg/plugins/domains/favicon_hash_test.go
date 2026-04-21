@@ -267,21 +267,21 @@ func newFaviconTestPlugin(faviconSrv, shodanSrv, fofaSrv *httptest.Server) *Favi
 func mockFaviconServer(body []byte, status int) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 }
 
 func mockShodanServer(matches []shodanMatch) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(shodanResponse{Matches: matches})
+		_ = json.NewEncoder(w).Encode(shodanResponse{Matches: matches})
 	}))
 }
 
 func mockFOFAServer(results [][]string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(fofaResponse{Results: results})
+		_ = json.NewEncoder(w).Encode(fofaResponse{Results: results})
 	}))
 }
 

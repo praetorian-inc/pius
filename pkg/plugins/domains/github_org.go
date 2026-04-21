@@ -133,10 +133,8 @@ func (p *GitHubOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	// Step 2: Fetch full org details and score each candidate
 	var findings []plugins.Finding
 	for _, item := range result.Items {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			break
-		default:
 		}
 
 		org, err := p.fetchOrg(ctx, item.Login, headers)

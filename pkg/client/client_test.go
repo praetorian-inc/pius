@@ -17,7 +17,7 @@ func TestClient_Get_LimitsResponseSize(t *testing.T) {
 	largeResponse := strings.Repeat("x", 11*1024*1024) // 11 MB
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(largeResponse))
+		_, _ = w.Write([]byte(largeResponse))
 	}))
 	defer server.Close()
 
@@ -35,7 +35,7 @@ func TestClient_Get_AllowsResponsesUnder10MB(t *testing.T) {
 	smallResponse := strings.Repeat("y", 5*1024*1024) // 5 MB
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(smallResponse))
+		_, _ = w.Write([]byte(smallResponse))
 	}))
 	defer server.Close()
 
@@ -53,7 +53,7 @@ func TestClient_PostWithHeaders_SendsHeadersAndBody(t *testing.T) {
 		assert.Equal(t, "Bearer my-token", r.Header.Get("Authorization"))
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer server.Close()
 
@@ -70,7 +70,7 @@ func TestClient_PostWithHeaders_LimitsResponseSize(t *testing.T) {
 	largeResponse := strings.Repeat("x", 11*1024*1024)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(largeResponse))
+		_, _ = w.Write([]byte(largeResponse))
 	}))
 	defer server.Close()
 

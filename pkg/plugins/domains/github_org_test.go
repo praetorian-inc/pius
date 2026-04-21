@@ -41,7 +41,7 @@ func mockGitHubServer(t *testing.T, orgs []githubOrg) *httptest.Server {
 					"score": 1.0,
 				}
 			}
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"total_count": len(orgs),
 				"items":       items,
 			})
@@ -51,12 +51,12 @@ func mockGitHubServer(t *testing.T, orgs []githubOrg) *httptest.Server {
 		// /orgs/{login}
 		for _, org := range orgs {
 			if r.URL.Path == fmt.Sprintf("/orgs/%s", org.Login) {
-				json.NewEncoder(w).Encode(org)
+				_ = json.NewEncoder(w).Encode(org)
 				return
 			}
 		}
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{}`))
 	}))
 }
 
@@ -296,7 +296,7 @@ func TestGitHubOrgPlugin_Run_UsesCacheOnSecondCall(t *testing.T) {
 		callCount++
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/search/users" {
-			json.NewEncoder(w).Encode(map[string]any{"total_count": 0, "items": []any{}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"total_count": 0, "items": []any{}})
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
