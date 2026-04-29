@@ -11,7 +11,7 @@ require (
 	github.com/chromedp/chromedp v0.14.2
 	github.com/likexian/whois-parser v1.24.21
 	github.com/miekg/dns v1.1.72
-	github.com/praetorian-inc/capability-sdk v0.0.0-20260327190348-f1423fe9c678
+	github.com/praetorian-inc/capability-sdk v0.0.0-20260429163819-b5e04656d5b8
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/twmb/murmur3 v1.1.8
