@@ -194,13 +194,13 @@ func (p *WikidataPlugin) findCompanyEntity(ctx context.Context, orgName string) 
 	// SPARQL query to find company entity by label
 	// Filters for instances of company (Q783794), business (Q4830453), or organization (Q43229)
 	query := fmt.Sprintf(`
-SELECT ?company WHERE {
-  ?company rdfs:label "%s"@en .
-  { ?company wdt:P31/wdt:P279* wd:Q783794 }  # instance of company
+SELECT ?entity WHERE {
+  ?entity rdfs:label "%s"@en .
+  { ?entity wdt:P31/wdt:P279* wd:Q783794 }  # instance of company
   UNION
-  { ?company wdt:P31/wdt:P279* wd:Q4830453 } # instance of business
+  { ?entity wdt:P31/wdt:P279* wd:Q4830453 } # instance of business
   UNION
-  { ?company wdt:P31/wdt:P279* wd:Q43229 }   # instance of organization
+  { ?entity wdt:P31/wdt:P279* wd:Q43229 }   # instance of organization
 }
 LIMIT 1
 `, escapeSPARQL(orgName))
