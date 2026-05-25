@@ -35,6 +35,86 @@ type CensysOrgPlugin struct {
 
 const censysDefaultBaseURL = "https://api.platform.censys.io"
 
+// infraOrgDenyList contains organization names that appear in TLS certificate
+// Subject Organization fields but represent infrastructure providers, not the
+// actual operator. Keyed by lowercase for case-insensitive matching.
+var infraOrgDenyList = map[string]bool{
+	// CDN / Edge / WAF — terminate TLS on behalf of customers
+	"cloudflare, inc.":                     true,
+	"cloudflare":                           true,
+	"akamai technologies, inc.":            true,
+	"akamai international b.v.":            true,
+	"fastly, inc.":                         true,
+	"imperva, inc.":                        true,
+	"incapsula inc":                        true,
+	"sucuri":                               true,
+	"stackpath, llc":                       true,
+	"f5 networks, inc.":                    true,
+	"f5, inc.":                             true,
+	"verizon digital media services, inc.": true,
+
+	// Cloud / PaaS — shared certs carry provider's org name
+	"amazon.com, inc.":             true,
+	"amazon technologies, inc.":    true,
+	"amazon web services, inc.":    true,
+	"amazon":                       true,
+	"microsoft corporation":        true,
+	"microsoft":                    true,
+	"google llc":                   true,
+	"google inc":                   true,
+	"google trust services llc":    true,
+	"google trust services":        true,
+	"oracle corporation":           true,
+	"ibm":                          true,
+	"alibaba cloud computing ltd.": true,
+	"digitalocean, llc":            true,
+	"linode, llc":                  true,
+	"hetzner online gmbh":          true,
+	"ovhcloud":                     true,
+	"ovh sas":                      true,
+	"rackspace us, inc.":           true,
+
+	// Hosting platforms — serve certs with platform org name
+	"automattic, inc.":               true,
+	"shopify inc.":                   true,
+	"squarespace, inc.":              true,
+	"github, inc.":                   true,
+	"netlify":                        true,
+	"vercel inc.":                    true,
+	"heroku, inc.":                   true,
+	"wix.com ltd.":                   true,
+	"wp engine, inc.":                true,
+	"godaddy operating company, llc": true,
+	"godaddy.com, inc.":              true,
+	"newfold digital, inc.":          true,
+	"unified layer":                  true,
+	"siteground hosting ltd.":        true,
+	"dreamhost, llc":                 true,
+	"hostinger international ltd.":   true,
+	"pantheon systems, inc.":         true,
+
+	// Hosting control panels — auto-provision certs with panel vendor org
+	"cpanel, inc.":               true,
+	"cpanel, l.l.c.":             true,
+	"plesk":                      true,
+	"parallels international gmbh": true,
+
+	// CAs that appear as Subject O on shared/managed certs
+	"let's encrypt":                    true,
+	"internet security research group": true,
+	"digicert inc":                     true,
+	"sectigo limited":                  true,
+	"comodo ca limited":                true,
+	"globalsign nv-sa":                 true,
+	"zerossl":                          true,
+	"trustasia technologies, inc.":     true,
+	"starfield technologies, inc.":     true,
+	"entrust, inc.":                    true,
+	"ssl.com":                          true,
+	"certainly":                        true,
+	"plex, inc.":                       true,
+}
+
 func (p *CensysOrgPlugin) censysBaseURL() string {
 	if p.baseURL != "" {
 		return p.baseURL
@@ -264,6 +344,9 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 					if org == "" || strings.EqualFold(org, orgName) {
 						continue // skip empty and self-match
 					}
+					if infraOrgDenyList[strings.ToLower(org)] {
+						continue // skip infrastructure providers
+					}
 					if orgHosts[org] == nil {
 						orgHosts[org] = make(map[string]bool)
 					}
@@ -292,9 +375,9 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 		}
 	}
 
-	// Emit preseed for any org name that appears across 2+ distinct hosts.
+	// Emit preseed for any org name that appears across 5+ distinct hosts.
 	for org, hosts := range orgHosts {
-		if len(hosts) < 2 {
+		if len(hosts) < 5 {
 			continue
 		}
 		f := plugins.Finding{

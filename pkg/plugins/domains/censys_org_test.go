@@ -3,6 +3,7 @@ package domains
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -356,7 +357,10 @@ func TestCensysOrgPlugin_ExtractPreseeds_MultiHostEmitsPreseed(t *testing.T) {
 	hits := []censysSearchHit{
 		makeHitFull(hitOpts{ip: "1.2.3.4", certOrgNames: []string{"Contoso Ltd"}}),
 		makeHitFull(hitOpts{ip: "5.6.7.8", certOrgNames: []string{"Contoso Ltd"}}),
-		makeHitFull(hitOpts{ip: "9.10.11.12", certOrgNames: []string{"Different Corp"}}),
+		makeHitFull(hitOpts{ip: "9.10.11.12", certOrgNames: []string{"Contoso Ltd"}}),
+		makeHitFull(hitOpts{ip: "13.14.15.16", certOrgNames: []string{"Contoso Ltd"}}),
+		makeHitFull(hitOpts{ip: "17.18.19.20", certOrgNames: []string{"Contoso Ltd"}}),
+		makeHitFull(hitOpts{ip: "21.22.23.24", certOrgNames: []string{"Different Corp"}}),
 	}
 
 	findings := p.extractFindings("Acme Corp", hits)
@@ -368,7 +372,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_MultiHostEmitsPreseed(t *testing.T) {
 		}
 	}
 
-	require.Len(t, preseeds, 1, "only 'Contoso Ltd' appears on 2+ hosts")
+	require.Len(t, preseeds, 1, "only 'Contoso Ltd' appears on 5+ hosts")
 	assert.Equal(t, "Contoso Ltd", preseeds[0].Value)
 	assert.Equal(t, "censys-org", preseeds[0].Source)
 }
@@ -411,6 +415,9 @@ func TestCensysOrgPlugin_ExtractPreseeds_DataFields(t *testing.T) {
 	hits := []censysSearchHit{
 		makeHitFull(hitOpts{ip: "1.2.3.4", certOrgNames: []string{"Subsidiary Inc"}}),
 		makeHitFull(hitOpts{ip: "5.6.7.8", certOrgNames: []string{"Subsidiary Inc"}}),
+		makeHitFull(hitOpts{ip: "9.10.11.12", certOrgNames: []string{"Subsidiary Inc"}}),
+		makeHitFull(hitOpts{ip: "13.14.15.16", certOrgNames: []string{"Subsidiary Inc"}}),
+		makeHitFull(hitOpts{ip: "17.18.19.20", certOrgNames: []string{"Subsidiary Inc"}}),
 	}
 
 	findings := p.extractFindings("Acme Corp", hits)
@@ -426,7 +433,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_DataFields(t *testing.T) {
 
 	assert.Equal(t, "whois+company", preseed.Data["preseed_type"])
 	assert.Equal(t, "Subsidiary Inc", preseed.Data["preseed_title"])
-	assert.Equal(t, 2, preseed.Data["host_count"])
+	assert.Equal(t, 5, preseed.Data["host_count"])
 	assert.Equal(t, "subject_organization", preseed.Data["field"])
 	assert.Equal(t, "Acme Corp", preseed.Data["org"])
 }
@@ -653,6 +660,95 @@ func TestCensysOrgPlugin_Run_GracefulOnNilResult(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
 	assert.NoError(t, err)
 	assert.Empty(t, findings)
+}
+
+
+// ── Deny list tests ────────────────────────────────────────────────────────────
+
+// TestCensysOrgPlugin_ExtractPreseeds_DenyListBlocksCDN verifies that an org
+// name in the infrastructure deny list is never emitted as a preseed, even when
+// it appears on 10+ distinct hosts.
+func TestCensysOrgPlugin_ExtractPreseeds_DenyListBlocksCDN(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	// Build 10 hits with Cloudflare as the Subject Organization.
+	var hits []censysSearchHit
+	for i := 0; i < 10; i++ {
+		hits = append(hits, makeHitFull(hitOpts{
+			ip:           fmt.Sprintf("1.2.3.%d", i+1),
+			certOrgNames: []string{"Cloudflare, Inc."},
+		}))
+	}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	for _, f := range findings {
+		assert.NotEqual(t, plugins.FindingPreseed, f.Type,
+			"infrastructure org 'Cloudflare, Inc.' must never emit preseed")
+	}
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_DenyListCaseInsensitive verifies that
+// deny-list matching is case-insensitive (e.g., "CLOUDFLARE, INC." is blocked).
+func TestCensysOrgPlugin_ExtractPreseeds_DenyListCaseInsensitive(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	var hits []censysSearchHit
+	for i := 0; i < 10; i++ {
+		hits = append(hits, makeHitFull(hitOpts{
+			ip:           fmt.Sprintf("2.3.4.%d", i+1),
+			certOrgNames: []string{"CLOUDFLARE, INC."},
+		}))
+	}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	for _, f := range findings {
+		assert.NotEqual(t, plugins.FindingPreseed, f.Type,
+			"deny-list check must be case-insensitive: 'CLOUDFLARE, INC.' must be blocked")
+	}
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_ThresholdBelowFiveNoPreseed verifies that
+// an org appearing on exactly 3 hosts does not emit a preseed (below the 5-host
+// threshold).
+func TestCensysOrgPlugin_ExtractPreseeds_ThresholdBelowFiveNoPreseed(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{
+		makeHitFull(hitOpts{ip: "10.0.0.1", certOrgNames: []string{"Widget LLC"}}),
+		makeHitFull(hitOpts{ip: "10.0.0.2", certOrgNames: []string{"Widget LLC"}}),
+		makeHitFull(hitOpts{ip: "10.0.0.3", certOrgNames: []string{"Widget LLC"}}),
+	}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	for _, f := range findings {
+		assert.NotEqual(t, plugins.FindingPreseed, f.Type,
+			"org on 3 hosts must not emit preseed (threshold is 5)")
+	}
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_ThresholdAtFiveEmitsPreseed verifies that
+// an org appearing on exactly 5 hosts does emit a preseed (meets threshold).
+func TestCensysOrgPlugin_ExtractPreseeds_ThresholdAtFiveEmitsPreseed(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{
+		makeHitFull(hitOpts{ip: "10.1.0.1", certOrgNames: []string{"Threshold Corp"}}),
+		makeHitFull(hitOpts{ip: "10.1.0.2", certOrgNames: []string{"Threshold Corp"}}),
+		makeHitFull(hitOpts{ip: "10.1.0.3", certOrgNames: []string{"Threshold Corp"}}),
+		makeHitFull(hitOpts{ip: "10.1.0.4", certOrgNames: []string{"Threshold Corp"}}),
+		makeHitFull(hitOpts{ip: "10.1.0.5", certOrgNames: []string{"Threshold Corp"}}),
+	}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	var preseeds []plugins.Finding
+	for _, f := range findings {
+		if f.Type == plugins.FindingPreseed {
+			preseeds = append(preseeds, f)
+		}
+	}
+
+	require.Len(t, preseeds, 1, "org on exactly 5 hosts must emit preseed")
+	assert.Equal(t, "Threshold Corp", preseeds[0].Value)
 }
 
 // ── Registry ──────────────────────────────────────────────────────────────────
