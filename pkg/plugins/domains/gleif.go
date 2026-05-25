@@ -200,8 +200,11 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	var findings []plugins.Finding
 
 	addFinding := func(f plugins.Finding) {
+		if f.Value == "" {
+			return
+		}
 		key := string(f.Type) + "|" + f.Value
-		if key != "|" && !seen[key] {
+		if !seen[key] {
 			seen[key] = true
 			findings = append(findings, f)
 		}
