@@ -66,6 +66,7 @@ The runner (`pkg/runner/run.go`) executes plugins in phases:
 - `FindingCIDRHandle` - internal, filtered from output
 - `FindingCIDR` - discovered CIDR block
 - `FindingDomain` - discovered domain name
+- `FindingPreseed` - discovered organizational seed (company name, email); emitted as `capmodel.Preseed` via `invoke.go`
 
 ### Plugin Patterns
 

@@ -90,12 +90,14 @@ func (p *GoogleDorksPlugin) Run(ctx context.Context, input plugins.Input) ([]plu
 	if p.renderEnabled {
 		browserCtx, cleanupFn, err := p.initBrowser(ctx)
 		if err != nil {
-			slog.Warn("[google-dorks] failed to launch browser", "err", err)
-			return nil, nil
+			slog.Warn("[google-dorks] browser unavailable, falling back to HTTP", "err", err)
+			cleanup = func() {}
+			fetch = func(u string) (string, error) { return p.fetchSimpleHTML(ctx, u) }
+		} else {
+			cleanup = cleanupFn
+			p.handleConsent(browserCtx)
+			fetch = func(u string) (string, error) { return p.fetchRenderedHTML(browserCtx, u) }
 		}
-		cleanup = cleanupFn
-		p.handleConsent(browserCtx)
-		fetch = func(u string) (string, error) { return p.fetchRenderedHTML(browserCtx, u) }
 	} else {
 		cleanup = func() {}
 		fetch = func(u string) (string, error) { return p.fetchSimpleHTML(ctx, u) }

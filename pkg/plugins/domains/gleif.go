@@ -159,6 +159,25 @@ func recordToFinding(record leiRecord, relationshipType string, confidence float
 	return f
 }
 
+// recordToPreseed converts a GLEIF LEI record to a FindingPreseed.
+// Used for parent and subsidiary records so the CIDR discovery pipeline
+// can work when WHOIS returns nothing (GDPR redaction).
+func recordToPreseed(record leiRecord, confidence float64) plugins.Finding {
+	f := plugins.Finding{
+		Type:   plugins.FindingPreseed,
+		Value:  record.Attributes.Entity.LegalName.Name,
+		Source: "gleif",
+		Data: map[string]any{
+			"preseed_type":  "whois+company",
+			"preseed_title": record.Attributes.Entity.LegalName.Name,
+			"lei":           record.ID,
+			"jurisdiction":  record.Attributes.Entity.Jurisdiction,
+		},
+	}
+	plugins.SetConfidence(&f, confidence)
+	return f
+}
+
 // ── Run ───────────────────────────────────────────────────────────────────────
 
 func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
@@ -175,12 +194,18 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 		return nil, nil
 	}
 
+	// seen deduplicates by (Type, Value) pair so that FindingDomain and
+	// FindingPreseed with the same Value are both emitted.
 	seen := make(map[string]bool)
 	var findings []plugins.Finding
 
 	addFinding := func(f plugins.Finding) {
-		if f.Value != "" && !seen[f.Value] {
-			seen[f.Value] = true
+		if f.Value == "" {
+			return
+		}
+		key := string(f.Type) + "|" + f.Value
+		if !seen[key] {
+			seen[key] = true
 			findings = append(findings, f)
 		}
 	}
@@ -203,6 +228,7 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 				log.Printf("[gleif] parent record failed for %s: %v", directParentLEI, err)
 			} else {
 				addFinding(recordToFinding(*parentRecord, "direct-parent", plugins.ConfidenceHigh))
+				addFinding(recordToPreseed(*parentRecord, plugins.ConfidenceHigh))
 			}
 
 			// Ultimate parent — only emit if different from direct parent.
@@ -214,6 +240,7 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 					log.Printf("[gleif] ultimate parent record failed for %s: %v", ultimateParentLEI, err)
 				} else {
 					addFinding(recordToFinding(*ultimateRecord, "ultimate-parent", plugins.ConfidenceHigh))
+					addFinding(recordToPreseed(*ultimateRecord, plugins.ConfidenceHigh))
 				}
 			}
 		}
@@ -230,10 +257,12 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	for _, child := range children {
 		if child.Attributes.Entity.LegalName.Name != "" {
 			addFinding(recordToFinding(child, "subsidiary", plugins.ConfidenceHigh))
+			addFinding(recordToPreseed(child, plugins.ConfidenceHigh))
 		}
 	}
 
 	// Additional name-match candidates at low confidence.
+	// Do NOT emit preseeds for these — ConfidenceLow would generate noise.
 	for _, c := range candidates[1:] {
 		if c.Attributes.Entity.LegalName.Name != "" {
 			addFinding(recordToFinding(c, "name-match", plugins.ConfidenceLow))

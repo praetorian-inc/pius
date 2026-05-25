@@ -159,23 +159,22 @@ func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 			}
 		}
 
-		// Also emit the subsidiary name for further enrichment
-		// (other plugins like reverse-whois can resolve to domains)
 		entityName := r.EntityLabel.Value
-		if entityName != "" && !seen[entityName] && entityName != input.OrgName {
+		if entityName != "" && !seen[entityName] && !strings.EqualFold(entityName, input.OrgName) {
 			seen[entityName] = true
 			f := plugins.Finding{
-				Type:   plugins.FindingCIDRHandle, // Internal finding for subsidiary names
+				Type:   plugins.FindingPreseed,
 				Value:  entityName,
 				Source: p.Name(),
 				Data: map[string]any{
-					"org":          input.OrgName,
-					"wikidata_id":  extractEntityID(r.Entity.Value),
-					"relationship": r.Relation.Value,
-					"method":       "wikidata-sparql",
+					"preseed_type":  "whois+company",
+					"preseed_title": entityName,
+					"org":           input.OrgName,
+					"wikidata_id":   extractEntityID(r.Entity.Value),
+					"relationship":  r.Relation.Value,
+					"method":        "wikidata-sparql",
 				},
 			}
-			// Subsidiary names need verification
 			plugins.SetConfidence(&f, 0.55)
 			findings = append(findings, f)
 		}
@@ -195,13 +194,13 @@ func (p *WikidataPlugin) findCompanyEntity(ctx context.Context, orgName string) 
 	// SPARQL query to find company entity by label
 	// Filters for instances of company (Q783794), business (Q4830453), or organization (Q43229)
 	query := fmt.Sprintf(`
-SELECT ?company WHERE {
-  ?company rdfs:label "%s"@en .
-  { ?company wdt:P31/wdt:P279* wd:Q783794 }  # instance of company
+SELECT ?entity WHERE {
+  ?entity rdfs:label "%s"@en .
+  { ?entity wdt:P31/wdt:P279* wd:Q783794 }  # instance of company
   UNION
-  { ?company wdt:P31/wdt:P279* wd:Q4830453 } # instance of business
+  { ?entity wdt:P31/wdt:P279* wd:Q4830453 } # instance of business
   UNION
-  { ?company wdt:P31/wdt:P279* wd:Q43229 }   # instance of organization
+  { ?entity wdt:P31/wdt:P279* wd:Q43229 }   # instance of organization
 }
 LIMIT 1
 `, escapeSPARQL(orgName))
