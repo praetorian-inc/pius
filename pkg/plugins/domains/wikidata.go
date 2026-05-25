@@ -160,7 +160,7 @@ func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 		}
 
 		entityName := r.EntityLabel.Value
-		if entityName != "" && !seen[entityName] && entityName != input.OrgName {
+		if entityName != "" && !seen[entityName] && !strings.EqualFold(entityName, input.OrgName) {
 			seen[entityName] = true
 			f := plugins.Finding{
 				Type:   plugins.FindingPreseed,
