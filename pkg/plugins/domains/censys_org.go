@@ -316,8 +316,11 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 	seenCIDRs := make(map[string]bool)
 	var findings []plugins.Finding
 
-	// orgHosts tracks how many distinct host IPs carry each cert Organization name.
+	// orgHosts tracks distinct host IPs per org name (lowercased key for
+	// case-insensitive deduplication). orgDisplay maps the lowercased key to
+	// the first-seen original casing so the preseed Value preserves it.
 	orgHosts := make(map[string]map[string]bool)
+	orgDisplay := make(map[string]string)
 
 	for _, hit := range hits {
 		if hit.Host == nil || hit.Host.Resource == nil {
@@ -339,18 +342,22 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 				}
 
 				// Collect org names from TLS cert Subject Organization fields.
+				// Use lowercase keys so casing variants ("Acme Corp" / "ACME CORP")
+				// merge into the same bucket.
 				for _, org := range svc.Cert.Parsed.Subject.Organization {
 					org = strings.TrimSpace(org)
 					if org == "" || strings.EqualFold(org, orgName) {
 						continue // skip empty and self-match
 					}
-					if infraOrgDenyList[strings.ToLower(org)] {
+					orgKey := strings.ToLower(org)
+					if infraOrgDenyList[orgKey] {
 						continue // skip infrastructure providers
 					}
-					if orgHosts[org] == nil {
-						orgHosts[org] = make(map[string]bool)
+					if orgHosts[orgKey] == nil {
+						orgHosts[orgKey] = make(map[string]bool)
+						orgDisplay[orgKey] = org // preserve first-seen original casing
 					}
-					orgHosts[org][res.IP] = true
+					orgHosts[orgKey][res.IP] = true
 				}
 			}
 		}
@@ -376,17 +383,19 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 	}
 
 	// Emit preseed for any org name that appears across 5+ distinct hosts.
-	for org, hosts := range orgHosts {
+	// orgKey is the lowercase-normalized key; orgDisplay[orgKey] is the original casing.
+	for orgKey, hosts := range orgHosts {
 		if len(hosts) < 5 {
 			continue
 		}
+		displayName := orgDisplay[orgKey]
 		f := plugins.Finding{
 			Type:   plugins.FindingPreseed,
-			Value:  org,
+			Value:  displayName,
 			Source: "censys-org",
 			Data: map[string]any{
 				"preseed_type":  "whois+company",
-				"preseed_title": org,
+				"preseed_title": displayName,
 				"org":           orgName,
 				"field":         "subject_organization",
 				"host_count":    len(hosts),

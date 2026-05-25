@@ -751,6 +751,40 @@ func TestCensysOrgPlugin_ExtractPreseeds_ThresholdAtFiveEmitsPreseed(t *testing.
 	assert.Equal(t, "Threshold Corp", preseeds[0].Value)
 }
 
+
+// TestCensysOrgPlugin_ExtractPreseeds_CasingVariantsMerged verifies that casing
+// variants of the same org name (e.g. "Acme Corp" and "ACME CORP") are merged
+// into a single preseed bucket. Three hosts with "Acme Corp" and three hosts with
+// "ACME CORP" combine to six hosts total -- above the 5-host threshold -- so exactly
+// one preseed is emitted. The Value must use the first-seen original casing.
+func TestCensysOrgPlugin_ExtractPreseeds_CasingVariantsMerged(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{
+		// First-seen casing is "Acme Corp"
+		makeHitFull(hitOpts{ip: "1.1.1.1", certOrgNames: []string{"Acme Corp"}}),
+		makeHitFull(hitOpts{ip: "1.1.1.2", certOrgNames: []string{"Acme Corp"}}),
+		makeHitFull(hitOpts{ip: "1.1.1.3", certOrgNames: []string{"Acme Corp"}}),
+		// Different casing variant -- must be merged, not a separate bucket
+		makeHitFull(hitOpts{ip: "2.2.2.1", certOrgNames: []string{"ACME CORP"}}),
+		makeHitFull(hitOpts{ip: "2.2.2.2", certOrgNames: []string{"ACME CORP"}}),
+		makeHitFull(hitOpts{ip: "2.2.2.3", certOrgNames: []string{"ACME CORP"}}),
+	}
+
+	// Input orgName is different so self-match exclusion does not apply.
+	findings := p.extractFindings("Different Org", hits)
+
+	var preseeds []plugins.Finding
+	for _, f := range findings {
+		if f.Type == plugins.FindingPreseed {
+			preseeds = append(preseeds, f)
+		}
+	}
+
+	require.Len(t, preseeds, 1, "casing variants must be merged into a single preseed")
+	assert.Equal(t, "Acme Corp", preseeds[0].Value, "Value must use first-seen original casing")
+	assert.Equal(t, 6, preseeds[0].Data["host_count"], "host_count must reflect all variants combined")
+}
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 func TestCensysOrgPlugin_IsRegistered(t *testing.T) {
