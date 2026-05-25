@@ -309,7 +309,7 @@ func buildCensysQuery(orgName, domain string) string {
 
 // extractFindings collects unique domains, CIDR blocks, and org-name preseeds
 // from search hits. A preseed is emitted for any TLS cert Subject Organization
-// name (other than the searched orgName itself) that appears across 2+ distinct
+// name (other than the searched orgName itself) that appears across 5+ distinct
 // host IPs.
 func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit) []plugins.Finding {
 	seenDomains := make(map[string]bool)
