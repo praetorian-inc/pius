@@ -53,6 +53,40 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	return extractPreseeds(parsed), nil
 }
 
+// whoisPrivacyGuards contains organization names used by WHOIS privacy
+// services. These appear as registrant org but don't represent the actual
+// domain owner. Keyed by lowercase for case-insensitive matching.
+var whoisPrivacyGuards = map[string]bool{
+	"domains by proxy, llc":              true,
+	"domains by proxy":                   true,
+	"whoisguard, inc.":                   true,
+	"whoisguard protected":               true,
+	"whoisguard":                         true,
+	"privacy protect, llc":               true,
+	"contact privacy inc.":               true,
+	"contact privacy inc. customer":      true,
+	"privacyprotect.org":                 true,
+	"whois privacy corp.":                true,
+	"perfect privacy, llc":               true,
+	"data protected":                     true,
+	"identity protection service":        true,
+	"withheld for privacy":               true,
+	"redacted for privacy":               true,
+	"statutory masking enabled":          true,
+	"super privacy service ltd":          true,
+	"privacy service provided by withheld for privacy ehf": true,
+	"domain protection services, inc.":                     true,
+	"contactprivacy.com":                                   true,
+	"private by design, llc":                               true,
+	"domain privacy group, inc.":                           true,
+	"whoisprivacyprotect.com":                              true,
+	"gandi sas":                                            true,
+	"tucows domains inc.":                                  true,
+	"privacy hero, inc.":                                   true,
+	"proxy protection llc":                                 true,
+	"id shield":                                            true,
+}
+
 // extractPreseeds pulls registrant organization, name, and email from WHOIS contacts.
 func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
 	type param struct {
@@ -82,6 +116,9 @@ func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
 				continue
 			}
 			if p.name == "email" && !isEmail(p.value) {
+				continue
+			}
+			if p.name == "company" && whoisPrivacyGuards[strings.ToLower(p.value)] {
 				continue
 			}
 			seen[p] = true
