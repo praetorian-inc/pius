@@ -53,6 +53,33 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	return extractPreseeds(parsed), nil
 }
 
+// whoisPrivacyNames contains name-field values used by WHOIS privacy
+// services. These appear as registrant name but don't identify a real person.
+// Keyed by lowercase for case-insensitive matching.
+var whoisPrivacyNames = map[string]bool{
+	"registration private":                  true,
+	"domain admin":                          true,
+	"domain administrator":                  true,
+	"whois agent":                           true,
+	"whois privacy":                         true,
+	"data protected":                        true,
+	"redacted for privacy":                  true,
+	"withheld for privacy":                  true,
+	"contact privacy inc. customer":         true,
+	"identity protection service":           true,
+	"domain privacy group":                  true,
+	"private registration":                  true,
+	"not disclosed":                         true,
+	"statutory masking enabled":             true,
+	"admin":                                 true,
+	"hostmaster":                            true,
+	"dns admin":                             true,
+	"domain hostmaster":                     true,
+	"abuse":                                 true,
+	"postmaster":                            true,
+	"super privacy service ltd c/o migadu": true,
+}
+
 // whoisPrivacyGuards contains organization names used by WHOIS privacy
 // services. These appear as registrant org but don't represent the actual
 // domain owner. Keyed by lowercase for case-insensitive matching.
@@ -119,6 +146,9 @@ func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
 				continue
 			}
 			if p.name == "company" && whoisPrivacyGuards[strings.ToLower(p.value)] {
+				continue
+			}
+			if p.name == "name" && whoisPrivacyNames[strings.ToLower(p.value)] {
 				continue
 			}
 			seen[p] = true
