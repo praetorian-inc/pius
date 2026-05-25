@@ -131,8 +131,8 @@ type censysHostService struct {
 }
 
 type censysServiceCert struct {
-	Names  []string             `json:"names,omitempty"`
-	Parsed *censysCertParsed    `json:"parsed,omitempty"`
+	Names  []string          `json:"names,omitempty"`
+	Parsed *censysCertParsed `json:"parsed,omitempty"`
 }
 
 type censysCertParsed struct {
@@ -227,11 +227,17 @@ func buildCensysQuery(orgName, domain string) string {
 	return query
 }
 
-// extractFindings collects unique domains and CIDR blocks from search hits.
+// extractFindings collects unique domains, CIDR blocks, and org-name preseeds
+// from search hits. A preseed is emitted for any TLS cert Subject Organization
+// name (other than the searched orgName itself) that appears across 2+ distinct
+// host IPs.
 func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit) []plugins.Finding {
 	seenDomains := make(map[string]bool)
 	seenCIDRs := make(map[string]bool)
 	var findings []plugins.Finding
+
+	// orgHosts tracks how many distinct host IPs carry each cert Organization name.
+	orgHosts := make(map[string]map[string]bool)
 
 	for _, hit := range hits {
 		if hit.Host == nil || hit.Host.Resource == nil {
@@ -250,6 +256,18 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 			if svc.Cert.Parsed != nil && svc.Cert.Parsed.Subject != nil {
 				for _, cn := range svc.Cert.Parsed.Subject.CommonName {
 					p.emitDomain(&findings, seenDomains, orgName, cn, "subject_cn")
+				}
+
+				// Collect org names from TLS cert Subject Organization fields.
+				for _, org := range svc.Cert.Parsed.Subject.Organization {
+					org = strings.TrimSpace(org)
+					if org == "" || strings.EqualFold(org, orgName) {
+						continue // skip empty and self-match
+					}
+					if orgHosts[org] == nil {
+						orgHosts[org] = make(map[string]bool)
+					}
+					orgHosts[org][res.IP] = true
 				}
 			}
 		}
@@ -272,6 +290,27 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 		if res.AutonomousSystem != nil && res.AutonomousSystem.BGPPrefix != "" {
 			p.emitCIDR(&findings, seenCIDRs, orgName, res.AutonomousSystem.BGPPrefix, "bgp_prefix")
 		}
+	}
+
+	// Emit preseed for any org name that appears across 2+ distinct hosts.
+	for org, hosts := range orgHosts {
+		if len(hosts) < 2 {
+			continue
+		}
+		f := plugins.Finding{
+			Type:   plugins.FindingPreseed,
+			Value:  org,
+			Source: "censys-org",
+			Data: map[string]any{
+				"preseed_type":  "whois+company",
+				"preseed_title": org,
+				"org":           orgName,
+				"field":         "subject_organization",
+				"host_count":    len(hosts),
+			},
+		}
+		plugins.SetConfidence(&f, plugins.ConfidenceHigh)
+		findings = append(findings, f)
 	}
 
 	return findings

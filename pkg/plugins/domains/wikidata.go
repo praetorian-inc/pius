@@ -159,23 +159,22 @@ func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 			}
 		}
 
-		// Also emit the subsidiary name for further enrichment
-		// (other plugins like reverse-whois can resolve to domains)
 		entityName := r.EntityLabel.Value
 		if entityName != "" && !seen[entityName] && entityName != input.OrgName {
 			seen[entityName] = true
 			f := plugins.Finding{
-				Type:   plugins.FindingCIDRHandle, // Internal finding for subsidiary names
+				Type:   plugins.FindingPreseed,
 				Value:  entityName,
 				Source: p.Name(),
 				Data: map[string]any{
-					"org":          input.OrgName,
-					"wikidata_id":  extractEntityID(r.Entity.Value),
-					"relationship": r.Relation.Value,
-					"method":       "wikidata-sparql",
+					"preseed_type":  "whois+company",
+					"preseed_title": entityName,
+					"org":           input.OrgName,
+					"wikidata_id":   extractEntityID(r.Entity.Value),
+					"relationship":  r.Relation.Value,
+					"method":        "wikidata-sparql",
 				},
 			}
-			// Subsidiary names need verification
 			plugins.SetConfidence(&f, 0.55)
 			findings = append(findings, f)
 		}

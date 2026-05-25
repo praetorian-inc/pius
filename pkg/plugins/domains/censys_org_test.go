@@ -108,11 +108,13 @@ func TestBuildCensysQuery_OrgAndDomain(t *testing.T) {
 // ── extractFindings ────────────────────────────────────────────────────────────
 
 type hitOpts struct {
-	certNames []string
-	cnNames   []string
-	reverseDNS []string
-	whoisCIDRs []string
-	bgpPrefix  string
+	ip           string
+	certNames    []string
+	cnNames      []string
+	certOrgNames []string
+	reverseDNS   []string
+	whoisCIDRs   []string
+	bgpPrefix    string
 }
 
 func makeHit(certNames []string, cnNames []string, reverseDNS []string) censysSearchHit {
@@ -120,12 +122,20 @@ func makeHit(certNames []string, cnNames []string, reverseDNS []string) censysSe
 }
 
 func makeHitFull(opts hitOpts) censysSearchHit {
+	ip := opts.ip
+	if ip == "" {
+		ip = "1.2.3.4"
+	}
+
 	var services []censysHostService
-	if len(opts.certNames) > 0 || len(opts.cnNames) > 0 {
+	if len(opts.certNames) > 0 || len(opts.cnNames) > 0 || len(opts.certOrgNames) > 0 {
 		cert := &censysServiceCert{Names: opts.certNames}
-		if len(opts.cnNames) > 0 {
+		if len(opts.cnNames) > 0 || len(opts.certOrgNames) > 0 {
 			cert.Parsed = &censysCertParsed{
-				Subject: &censysCertSubject{CommonName: opts.cnNames},
+				Subject: &censysCertSubject{
+					CommonName:   opts.cnNames,
+					Organization: opts.certOrgNames,
+				},
 			}
 		}
 		services = append(services, censysHostService{Cert: cert})
@@ -153,7 +163,7 @@ func makeHitFull(opts hitOpts) censysSearchHit {
 	return censysSearchHit{
 		Host: &censysHostHit{
 			Resource: &censysHostResource{
-				IP:               "1.2.3.4",
+				IP:               ip,
 				Services:         services,
 				DNS:              dns,
 				Whois:            whois,
@@ -334,6 +344,91 @@ func TestCensysOrgPlugin_ExtractFindings_MixedDomainsAndCIDRs(t *testing.T) {
 	assert.Contains(t, domains, "www.acme.com")
 	assert.Contains(t, cidrs, "203.0.113.0/24")
 	assert.Contains(t, cidrs, "198.51.100.0/22")
+}
+
+// ── extractFindings — Preseeds from TLS cert Subject Organization ──────────────
+
+// TestCensysOrgPlugin_ExtractPreseeds_MultiHostEmitsPreseed verifies that when
+// the same Organization name appears in TLS cert subject fields across 2+ distinct
+// host IPs, a single FindingPreseed is emitted.
+func TestCensysOrgPlugin_ExtractPreseeds_MultiHostEmitsPreseed(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{
+		makeHitFull(hitOpts{ip: "1.2.3.4", certOrgNames: []string{"Contoso Ltd"}}),
+		makeHitFull(hitOpts{ip: "5.6.7.8", certOrgNames: []string{"Contoso Ltd"}}),
+		makeHitFull(hitOpts{ip: "9.10.11.12", certOrgNames: []string{"Different Corp"}}),
+	}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	var preseeds []plugins.Finding
+	for _, f := range findings {
+		if f.Type == plugins.FindingPreseed {
+			preseeds = append(preseeds, f)
+		}
+	}
+
+	require.Len(t, preseeds, 1, "only 'Contoso Ltd' appears on 2+ hosts")
+	assert.Equal(t, "Contoso Ltd", preseeds[0].Value)
+	assert.Equal(t, "censys-org", preseeds[0].Source)
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_SingleHostNoPreseed verifies that an
+// Organization appearing on only one host does not emit a preseed.
+func TestCensysOrgPlugin_ExtractPreseeds_SingleHostNoPreseed(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{
+		makeHitFull(hitOpts{ip: "1.2.3.4", certOrgNames: []string{"Lonely Corp"}}),
+	}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	for _, f := range findings {
+		assert.NotEqual(t, plugins.FindingPreseed, f.Type, "single-host org must not emit preseed")
+	}
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_SelfMatchExcluded verifies that the searched
+// orgName itself is not emitted as a preseed even when it appears on multiple hosts.
+func TestCensysOrgPlugin_ExtractPreseeds_SelfMatchExcluded(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{
+		makeHitFull(hitOpts{ip: "1.2.3.4", certOrgNames: []string{"Acme Corp"}}),
+		makeHitFull(hitOpts{ip: "5.6.7.8", certOrgNames: []string{"Acme Corp"}}),
+	}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	for _, f := range findings {
+		assert.NotEqual(t, plugins.FindingPreseed, f.Type, "orgName itself must not be emitted as preseed")
+	}
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_DataFields verifies that preseed findings
+// contain the required metadata fields.
+func TestCensysOrgPlugin_ExtractPreseeds_DataFields(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{
+		makeHitFull(hitOpts{ip: "1.2.3.4", certOrgNames: []string{"Subsidiary Inc"}}),
+		makeHitFull(hitOpts{ip: "5.6.7.8", certOrgNames: []string{"Subsidiary Inc"}}),
+	}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	var preseed *plugins.Finding
+	for i := range findings {
+		if findings[i].Type == plugins.FindingPreseed && findings[i].Value == "Subsidiary Inc" {
+			preseed = &findings[i]
+			break
+		}
+	}
+	require.NotNil(t, preseed, "preseed for 'Subsidiary Inc' must be emitted")
+
+	assert.Equal(t, "whois+company", preseed.Data["preseed_type"])
+	assert.Equal(t, "Subsidiary Inc", preseed.Data["preseed_title"])
+	assert.Equal(t, 2, preseed.Data["host_count"])
+	assert.Equal(t, "subject_organization", preseed.Data["field"])
+	assert.Equal(t, "Acme Corp", preseed.Data["org"])
 }
 
 // ── Cache integration ─────────────────────────────────────────────────────────

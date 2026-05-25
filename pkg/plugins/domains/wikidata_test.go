@@ -239,17 +239,19 @@ func TestWikidataPlugin_Run_SubsidiaryWithoutWebsite(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Apple Inc"})
 	require.NoError(t, err)
 
-	// Should have a FindingCIDRHandle for the subsidiary name (for further enrichment)
-	var handleFindings []plugins.Finding
+	// Should have a FindingPreseed for the subsidiary name (for further enrichment)
+	var preseedFindings []plugins.Finding
 	for _, f := range findings {
-		if f.Type == plugins.FindingCIDRHandle {
-			handleFindings = append(handleFindings, f)
+		if f.Type == plugins.FindingPreseed {
+			preseedFindings = append(preseedFindings, f)
 		}
 	}
 
-	require.Len(t, handleFindings, 1)
-	assert.Equal(t, "Apple Subsidiary LLC", handleFindings[0].Value)
-	assert.Equal(t, "wikidata", handleFindings[0].Source)
+	require.Len(t, preseedFindings, 1)
+	assert.Equal(t, "Apple Subsidiary LLC", preseedFindings[0].Value)
+	assert.Equal(t, "wikidata", preseedFindings[0].Source)
+	assert.Equal(t, "whois+company", preseedFindings[0].Data["preseed_type"])
+	assert.Equal(t, "Apple Subsidiary LLC", preseedFindings[0].Data["preseed_title"])
 }
 
 func TestWikidataPlugin_Run_Deduplication(t *testing.T) {
@@ -324,7 +326,7 @@ func TestWikidataPlugin_Run_ConfidenceScoring(t *testing.T) {
 		case plugins.FindingDomain:
 			// Domain findings from website should have high confidence
 			assert.Equal(t, plugins.ConfidenceHigh, conf, "domain findings should have high confidence")
-		case plugins.FindingCIDRHandle:
+		case plugins.FindingPreseed:
 			// Subsidiary name findings should have medium confidence
 			assert.Equal(t, 0.55, conf, "subsidiary name findings should have medium confidence")
 		}
@@ -402,10 +404,10 @@ func TestWikidataPlugin_Run_ExcludesOrgFromFindings(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Microsoft"})
 	require.NoError(t, err)
 
-	// Should not emit "Microsoft" as a FindingCIDRHandle (but domain is OK)
+	// Should not emit "Microsoft" as a FindingPreseed (but domain is OK)
 	for _, f := range findings {
-		if f.Type == plugins.FindingCIDRHandle {
-			assert.NotEqual(t, "Microsoft", f.Value, "should not emit org name as CIDR handle")
+		if f.Type == plugins.FindingPreseed {
+			assert.NotEqual(t, "Microsoft", f.Value, "should not emit org name as preseed")
 		}
 	}
 }
