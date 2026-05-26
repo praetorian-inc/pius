@@ -11,6 +11,8 @@ BUILD_DIR ?= bin
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
 
+GOLANGCI_LINT_VERSION ?= v2.12.2
+
 # Auto-discover source files
 GO_SOURCES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
 
@@ -37,7 +39,14 @@ test/cover: ## Run tests with HTML coverage report
 	@echo "Coverage report: coverage.html"
 
 lint: ## Run linter (requires golangci-lint)
-	golangci-lint run ./...
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run ./...; \
+	elif go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) 2>/dev/null; then \
+		golangci-lint run ./...; \
+	else \
+		echo "golangci-lint not available, running go vet..."; \
+		go vet ./...; \
+	fi
 
 clean: ## Remove build artifacts and coverage reports
 	rm -rf $(BUILD_DIR) coverage.out coverage.html
