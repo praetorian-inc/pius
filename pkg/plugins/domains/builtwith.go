@@ -96,7 +96,7 @@ func (p *BuiltWithPlugin) lookup(ctx context.Context, apiKey, analyticsID string
 	reqURL := fmt.Sprintf(
 		"%s/tag1/api.json?KEY=%s&LOOKUP=%s",
 		p.apiBase(),
-		apiKey,
+		url.QueryEscape(apiKey),
 		url.QueryEscape(analyticsID),
 	)
 

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/praetorian-inc/pius/pkg/client"
@@ -22,7 +21,7 @@ func TestBuiltWith_Accepts_WithKeyAndAnalyticsIDs(t *testing.T) {
 }
 
 func TestBuiltWith_Accepts_RejectsWithoutKey(t *testing.T) {
-	os.Unsetenv("BUILTWITH_API_KEY")
+	t.Setenv("BUILTWITH_API_KEY", "")
 	p := &BuiltWithPlugin{client: client.New()}
 
 	assert.False(t, p.Accepts(plugins.Input{Meta: map[string]string{"analytics_ids": "UA-12345"}}))

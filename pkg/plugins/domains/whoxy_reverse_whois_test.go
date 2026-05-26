@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/praetorian-inc/pius/pkg/client"
@@ -22,7 +21,7 @@ func TestWhoxyReverseWhois_Accepts_WithKeyAndOrg(t *testing.T) {
 }
 
 func TestWhoxyReverseWhois_Accepts_RejectsWithoutKey(t *testing.T) {
-	os.Unsetenv("WHOXY_API_KEY")
+	t.Setenv("WHOXY_API_KEY", "")
 	p := &WhoxyReverseWhoisPlugin{client: client.New()}
 
 	assert.False(t, p.Accepts(plugins.Input{OrgName: "Acme Corp"}))

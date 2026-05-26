@@ -13,6 +13,8 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
+const maxWhoxyPages = 100
+
 func init() {
 	plugins.Register("whoxy-reverse-whois", func() plugins.Plugin { return &WhoxyReverseWhoisPlugin{client: client.New()} })
 }
@@ -75,7 +77,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 			if result.DomainName == "" {
 				continue
 			}
-			if whoxyDomainTenYearsOld(result.QueryTime) {
+			if whoxyRecordStale(result.QueryTime) {
 				continue
 			}
 			domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(result.DomainName), "."))
@@ -98,7 +100,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 			findings = append(findings, f)
 		}
 
-		if len(resp.SearchResult) == 0 || page >= totalPages {
+		if len(resp.SearchResult) == 0 || page >= totalPages || page >= maxWhoxyPages {
 			break
 		}
 		page++
@@ -111,7 +113,7 @@ func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, orgName
 	reqURL := fmt.Sprintf(
 		"%s/?key=%s&reverse=whois&name=%s&mode=micro&page=%d",
 		p.apiBase(),
-		apiKey,
+		url.QueryEscape(apiKey),
 		url.QueryEscape(orgName),
 		page,
 	)
@@ -130,12 +132,13 @@ func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, orgName
 	return resp, nil
 }
 
-// whoxyDomainTenYearsOld reports whether the WHOIS query_time indicates the
-// domain was registered more than 10 years ago. Matches guard-core logic.
-func whoxyDomainTenYearsOld(queryTime string) bool {
+// whoxyRecordStale filters out records where Whoxy's query_time (last cache
+// refresh) is older than 10 years. This is guard-core parity — note that
+// query_time is NOT the domain registration date but when Whoxy last crawled it.
+func whoxyRecordStale(queryTime string) bool {
 	t, err := time.Parse(time.DateTime, queryTime)
 	if err != nil {
-		return false
+		return true
 	}
 	return t.Before(time.Now().AddDate(-10, 0, 0))
 }
