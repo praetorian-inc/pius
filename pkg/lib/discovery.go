@@ -31,7 +31,8 @@ var pluginNames = []string{
 	// API-key plugins (ENG-1908)
 	"shodan", "dnsdb", "crunchbase", "opencorporates",
 	"proxycurl", "diffbot", "securitytrails", "virustotal",
-	"binaryedge", "censys", "viewdns",
+	"binaryedge", "censys", "viewdns", "whoxy-reverse-whois",
+	"builtwith",
 }
 
 // piusParams returns the shared parameter list for both capability variants.
@@ -62,6 +63,9 @@ func piusParams(defaultMode string) []capability.Parameter {
 		capability.String("censys_api_token", "Censys Platform API token (Personal Access Token)"),
 		capability.String("censys_org_id", "Censys organization ID"),
 		capability.String("viewdns_api_key", "ViewDNS API key"),
+		capability.String("whoxy_api_key", "Whoxy API key"),
+		capability.String("builtwith_api_key", "BuiltWith API key"),
+		capability.String("analytics_ids", "Comma-separated analytics tracking IDs"),
 
 		// --- Per-plugin configuration ---
 
