@@ -3,8 +3,10 @@ package domains
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/praetorian-inc/pius/pkg/client"
@@ -96,6 +98,12 @@ func TestParseTrackingIDList_EmptyInput(t *testing.T) {
 	assert.Empty(t, ids)
 }
 
+func TestParseTrackingIDList_ExtractsExactMatch(t *testing.T) {
+	ids := parseTrackingIDList("UA-12345-1 trailing garbage")
+	require.Len(t, ids, 1)
+	assert.Equal(t, "UA-12345-1", ids[0].value)
+}
+
 // ── extractFromDomain ─────────────────────────────────────────────────────────
 
 func TestGATrackingPlugin_ExtractFromDomain_ExtractsUAIDs(t *testing.T) {
@@ -150,6 +158,26 @@ func TestGATrackingPlugin_ExtractFromDomain_EmptyHTMLReturnsNoIDs(t *testing.T) 
 	assert.Empty(t, ids)
 }
 
+func TestGATrackingPlugin_ExtractFromDomain_CapsIDs(t *testing.T) {
+	var html strings.Builder
+	html.WriteString("<html>")
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&html, "UA-%d-1 ", 10000+i)
+	}
+	html.WriteString("</html>")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(html.String()))
+	}))
+	defer srv.Close()
+
+	p := &GATrackingPlugin{client: client.New(), targetURL: srv.URL}
+	ids, err := p.extractFromDomain(context.Background(), "example.com")
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(ids), maxTrackingIDsPerDomain, "should cap extracted UA IDs")
+}
+
 // ── parseSpyOnWebResponse ─────────────────────────────────────────────────────
 
 func TestParseSpyOnWebResponse_Found_Analytics(t *testing.T) {
@@ -195,6 +223,13 @@ func TestParseSpyOnWebResponse_NotFound(t *testing.T) {
 	tid := trackingID{value: "UA-99999-1", idType: "analytics"}
 
 	findings, err := parseSpyOnWebResponse(body, tid, plugins.Input{})
+	require.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
+func TestParseSpyOnWebResponse_ErrorStatus(t *testing.T) {
+	body := []byte(`{"status":"error"}`)
+	findings, err := parseSpyOnWebResponse(body, trackingID{value: "UA-1234-1", idType: "analytics"}, plugins.Input{})
 	require.NoError(t, err)
 	assert.Empty(t, findings)
 }
@@ -398,6 +433,21 @@ func TestGATrackingPlugin_Run_GracefulOnTargetFetchError(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Empty(t, findings)
+}
+
+func TestGATrackingPlugin_QuerySpyOnWeb_StripsPropertySuffix(t *testing.T) {
+	t.Setenv("SPYONWEB_API_KEY", "test-key")
+	var capturedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"not_found"}`))
+	}))
+	defer srv.Close()
+
+	p := &GATrackingPlugin{client: client.New(), spyonwebURL: srv.URL}
+	_, _ = p.querySpyOnWeb(context.Background(), trackingID{value: "UA-15207196-1", idType: "analytics"}, plugins.Input{})
+	assert.Equal(t, "/analytics/UA-15207196", capturedPath, "should strip property suffix for analytics queries")
 }
 
 func TestGATrackingPlugin_Run_NoTrackingIDsFound(t *testing.T) {

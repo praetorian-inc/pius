@@ -57,6 +57,10 @@ type trackingID struct {
 	idType string // "analytics" or "adsense"
 }
 
+// maxTrackingIDsPerDomain caps the number of UA or pub IDs extracted from a
+// single HTML page. Any legitimate page will have far fewer than 10.
+const maxTrackingIDsPerDomain = 10
+
 // gaRegex matches Universal Analytics IDs (UA-XXXXX-X).
 var gaRegex = regexp.MustCompile(`\bUA-\d{4,10}-\d{1,4}\b`)
 
@@ -123,14 +127,14 @@ func parseTrackingIDList(raw string) []trackingID {
 		}
 		switch {
 		case strings.HasPrefix(part, "UA-"):
-			if gaRegex.MatchString(part) {
-				result = append(result, trackingID{value: part, idType: "analytics"})
+			if match := gaRegex.FindString(part); match != "" {
+				result = append(result, trackingID{value: match, idType: "analytics"})
 			} else {
 				slog.Warn("ga-tracking: malformed UA tracking ID, skipping", "id", part)
 			}
 		case strings.HasPrefix(part, "pub-"):
-			if adsenseRegex.MatchString(part) {
-				result = append(result, trackingID{value: part, idType: "adsense"})
+			if match := adsenseRegex.FindString(part); match != "" {
+				result = append(result, trackingID{value: match, idType: "adsense"})
 			} else {
 				slog.Warn("ga-tracking: malformed AdSense publisher ID, skipping", "id", part)
 			}
@@ -159,10 +163,10 @@ func (p *GATrackingPlugin) extractFromDomain(ctx context.Context, domain string)
 	html := string(body)
 	var ids []trackingID
 
-	for _, ua := range gaRegex.FindAllString(html, -1) {
+	for _, ua := range gaRegex.FindAllString(html, maxTrackingIDsPerDomain) {
 		ids = append(ids, trackingID{value: ua, idType: "analytics"})
 	}
-	for _, pub := range adsenseRegex.FindAllString(html, -1) {
+	for _, pub := range adsenseRegex.FindAllString(html, maxTrackingIDsPerDomain) {
 		ids = append(ids, trackingID{value: pub, idType: "adsense"})
 	}
 
@@ -227,13 +231,23 @@ func (p *GATrackingPlugin) querySpyOnWeb(ctx context.Context, tid trackingID, in
 		base = p.spyonwebURL
 	}
 
+	// SpyOnWeb indexes by account ID (UA-15207196), not property ID (UA-15207196-1).
+	// Strip the last "-N" suffix for analytics queries so the lookup succeeds.
+	queryID := tid.value
+	if tid.idType == "analytics" {
+		if i := strings.LastIndex(queryID, "-"); i > 0 {
+			queryID = queryID[:i]
+		}
+	}
+
 	reqURL := fmt.Sprintf("%s/%s/%s?access_token=%s",
-		base, tid.idType, url.PathEscape(tid.value), url.QueryEscape(apiKey))
+		base, tid.idType, url.PathEscape(queryID), url.QueryEscape(apiKey))
 
 	body, err := p.client.Get(ctx, reqURL)
 	if err != nil {
-		// Sanitize error — don't include the API key from the URL.
-		return nil, fmt.Errorf("ga-tracking: SpyOnWeb request failed for %s", tid.value)
+		// pkg/client sanitizes the access_token via sanitizeURL() before wrapping errors,
+		// so it is safe to wrap and propagate here.
+		return nil, fmt.Errorf("ga-tracking: SpyOnWeb request for %s: %w", tid.value, err)
 	}
 
 	return parseSpyOnWebResponse(body, tid, input)
@@ -255,6 +269,10 @@ func parseSpyOnWebResponse(body []byte, tid trackingID, input plugins.Input) ([]
 	}
 
 	if resp.Status == "not_found" {
+		return nil, nil
+	}
+	if resp.Status != "found" {
+		slog.Warn("ga-tracking: SpyOnWeb returned unexpected status", "status", resp.Status, "tracking_id", tid.value)
 		return nil, nil
 	}
 
