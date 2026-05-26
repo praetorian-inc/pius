@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -65,8 +66,8 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 	for {
 		resp, err := p.fetchPage(ctx, apiKey, input.OrgName, page)
 		if err != nil {
-			// Stop pagination on error — return partial results rather than none.
-			return findings, fmt.Errorf("whoxy-reverse-whois: page %d for %q: %w", page, input.OrgName, err)
+			slog.Warn("whoxy-reverse-whois: stopping pagination", "page", page, "org", input.OrgName, "error", err)
+			break
 		}
 
 		if resp.TotalPages > 0 {
