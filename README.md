@@ -2,7 +2,7 @@
 
 # Pius - Attack Surface Discovery & OSINT Reconnaissance Tool
 
-> Discover domains, subdomains, and IP ranges (CIDRs) owned by any organization using certificate transparency, RIR registries, passive DNS, and 24 extensible plugins.
+> Discover domains, subdomains, and IP ranges (CIDRs) owned by any organization using certificate transparency, RIR registries, passive DNS, and 26 extensible plugins.
 
 [![CI](https://github.com/praetorian-inc/pius/actions/workflows/ci.yaml/badge.svg)](https://github.com/praetorian-inc/pius/actions/workflows/ci.yaml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/praetorian-inc/pius)](go.mod)
@@ -10,7 +10,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/praetorian-inc/pius)](https://goreportcard.com/report/github.com/praetorian-inc/pius)
 [![GitHub Release](https://img.shields.io/github/v/release/praetorian-inc/pius?include_prereleases&sort=semver)](https://github.com/praetorian-inc/pius/releases)
 
-**Pius** is an open-source attack surface discovery tool written in Go. Given a company name, it maps the complete external attack surface: domains, subdomains, and IP ranges (CIDRs). Pius queries certificate transparency logs, all five regional Internet registries (ARIN, RIPE, APNIC, AFRINIC, LACNIC), passive DNS databases, WHOIS/RDAP, BGP tables, and more through 24 discovery plugins.
+**Pius** is an open-source attack surface discovery tool written in Go. Given a company name, it maps the complete external attack surface: domains, subdomains, and IP ranges (CIDRs). Pius queries certificate transparency logs, all five regional Internet registries (ARIN, RIPE, APNIC, AFRINIC, LACNIC), passive DNS databases, WHOIS/RDAP, BGP tables, and more through 26 discovery plugins.
 
 Built for penetration testers, bug bounty hunters, and security teams who need reliable, repeatable asset discovery. Unlike ad-hoc reconnaissance scripts, Pius is production-grade: concurrent plugin execution, a three-phase discovery pipeline, multi-tier caching, confidence scoring for ambiguous results, graceful degradation, and passive-first OSINT defaults.
 
@@ -63,7 +63,7 @@ Pius fills the gap between subdomain enumeration tools (like subfinder) and full
 
 | Feature | Description |
 |---------|-------------|
-| **24 Discovery Plugins** | 15 domain plugins + 9 CIDR plugins covering certificate transparency, passive DNS, WHOIS, RDAP, RPSL, BGP tables, favicon hashing, and subdomain permutation |
+| **26 Discovery Plugins** | 17 domain plugins + 9 CIDR plugins covering certificate transparency, passive DNS, WHOIS, RDAP, RPSL, BGP tables, favicon hashing, and subdomain permutation |
 | **All 5 RIRs** | ARIN (North America), RIPE (Europe/Middle East), APNIC (Asia-Pacific), AFRINIC (Africa), LACNIC (Latin America) |
 | **Three-Phase Pipeline** | Phase 0 runs independently, Phase 1 discovers RIR org handles, Phase 2 resolves handles to CIDRs; late-stage plugins enrich results using discovered assets |
 | **Confidence Scoring** | Ambiguous name-to-asset mappings are scored and flagged for review rather than silently dropped |
@@ -124,7 +124,7 @@ pius list
 
 ### Domain Plugins
 
-All domain plugins run in Phase 0 (independent, concurrent). They emit discovered domain names.
+Most domain plugins run in Phase 0 (independent, concurrent). Late-stage plugins run in Phase 3. They emit discovered domain names.
 
 | Plugin | Data Source | Auth Required | Mode | Notes |
 |--------|-------------|---------------|------|-------|
@@ -134,6 +134,8 @@ All domain plugins run in Phase 0 (independent, concurrent). They emit discovere
 | `gleif` | GLEIF LEI corporate registry | None | Passive | Discovers parent/subsidiary domains |
 | `passive-dns` | SecurityTrails passive DNS | `SECURITYTRAILS_API_KEY` | Passive | Historical subdomain records |
 | `reverse-whois` | ViewDNS reverse WHOIS | `VIEWDNS_API_KEY` | Passive | 0.75 confidence; registrant email matching |
+| `whoxy-reverse-whois` | Whoxy reverse WHOIS API | `WHOXY_API_KEY` | Passive | Paginated lookup; stale-record filter; 0.75 confidence |
+| `builtwith` | BuiltWith tag lookup API | `BUILTWITH_API_KEY` | Passive | Phase 3; correlates domains via shared analytics tracking codes |
 | `dns-brute` | Local DNS resolver | None | **Active** | 50 concurrent goroutines; embedded wordlist |
 | `dns-zone-transfer` | DNS AXFR | None | **Active** | Extracts A, AAAA, CNAME, MX, SRV records |
 | `doh-enum` | DNS-over-HTTPS resolvers | AWS credentials (optional) | **Active** | 50 concurrent workers; round-robin endpoint rotation; optional API Gateway deployment for IP diversity |

@@ -138,6 +138,8 @@ var piusCredentialMapping = map[string]string{
 	"censys_api_token":       "CENSYS_API_TOKEN",
 	"censys_org_id":          "CENSYS_ORG_ID",
 	"viewdns_api_key":        "VIEWDNS_API_KEY",
+	"whoxy_api_key":          "WHOXY_API_KEY",
+	"builtwith_api_key":      "BUILTWITH_API_KEY",
 	"github_token":           "GITHUB_TOKEN",
 }
 
@@ -167,6 +169,7 @@ var pluginMetaKeys = []string{
 	"doh_deploy_gateways",
 	"dns_brute_concurrency",
 	"google_dorks_max_subsidiaries",
+	"analytics_ids",
 }
 
 // bridgeMeta reads plugin-specific parameters from the execution context
