@@ -247,7 +247,7 @@ func (p *GATrackingPlugin) querySpyOnWeb(ctx context.Context, tid trackingID, in
 	if err != nil {
 		// pkg/client sanitizes the access_token via sanitizeURL() before wrapping errors,
 		// so it is safe to wrap and propagate here.
-		return nil, fmt.Errorf("ga-tracking: SpyOnWeb request for %s: %w", tid.value, err)
+		return nil, fmt.Errorf("ga-tracking: SpyOnWeb request failed for %s", tid.value)
 	}
 
 	return parseSpyOnWebResponse(body, tid, input)
