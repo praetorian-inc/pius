@@ -12,3 +12,6 @@ coverage.html
 # Claude Code internals
 .claude/hooks/
 .claude/.output/
+
+# graphify code knowledge graph (built locally / in CI; do not commit the 50k+ node graph)
+graphify-out/
