@@ -27,7 +27,7 @@ type WhoxyReverseWhoisPlugin struct {
 
 func (p *WhoxyReverseWhoisPlugin) Name() string { return "whoxy-reverse-whois" }
 func (p *WhoxyReverseWhoisPlugin) Description() string {
-	return "Reverse WHOIS via Whoxy API — discovers related domains by registrant name (paid, requires WHOXY_API_KEY)"
+	return "Reverse WHOIS via Whoxy API — discovers related domains by registrant organization name or email (paid, requires WHOXY_API_KEY)"
 }
 func (p *WhoxyReverseWhoisPlugin) Category() string { return "domain" }
 func (p *WhoxyReverseWhoisPlugin) Phase() int       { return 0 }
