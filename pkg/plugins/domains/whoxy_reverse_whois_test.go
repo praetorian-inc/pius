@@ -35,6 +35,20 @@ func TestWhoxyReverseWhois_Accepts_RejectsWithoutOrgName(t *testing.T) {
 	assert.False(t, p.Accepts(plugins.Input{Domain: "acme.com"}))
 }
 
+func TestWhoxyReverseWhois_Accepts_WithKeyAndEmail(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "test-key")
+	p := &WhoxyReverseWhoisPlugin{client: client.New()}
+	assert.True(t, p.Accepts(plugins.Input{Email: "admin@acme.com"}))
+}
+
+func TestWhoxyReverseWhois_Accepts_RejectsWithoutKeyOrSeed(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "test-key")
+	p := &WhoxyReverseWhoisPlugin{client: client.New()}
+	assert.False(t, p.Accepts(plugins.Input{}))                 // neither org nor email
+	t.Setenv("WHOXY_API_KEY", "")
+	assert.False(t, p.Accepts(plugins.Input{Email: "a@b.com"})) // email but no key
+}
+
 func TestWhoxyReverseWhois_Metadata(t *testing.T) {
 	p, ok := plugins.Get("whoxy-reverse-whois")
 	require.True(t, ok, "whoxy-reverse-whois plugin must be registered")
@@ -191,4 +205,22 @@ func TestWhoxyReverseWhois_Run_EmptyResponse(t *testing.T) {
 func TestWhoxyReverseWhois_IsRegistered(t *testing.T) {
 	_, ok := plugins.Get("whoxy-reverse-whois")
 	assert.True(t, ok)
+}
+
+func TestWhoxyReverseWhois_Run_EmailMode(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "test-key")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		assert.Equal(t, "whois", q.Get("reverse"))
+		assert.Equal(t, "admin@acme.com", q.Get("email"))
+		assert.Empty(t, q.Get("name")) // email mode must NOT send name=
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(mockWhoxyPage([]string{"acme.com"}, 1))
+	}))
+	defer srv.Close()
+	p := &WhoxyReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	findings, err := p.Run(context.Background(), plugins.Input{Email: "admin@acme.com"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "admin@acme.com", findings[0].Data["org"])
 }

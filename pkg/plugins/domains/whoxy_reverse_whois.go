@@ -27,15 +27,16 @@ type WhoxyReverseWhoisPlugin struct {
 
 func (p *WhoxyReverseWhoisPlugin) Name() string { return "whoxy-reverse-whois" }
 func (p *WhoxyReverseWhoisPlugin) Description() string {
-	return "Reverse WHOIS via Whoxy API — discovers related domains by registrant name (paid, requires WHOXY_API_KEY)"
+	return "Reverse WHOIS via Whoxy API — discovers related domains by registrant organization name or email (paid, requires WHOXY_API_KEY)"
 }
 func (p *WhoxyReverseWhoisPlugin) Category() string { return "domain" }
 func (p *WhoxyReverseWhoisPlugin) Phase() int       { return 0 }
 func (p *WhoxyReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
-// Accepts only runs if WHOXY_API_KEY is set and an org name is provided.
+// Accepts only runs if WHOXY_API_KEY is set and an org name or registrant
+// email seed is provided.
 func (p *WhoxyReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("WHOXY_API_KEY") != "" && input.OrgName != ""
+	return os.Getenv("WHOXY_API_KEY") != "" && (input.OrgName != "" || input.Email != "")
 }
 
 type whoxyResponse struct {
@@ -58,15 +59,25 @@ func (p *WhoxyReverseWhoisPlugin) apiBase() string {
 func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("WHOXY_API_KEY")
 
+	// Active seed: org name by default, registrant email when only Email is set.
+	query, byEmail := input.OrgName, false
+	if input.OrgName == "" && input.Email != "" {
+		query, byEmail = input.Email, true
+	}
+	queryType := "org"
+	if byEmail {
+		queryType = "email"
+	}
+
 	page := 1
 	totalPages := 1
 	var findings []plugins.Finding
 	seen := make(map[string]struct{})
 
 	for {
-		resp, err := p.fetchPage(ctx, apiKey, input.OrgName, page)
+		resp, err := p.fetchPage(ctx, apiKey, query, byEmail, page)
 		if err != nil {
-			slog.Warn("whoxy-reverse-whois: stopping pagination", "page", page, "org", input.OrgName, "error", err)
+			slog.Warn("whoxy-reverse-whois: stopping pagination", "page", page, "query_type", queryType, "error", err)
 			break
 		}
 
@@ -91,7 +102,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 				Value:  domain,
 				Source: p.Name(),
 				Data: map[string]any{
-					"org": input.OrgName,
+					"org": query,
 				},
 			}
 			// WHOIS registrant name matching is reliable but not perfect.
@@ -110,12 +121,17 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 	return findings, nil
 }
 
-func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, orgName string, page int) (whoxyResponse, error) {
+func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, query string, byEmail bool, page int) (whoxyResponse, error) {
+	param := "name"
+	if byEmail {
+		param = "email"
+	}
 	reqURL := fmt.Sprintf(
-		"%s/?key=%s&reverse=whois&name=%s&mode=micro&page=%d",
+		"%s/?key=%s&reverse=whois&%s=%s&mode=micro&page=%d",
 		p.apiBase(),
 		url.QueryEscape(apiKey),
-		url.QueryEscape(orgName),
+		param,
+		url.QueryEscape(query),
 		page,
 	)
 

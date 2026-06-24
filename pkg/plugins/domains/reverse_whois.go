@@ -17,7 +17,15 @@ func init() {
 }
 
 type ReverseWhoisPlugin struct {
-	client *client.Client
+	client  *client.Client
+	baseURL string // overridable for tests
+}
+
+func (p *ReverseWhoisPlugin) apiBase() string {
+	if p.baseURL != "" {
+		return p.baseURL
+	}
+	return "https://api.viewdns.info"
 }
 
 func (p *ReverseWhoisPlugin) Name() string        { return "reverse-whois" }
@@ -26,44 +34,52 @@ func (p *ReverseWhoisPlugin) Category() string    { return "domain" }
 func (p *ReverseWhoisPlugin) Phase() int          { return 0 }
 func (p *ReverseWhoisPlugin) Mode() string        { return plugins.ModePassive }
 
-// Only runs if VIEWDNS_API_KEY is set
+// Only runs if VIEWDNS_API_KEY is set and an org name or registrant email
+// seed is provided.
 func (p *ReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("VIEWDNS_API_KEY") != "" && input.OrgName != ""
+	return os.Getenv("VIEWDNS_API_KEY") != "" && (input.OrgName != "" || input.Email != "")
 }
 
 func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("VIEWDNS_API_KEY")
 
+	// Active seed: org name by default, registrant email when only Email is set.
+	query := input.OrgName
+	if query == "" {
+		query = input.Email
+	}
+
 	// ViewDNS Reverse WHOIS API
 	reqURL := fmt.Sprintf(
-		"https://api.viewdns.info/reversewhois/?q=%s&apikey=%s&output=json",
-		url.QueryEscape(input.OrgName),
+		"%s/reversewhois/?q=%s&apikey=%s&output=json",
+		p.apiBase(),
+		url.QueryEscape(query),
 		apiKey,
 	)
 
 	body, err := p.client.Get(ctx, reqURL)
 	if err != nil {
 		// Return sanitized error — strip URL which contains the API key.
-		return nil, fmt.Errorf("reverse-whois: request failed for %q", input.OrgName)
+		return nil, fmt.Errorf("reverse-whois: request failed")
 	}
 
 	var response struct {
-		Query struct {
-			Domains []struct {
-				DomainName string `json:"domain_name"`
-			} `json:"domains"`
-		} `json:"query"`
+		Response struct {
+			Matches []struct {
+				Domain string `json:"domain"`
+			} `json:"matches"`
+		} `json:"response"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("reverse-whois: parse response for %q: %w", input.OrgName, err)
+		return nil, fmt.Errorf("reverse-whois: parse response: %w", err)
 	}
 
-	findings := make([]plugins.Finding, 0, len(response.Query.Domains))
-	for _, d := range response.Query.Domains {
-		if d.DomainName == "" {
+	findings := make([]plugins.Finding, 0, len(response.Response.Matches))
+	for _, d := range response.Response.Matches {
+		if d.Domain == "" {
 			continue
 		}
-		domain := strings.ToLower(d.DomainName)
+		domain := strings.ToLower(d.Domain)
 		domain = strings.TrimSpace(domain)
 		domain = strings.TrimSuffix(domain, ".")
 		f := plugins.Finding{
@@ -71,7 +87,7 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 			Value:  domain,
 			Source: p.Name(),
 			Data: map[string]any{
-				"org": input.OrgName,
+				"org": query,
 			},
 		}
 		// WHOIS registrant matching is reliable but not perfect: the org name

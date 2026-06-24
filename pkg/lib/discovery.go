@@ -96,6 +96,7 @@ type Discovery struct{}
 var matchedPreseedTypes = []string{
 	"whois+company",
 	"whois+name",
+	"whois+email",
 	"edgar+company",
 }
 

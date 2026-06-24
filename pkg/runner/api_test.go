@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRun_DefaultConfig(t *testing.T) {
@@ -43,6 +44,16 @@ func TestRun_ModeDefault(t *testing.T) {
 	defer cancel()
 
 	_, _ = Run(ctx, cfg)
+}
+
+func TestRun_EmailOnlySeed_NoKeys_NoError(t *testing.T) {
+	// Explicitly unset reverse-whois API keys so no plugin can make real network calls.
+	t.Setenv("VIEWDNS_API_KEY", "")
+	t.Setenv("WHOXY_API_KEY", "")
+
+	findings, err := Run(context.Background(), Config{Email: "admin@acme.com", Mode: "passive"})
+	require.NoError(t, err)
+	assert.Empty(t, findings)
 }
 
 func TestSelectPlugins_AllPassive(t *testing.T) {
