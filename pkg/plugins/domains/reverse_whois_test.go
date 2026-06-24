@@ -1,10 +1,14 @@
-package domains_test
+package domains
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 
+	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -96,4 +100,18 @@ func TestReverseWhoisPlugin_Accepts(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestReverseWhois_Run_OrgMode(t *testing.T) {
+	t.Setenv("VIEWDNS_API_KEY", "test-key")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.URL.RawQuery, "q=")
+		_, _ = w.Write([]byte(`{"query":{"domains":[{"domain_name":"acme.com"}]}}`))
+	}))
+	defer srv.Close()
+	p := &ReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "acme.com", findings[0].Value)
 }

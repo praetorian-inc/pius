@@ -17,7 +17,15 @@ func init() {
 }
 
 type ReverseWhoisPlugin struct {
-	client *client.Client
+	client  *client.Client
+	baseURL string // overridable for tests
+}
+
+func (p *ReverseWhoisPlugin) apiBase() string {
+	if p.baseURL != "" {
+		return p.baseURL
+	}
+	return "https://api.viewdns.info"
 }
 
 func (p *ReverseWhoisPlugin) Name() string        { return "reverse-whois" }
@@ -36,7 +44,8 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 
 	// ViewDNS Reverse WHOIS API
 	reqURL := fmt.Sprintf(
-		"https://api.viewdns.info/reversewhois/?q=%s&apikey=%s&output=json",
+		"%s/reversewhois/?q=%s&apikey=%s&output=json",
+		p.apiBase(),
 		url.QueryEscape(input.OrgName),
 		apiKey,
 	)
