@@ -81,6 +81,16 @@ func TestDiscovery_Match_EdgarCompany(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestDiscovery_Match_WhoisEmail(t *testing.T) {
+	d := &Discovery{}
+	err := d.Match(capability.ExecutionContext{}, capmodel.Preseed{
+		Type:  "whois+email",
+		Title: "admin@acme.com",
+		Value: "admin@acme.com",
+	})
+	require.NoError(t, err)
+}
+
 func TestDiscovery_Match_UnsupportedType(t *testing.T) {
 	d := &Discovery{}
 	err := d.Match(capability.ExecutionContext{}, capmodel.Preseed{
