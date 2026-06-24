@@ -59,15 +59,21 @@ func (p *WhoxyReverseWhoisPlugin) apiBase() string {
 func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("WHOXY_API_KEY")
 
+	// Active seed: org name by default, registrant email when only Email is set.
+	query, byEmail := input.OrgName, false
+	if input.OrgName == "" && input.Email != "" {
+		query, byEmail = input.Email, true
+	}
+
 	page := 1
 	totalPages := 1
 	var findings []plugins.Finding
 	seen := make(map[string]struct{})
 
 	for {
-		resp, err := p.fetchPage(ctx, apiKey, input.OrgName, page)
+		resp, err := p.fetchPage(ctx, apiKey, query, byEmail, page)
 		if err != nil {
-			slog.Warn("whoxy-reverse-whois: stopping pagination", "page", page, "org", input.OrgName, "error", err)
+			slog.Warn("whoxy-reverse-whois: stopping pagination", "page", page, "query", query, "error", err)
 			break
 		}
 
@@ -92,7 +98,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 				Value:  domain,
 				Source: p.Name(),
 				Data: map[string]any{
-					"org": input.OrgName,
+					"org": query,
 				},
 			}
 			// WHOIS registrant name matching is reliable but not perfect.
@@ -111,12 +117,17 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 	return findings, nil
 }
 
-func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, orgName string, page int) (whoxyResponse, error) {
+func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, query string, byEmail bool, page int) (whoxyResponse, error) {
+	param := "name"
+	if byEmail {
+		param = "email"
+	}
 	reqURL := fmt.Sprintf(
-		"%s/?key=%s&reverse=whois&name=%s&mode=micro&page=%d",
+		"%s/?key=%s&reverse=whois&%s=%s&mode=micro&page=%d",
 		p.apiBase(),
 		url.QueryEscape(apiKey),
-		url.QueryEscape(orgName),
+		param,
+		url.QueryEscape(query),
 		page,
 	)
 
