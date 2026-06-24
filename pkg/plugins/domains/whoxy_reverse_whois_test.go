@@ -210,9 +210,10 @@ func TestWhoxyReverseWhois_IsRegistered(t *testing.T) {
 func TestWhoxyReverseWhois_Run_EmailMode(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "test-key")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Contains(t, r.URL.RawQuery, "reverse=whois")
-		assert.Contains(t, r.URL.RawQuery, "email=")
-		assert.NotContains(t, r.URL.RawQuery, "name=") // email mode must NOT send name=
+		q := r.URL.Query()
+		assert.Equal(t, "whois", q.Get("reverse"))
+		assert.Equal(t, "admin@acme.com", q.Get("email"))
+		assert.Empty(t, q.Get("name")) // email mode must NOT send name=
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(mockWhoxyPage([]string{"acme.com"}, 1))
 	}))

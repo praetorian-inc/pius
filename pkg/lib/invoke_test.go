@@ -323,6 +323,7 @@ func TestPiusCredentialMapping_CoversAllPlugins(t *testing.T) {
 		"securitytrails_api_key", "virustotal_api_key", "binaryedge_api_key",
 		"apollo_api_key", "censys_api_key", "censys_api_token", "censys_org_id", "viewdns_api_key",
 		"github_token",
+		"whoxy_api_key", "builtwith_api_key",
 	}
 
 	assert.Len(t, piusCredentialMapping, len(expectedParams))
@@ -520,11 +521,11 @@ func TestInvoke_CIDRWithConfidence(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, emitted, 1)
 
-	preseed := emitted[0].(capmodel.Preseed)
-	require.NotNil(t, preseed.Confidence)
-	require.NotNil(t, preseed.NeedsReview)
-	assert.Equal(t, 0.40, *preseed.Confidence)
-	assert.Equal(t, true, *preseed.NeedsReview)
+	asset := emitted[0].(capmodel.Asset)
+	require.NotNil(t, asset.Confidence)
+	require.NotNil(t, asset.NeedsReview)
+	assert.Equal(t, 0.40, *asset.Confidence)
+	assert.Equal(t, true, *asset.NeedsReview)
 }
 
 func TestInvoke_PreseedWithConfidence(t *testing.T) {
