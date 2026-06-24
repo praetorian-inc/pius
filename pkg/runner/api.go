@@ -12,6 +12,9 @@ type Config struct {
 	// Org is the organization name to search for. Required.
 	Org string
 
+	// Email is a registrant email seed (routed to plugins.Input.Email).
+	Email string
+
 	// Domain is an optional known domain hint.
 	Domain string
 
@@ -41,6 +44,7 @@ type Config struct {
 func Run(ctx context.Context, cfg Config) ([]plugins.Finding, error) {
 	input := plugins.Input{
 		OrgName: cfg.Org,
+		Email:   cfg.Email,
 		Domain:  cfg.Domain,
 		ASN:     cfg.ASN,
 		Meta:    make(map[string]string),
