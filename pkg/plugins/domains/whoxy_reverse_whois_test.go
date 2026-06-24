@@ -35,6 +35,20 @@ func TestWhoxyReverseWhois_Accepts_RejectsWithoutOrgName(t *testing.T) {
 	assert.False(t, p.Accepts(plugins.Input{Domain: "acme.com"}))
 }
 
+func TestWhoxyReverseWhois_Accepts_WithKeyAndEmail(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "test-key")
+	p := &WhoxyReverseWhoisPlugin{client: client.New()}
+	assert.True(t, p.Accepts(plugins.Input{Email: "admin@acme.com"}))
+}
+
+func TestWhoxyReverseWhois_Accepts_RejectsWithoutKeyOrSeed(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "test-key")
+	p := &WhoxyReverseWhoisPlugin{client: client.New()}
+	assert.False(t, p.Accepts(plugins.Input{}))                 // neither org nor email
+	t.Setenv("WHOXY_API_KEY", "")
+	assert.False(t, p.Accepts(plugins.Input{Email: "a@b.com"})) // email but no key
+}
+
 func TestWhoxyReverseWhois_Metadata(t *testing.T) {
 	p, ok := plugins.Get("whoxy-reverse-whois")
 	require.True(t, ok, "whoxy-reverse-whois plugin must be registered")

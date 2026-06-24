@@ -33,9 +33,10 @@ func (p *WhoxyReverseWhoisPlugin) Category() string { return "domain" }
 func (p *WhoxyReverseWhoisPlugin) Phase() int       { return 0 }
 func (p *WhoxyReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
-// Accepts only runs if WHOXY_API_KEY is set and an org name is provided.
+// Accepts only runs if WHOXY_API_KEY is set and an org name or registrant
+// email seed is provided.
 func (p *WhoxyReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("WHOXY_API_KEY") != "" && input.OrgName != ""
+	return os.Getenv("WHOXY_API_KEY") != "" && (input.OrgName != "" || input.Email != "")
 }
 
 type whoxyResponse struct {
