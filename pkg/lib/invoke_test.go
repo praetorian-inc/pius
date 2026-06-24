@@ -558,3 +558,34 @@ func TestInvoke_PreseedWithConfidence(t *testing.T) {
 	assert.Equal(t, 0.65, *preseed.Confidence)
 	assert.Equal(t, false, *preseed.NeedsReview)
 }
+
+// --- Task 6: whois+email preseed routing tests ---
+
+func TestInvoke_EmailPreseed_RoutesToEmail(t *testing.T) {
+	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
+		assert.Equal(t, "admin@acme.com", cfg.Email)
+		assert.Empty(t, cfg.Org, "email seed must NOT populate Org")
+		return nil, nil
+	})
+	defer restore()
+	d := &Discovery{}
+	emitter := capability.EmitterFunc(func(models ...any) error { return nil })
+	err := d.Invoke(capability.ExecutionContext{},
+		capmodel.Preseed{Type: "whois+email", Title: "admin@acme.com", Value: "admin@acme.com"},
+		emitter)
+	require.NoError(t, err)
+}
+
+func TestInvoke_CompanyPreseed_StillRoutesToOrg(t *testing.T) {
+	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
+		assert.Equal(t, "Acme Corp", cfg.Org)
+		assert.Empty(t, cfg.Email)
+		return nil, nil
+	})
+	defer restore()
+	d := &Discovery{}
+	emitter := capability.EmitterFunc(func(models ...any) error { return nil })
+	err := d.Invoke(capability.ExecutionContext{},
+		capmodel.Preseed{Type: "whois+company", Value: "Acme Corp"}, emitter)
+	require.NoError(t, err)
+}

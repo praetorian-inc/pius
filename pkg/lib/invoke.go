@@ -30,10 +30,15 @@ func (d *Discovery) Invoke(ctx capability.ExecutionContext, input capmodel.Prese
 	defer cleanup()
 
 	cfg := runner.Config{
-		Org:         input.Value,
 		Mode:        mode,
 		Concurrency: concurrency,
 		Meta:        bridgeMeta(ctx.Parameters),
+	}
+	switch input.Type {
+	case "whois+email":
+		cfg.Email = input.Value
+	default:
+		cfg.Org = input.Value
 	}
 	if pluginsParam != "" {
 		cfg.Plugins = strings.Split(pluginsParam, ",")
