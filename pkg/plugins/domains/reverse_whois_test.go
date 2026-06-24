@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/praetorian-inc/pius/pkg/client"
@@ -135,4 +136,45 @@ func TestReverseWhois_Run_EmailMode(t *testing.T) {
 	require.Len(t, findings, 1)
 	assert.Equal(t, "acme.com", findings[0].Value)
 	assert.Equal(t, "admin@acme.com", findings[0].Data["org"]) // provenance: Data["org"] holds active seed
+}
+
+// TestReverseWhois_Run_EmailMode_ErrorOmitsRawEmail is the TDD RED test proving that
+// ViewDNS Run() currently leaks the registrant email in error strings (PII leak).
+//
+// The parse-error branch (line 74 of reverse_whois.go) formats:
+//
+//	fmt.Errorf("reverse-whois: parse response for %q: %w", query, err)
+//
+// When query == input.Email, the raw email appears in the error. The runner logs
+// Phase-0 plugin errors, so this email reaches the logs.
+//
+// RED: this test FAILS against current production code because the email IS present.
+// GREEN: fix reverse_whois.go to omit the raw email from error strings.
+func TestReverseWhois_Run_EmailMode_ErrorOmitsRawEmail(t *testing.T) {
+	const sensitiveEmail = "admin@secret-corp.com"
+
+	t.Setenv("VIEWDNS_API_KEY", "test-key")
+
+	// Server returns HTTP 200 with an invalid JSON body so json.Unmarshal fails,
+	// triggering the parse-error branch at line 74 of reverse_whois.go.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+
+	p := &ReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+
+	_, err := p.Run(context.Background(), plugins.Input{Email: sensitiveEmail})
+
+	// The parse must have failed.
+	require.Error(t, err, "Run must return an error when the response body is not valid JSON")
+
+	// PII assertion: the raw email must NOT appear in the error string.
+	// This assertion FAILS today because line 74 embeds %q query (== sensitiveEmail).
+	assert.False(t,
+		strings.Contains(err.Error(), sensitiveEmail),
+		"error string must not contain the raw registrant email (PII leak): got %q",
+		err.Error(),
+	)
 }
