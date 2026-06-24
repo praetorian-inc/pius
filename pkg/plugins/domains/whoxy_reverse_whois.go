@@ -64,6 +64,10 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 	if input.OrgName == "" && input.Email != "" {
 		query, byEmail = input.Email, true
 	}
+	queryType := "org"
+	if byEmail {
+		queryType = "email"
+	}
 
 	page := 1
 	totalPages := 1
@@ -73,7 +77,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 	for {
 		resp, err := p.fetchPage(ctx, apiKey, query, byEmail, page)
 		if err != nil {
-			slog.Warn("whoxy-reverse-whois: stopping pagination", "page", page, "query", query, "error", err)
+			slog.Warn("whoxy-reverse-whois: stopping pagination", "page", page, "query_type", queryType, "error", err)
 			break
 		}
 
