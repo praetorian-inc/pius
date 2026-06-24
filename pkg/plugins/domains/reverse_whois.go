@@ -64,22 +64,22 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 	}
 
 	var response struct {
-		Query struct {
-			Domains []struct {
-				DomainName string `json:"domain_name"`
-			} `json:"domains"`
-		} `json:"query"`
+		Response struct {
+			Matches []struct {
+				Domain string `json:"domain"`
+			} `json:"matches"`
+		} `json:"response"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("reverse-whois: parse response for %q: %w", query, err)
 	}
 
-	findings := make([]plugins.Finding, 0, len(response.Query.Domains))
-	for _, d := range response.Query.Domains {
-		if d.DomainName == "" {
+	findings := make([]plugins.Finding, 0, len(response.Response.Matches))
+	for _, d := range response.Response.Matches {
+		if d.Domain == "" {
 			continue
 		}
-		domain := strings.ToLower(d.DomainName)
+		domain := strings.ToLower(d.Domain)
 		domain = strings.TrimSpace(domain)
 		domain = strings.TrimSuffix(domain, ".")
 		f := plugins.Finding{

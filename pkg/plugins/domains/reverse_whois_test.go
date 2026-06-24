@@ -15,32 +15,26 @@ import (
 )
 
 // TestReverseWhoisPlugin_JSONParseError_Format verifies that JSON parse errors
-// include helpful context in the error message (after Fix M6 is applied).
-// This is a compile-time/static check that the error format is correct.
+// include helpful context in the error message.
+// Uses the REAL ViewDNS API response shape: response.matches[].domain
 func TestReverseWhoisPlugin_JSONParseError_Format(t *testing.T) {
-	// Read the source file to verify error message format
-	// This test validates that line 58-60 returns fmt.Errorf("parse ViewDNS response: %w", err)
-	// rather than return nil, nil
-
-	// Simulate what happens when JSON parsing fails
+	// Simulate what happens when JSON parsing fails against the real API shape.
 	invalidJSON := []byte("invalid json {")
 	var response struct {
-		Query struct {
-			Domains []struct {
-				DomainName string `json:"domain_name"`
-			} `json:"domains"`
-		} `json:"query"`
+		Response struct {
+			MatchCount int `json:"match_count"`
+			Matches    []struct {
+				Domain     string `json:"domain"`
+				CreatedDate string `json:"created_date"`
+				Registrar   string `json:"registrar"`
+			} `json:"matches"`
+		} `json:"response"`
 	}
 
 	err := json.Unmarshal(invalidJSON, &response)
 	require.Error(t, err, "json.Unmarshal should fail on invalid JSON")
 
-	// After Fix M6, the plugin should wrap this error with context
-	// We can't test the plugin directly without HTTP mocking, but we can
-	// verify the expected error message format exists in the code by
-	// checking that our fix compiles and uses fmt.Errorf
-
-	// This test passes if the code compiles with the fix
+	// The plugin wraps this error with context.
 	assert.Contains(t, err.Error(), "invalid", "JSON parse error should indicate the issue")
 }
 
@@ -104,9 +98,11 @@ func TestReverseWhoisPlugin_Accepts(t *testing.T) {
 
 func TestReverseWhois_Run_OrgMode(t *testing.T) {
 	t.Setenv("VIEWDNS_API_KEY", "test-key")
+	// Mock returns the REAL ViewDNS API shape: response.matches[].domain
+	// (not the broken query.domains[].domain_name shape the parser currently reads)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.URL.RawQuery, "q=")
-		_, _ = w.Write([]byte(`{"query":{"domains":[{"domain_name":"acme.com"}]}}`))
+		_, _ = w.Write([]byte(`{"query":{"tool":"reversewhois","query":"Acme Corp"},"response":{"match_count":1,"matches":[{"domain":"acme.com","created_date":"2010-01-01","registrar":"Example Registrar, Inc."}]}}`))
 	}))
 	defer srv.Close()
 	p := &ReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
@@ -114,6 +110,7 @@ func TestReverseWhois_Run_OrgMode(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
 	assert.Equal(t, "acme.com", findings[0].Value)
+	assert.Equal(t, "Acme Corp", findings[0].Data["org"])
 }
 
 func TestReverseWhois_Accepts_WithKeyAndEmail(t *testing.T) {
@@ -125,9 +122,11 @@ func TestReverseWhois_Accepts_WithKeyAndEmail(t *testing.T) {
 
 func TestReverseWhois_Run_EmailMode(t *testing.T) {
 	t.Setenv("VIEWDNS_API_KEY", "test-key")
+	// Mock returns the REAL ViewDNS API shape: response.matches[].domain
+	// (not the broken query.domains[].domain_name shape the parser currently reads)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.URL.RawQuery, "q=admin%40acme.com") // email url-escaped into q=
-		_, _ = w.Write([]byte(`{"query":{"domains":[{"domain_name":"acme.com"}]}}`))
+		_, _ = w.Write([]byte(`{"query":{"tool":"reversewhois","query":"admin@acme.com"},"response":{"match_count":1,"matches":[{"domain":"acme.com","created_date":"2010-01-01","registrar":"Example Registrar, Inc."}]}}`))
 	}))
 	defer srv.Close()
 	p := &ReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
@@ -135,5 +134,5 @@ func TestReverseWhois_Run_EmailMode(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
 	assert.Equal(t, "acme.com", findings[0].Value)
-	assert.Equal(t, "admin@acme.com", findings[0].Data["org"]) // provenance: Data["org"] holds active seed (OQ1)
+	assert.Equal(t, "admin@acme.com", findings[0].Data["org"]) // provenance: Data["org"] holds active seed
 }
