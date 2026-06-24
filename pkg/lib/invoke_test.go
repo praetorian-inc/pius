@@ -589,3 +589,41 @@ func TestInvoke_CompanyPreseed_StillRoutesToOrg(t *testing.T) {
 		capmodel.Preseed{Type: "whois+company", Value: "Acme Corp"}, emitter)
 	require.NoError(t, err)
 }
+
+// TestInvoke_EmailPreseed_ErrorOmitsRawEmail proves that when the pipeline
+// returns an error for a whois+email preseed, the raw registrant email address
+// is NOT embedded in the returned error string (PII leak prevention).
+//
+// RED: today invoke.go:56 does
+//
+//	return fmt.Errorf("%s pipeline for %q: %w", CapabilityName, input.Value, err)
+//
+// which embeds the raw email. The planned fix uses input.Type instead.
+func TestInvoke_EmailPreseed_ErrorOmitsRawEmail(t *testing.T) {
+	const sensitiveEmail = "admin@secret-corp.com"
+
+	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
+		return nil, errors.New("boom")
+	})
+	defer restore()
+
+	d := &Discovery{}
+	emitter := capability.EmitterFunc(func(models ...any) error { return nil })
+
+	err := d.Invoke(
+		capability.ExecutionContext{},
+		capmodel.Preseed{Type: "whois+email", Value: sensitiveEmail},
+		emitter,
+	)
+
+	require.Error(t, err, "Invoke must return an error when RunFunc fails")
+
+	// The raw email MUST NOT appear in the error string — this is the PII-leak guard.
+	// Against current code this assertion FAILS because line 56 of invoke.go embeds input.Value.
+	assert.NotContains(t, err.Error(), sensitiveEmail,
+		"error message must not contain the raw registrant email (PII leak); got: %q", err.Error())
+
+	// The error should still contain useful context — the preseed TYPE not the value.
+	assert.Contains(t, err.Error(), "whois+email",
+		"error message should mention the preseed type for debuggability")
+}

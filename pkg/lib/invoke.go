@@ -53,7 +53,7 @@ func (d *Discovery) Invoke(ctx capability.ExecutionContext, input capmodel.Prese
 
 	findings, err := RunFunc(runCtx, cfg)
 	if err != nil {
-		return fmt.Errorf("%s pipeline for %q: %w", CapabilityName, input.Value, err)
+		return fmt.Errorf("%s pipeline for %q seed: %w", CapabilityName, input.Type, err)
 	}
 
 	for _, f := range findings {
