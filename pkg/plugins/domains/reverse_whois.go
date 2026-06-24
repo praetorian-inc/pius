@@ -34,26 +34,33 @@ func (p *ReverseWhoisPlugin) Category() string    { return "domain" }
 func (p *ReverseWhoisPlugin) Phase() int          { return 0 }
 func (p *ReverseWhoisPlugin) Mode() string        { return plugins.ModePassive }
 
-// Only runs if VIEWDNS_API_KEY is set
+// Only runs if VIEWDNS_API_KEY is set and an org name or registrant email
+// seed is provided.
 func (p *ReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("VIEWDNS_API_KEY") != "" && input.OrgName != ""
+	return os.Getenv("VIEWDNS_API_KEY") != "" && (input.OrgName != "" || input.Email != "")
 }
 
 func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("VIEWDNS_API_KEY")
 
+	// Active seed: org name by default, registrant email when only Email is set.
+	query := input.OrgName
+	if query == "" {
+		query = input.Email
+	}
+
 	// ViewDNS Reverse WHOIS API
 	reqURL := fmt.Sprintf(
 		"%s/reversewhois/?q=%s&apikey=%s&output=json",
 		p.apiBase(),
-		url.QueryEscape(input.OrgName),
+		url.QueryEscape(query),
 		apiKey,
 	)
 
 	body, err := p.client.Get(ctx, reqURL)
 	if err != nil {
 		// Return sanitized error — strip URL which contains the API key.
-		return nil, fmt.Errorf("reverse-whois: request failed for %q", input.OrgName)
+		return nil, fmt.Errorf("reverse-whois: request failed for %q", query)
 	}
 
 	var response struct {
@@ -64,7 +71,7 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 		} `json:"query"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("reverse-whois: parse response for %q: %w", input.OrgName, err)
+		return nil, fmt.Errorf("reverse-whois: parse response for %q: %w", query, err)
 	}
 
 	findings := make([]plugins.Finding, 0, len(response.Query.Domains))
@@ -80,7 +87,7 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 			Value:  domain,
 			Source: p.Name(),
 			Data: map[string]any{
-				"org": input.OrgName,
+				"org": query,
 			},
 		}
 		// WHOIS registrant matching is reliable but not perfect: the org name

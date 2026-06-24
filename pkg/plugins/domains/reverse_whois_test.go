@@ -115,3 +115,25 @@ func TestReverseWhois_Run_OrgMode(t *testing.T) {
 	require.Len(t, findings, 1)
 	assert.Equal(t, "acme.com", findings[0].Value)
 }
+
+func TestReverseWhois_Accepts_WithKeyAndEmail(t *testing.T) {
+	t.Setenv("VIEWDNS_API_KEY", "test-key")
+	p := &ReverseWhoisPlugin{client: client.New()}
+	assert.True(t, p.Accepts(plugins.Input{Email: "admin@acme.com"}))
+	assert.False(t, p.Accepts(plugins.Input{})) // neither org nor email
+}
+
+func TestReverseWhois_Run_EmailMode(t *testing.T) {
+	t.Setenv("VIEWDNS_API_KEY", "test-key")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.URL.RawQuery, "q=admin%40acme.com") // email url-escaped into q=
+		_, _ = w.Write([]byte(`{"query":{"domains":[{"domain_name":"acme.com"}]}}`))
+	}))
+	defer srv.Close()
+	p := &ReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	findings, err := p.Run(context.Background(), plugins.Input{Email: "admin@acme.com"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "acme.com", findings[0].Value)
+	assert.Equal(t, "admin@acme.com", findings[0].Data["org"]) // provenance: Data["org"] holds active seed (OQ1)
+}
