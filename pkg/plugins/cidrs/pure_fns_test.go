@@ -1,9 +1,11 @@
 package cidrs
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ── splitHandles (rdap.go) ────────────────────────────────────────────────────
@@ -72,4 +74,46 @@ func TestIsLikelyRIRHandle_CaseSensitive(t *testing.T) {
 	// Filter checks HasPrefix — make sure it works with uppercase (as produced by EDGAR)
 	assert.False(t, isLikelyRIRHandle("SEC-FILING"))
 	assert.True(t, isLikelyRIRHandle("PRAETORIAN-1")) // no blocklisted prefix
+}
+
+// ── ArinRefs UnmarshalJSON (reverse_rir.go) ─────────────────────────────────
+
+func TestArinRefs_UnmarshalArray(t *testing.T) {
+	data := `[{"@handle":"ACME-1","@name":"Acme"},{"@handle":"ACME-2","@name":"Acme Inc"}]`
+	var refs ArinRefs
+	require.NoError(t, json.Unmarshal([]byte(data), &refs))
+	require.Len(t, refs, 2)
+	assert.Equal(t, "ACME-1", refs[0].Handle)
+	assert.Equal(t, "ACME-2", refs[1].Handle)
+}
+
+func TestArinRefs_UnmarshalSingleObject(t *testing.T) {
+	data := `{"@handle":"PS-1576","@name":"Praetorian Security, Inc."}`
+	var refs ArinRefs
+	require.NoError(t, json.Unmarshal([]byte(data), &refs))
+	require.Len(t, refs, 1)
+	assert.Equal(t, "PS-1576", refs[0].Handle)
+}
+
+func TestArinRefs_UnmarshalNull(t *testing.T) {
+	data := `null`
+	var refs ArinRefs
+	require.NoError(t, json.Unmarshal([]byte(data), &refs))
+	assert.Empty(t, refs)
+}
+
+func TestArinOrgsResponse_SingleResult(t *testing.T) {
+	data := `{"orgs":{"orgRef":{"@handle":"PS-1576","@name":"Praetorian Security, Inc."}}}`
+	var resp ArinOrgsResponse
+	require.NoError(t, json.Unmarshal([]byte(data), &resp))
+	require.Len(t, resp.Orgs.OrgRef, 1)
+	assert.Equal(t, "PS-1576", resp.Orgs.OrgRef[0].Handle)
+}
+
+func TestArinOrgsResponse_MultipleResults(t *testing.T) {
+	data := `{"orgs":{"orgRef":[{"@handle":"PRAET-1","@name":"Praetorian Global"},{"@handle":"PS-1576","@name":"Praetorian Security"}]}}`
+	var resp ArinOrgsResponse
+	require.NoError(t, json.Unmarshal([]byte(data), &resp))
+	require.Len(t, resp.Orgs.OrgRef, 2)
+	assert.Equal(t, "PRAET-1", resp.Orgs.OrgRef[0].Handle)
 }

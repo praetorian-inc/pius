@@ -333,27 +333,48 @@ type ArinRef struct {
 	Name   string `json:"@name"`
 }
 
+// ArinRefs handles ARIN's JSON quirk: single results are returned as a bare
+// object, not a single-element array. Standard json.Unmarshal fails silently
+// when unmarshaling an object into []T.
+type ArinRefs []ArinRef
+
+func (r *ArinRefs) UnmarshalJSON(data []byte) error {
+	// Try array first (common case with multiple results).
+	var arr []ArinRef
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*r = arr
+		return nil
+	}
+	// Fall back to single object (ARIN returns this for exactly one result).
+	var single ArinRef
+	if err := json.Unmarshal(data, &single); err != nil {
+		return err
+	}
+	*r = ArinRefs{single}
+	return nil
+}
+
 type ArinOrgsResponse struct {
 	Orgs struct {
-		OrgRef []ArinRef `json:"orgRef"`
+		OrgRef ArinRefs `json:"orgRef"`
 	} `json:"orgs"`
 }
 
 type ArinCustomersResponse struct {
 	Customers struct {
-		CustomerRef []ArinRef `json:"customerRef"`
+		CustomerRef ArinRefs `json:"customerRef"`
 	} `json:"customers"`
 }
 
 type ArinNetsResponse struct {
 	Nets struct {
-		NetRef []ArinRef `json:"netRef"`
+		NetRef ArinRefs `json:"netRef"`
 	} `json:"nets"`
 }
 
 type ArinAsnsResponse struct {
 	Asns struct {
-		AsnRef []ArinRef `json:"asnRef"`
+		AsnRef ArinRefs `json:"asnRef"`
 	} `json:"asns"`
 }
 
