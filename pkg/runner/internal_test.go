@@ -43,16 +43,14 @@ func TestEnrichWithHandles_MultipleRegistries(t *testing.T) {
 	assert.Empty(t, result.Meta["afrinic_handles"])
 }
 
-func TestEnrichWithHandles_UnknownRegistryBroadcastsToAll(t *testing.T) {
-	// Tests Phase 11 fix: a FindingCIDRHandle with no/empty registry key
-	// must be broadcast to ALL FOUR RIRs (arin, ripe, apnic, afrinic).
+func TestEnrichWithHandles_EmptyRegistryBroadcastsToAll(t *testing.T) {
 	input := plugins.Input{OrgName: "Acme", Meta: make(map[string]string)}
 	findings := []plugins.Finding{
 		{
 			Type:   plugins.FindingCIDRHandle,
 			Value:  "UNKNOWN-HANDLE",
 			Source: "edgar",
-			Data:   map[string]any{}, // no "registry" key → unknown
+			Data:   map[string]any{}, // no "registry" key → empty string
 		},
 	}
 	result := enrichWithHandles(input, findings)
@@ -60,6 +58,26 @@ func TestEnrichWithHandles_UnknownRegistryBroadcastsToAll(t *testing.T) {
 	assert.Equal(t, "UNKNOWN-HANDLE", result.Meta["ripe_handles"])
 	assert.Equal(t, "UNKNOWN-HANDLE", result.Meta["apnic_handles"])
 	assert.Equal(t, "UNKNOWN-HANDLE", result.Meta["afrinic_handles"])
+	assert.Equal(t, "UNKNOWN-HANDLE", result.Meta["lacnic_handles"])
+}
+
+func TestEnrichWithHandles_UnknownRegistryBroadcastsToAll(t *testing.T) {
+	input := plugins.Input{OrgName: "Acme", Meta: make(map[string]string)}
+	findings := []plugins.Finding{
+		{
+			Type:   plugins.FindingCIDRHandle,
+			Value:  "EDGAR-HANDLE",
+			Source: "edgar",
+			Data:   map[string]any{"registry": "unknown", "org": "Acme"},
+		},
+	}
+	result := enrichWithHandles(input, findings)
+	assert.Equal(t, "EDGAR-HANDLE", result.Meta["arin_handles"])
+	assert.Equal(t, "EDGAR-HANDLE", result.Meta["ripe_handles"])
+	assert.Equal(t, "EDGAR-HANDLE", result.Meta["apnic_handles"])
+	assert.Equal(t, "EDGAR-HANDLE", result.Meta["afrinic_handles"])
+	assert.Equal(t, "EDGAR-HANDLE", result.Meta["lacnic_handles"])
+	assert.Empty(t, result.Meta["unknown_handles"])
 }
 
 func TestEnrichWithHandles_PreservesExistingMeta(t *testing.T) {

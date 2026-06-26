@@ -357,8 +357,8 @@ func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.
 			continue
 		}
 		reg, _ := f.Data["registry"].(string)
-		if reg == "" {
-			for _, r := range []string{"arin", "ripe", "apnic", "afrinic"} {
+		if reg == "" || reg == "unknown" {
+			for _, r := range []string{"arin", "ripe", "apnic", "afrinic", "lacnic"} {
 				groups[r] = append(groups[r], f.Value)
 			}
 			continue
