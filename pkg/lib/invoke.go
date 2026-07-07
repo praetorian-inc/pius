@@ -78,6 +78,9 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 
 	switch f.Type {
 	case plugins.FindingDomain:
+		if strings.HasPrefix(f.Value, "*") {
+			return nil
+		}
 		return output.Emit(capmodel.Asset{
 			DNS:         f.Value,
 			Name:        f.Value,

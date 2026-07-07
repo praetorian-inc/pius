@@ -119,6 +119,36 @@ func TestInvoke_EmptySource_OmitsOrigins(t *testing.T) {
 	assert.Nil(t, asset.Capability)
 }
 
+func TestInvoke_WildcardDomainsDropped(t *testing.T) {
+	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
+		return []plugins.Finding{
+			{Type: plugins.FindingDomain, Value: "*.acme.com", Source: "crt-sh"},
+			{Type: plugins.FindingDomain, Value: "*.dev.acme.com", Source: "crt-sh"},
+			{Type: plugins.FindingDomain, Value: "*", Source: "crt-sh"},
+			{Type: plugins.FindingDomain, Value: "api.acme.com", Source: "crt-sh"},
+		}, nil
+	})
+	defer restore()
+
+	d := &Discovery{}
+	var emitted []any
+	emitter := capability.EmitterFunc(func(models ...any) error {
+		emitted = append(emitted, models...)
+		return nil
+	})
+
+	err := d.Invoke(
+		capability.ExecutionContext{},
+		capmodel.Preseed{Type: "whois+company", Title: "Acme Corp", Value: "Acme Corp"},
+		emitter,
+	)
+	require.NoError(t, err)
+	require.Len(t, emitted, 1)
+
+	asset := emitted[0].(capmodel.Asset)
+	assert.Equal(t, "api.acme.com", asset.DNS)
+}
+
 func TestInvoke_MixedFindings(t *testing.T) {
 	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
 		return []plugins.Finding{

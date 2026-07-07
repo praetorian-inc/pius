@@ -39,6 +39,31 @@ func TestExtractParent(t *testing.T) {
 	}
 }
 
+// ── isDomainName ──────────────────────────────────────────────────────────
+
+func TestIsDomainName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"example.com", true},
+		{"sub.example.com", true},
+		{"*.example.com", false},
+		{"*", false},
+		{"*.dev.example.com", false},
+		{"", false},
+		{"10.0.0.0/24", false},
+		{"192.168.1.1", false},
+		{"::1", false},
+		{"[::1]", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.want, isDomainName(tt.input))
+		})
+	}
+}
+
 // ── FilterWildcardDomains ───────────────────────────────────────────────────
 
 // mockResolver intercepts DNS queries for testing.
