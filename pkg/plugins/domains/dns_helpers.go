@@ -318,6 +318,9 @@ func isDomainName(s string) bool {
 	if s == "" {
 		return false
 	}
+	if strings.Contains(s, "*") {
+		return false
+	}
 	// Reject CIDR notation (e.g. "10.0.0.0/8")
 	if strings.Contains(s, "/") {
 		return false
