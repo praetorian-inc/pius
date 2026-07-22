@@ -90,11 +90,15 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 				"org": query,
 			},
 		}
-		// WHOIS registrant matching is reliable but not perfect: the org name
-		// query may match similarly-named registrants. Score at 0.75 — above
-		// the review threshold so output is clean, but confidence is available
-		// in Data for agent/downstream use.
-		plugins.SetConfidence(&f, 0.75)
+		// ViewDNS reverse-whois is a broad substring/token search over the full
+		// WHOIS record; a match does NOT prove the candidate's registrant is the
+		// query org (e.g. "LEICA BIOSYSTEMS..." can surface walmart.com via a
+		// shared privacy-proxy registrant or a common token). We perform no
+		// per-candidate corroboration here, so the mapping is unverified: score
+		// mid-band (0.50) so SetConfidence flags needs_review and the match lands
+		// in Pending for review rather than reading as clean. Recall is preserved
+		// (nothing is dropped). Real corroboration-based scoring is ENG-5123.
+		plugins.SetConfidence(&f, 0.50)
 		findings = append(findings, f)
 	}
 	return findings, nil
