@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -85,42 +86,38 @@ func TestDecideConfidence(t *testing.T) {
 		res       registrantResult
 		lookupErr error
 		wantScore float64
-		wantDrop  bool
 	}{
 		{
 			name:      "corroborated exact",
 			queryOrg:  "Leica Biosystems",
 			res:       org("Leica Biosystems Inc."),
 			wantScore: confReverseWhoisCorroborated,
-			wantDrop:  false,
 		},
 		{
 			name:      "corroborated partial (shorter fully contained)",
 			queryOrg:  "Acme",
 			res:       org("Acme Corp"),
 			wantScore: confReverseWhoisCorroborated,
-			wantDrop:  false,
 		},
 		{
-			name:      "clear mismatch drops (walmart from Leica)",
+			// De-ranked to the bottom of the band, NOT dropped: a textual
+			// registrant mismatch is not proof of non-ownership (ENG-5123 #1).
+			name:      "clear mismatch de-ranks (walmart from Leica)",
 			queryOrg:  "Leica Biosystems Richmond, Inc.",
 			res:       org("Walmart Inc."),
-			wantScore: 0,
-			wantDrop:  true,
+			wantScore: confReverseWhoisMismatch,
 		},
 		{
 			name:      "masked registrant stays unverified",
 			queryOrg:  "Leica Biosystems",
 			res:       org("Domains By Proxy, LLC"),
 			wantScore: confReverseWhoisUnverified,
-			wantDrop:  false,
 		},
 		{
 			name:      "empty registrant stays unverified",
 			queryOrg:  "Leica Biosystems",
 			res:       registrantResult{},
 			wantScore: confReverseWhoisUnverified,
-			wantDrop:  false,
 		},
 		{
 			name:      "lookup error stays unverified (not mismatch)",
@@ -128,14 +125,12 @@ func TestDecideConfidence(t *testing.T) {
 			res:       registrantResult{},
 			lookupErr: lookupErr,
 			wantScore: confReverseWhoisUnverified,
-			wantDrop:  false,
 		},
 		{
 			name:      "ambiguous partial overlap stays unverified",
 			queryOrg:  "Acme Global Services",
 			res:       org("Acme Widgets Manufacturing Holdings"),
 			wantScore: confReverseWhoisUnverified,
-			wantDrop:  false,
 		},
 		{
 			// 3 of 5 shared tokens = 0.60 == simCorroborate. Non-degenerate
@@ -145,54 +140,49 @@ func TestDecideConfidence(t *testing.T) {
 			queryOrg:  "Acme Global Data Cloud Services",
 			res:       org("Acme Global Data Widgets Holdings"),
 			wantScore: confReverseWhoisCorroborated,
-			wantDrop:  false,
 		},
 		{
-			// 3 of 10 shared tokens = 0.30 == simMismatch. The drop test is
-			// strictly-less-than, so the recall boundary must NOT drop here.
-			name:      "sim exactly at mismatch threshold stays unverified (recall boundary)",
+			// 3 of 10 shared tokens = 0.30 == simMismatch. The mismatch test is
+			// strictly-less-than, so the boundary stays unverified (not de-ranked).
+			name:      "sim exactly at mismatch threshold stays unverified (boundary)",
 			queryOrg:  "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
 			res:       org("alpha bravo charlie kilo lima mike november oscar papa quebec"),
 			wantScore: confReverseWhoisUnverified,
-			wantDrop:  false,
 		},
 		{
-			// 2 of 10 shared tokens = 0.20 < simMismatch → clear mismatch drops.
-			name:      "sim just below mismatch threshold drops",
+			// 2 of 10 shared tokens = 0.20 < simMismatch → clear mismatch de-ranks.
+			name:      "sim just below mismatch threshold de-ranks",
 			queryOrg:  "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
 			res:       org("alpha bravo kilo lima mike november oscar papa quebec romeo"),
-			wantScore: 0,
-			wantDrop:  true,
+			wantScore: confReverseWhoisMismatch,
 		},
 		{
 			// queryOrg normalizes to "" (all legal-suffix tokens) → similarity is
-			// undefined → unverifiable, never a mismatch-drop (ENG-5123 S1).
-			name:      "query normalizes empty stays unverified (not drop)",
+			// undefined → unverifiable, never a mismatch (ENG-5123 S1).
+			name:      "query normalizes empty stays unverified",
 			queryOrg:  "Co., Ltd.",
 			res:       org("Walmart Inc."),
 			wantScore: confReverseWhoisUnverified,
-			wantDrop:  false,
 		},
 		{
 			// candidate registrant normalizes to "" → same guard, from the other
 			// side (ENG-5123 S1).
-			name:      "candidate registrant normalizes empty stays unverified (not drop)",
+			name:      "candidate registrant normalizes empty stays unverified",
 			queryOrg:  "Walmart",
 			res:       org("Co., Ltd."),
 			wantScore: confReverseWhoisUnverified,
-			wantDrop:  false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			score, drop := decideConfidence(tt.queryOrg, tt.res, tt.lookupErr)
-			assert.Equal(t, tt.wantDrop, drop, "drop")
+			score := decideConfidence(tt.queryOrg, tt.res, tt.lookupErr)
 			assert.InDelta(t, tt.wantScore, score, 0.001, "score")
-			// Design invariant: no emitted (non-dropped) score ever reaches clean.
-			if !drop {
-				assert.Less(t, score, plugins.ConfidenceHigh,
-					"reverse-whois must never auto-clean")
-			}
+			// Design invariant: every score stays in needs_review — below clean
+			// (never auto-clean) and at/above the noise floor (never dropped).
+			assert.Less(t, score, plugins.ConfidenceHigh,
+				"reverse-whois must never auto-clean")
+			assert.GreaterOrEqual(t, score, plugins.ConfidenceLow,
+				"reverse-whois must never drop below needs_review")
 		})
 	}
 }
@@ -201,6 +191,10 @@ func TestIsMaskedOrg(t *testing.T) {
 	assert.True(t, isMaskedOrg("Domains By Proxy, LLC"))
 	assert.True(t, isMaskedOrg("REDACTED FOR PRIVACY"))
 	assert.True(t, isMaskedOrg("whois agent")) // present in whoisPrivacyNames
+	// Proxy orgs append a per-customer suffix that defeats an exact lookup; the
+	// substring pass must still catch it (ENG-5123 #2).
+	assert.True(t, isMaskedOrg("Domains By Proxy, LLC (customer 12345)"))
+	assert.True(t, isMaskedOrg("Registration Private, Domains By Proxy"))
 	assert.False(t, isMaskedOrg("Leica Biosystems"))
 	assert.False(t, isMaskedOrg(""))
 }
@@ -223,13 +217,14 @@ func TestVerifyCandidates_EmailModeShortCircuits(t *testing.T) {
 	}
 }
 
-// TestVerifyCandidates_OrderPreservedAndDropped proves output order matches
-// input order and dropped candidates are omitted.
-func TestVerifyCandidates_OrderPreservedAndDropped(t *testing.T) {
+// TestVerifyCandidates_OrderPreservedAllEmitted proves output order matches
+// input order and that a clear mismatch is DE-RANKED (bottom of band), never
+// dropped — nothing is ever removed from the graph (ENG-5123 #1).
+func TestVerifyCandidates_OrderPreservedAllEmitted(t *testing.T) {
 	stub := &stubResolver{
 		byDomain: map[string]registrantResult{
 			"first.com":  org("Acme Corp"),    // corroborated
-			"second.com": org("Walmart Inc."), // clear mismatch → drop
+			"second.com": org("Walmart Inc."), // clear mismatch → de-rank, keep
 			"third.com":  {},                  // unverified
 		},
 	}
@@ -240,22 +235,28 @@ func TestVerifyCandidates_OrderPreservedAndDropped(t *testing.T) {
 	}
 	findings, err := verifyCandidates(context.Background(), stub, "Acme", cands)
 	require.NoError(t, err)
-	require.Len(t, findings, 2)
+	require.Len(t, findings, 3)
 	assert.Equal(t, "first.com", findings[0].Value)
-	assert.Equal(t, "third.com", findings[1].Value)
+	assert.Equal(t, "second.com", findings[1].Value)
+	assert.Equal(t, "third.com", findings[2].Value)
 	assert.InDelta(t, confReverseWhoisCorroborated, plugins.Confidence(findings[0]), 0.001)
-	assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(findings[1]), 0.001)
+	assert.InDelta(t, confReverseWhoisMismatch, plugins.Confidence(findings[1]), 0.001)
+	assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(findings[2]), 0.001)
+	// De-ranked mismatch is still in the needs_review band, not discarded.
+	assert.True(t, plugins.NeedsReview(findings[1]))
 }
 
 // TestVerifyCandidates_DropsImplausibleDomains proves malformed candidates
 // (interior whitespace/control chars, over-length) are filtered out before any
 // resolver call or emission (ENG-5123 F2).
 func TestVerifyCandidates_DropsImplausibleDomains(t *testing.T) {
+	overLen := strings.Repeat("a", 250) + ".com" // 254 chars > 253 max
 	stub := &stubResolver{byDomain: map[string]registrantResult{"good.com": org("Acme Corp")}}
 	cands := []candidate{
 		{domain: "good.com", finding: plugins.Finding{Value: "good.com"}},
 		{domain: "bad domain.com", finding: plugins.Finding{Value: "bad domain.com"}},
 		{domain: "inject\r\n.com", finding: plugins.Finding{Value: "inject\r\n.com"}},
+		{domain: overLen, finding: plugins.Finding{Value: overLen}},
 	}
 	findings, err := verifyCandidates(context.Background(), stub, "Acme", cands)
 	require.NoError(t, err)
@@ -263,6 +264,7 @@ func TestVerifyCandidates_DropsImplausibleDomains(t *testing.T) {
 	assert.Equal(t, "good.com", findings[0].Value)
 	assert.False(t, stub.queried("bad domain.com"), "malformed candidate must not be looked up")
 	assert.False(t, stub.queried("inject\r\n.com"), "control-char candidate must not be looked up")
+	assert.False(t, stub.queried(overLen), "over-length candidate must not be looked up")
 }
 
 // TestReverseWhois_NeverAutoCleans is the design-guard invariant: across a mix

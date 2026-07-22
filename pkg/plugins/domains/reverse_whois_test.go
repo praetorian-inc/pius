@@ -98,9 +98,12 @@ func TestReverseWhois_Run_OrgMode(t *testing.T) {
 //   - acme.com's own registrant is unresolvable → unverified 0.50, needs_review
 //     (kept: a lookup failure is never a drop).
 //   - walmart.com's own registrant is "Walmart Inc.", unmasked and a clear
-//     mismatch against the Leica query → DROPPED (not emitted).
+//     mismatch against the Leica query → DE-RANKED to 0.40 (bottom of the
+//     needs_review band), NOT dropped: a textual mismatch is not proof of
+//     non-ownership, so nothing is removed from the graph (ENG-5123 #1).
 //
-// Both surviving findings stay strictly below ConfidenceHigh (never clean).
+// Both findings stay strictly below ConfidenceHigh (never clean) and at/above
+// ConfidenceLow (never dropped).
 func TestReverseWhois_Run_UnverifiedMatchNeedsReview(t *testing.T) {
 	t.Setenv("VIEWDNS_API_KEY", "test-key")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -111,26 +114,32 @@ func TestReverseWhois_Run_UnverifiedMatchNeedsReview(t *testing.T) {
 	stub := &stubResolver{
 		byDomain: map[string]registrantResult{
 			"acme.com":    {},                  // unresolvable → unverified, kept
-			"walmart.com": org("Walmart Inc."), // clear mismatch → dropped
+			"walmart.com": org("Walmart Inc."), // clear mismatch → de-ranked, kept
 		},
 	}
 	p := &ReverseWhoisPlugin{client: client.New(), baseURL: srv.URL, resolver: stub}
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Leica Biosystems Richmond, Inc."})
 	require.NoError(t, err)
 
-	require.Len(t, findings, 1, "the clear-mismatch walmart.com candidate must be dropped")
-	f := findings[0]
-	assert.Equal(t, "acme.com", f.Value)
-	conf, ok := f.Data["confidence"].(float64)
-	require.True(t, ok, "confidence must be set for %q", f.Value)
-	assert.InDelta(t, 0.50, conf, 0.001,
-		"unresolvable match %q must be scored at the 0.50 mid-band value", f.Value)
-	assert.GreaterOrEqual(t, conf, plugins.ConfidenceLow,
-		"confidence for %q must be at or above the noise floor", f.Value)
-	assert.Less(t, conf, plugins.ConfidenceHigh,
-		"confidence for %q must be below ConfidenceHigh so it is not clean", f.Value)
-	assert.True(t, plugins.NeedsReview(f),
-		"unverified match %q must be flagged needs_review", f.Value)
+	require.Len(t, findings, 2, "clear-mismatch candidate must be de-ranked, never dropped")
+	byDomain := map[string]plugins.Finding{}
+	for _, f := range findings {
+		conf, ok := f.Data["confidence"].(float64)
+		require.True(t, ok, "confidence must be set for %q", f.Value)
+		assert.GreaterOrEqual(t, conf, plugins.ConfidenceLow,
+			"confidence for %q must be at or above the noise floor", f.Value)
+		assert.Less(t, conf, plugins.ConfidenceHigh,
+			"confidence for %q must be below ConfidenceHigh so it is not clean", f.Value)
+		assert.True(t, plugins.NeedsReview(f),
+			"match %q must be flagged needs_review", f.Value)
+		byDomain[f.Value] = f
+	}
+	require.Contains(t, byDomain, "acme.com")
+	require.Contains(t, byDomain, "walmart.com")
+	assert.InDelta(t, 0.50, byDomain["acme.com"].Data["confidence"].(float64), 0.001,
+		"unresolvable match must be scored at the 0.50 mid-band value")
+	assert.InDelta(t, confReverseWhoisMismatch, byDomain["walmart.com"].Data["confidence"].(float64), 0.001,
+		"clear mismatch must be de-ranked to the bottom of the band")
 }
 
 // TestReverseWhois_Run_CorroboratedRanksHigherStillNeedsReview asserts a

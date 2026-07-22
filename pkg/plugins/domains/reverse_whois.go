@@ -29,11 +29,13 @@ func (p *ReverseWhoisPlugin) apiBase() string {
 	return "https://api.viewdns.info"
 }
 
-func (p *ReverseWhoisPlugin) Name() string        { return "reverse-whois" }
-func (p *ReverseWhoisPlugin) Description() string { return "ViewDNS Reverse WHOIS: discovers domain portfolio (requires VIEWDNS_API_KEY)" }
-func (p *ReverseWhoisPlugin) Category() string    { return "domain" }
-func (p *ReverseWhoisPlugin) Phase() int          { return 0 }
-func (p *ReverseWhoisPlugin) Mode() string        { return plugins.ModePassive }
+func (p *ReverseWhoisPlugin) Name() string { return "reverse-whois" }
+func (p *ReverseWhoisPlugin) Description() string {
+	return "ViewDNS Reverse WHOIS: discovers domain portfolio (requires VIEWDNS_API_KEY)"
+}
+func (p *ReverseWhoisPlugin) Category() string { return "domain" }
+func (p *ReverseWhoisPlugin) Phase() int       { return 0 }
+func (p *ReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
 // Only runs if VIEWDNS_API_KEY is set and an org name or registrant email
 // seed is provided.
@@ -104,9 +106,6 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 				},
 			},
 		})
-		if len(cands) >= maxReverseWhoisCandidates {
-			break
-		}
 	}
 
 	if p.resolver == nil {

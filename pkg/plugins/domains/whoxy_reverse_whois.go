@@ -80,7 +80,6 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 	var cands []candidate
 	seen := make(map[string]struct{})
 
-fetch:
 	for {
 		resp, err := p.fetchPage(ctx, apiKey, query, byEmail, page)
 		if err != nil {
@@ -118,9 +117,6 @@ fetch:
 					},
 				},
 			})
-			if len(cands) >= maxReverseWhoisCandidates {
-				break fetch
-			}
 		}
 
 		if len(resp.SearchResult) == 0 || page >= totalPages || page >= maxWhoxyPages {

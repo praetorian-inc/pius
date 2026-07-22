@@ -21,16 +21,21 @@ import (
 // org. To reduce that false-positive class we re-resolve each candidate's OWN
 // registrant organization and compare it to the query org.
 //
-// Design constraint (GPT-5.6-sol adjudicated, human-approved): reverse-WHOIS is
-// a lead signal, not ownership evidence. Re-reading the candidate's own
-// WHOIS/RDAP samples the SAME noisy, frequently-masked namespace the lead came
-// from, so token similarity between two registrant-org strings is nowhere near
-// an auto-clean bar. Corroboration is therefore used ONLY to (a) DROP clear
-// false-positives and (b) RANK within the needs_review band. Nothing here ever
-// auto-cleans: every emitted finding is scored strictly below
-// plugins.ConfidenceHigh, so SetConfidence always flags needs_review. An
-// auto-clean path, if ever wanted, must come from an INDEPENDENT corroboration
-// channel calibrated against labeled data — out of scope, filed as follow-up.
+// Design constraint (human-approved): reverse-WHOIS is a lead signal, not
+// ownership evidence. Re-reading the candidate's own WHOIS/RDAP samples the
+// SAME noisy, frequently-masked namespace the lead came from, so token
+// similarity between two registrant-org strings is nowhere near an auto-clean
+// bar — and, by the same logic, nowhere near an auto-DROP bar either. A
+// token-mismatched registrant routinely reflects legitimate cross-entity
+// ownership (subsidiaries, parent/holding registrations, corporate registrars,
+// DBAs, post-acquisition records), so removing it would silently destroy a real
+// asset. Corroboration is therefore used ONLY to RANK within the needs_review
+// band: a clear mismatch is de-ranked to the bottom of the band, never dropped.
+// Reverse-WHOIS never removes a candidate from the graph. Every emitted finding
+// is scored strictly below plugins.ConfidenceHigh, so SetConfidence always
+// flags needs_review. An auto-clean path, if ever wanted, must come from an
+// INDEPENDENT corroboration channel calibrated against labeled data — out of
+// scope, filed as follow-up.
 const (
 	// confReverseWhoisCorroborated is the top of the needs_review band: the
 	// candidate's own registrant org corroborates the query org. Still < 0.65,
@@ -40,13 +45,21 @@ const (
 	// corroborate (lookup failed/timed out, masked registrant, empty org, or an
 	// ambiguous partial-token overlap).
 	confReverseWhoisUnverified = 0.50
+	// confReverseWhoisMismatch is the bottom-of-band score for a present,
+	// unmasked registrant org that clearly disagrees with the query org. It sits
+	// below confReverseWhoisUnverified so the likely false positive (walmart.com
+	// from a Leica query) sinks to the bottom of the Pending queue, but stays
+	// >= plugins.ConfidenceLow so it remains needs_review — de-ranked, NEVER
+	// dropped, because a textual registrant mismatch is not proof of non-ownership.
+	confReverseWhoisMismatch = 0.40
 
 	// simCorroborate is the token-similarity threshold at/above which the
 	// candidate's registrant org is treated as corroborating the query org.
 	simCorroborate = 0.60
 	// simMismatch is the token-similarity threshold below which a present,
-	// unmasked registrant org is treated as a clear mismatch and the candidate
-	// is dropped (the walmart.com-from-a-Leica-query false positive).
+	// unmasked registrant org is treated as a clear mismatch and de-ranked to the
+	// bottom of the needs_review band (the walmart.com-from-a-Leica-query false
+	// positive) — de-ranked, never dropped.
 	simMismatch = 0.30
 
 	// maxReverseWhoisCandidates caps how many candidates we verify per run.
@@ -81,13 +94,6 @@ type candidate struct {
 	finding plugins.Finding
 }
 
-// scoredCandidate is the per-candidate verification outcome, held in an
-// index-aligned slice so output order is preserved.
-type scoredCandidate struct {
-	score float64
-	drop  bool
-}
-
 // orgLegalSuffixes are legal-form tokens stripped by normalizeOrg before
 // comparison. Disambiguating tokens (group, holdings, international, systems)
 // are deliberately NOT included — they carry signal.
@@ -115,11 +121,36 @@ func normalizeOrg(s string) string {
 	return strings.Join(kept, " ")
 }
 
+// maskedSubstringMinLen is the shortest privacy-guard phrase eligible for
+// substring matching in isMaskedOrg. The whoisPrivacyGuards phrases are all
+// distinctive multi-word org strings (>= 8 chars), so requiring this length
+// avoids matching an incidental substring of a legitimate org name.
+const maskedSubstringMinLen = 8
+
 // isMaskedOrg reports whether v is a known WHOIS privacy/proxy org or name
-// string (exact lowercase lookup, parity with whois.go's registrant filter).
+// string. It first tries an exact lowercase lookup (parity with whois.go's
+// registrant filter), then falls back to substring containment against the
+// known privacy-GUARD phrases. Privacy/proxy orgs routinely append a
+// per-customer suffix ("Domains By Proxy, LLC (customer 12345)"), which an
+// exact lookup misses; because these are non-authoritative registrants, missing
+// one would mis-rank (a masked domain scored as a mismatch) rather than clear
+// it, but the substring pass keeps the masked → unverified ranking correct
+// (ENG-5123). Only the org-name guard phrases are used for substring matching;
+// the name-field generics ("admin", "abuse") are too short to match safely.
 func isMaskedOrg(v string) bool {
 	key := strings.ToLower(strings.TrimSpace(v))
-	return whoisPrivacyGuards[key] || whoisPrivacyNames[key]
+	if key == "" {
+		return false
+	}
+	if whoisPrivacyGuards[key] || whoisPrivacyNames[key] {
+		return true
+	}
+	for phrase := range whoisPrivacyGuards {
+		if len(phrase) >= maskedSubstringMinLen && strings.Contains(key, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // isPlausibleDomain reports whether d is a syntactically plausible hostname:
@@ -140,38 +171,45 @@ func isPlausibleDomain(d string) bool {
 }
 
 // decideConfidence maps a candidate's resolved registrant against the query org
-// to a (score, drop) decision. A lookup error means "unverifiable", NOT
-// "mismatch": it is scored mid-band and never dropped.
-func decideConfidence(queryOrg string, res registrantResult, lookupErr error) (score float64, drop bool) {
+// to a needs_review score. A lookup error means "unverifiable", NOT "mismatch":
+// it is scored mid-band. Nothing here ever drops a candidate — a clear mismatch
+// is de-ranked to the bottom of the band, and every return is < ConfidenceHigh.
+func decideConfidence(queryOrg string, res registrantResult, lookupErr error) float64 {
 	if lookupErr != nil || res.Masked || res.Org == "" {
-		return confReverseWhoisUnverified, false
+		return confReverseWhoisUnverified
 	}
 	nq, nc := normalizeOrg(queryOrg), normalizeOrg(res.Org)
 	if nq == "" || nc == "" {
 		// One side has no comparable tokens after legal-suffix stripping (e.g. an
 		// all-suffix org like "Co., Ltd."). Token similarity is undefined here, so
-		// the candidate is UNVERIFIABLE, not a mismatch — score mid-band, never
-		// drop. Dropping on an empty token set would silently lose real assets
-		// (the recall failure named in the plan's risk list; ENG-5123 S1).
-		return confReverseWhoisUnverified, false
+		// the candidate is UNVERIFIABLE, not a mismatch — score mid-band.
+		return confReverseWhoisUnverified
 	}
 	sim := tokenSimilarity(nq, nc)
 	switch {
 	case sim >= simCorroborate:
-		return confReverseWhoisCorroborated, false
+		return confReverseWhoisCorroborated
 	case sim < simMismatch:
-		// Present, unmasked, clear mismatch → drop the false positive.
-		return 0, true
+		// Present, unmasked, clear mismatch → de-rank to the bottom of the
+		// needs_review band (walmart.com-from-a-Leica-query). A textual registrant
+		// mismatch is not proof of non-ownership, so this is never dropped.
+		return confReverseWhoisMismatch
 	default:
 		// Ambiguous partial overlap [simMismatch, simCorroborate).
-		return confReverseWhoisUnverified, false
+		return confReverseWhoisUnverified
 	}
 }
 
 // verifyCandidates scores each candidate by resolving its own registrant and
-// comparing to queryOrg, then emits findings in the original order, skipping
-// dropped candidates. Lookups run under bounded concurrency with a per-lookup
-// timeout; a timeout/error is treated as unverifiable (never dropped).
+// comparing to queryOrg, then emits findings in the original order. Lookups run
+// under bounded concurrency with a per-lookup timeout; a timeout/error is
+// treated as unverifiable. No candidate is ever dropped — every plausible
+// candidate is emitted (in needs_review).
+//
+// At most maxReverseWhoisCandidates candidates are resolved, to bound lookup
+// cost; any beyond that cap are still emitted at the unverified mid-band score
+// WITHOUT a lookup, so a large result set is ranked-where-possible but never
+// truncated (ENG-5123 #3 — the cap limits resolver calls, not recall).
 //
 // When queryOrg is empty (email-mode seed) there is nothing to corroborate
 // against, so every candidate short-circuits to the unverified mid-band score
@@ -201,17 +239,27 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		return findings, nil
 	}
 
-	results := make([]scoredCandidate, len(cands))
+	// Resolve at most maxReverseWhoisCandidates; overflow is emitted unverified
+	// below without a lookup (recall-safe cap on resolver calls, not on output).
+	resolveCount := len(cands)
+	if resolveCount > maxReverseWhoisCandidates {
+		resolveCount = maxReverseWhoisCandidates
+	}
+
+	scores := make([]float64, len(cands))
+	for i := resolveCount; i < len(cands); i++ {
+		scores[i] = confReverseWhoisUnverified
+	}
+
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(reverseWhoisWorkers)
-	for i := range cands {
+	for i := 0; i < resolveCount; i++ {
 		i := i
 		g.Go(func() error {
 			lctx, cancel := context.WithTimeout(gctx, reverseWhoisLookupTimeout)
 			defer cancel()
 			res, err := r.resolveRegistrant(lctx, cands[i].domain)
-			score, drop := decideConfidence(queryOrg, res, err)
-			results[i] = scoredCandidate{score: score, drop: drop}
+			scores[i] = decideConfidence(queryOrg, res, err)
 			return nil
 		})
 	}
@@ -221,11 +269,8 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 
 	findings := make([]plugins.Finding, 0, len(cands))
 	for i, c := range cands {
-		if results[i].drop {
-			continue
-		}
 		f := c.finding
-		plugins.SetConfidence(&f, results[i].score)
+		plugins.SetConfidence(&f, scores[i])
 		findings = append(findings, f)
 	}
 	return findings, nil
