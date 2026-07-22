@@ -8,12 +8,24 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// blockingResolver blocks each lookup until its context is cancelled, then
+// surfaces the context error. It models a slow/unresponsive registrant source so
+// tests can prove the overall verification budget (not just the per-lookup
+// timeout) caps the pass.
+type blockingResolver struct{}
+
+func (blockingResolver) resolveRegistrant(ctx context.Context, _ string) (registrantResult, error) {
+	<-ctx.Done()
+	return registrantResult{}, ctx.Err()
+}
 
 // stubResolver is a hermetic registrantResolver: it returns canned results per
 // domain with no network access, and records which domains were queried so
@@ -247,8 +259,10 @@ func TestVerifyCandidates_OrderPreservedAllEmitted(t *testing.T) {
 }
 
 // TestVerifyCandidates_DropsImplausibleDomains proves malformed candidates
-// (interior whitespace/control chars, over-length) are filtered out before any
-// resolver call or emission (ENG-5123 F2).
+// (interior whitespace/control chars, over-length, URL/authority punctuation, or
+// dot-less single labels) are filtered out before any resolver call or emission
+// (ENG-5123 F2 + Codex-suggestion hardening). Because reverse-whois never drops,
+// this filter is the only thing keeping such values out of the graph.
 func TestVerifyCandidates_DropsImplausibleDomains(t *testing.T) {
 	overLen := strings.Repeat("a", 250) + ".com" // 254 chars > 253 max
 	stub := &stubResolver{byDomain: map[string]registrantResult{"good.com": org("Acme Corp")}}
@@ -257,6 +271,10 @@ func TestVerifyCandidates_DropsImplausibleDomains(t *testing.T) {
 		{domain: "bad domain.com", finding: plugins.Finding{Value: "bad domain.com"}},
 		{domain: "inject\r\n.com", finding: plugins.Finding{Value: "inject\r\n.com"}},
 		{domain: overLen, finding: plugins.Finding{Value: overLen}},
+		{domain: "example.com:443", finding: plugins.Finding{Value: "example.com:443"}},
+		{domain: "http://example.com/path", finding: plugins.Finding{Value: "http://example.com/path"}},
+		{domain: "admin@example.com", finding: plugins.Finding{Value: "admin@example.com"}},
+		{domain: "localhost", finding: plugins.Finding{Value: "localhost"}},
 	}
 	findings, err := verifyCandidates(context.Background(), stub, "Acme", cands)
 	require.NoError(t, err)
@@ -265,6 +283,45 @@ func TestVerifyCandidates_DropsImplausibleDomains(t *testing.T) {
 	assert.False(t, stub.queried("bad domain.com"), "malformed candidate must not be looked up")
 	assert.False(t, stub.queried("inject\r\n.com"), "control-char candidate must not be looked up")
 	assert.False(t, stub.queried(overLen), "over-length candidate must not be looked up")
+	assert.False(t, stub.queried("example.com:443"), "port-bearing candidate must not be looked up")
+	assert.False(t, stub.queried("http://example.com/path"), "URL candidate must not be looked up")
+	assert.False(t, stub.queried("admin@example.com"), "userinfo-bearing candidate must not be looked up")
+	assert.False(t, stub.queried("localhost"), "dot-less single label must not be looked up")
+}
+
+// TestVerifyCandidates_TotalBudgetCapsRuntime proves the overall verification
+// budget bounds the pass even when every lookup hangs. With a slow/serialized
+// registrant source, per-lookup 10s budgets would otherwise stack; the total
+// budget caps runtime and scores every unresolved candidate unverified —
+// emitted, needs_review, never dropped (ENG-5123 review, Codex critical).
+func TestVerifyCandidates_TotalBudgetCapsRuntime(t *testing.T) {
+	orig := reverseWhoisTotalBudget
+	reverseWhoisTotalBudget = 100 * time.Millisecond
+	defer func() { reverseWhoisTotalBudget = orig }()
+
+	cands := make([]candidate, 0, 20)
+	for _, d := range []string{
+		"a.com", "b.com", "c.com", "d.com", "e.com", "f.com", "g.com",
+		"h.com", "i.com", "j.com", "k.com", "l.com", "m.com", "n.com",
+	} {
+		cands = append(cands, candidate{domain: d, finding: plugins.Finding{Value: d}})
+	}
+
+	start := time.Now()
+	findings, err := verifyCandidates(context.Background(), blockingResolver{}, "Acme Corp", cands)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.Len(t, findings, len(cands), "every candidate must still be emitted (never dropped)")
+	// The pass must be bounded by the total budget, NOT by a single per-lookup
+	// timeout — proving the stacking-budget failure mode is capped.
+	assert.Less(t, elapsed, reverseWhoisLookupTimeout,
+		"total budget must cap the pass well under one per-lookup timeout")
+	for _, f := range findings {
+		assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(f), 0.001,
+			"budget-expired lookup must score unverified")
+		assert.True(t, plugins.NeedsReview(f))
+	}
 }
 
 // TestReverseWhois_NeverAutoCleans is the design-guard invariant: across a mix

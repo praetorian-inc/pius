@@ -70,6 +70,19 @@ const (
 	reverseWhoisLookupTimeout = 10 * time.Second
 )
 
+// reverseWhoisTotalBudget bounds the ENTIRE verification pass, not just a single
+// lookup. RDAP requests are serialized (openrdap's bootstrap cache is not
+// concurrency-safe — see viaRDAP), so the per-lookup 10s budgets can STACK: with
+// a large result set against a slow/timing-out RDAP path, workers spend their
+// budgets queued on the serialization slot and the plugin — holding a phase-0
+// concurrency slot the whole time — could run for many minutes (ENG-5123 review,
+// Codex critical). This overall deadline caps that: any candidate still
+// unresolved when the budget expires is scored unverified (recall-safe — still
+// emitted, still needs_review, never dropped). It is a var, not a const, so tests
+// can shorten it. ENG-5167 tightens the WHOIS read path itself; this is the
+// backstop that holds regardless.
+var reverseWhoisTotalBudget = 90 * time.Second
+
 // registrantResult is the outcome of resolving a single candidate domain's own
 // registrant organization.
 type registrantResult struct {
@@ -154,20 +167,31 @@ func isMaskedOrg(v string) bool {
 }
 
 // isPlausibleDomain reports whether d is a syntactically plausible hostname:
-// non-empty, within the DNS length limit, and free of whitespace/control
-// characters. It is intentionally permissive about the label charset (IDN
-// punycode already arrives ASCII); the goal is to reject malformed or
-// injection-bearing values, not to fully validate DNS grammar.
+// non-empty, within the DNS length limit, free of whitespace/control characters
+// and URL/authority punctuation, and containing at least one dot. It is
+// intentionally permissive about the label charset (IDN punycode already arrives
+// ASCII); the goal is to reject malformed or injection-bearing values, not to
+// fully validate DNS grammar. This is the ONLY gate between a source's raw
+// "domain" field and a graph node, because reverse-whois never drops (ENG-5123),
+// so a value like "example.com:443" or "http://example.com/path" must be rejected
+// here or it becomes a bogus domain node (ENG-5123 review, Codex suggestion).
 func isPlausibleDomain(d string) bool {
 	if d == "" || len(d) > 253 {
 		return false
 	}
 	for _, r := range d {
-		if r <= ' ' || r == 0x7f {
+		switch {
+		case r <= ' ' || r == 0x7f:
+			return false
+		case r == '/' || r == ':' || r == '@' || r == '?' || r == '#':
+			// URL / authority punctuation: a bare registrable hostname carries none
+			// of these.
 			return false
 		}
 	}
-	return true
+	// A registrable domain has at least one dot; a bare single label is not a
+	// candidate a reverse-whois source should be returning.
+	return strings.Contains(d, ".")
 }
 
 // decideConfidence maps a candidate's resolved registrant against the query org
@@ -251,7 +275,14 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		scores[i] = confReverseWhoisUnverified
 	}
 
-	g, gctx := errgroup.WithContext(ctx)
+	// Bound the whole pass, not just each lookup: serialized RDAP means per-lookup
+	// budgets can stack (see reverseWhoisTotalBudget). Any lookup still in flight or
+	// queued when this fires sees a cancelled context, returns an error, and is
+	// scored unverified — capping worst-case runtime without dropping anything.
+	bctx, cancelBudget := context.WithTimeout(ctx, reverseWhoisTotalBudget)
+	defer cancelBudget()
+
+	g, gctx := errgroup.WithContext(bctx)
 	g.SetLimit(reverseWhoisWorkers)
 	for i := 0; i < resolveCount; i++ {
 		i := i
@@ -263,6 +294,11 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 			return nil
 		})
 	}
+	// Workers deliberately absorb every lookup error (scoring the candidate
+	// unverified rather than failing the pass), so g.Wait never actually returns
+	// non-nil today. We keep the check as the happens-before barrier that
+	// publishes all scores[] writes to this goroutine, and as defensive cover if
+	// a future worker ever propagates an error (Gemini review, ENG-5123).
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
@@ -310,9 +346,15 @@ func (r *rdapWhoisResolver) viaRDAP(ctx context.Context, domain string) (registr
 	case <-ctx.Done():
 		return registrantResult{}, ctx.Err()
 	}
-	req := rdap.NewDomainRequest(domain).WithContext(ctx)
-	resp, err := r.client.Do(req)
-	<-r.sem
+	// Release the serialization slot as soon as Do returns — parsing below is
+	// concurrency-safe and must not hold the size-1 lock. The defer guarantees
+	// release even if Do panics, so a single misbehaving lookup can't wedge the
+	// whole plugin (Gemini review, ENG-5123).
+	resp, err := func() (*rdap.Response, error) {
+		defer func() { <-r.sem }()
+		req := rdap.NewDomainRequest(domain).WithContext(ctx)
+		return r.client.Do(req)
+	}()
 	if err != nil {
 		return registrantResult{}, err
 	}
