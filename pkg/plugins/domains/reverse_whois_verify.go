@@ -2,7 +2,6 @@ package domains
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -317,80 +316,75 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 // falling back to raw WHOIS when RDAP is unavailable (transport error, or a
 // TLD with no RDAP service, e.g. many ccTLDs).
 type rdapWhoisResolver struct {
-	initOnce sync.Once
-	sem      chan struct{} // size-1, serializes concurrent RDAP Do calls
-	client   *rdap.Client
+	initOnce   sync.Once
+	clientPool *sync.Pool // pool of *rdap.Client; each is used by one goroutine at a time
 }
-
-// errRDAPBusy signals that the single RDAP serialization slot was already held,
-// so this lookup should fall through to the lock-free WHOIS path rather than
-// queue behind it (see viaRDAP).
-var errRDAPBusy = errors.New("rdap: serialization slot busy")
 
 func (r *rdapWhoisResolver) resolveRegistrant(ctx context.Context, domain string) (registrantResult, error) {
 	return resolveWithFallback(ctx, domain, r.viaRDAP, r.viaWHOIS)
 }
 
 // resolveWithFallback implements the RDAP-primary / WHOIS-fallback policy. RDAP
-// is authoritative ONLY when it actually resolved a registrant (Found): an RDAP
-// transport error, a busy serialization slot, OR a successful response whose
-// registrant org is absent/redacted (Found==false) all fall through to WHOIS.
+// is authoritative ONLY when it resolved a real, usable registrant — Found AND
+// not masked. Every other RDAP outcome falls through to WHOIS: a transport
+// error, a successful response whose registrant org is absent/redacted
+// (Found==false), OR a successful response carrying a literal privacy/proxy
+// value such as "REDACTED FOR PRIVACY" or "Domains By Proxy, LLC" (Masked).
 //
-// The empty-but-successful case is the one that matters in production: under
-// GDPR most gTLD RDAP records redact the registrant org, so treating an empty
-// RDAP response as "resolved" would skip WHOIS and collapse corroboration to the
-// unverified mid-band for the common path — the corroborate/mismatch bands would
-// almost never fire. Falling through to WHOIS gives the candidate a real second
-// source before scoring (Codex+Claude+Gemini review, ENG-5123).
+// The redacted/masked cases are the ones that matter in production: under GDPR
+// most gTLD RDAP records either omit the registrant org or return a privacy
+// placeholder, so treating either as "resolved" would skip WHOIS and collapse
+// corroboration to the unverified mid-band for the common path — the
+// corroborate/mismatch bands would almost never fire. Falling through to WHOIS
+// gives the candidate a real second source before scoring; if WHOIS is also
+// empty/masked/errored the candidate simply stays in the same unverified band,
+// so the fallback never de-ranks (Codex+Claude+Gemini review, ENG-5123).
 func resolveWithFallback(
 	ctx context.Context,
 	domain string,
 	rdapFn, whoisFn func(context.Context, string) (registrantResult, error),
 ) (registrantResult, error) {
-	if res, err := rdapFn(ctx, domain); err == nil && res.Found {
+	if res, err := rdapFn(ctx, domain); err == nil && res.Found && !res.Masked {
 		return res, nil
 	}
 	return whoisFn(ctx, domain)
 }
 
 func (r *rdapWhoisResolver) viaRDAP(ctx context.Context, domain string) (registrantResult, error) {
-	// openrdap's bootstrap MemoryCache is a plain map with no locking, so a
-	// shared *rdap.Client is not safe for concurrent Do. Serialize RDAP requests
-	// through a size-1 semaphore; the concurrent WHOIS fallback path stays
-	// lock-free. (A disk-cache warm-up could restore RDAP parallelism — deferred
-	// as a perf follow-up.)
+	// openrdap's bootstrap Client is not safe for concurrent Do: Lookup writes an
+	// unsynchronized registries map backed by a plain-map MemoryCache. Serializing
+	// every RDAP call through one slot is the wrong fix in both directions — a
+	// blocking slot starves queued workers of their 10s budget, and a non-blocking
+	// slot bypasses RDAP for ~5 of every 6 concurrent lookups (reverseWhoisWorkers)
+	// so WHOIS silently becomes the primary resolver and takes the rate-limit hit.
+	// Instead give each in-flight lookup its OWN client from a pool: a pooled client
+	// is only ever touched by one goroutine at a time, so its maps stay race-free,
+	// and up to reverseWhoisWorkers clients run RDAP truly in parallel. Each distinct
+	// client warms the DNS bootstrap registry once (24h in-client cache), so the pool
+	// amortizes bootstrap cost across the run (Gemini review, ENG-5123).
 	r.initOnce.Do(func() {
-		r.sem = make(chan struct{}, 1)
-		r.client = &rdap.Client{}
+		r.clientPool = &sync.Pool{New: func() any { return &rdap.Client{} }}
 	})
-	// Non-blocking acquire: RDAP is serialized to one in-flight call, but a worker
-	// must NEVER queue behind the slot. Queueing would burn this lookup's 10s
-	// budget waiting, and a worker whose ctx expires in line would then fall back
-	// to WHOIS with an already-dead context — an instant no-op that silently loses
-	// corroboration coverage. If the slot is held, report errRDAPBusy so the caller
-	// falls straight through to lock-free WHOIS while the other workers keep making
-	// progress in parallel (Gemini review, ENG-5123).
-	select {
-	case r.sem <- struct{}{}:
-	default:
-		return registrantResult{}, errRDAPBusy
-	}
-	// Release the serialization slot as soon as Do returns — parsing below is
-	// concurrency-safe and must not hold the size-1 lock. The defer guarantees
-	// release even if Do panics, and recovers the panic into an error so a single
-	// misbehaving lookup can neither wedge the slot nor crash the whole pius run
-	// (which would lose every finding). A recovered panic falls through to WHOIS
-	// like any other RDAP failure (Gemini review, ENG-5123).
+	client := r.clientPool.Get().(*rdap.Client)
+	// Recover a panic inside Do into an error so a single malformed response can't
+	// crash the whole pius run (which would lose every finding); it then falls
+	// through to WHOIS like any other RDAP failure. A client that panicked
+	// mid-Lookup may have a half-written registries map, so it is NOT returned to
+	// the pool — a fresh one is created on next Get (Gemini review, ENG-5123).
+	returnToPool := true
 	resp, err := func() (resp *rdap.Response, err error) {
 		defer func() {
-			<-r.sem
 			if rec := recover(); rec != nil {
+				returnToPool = false
 				resp, err = nil, fmt.Errorf("rdap: recovered panic resolving %q: %v", domain, rec)
 			}
 		}()
 		req := rdap.NewDomainRequest(domain).WithContext(ctx)
-		return r.client.Do(req)
+		return client.Do(req)
 	}()
+	if returnToPool {
+		r.clientPool.Put(client)
+	}
 	if err != nil {
 		return registrantResult{}, err
 	}
