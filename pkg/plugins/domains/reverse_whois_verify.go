@@ -66,21 +66,29 @@ const (
 	maxReverseWhoisCandidates = 500
 	// reverseWhoisWorkers bounds concurrent registrant lookups.
 	reverseWhoisWorkers = 6
-	// reverseWhoisLookupTimeout bounds a single candidate's registrant lookup.
+	// reverseWhoisLookupTimeout bounds a single resolver STEP — the RDAP attempt,
+	// and INDEPENDENTLY the WHOIS fallback. resolveWithFallback derives each step's
+	// context fresh from the overall budget context, so an RDAP attempt that burns
+	// its whole timeout does NOT starve the WHOIS fallback of time to recover from
+	// precisely that RDAP-timeout case (ENG-5123 review, Codex). Both steps stay
+	// bounded by reverseWhoisTotalBudget, so worst case per candidate is two step
+	// timeouts, still capped by the pass-wide budget.
 	reverseWhoisLookupTimeout = 10 * time.Second
 )
 
 // reverseWhoisTotalBudget bounds the ENTIRE verification pass, not just a single
-// lookup. RDAP requests are serialized (openrdap's bootstrap cache is not
-// concurrency-safe — see viaRDAP), so the per-lookup 10s budgets can STACK: with
-// a large result set against a slow/timing-out RDAP path, workers spend their
-// budgets queued on the serialization slot and the plugin — holding a phase-0
-// concurrency slot the whole time — could run for many minutes (ENG-5123 review,
-// Codex critical). This overall deadline caps that: any candidate still
-// unresolved when the budget expires is scored unverified (recall-safe — still
-// emitted, still needs_review, never dropped). It is a var, not a const, so tests
-// can shorten it. ENG-5167 tightens the WHOIS read path itself; this is the
-// backstop that holds regardless.
+// lookup. Even with RDAP now running in parallel (a per-worker client pool — see
+// viaRDAP), a single candidate can cost up to two step timeouts (RDAP, then the
+// WHOIS fallback), and the WHOIS fallback itself follows up to 5 referral hops.
+// Against a large result set backed by slow or timing-out resolvers, that per-
+// candidate cost would otherwise let the plugin — which holds a phase-0
+// concurrency slot the whole time — run for many minutes (ENG-5123 review, Codex
+// critical). This overall deadline caps that: any candidate still unresolved when
+// the budget expires is scored unverified (recall-safe — still emitted, still
+// needs_review, never dropped). It is a var, not a const, so tests can shorten it.
+// The per-step read path now honors ctx (see whoisclient.go); a byte cap on the
+// WHOIS response is tracked as ENG-5167. This budget is the backstop that holds
+// regardless.
 var reverseWhoisTotalBudget = 90 * time.Second
 
 // registrantResult is the outcome of resolving a single candidate domain's own
@@ -275,10 +283,13 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		scores[i] = confReverseWhoisUnverified
 	}
 
-	// Bound the whole pass, not just each lookup: serialized RDAP means per-lookup
-	// budgets can stack (see reverseWhoisTotalBudget). Any lookup still in flight or
-	// queued when this fires sees a cancelled context, returns an error, and is
-	// scored unverified — capping worst-case runtime without dropping anything.
+	// Bound the whole pass, not just each lookup: a candidate can cost up to two
+	// step timeouts plus WHOIS referral hops (see reverseWhoisTotalBudget), so
+	// without a pass-wide cap a large result set against slow resolvers could hold
+	// the phase-0 slot for minutes. Any lookup still in flight or queued when this
+	// fires sees a cancelled context, returns an error, and is scored unverified —
+	// capping worst-case runtime without dropping anything. Per-step timeouts are
+	// owned by resolveWithFallback, derived from gctx, so this budget bounds them.
 	bctx, cancelBudget := context.WithTimeout(ctx, reverseWhoisTotalBudget)
 	defer cancelBudget()
 
@@ -287,9 +298,7 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 	for i := 0; i < resolveCount; i++ {
 		i := i
 		g.Go(func() error {
-			lctx, cancel := context.WithTimeout(gctx, reverseWhoisLookupTimeout)
-			defer cancel()
-			res, err := r.resolveRegistrant(lctx, cands[i].domain)
+			res, err := r.resolveRegistrant(gctx, cands[i].domain)
 			scores[i] = decideConfidence(queryOrg, res, err)
 			return nil
 		})
@@ -339,15 +348,28 @@ func (r *rdapWhoisResolver) resolveRegistrant(ctx context.Context, domain string
 // gives the candidate a real second source before scoring; if WHOIS is also
 // empty/masked/errored the candidate simply stays in the same unverified band,
 // so the fallback never de-ranks (Codex+Claude+Gemini review, ENG-5123).
+//
+// Each step gets its OWN timeout derived from the incoming budget context, not a
+// single shared per-lookup deadline: an RDAP attempt that consumes its entire
+// timeout (a transport hang) must not leave the WHOIS fallback with an already-
+// exhausted context, or the fallback would no-op in precisely the RDAP-timeout
+// case it exists to cover (ENG-5123 review, Codex P2). Both step contexts remain
+// bounded by ctx, so the pass-wide budget still caps total time.
 func resolveWithFallback(
 	ctx context.Context,
 	domain string,
 	rdapFn, whoisFn func(context.Context, string) (registrantResult, error),
 ) (registrantResult, error) {
-	if res, err := rdapFn(ctx, domain); err == nil && res.Found && !res.Masked {
+	rctx, cancelRDAP := context.WithTimeout(ctx, reverseWhoisLookupTimeout)
+	res, err := rdapFn(rctx, domain)
+	cancelRDAP()
+	if err == nil && res.Found && !res.Masked {
 		return res, nil
 	}
-	return whoisFn(ctx, domain)
+
+	wctx, cancelWHOIS := context.WithTimeout(ctx, reverseWhoisLookupTimeout)
+	defer cancelWHOIS()
+	return whoisFn(wctx, domain)
 }
 
 func (r *rdapWhoisResolver) viaRDAP(ctx context.Context, domain string) (registrantResult, error) {
