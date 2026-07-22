@@ -17,8 +17,9 @@ func init() {
 }
 
 type ReverseWhoisPlugin struct {
-	client  *client.Client
-	baseURL string // overridable for tests
+	client   *client.Client
+	baseURL  string             // overridable for tests
+	resolver registrantResolver // overridable for tests; defaults to rdapWhoisResolver
 }
 
 func (p *ReverseWhoisPlugin) apiBase() string {
@@ -74,32 +75,44 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 		return nil, fmt.Errorf("reverse-whois: parse response: %w", err)
 	}
 
-	findings := make([]plugins.Finding, 0, len(response.Response.Matches))
+	// Build an ordered, deduped, capped candidate list. A ViewDNS match is only
+	// a lead (broad substring/token search over the full WHOIS record), so each
+	// candidate is corroborated against its own registrant in verifyCandidates
+	// rather than emitted at a flat score here (ENG-5123).
+	cands := make([]candidate, 0, len(response.Response.Matches))
+	seen := make(map[string]struct{})
 	for _, d := range response.Response.Matches {
 		if d.Domain == "" {
 			continue
 		}
-		domain := strings.ToLower(d.Domain)
-		domain = strings.TrimSpace(domain)
-		domain = strings.TrimSuffix(domain, ".")
-		f := plugins.Finding{
-			Type:   plugins.FindingDomain,
-			Value:  domain,
-			Source: p.Name(),
-			Data: map[string]any{
-				"org": query,
-			},
+		domain := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(d.Domain)), ".")
+		if domain == "" {
+			continue
 		}
-		// ViewDNS reverse-whois is a broad substring/token search over the full
-		// WHOIS record; a match does NOT prove the candidate's registrant is the
-		// query org (e.g. "LEICA BIOSYSTEMS..." can surface walmart.com via a
-		// shared privacy-proxy registrant or a common token). We perform no
-		// per-candidate corroboration here, so the mapping is unverified: score
-		// mid-band (0.50) so SetConfidence flags needs_review and the match lands
-		// in Pending for review rather than reading as clean. Recall is preserved
-		// (nothing is dropped). Real corroboration-based scoring is ENG-5123.
-		plugins.SetConfidence(&f, 0.50)
-		findings = append(findings, f)
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		cands = append(cands, candidate{
+			domain: domain,
+			finding: plugins.Finding{
+				Type:   plugins.FindingDomain,
+				Value:  domain,
+				Source: p.Name(),
+				Data: map[string]any{
+					"org": query,
+				},
+			},
+		})
+		if len(cands) >= maxReverseWhoisCandidates {
+			break
+		}
 	}
-	return findings, nil
+
+	if p.resolver == nil {
+		p.resolver = &rdapWhoisResolver{}
+	}
+	// input.OrgName drives corroboration; email-mode (OrgName == "") short-
+	// circuits inside verifyCandidates. Data["org"] provenance stays the query.
+	return verifyCandidates(ctx, p.resolver, input.OrgName, cands)
 }

@@ -21,8 +21,9 @@ func init() {
 }
 
 type WhoxyReverseWhoisPlugin struct {
-	client  *client.Client
-	baseURL string // overridable for tests
+	client   *client.Client
+	baseURL  string             // overridable for tests
+	resolver registrantResolver // overridable for tests; defaults to rdapWhoisResolver
 }
 
 func (p *WhoxyReverseWhoisPlugin) Name() string { return "whoxy-reverse-whois" }
@@ -71,9 +72,15 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 
 	page := 1
 	totalPages := 1
-	var findings []plugins.Finding
+	// Accumulate an ordered, deduped candidate list. Staleness filtering happens
+	// here, BEFORE verification, so stale records never trigger a lookup. Each
+	// Whoxy match is only a lead (registrant name/email match); corroboration
+	// against the candidate's own registrant happens in verifyCandidates
+	// (ENG-5123).
+	var cands []candidate
 	seen := make(map[string]struct{})
 
+fetch:
 	for {
 		resp, err := p.fetchPage(ctx, apiKey, query, byEmail, page)
 		if err != nil {
@@ -93,28 +100,27 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 				continue
 			}
 			domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(result.DomainName), "."))
+			if domain == "" {
+				continue
+			}
 			if _, ok := seen[domain]; ok {
 				continue
 			}
 			seen[domain] = struct{}{}
-			f := plugins.Finding{
-				Type:   plugins.FindingDomain,
-				Value:  domain,
-				Source: p.Name(),
-				Data: map[string]any{
-					"org": query,
+			cands = append(cands, candidate{
+				domain: domain,
+				finding: plugins.Finding{
+					Type:   plugins.FindingDomain,
+					Value:  domain,
+					Source: p.Name(),
+					Data: map[string]any{
+						"org": query,
+					},
 				},
+			})
+			if len(cands) >= maxReverseWhoisCandidates {
+				break fetch
 			}
-			// Whoxy reverse-whois matches by registrant name/email but a match
-			// does NOT prove the candidate's registrant is the query org (same
-			// false-positive class as ViewDNS: shared registrants, common
-			// tokens). We perform no per-candidate corroboration here, so the
-			// mapping is unverified: score mid-band (0.50) so SetConfidence flags
-			// needs_review and the match lands in Pending for review rather than
-			// reading as clean. Recall is preserved (nothing is dropped). Real
-			// corroboration-based scoring is ENG-5123.
-			plugins.SetConfidence(&f, 0.50)
-			findings = append(findings, f)
 		}
 
 		if len(resp.SearchResult) == 0 || page >= totalPages || page >= maxWhoxyPages {
@@ -123,7 +129,12 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		page++
 	}
 
-	return findings, nil
+	if p.resolver == nil {
+		p.resolver = &rdapWhoisResolver{}
+	}
+	// input.OrgName drives corroboration; email-mode (OrgName == "") short-
+	// circuits inside verifyCandidates. Data["org"] provenance stays the query.
+	return verifyCandidates(ctx, p.resolver, input.OrgName, cands)
 }
 
 func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, query string, byEmail bool, page int) (whoxyResponse, error) {
