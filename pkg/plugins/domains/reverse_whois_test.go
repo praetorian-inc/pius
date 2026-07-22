@@ -132,6 +132,9 @@ func TestReverseWhois_Run_UnverifiedMatchNeedsReview(t *testing.T) {
 	for _, f := range findings {
 		conf, ok := f.Data["confidence"].(float64)
 		require.True(t, ok, "confidence must be set for %q", f.Value)
+		// Lock the exact mid-band score so a regression to e.g. 0.49/0.64 is caught.
+		assert.InDelta(t, 0.50, conf, 0.001,
+			"unverified match %q must be scored at the 0.50 mid-band value", f.Value)
 		assert.GreaterOrEqual(t, conf, plugins.ConfidenceLow,
 			"confidence for %q must be at or above the noise floor", f.Value)
 		assert.Less(t, conf, plugins.ConfidenceHigh,
