@@ -105,12 +105,15 @@ func TestWhoxyReverseWhois_Run_EmitsFindings(t *testing.T) {
 	assert.Contains(t, values, "acme-corp.com")
 }
 
+// TestWhoxyReverseWhois_Run_ConfidenceScore asserts the ENG-5120 fix: unverified
+// reverse-whois matches are emitted inside the needs_review band (0.35-0.65), NOT
+// above it, so they land in Pending flagged for review instead of reading as clean.
 func TestWhoxyReverseWhois_Run_ConfidenceScore(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "test-key")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(mockWhoxyPage([]string{"acme.com"}, 1))
+		_, _ = w.Write(mockWhoxyPage([]string{"acme.com", "acme-corp.com"}, 1))
 	}))
 	defer srv.Close()
 
@@ -118,10 +121,18 @@ func TestWhoxyReverseWhois_Run_ConfidenceScore(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
 
 	require.NoError(t, err)
-	require.Len(t, findings, 1)
-	conf, ok := findings[0].Data["confidence"].(float64)
-	require.True(t, ok, "confidence must be set")
-	assert.InDelta(t, 0.75, conf, 0.001)
+	require.Len(t, findings, 2)
+	for _, f := range findings {
+		conf, ok := f.Data["confidence"].(float64)
+		require.True(t, ok, "confidence must be set for %q", f.Value)
+		// Unverified match must be inside the needs_review band, below ConfidenceHigh.
+		assert.GreaterOrEqual(t, conf, plugins.ConfidenceLow,
+			"confidence for %q must be at or above the noise floor", f.Value)
+		assert.Less(t, conf, plugins.ConfidenceHigh,
+			"confidence for %q must be below ConfidenceHigh so it is not clean", f.Value)
+		assert.True(t, plugins.NeedsReview(f),
+			"unverified match %q must be flagged needs_review", f.Value)
+	}
 }
 
 func TestWhoxyReverseWhois_Run_FiltersTenYearOldDomains(t *testing.T) {

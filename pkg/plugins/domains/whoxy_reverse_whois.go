@@ -105,10 +105,15 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 					"org": query,
 				},
 			}
-			// WHOIS registrant name matching is reliable but not perfect.
-			// Score at 0.75 — above the review threshold so output is clean,
-			// but confidence is available in Data for agent/downstream use.
-			plugins.SetConfidence(&f, 0.75)
+			// Whoxy reverse-whois matches by registrant name/email but a match
+			// does NOT prove the candidate's registrant is the query org (same
+			// false-positive class as ViewDNS: shared registrants, common
+			// tokens). We perform no per-candidate corroboration here, so the
+			// mapping is unverified: score mid-band (0.50) so SetConfidence flags
+			// needs_review and the match lands in Pending for review rather than
+			// reading as clean. Recall is preserved (nothing is dropped). Real
+			// corroboration-based scoring is ENG-5123.
+			plugins.SetConfidence(&f, 0.50)
 			findings = append(findings, f)
 		}
 

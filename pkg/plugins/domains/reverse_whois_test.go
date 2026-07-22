@@ -114,6 +114,33 @@ func TestReverseWhois_Run_OrgMode(t *testing.T) {
 	assert.Equal(t, "Acme Corp", findings[0].Data["org"])
 }
 
+// TestReverseWhois_Run_UnverifiedMatchNeedsReview asserts the ENG-5120 fix: an
+// unverified ViewDNS match is emitted inside the needs_review band (0.35-0.65),
+// NOT above it, so it surfaces in Pending flagged for review instead of reading
+// as clean. This is the walmart.com-from-a-Leica-query false-clean guard.
+func TestReverseWhois_Run_UnverifiedMatchNeedsReview(t *testing.T) {
+	t.Setenv("VIEWDNS_API_KEY", "test-key")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"response":{"match_count":2,"matches":[{"domain":"acme.com"},{"domain":"walmart.com"}]}}`))
+	}))
+	defer srv.Close()
+
+	p := &ReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Leica Biosystems Richmond, Inc."})
+	require.NoError(t, err)
+	require.Len(t, findings, 2)
+	for _, f := range findings {
+		conf, ok := f.Data["confidence"].(float64)
+		require.True(t, ok, "confidence must be set for %q", f.Value)
+		assert.GreaterOrEqual(t, conf, plugins.ConfidenceLow,
+			"confidence for %q must be at or above the noise floor", f.Value)
+		assert.Less(t, conf, plugins.ConfidenceHigh,
+			"confidence for %q must be below ConfidenceHigh so it is not clean", f.Value)
+		assert.True(t, plugins.NeedsReview(f),
+			"unverified match %q must be flagged needs_review", f.Value)
+	}
+}
+
 func TestReverseWhois_Accepts_WithKeyAndEmail(t *testing.T) {
 	t.Setenv("VIEWDNS_API_KEY", "test-key")
 	p := &ReverseWhoisPlugin{client: client.New()}
