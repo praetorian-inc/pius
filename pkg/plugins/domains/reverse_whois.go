@@ -108,10 +108,14 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 		})
 	}
 
-	if p.resolver == nil {
-		p.resolver = &rdapWhoisResolver{}
+	// Resolve into a local rather than mutating p.resolver: writing shared plugin
+	// state inside Run() would be a data race if an instance were ever reused or
+	// run concurrently (Gemini review, ENG-5123).
+	resolver := p.resolver
+	if resolver == nil {
+		resolver = &rdapWhoisResolver{}
 	}
 	// input.OrgName drives corroboration; email-mode (OrgName == "") short-
 	// circuits inside verifyCandidates. Data["org"] provenance stays the query.
-	return verifyCandidates(ctx, p.resolver, input.OrgName, cands)
+	return verifyCandidates(ctx, resolver, input.OrgName, cands)
 }

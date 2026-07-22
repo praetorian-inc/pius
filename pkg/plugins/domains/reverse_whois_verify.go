@@ -2,6 +2,7 @@ package domains
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -321,11 +322,35 @@ type rdapWhoisResolver struct {
 	client   *rdap.Client
 }
 
+// errRDAPBusy signals that the single RDAP serialization slot was already held,
+// so this lookup should fall through to the lock-free WHOIS path rather than
+// queue behind it (see viaRDAP).
+var errRDAPBusy = errors.New("rdap: serialization slot busy")
+
 func (r *rdapWhoisResolver) resolveRegistrant(ctx context.Context, domain string) (registrantResult, error) {
-	if res, err := r.viaRDAP(ctx, domain); err == nil {
+	return resolveWithFallback(ctx, domain, r.viaRDAP, r.viaWHOIS)
+}
+
+// resolveWithFallback implements the RDAP-primary / WHOIS-fallback policy. RDAP
+// is authoritative ONLY when it actually resolved a registrant (Found): an RDAP
+// transport error, a busy serialization slot, OR a successful response whose
+// registrant org is absent/redacted (Found==false) all fall through to WHOIS.
+//
+// The empty-but-successful case is the one that matters in production: under
+// GDPR most gTLD RDAP records redact the registrant org, so treating an empty
+// RDAP response as "resolved" would skip WHOIS and collapse corroboration to the
+// unverified mid-band for the common path — the corroborate/mismatch bands would
+// almost never fire. Falling through to WHOIS gives the candidate a real second
+// source before scoring (Codex+Claude+Gemini review, ENG-5123).
+func resolveWithFallback(
+	ctx context.Context,
+	domain string,
+	rdapFn, whoisFn func(context.Context, string) (registrantResult, error),
+) (registrantResult, error) {
+	if res, err := rdapFn(ctx, domain); err == nil && res.Found {
 		return res, nil
 	}
-	return r.viaWHOIS(ctx, domain)
+	return whoisFn(ctx, domain)
 }
 
 func (r *rdapWhoisResolver) viaRDAP(ctx context.Context, domain string) (registrantResult, error) {
@@ -338,20 +363,31 @@ func (r *rdapWhoisResolver) viaRDAP(ctx context.Context, domain string) (registr
 		r.sem = make(chan struct{}, 1)
 		r.client = &rdap.Client{}
 	})
-	// Acquire the serialization slot without out-waiting our own deadline: a
-	// worker blocked here must still honor ctx (the 10s per-lookup timeout), so a
-	// slow lookup can't pin queued workers past their budget (ENG-5123 F1).
+	// Non-blocking acquire: RDAP is serialized to one in-flight call, but a worker
+	// must NEVER queue behind the slot. Queueing would burn this lookup's 10s
+	// budget waiting, and a worker whose ctx expires in line would then fall back
+	// to WHOIS with an already-dead context — an instant no-op that silently loses
+	// corroboration coverage. If the slot is held, report errRDAPBusy so the caller
+	// falls straight through to lock-free WHOIS while the other workers keep making
+	// progress in parallel (Gemini review, ENG-5123).
 	select {
 	case r.sem <- struct{}{}:
-	case <-ctx.Done():
-		return registrantResult{}, ctx.Err()
+	default:
+		return registrantResult{}, errRDAPBusy
 	}
 	// Release the serialization slot as soon as Do returns — parsing below is
 	// concurrency-safe and must not hold the size-1 lock. The defer guarantees
-	// release even if Do panics, so a single misbehaving lookup can't wedge the
-	// whole plugin (Gemini review, ENG-5123).
-	resp, err := func() (*rdap.Response, error) {
-		defer func() { <-r.sem }()
+	// release even if Do panics, and recovers the panic into an error so a single
+	// misbehaving lookup can neither wedge the slot nor crash the whole pius run
+	// (which would lose every finding). A recovered panic falls through to WHOIS
+	// like any other RDAP failure (Gemini review, ENG-5123).
+	resp, err := func() (resp *rdap.Response, err error) {
+		defer func() {
+			<-r.sem
+			if rec := recover(); rec != nil {
+				resp, err = nil, fmt.Errorf("rdap: recovered panic resolving %q: %v", domain, rec)
+			}
+		}()
 		req := rdap.NewDomainRequest(domain).WithContext(ctx)
 		return r.client.Do(req)
 	}()

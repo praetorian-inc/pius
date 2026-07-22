@@ -357,3 +357,76 @@ func TestReverseWhois_NeverAutoCleans(t *testing.T) {
 			"reverse-whois finding %q must be flagged needs_review", f.Value)
 	}
 }
+
+// TestResolveWithFallback pins the RDAP-primary / WHOIS-fallback policy that the
+// review round found broken: RDAP is authoritative ONLY when it actually
+// resolved a registrant. A redacted-but-successful RDAP response (Found==false,
+// nil error — the GDPR norm for gTLDs), an RDAP transport error, and a busy
+// serialization slot must ALL fall through to WHOIS; only a genuine RDAP hit
+// short-circuits it (Codex+Claude+Gemini review, ENG-5123).
+func TestResolveWithFallback(t *testing.T) {
+	const domain = "example.com"
+	rdapHit := registrantResult{Org: "RDAP Org", Found: true}
+	whoisHit := registrantResult{Org: "WHOIS Org", Found: true}
+
+	// fn builds a fake resolver step that records whether it ran.
+	fn := func(res registrantResult, err error, ran *bool) func(context.Context, string) (registrantResult, error) {
+		return func(context.Context, string) (registrantResult, error) {
+			*ran = true
+			return res, err
+		}
+	}
+
+	tests := []struct {
+		name      string
+		rdapRes   registrantResult
+		rdapErr   error
+		wantOrg   string
+		wantFound bool
+		wantWHOIS bool // WHOIS fallback must have run
+	}{
+		{
+			name:      "rdap hit short-circuits whois",
+			rdapRes:   rdapHit,
+			wantOrg:   "RDAP Org",
+			wantFound: true,
+			wantWHOIS: false,
+		},
+		{
+			name:      "rdap redacted (found=false) falls through to whois",
+			rdapRes:   registrantResult{}, // successful RDAP, but registrant absent/redacted
+			wantOrg:   "WHOIS Org",
+			wantFound: true,
+			wantWHOIS: true,
+		},
+		{
+			name:      "rdap transport error falls through to whois",
+			rdapErr:   errors.New("rdap: dial tcp: timeout"),
+			wantOrg:   "WHOIS Org",
+			wantFound: true,
+			wantWHOIS: true,
+		},
+		{
+			name:      "rdap busy slot falls through to whois",
+			rdapErr:   errRDAPBusy,
+			wantOrg:   "WHOIS Org",
+			wantFound: true,
+			wantWHOIS: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var rdapRan, whoisRan bool
+			rdapFn := fn(tt.rdapRes, tt.rdapErr, &rdapRan)
+			whoisFn := fn(whoisHit, nil, &whoisRan)
+
+			res, err := resolveWithFallback(context.Background(), domain, rdapFn, whoisFn)
+			require.NoError(t, err)
+			assert.True(t, rdapRan, "RDAP must always be attempted first")
+			assert.Equal(t, tt.wantWHOIS, whoisRan, "WHOIS fallback ran?")
+			assert.Equal(t, tt.wantOrg, res.Org)
+			assert.Equal(t, tt.wantFound, res.Found)
+		})
+	}
+}
