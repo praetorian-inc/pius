@@ -312,6 +312,18 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		return nil, err
 	}
 
+	// An INTERNAL budget expiry is recall-safe: bctx's own deadline cancels the
+	// workers, their in-flight lookups score unverified, and every candidate is
+	// still emitted. But that timeout is derived from ctx, so it never cancels the
+	// PARENT — meaning a cancelled parent ctx here can ONLY be the caller aborting
+	// (user interrupt / runner deadline). In that case the pass is incomplete, so
+	// propagate ctx.Err() instead of returning a full set of half-verified findings
+	// as though the run completed — matching every other plugin (ENG-5123 review,
+	// Codex critical). Internal-budget expiry leaves ctx.Err() nil and still emits.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	findings := make([]plugins.Finding, 0, len(cands))
 	for i, c := range cands {
 		f := c.finding
@@ -409,6 +421,15 @@ func (r *rdapWhoisResolver) viaRDAP(ctx context.Context, domain string) (registr
 	}
 	if err != nil {
 		return registrantResult{}, err
+	}
+	// Defensive: openrdap should never return (nil, nil), but the recover above
+	// only guards the Do call — a nil resp here would panic on resp.Object in the
+	// errgroup goroutine, an unrecovered panic that crashes the whole pius run and
+	// loses every finding (exactly what the recover exists to prevent). Guard it so
+	// a nil response falls through to WHOIS like any other RDAP miss (ENG-5123
+	// review, Claude critical).
+	if resp == nil {
+		return registrantResult{}, fmt.Errorf("rdap: nil response for %q", domain)
 	}
 	dom, ok := resp.Object.(*rdap.Domain)
 	if !ok || dom == nil {

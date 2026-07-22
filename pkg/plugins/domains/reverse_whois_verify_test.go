@@ -324,6 +324,41 @@ func TestVerifyCandidates_TotalBudgetCapsRuntime(t *testing.T) {
 	}
 }
 
+// TestVerifyCandidates_PropagatesCallerCancellation proves the two context
+// regimes are distinguished: an INTERNAL budget expiry is recall-safe (every
+// candidate still emitted, see TestVerifyCandidates_TotalBudgetCapsRuntime),
+// but a cancelled CALLER context — user interrupt / runner deadline — aborts
+// the pass with ctx.Err() instead of returning a full set of half-verified
+// findings as though the run completed (ENG-5123 review, Codex critical).
+func TestVerifyCandidates_PropagatesCallerCancellation(t *testing.T) {
+	// Keep the internal budget long so it cannot be what fires — the ONLY thing
+	// that ends this pass is the parent cancellation below.
+	orig := reverseWhoisTotalBudget
+	reverseWhoisTotalBudget = 30 * time.Second
+	defer func() { reverseWhoisTotalBudget = orig }()
+
+	cands := make([]candidate, 0, 8)
+	for _, d := range []string{"a.com", "b.com", "c.com", "d.com", "e.com", "f.com", "g.com", "h.com"} {
+		cands = append(cands, candidate{domain: d, finding: plugins.Finding{Value: d}})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel() // caller aborts mid-pass
+	}()
+
+	start := time.Now()
+	findings, err := verifyCandidates(ctx, blockingResolver{}, "Acme Corp", cands)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, findings, "an aborted pass must not emit a partial finding set")
+	assert.Less(t, elapsed, reverseWhoisTotalBudget,
+		"caller cancellation must abort well before the internal budget")
+}
+
 // TestReverseWhois_NeverAutoCleans is the design-guard invariant: across a mix
 // of corroborated / unverified / masked / mismatch results, NO reverse-whois
 // finding is ever emitted at or above plugins.ConfidenceHigh. A future
