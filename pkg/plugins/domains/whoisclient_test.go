@@ -56,7 +56,7 @@ func TestBoundedDeadline_FallsBackToQueryTimeout(t *testing.T) {
 // cancellation (ENG-5123 review). Hermetic: net.Pipe, no network.
 func TestReadAllWithContext_HonorsCancellation(t *testing.T) {
 	client, server := net.Pipe()
-	defer server.Close() // server never writes → read would block forever
+	defer func() { _ = server.Close() }() // server never writes → read would block forever
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled: watcher must close the conn and unblock the read
@@ -75,7 +75,7 @@ func TestReadAllWithContext_HonorsCancellation(t *testing.T) {
 // raw i/o-timeout error.
 func TestReadAllWithContext_HonorsDeadline(t *testing.T) {
 	client, server := net.Pipe()
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
