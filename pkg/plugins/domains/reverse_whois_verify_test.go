@@ -359,6 +359,30 @@ func TestVerifyCandidates_PropagatesCallerCancellation(t *testing.T) {
 		"caller cancellation must abort well before the internal budget")
 }
 
+// TestVerifyCandidates_EmailModeHonorsPreCancellation proves the entry-level
+// ctx check aborts even paths that do no lookups of their own. Email-mode
+// (empty queryOrg) short-circuits to the unverified band before the parallel
+// resolver runs, so it never reaches the post-g.Wait cancellation check; a
+// caller that already cancelled (e.g. right after the upstream API fetch) must
+// still get ctx.Err() and no findings, not a full "completed" slice (ENG-5123
+// review, Codex P2).
+func TestVerifyCandidates_EmailModeHonorsPreCancellation(t *testing.T) {
+	cands := make([]candidate, 0, 4)
+	for _, d := range []string{"a.com", "b.com", "c.com", "d.com"} {
+		cands = append(cands, candidate{domain: d, finding: plugins.Finding{Value: d}})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // caller already aborted before the pass starts
+
+	// Empty queryOrg selects the email-mode fast path (no resolver calls).
+	findings, err := verifyCandidates(ctx, blockingResolver{}, "", cands)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, findings, "a pre-cancelled email-mode pass must not emit findings")
+}
+
 // TestReverseWhois_NeverAutoCleans is the design-guard invariant: across a mix
 // of corroborated / unverified / masked / mismatch results, NO reverse-whois
 // finding is ever emitted at or above plugins.ConfidenceHigh. A future

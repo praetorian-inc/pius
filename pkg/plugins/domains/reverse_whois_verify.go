@@ -247,6 +247,17 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) fl
 // against, so every candidate short-circuits to the unverified mid-band score
 // with no resolver calls.
 func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string, cands []candidate) ([]plugins.Finding, error) {
+	// A caller that already cancelled before we start must abort here, not emit a
+	// result set. The post-g.Wait check below covers cancellation DURING parallel
+	// resolution, but the email-mode fast path and the pre-resolution setup both
+	// return before reaching it — so without this entry check a caller that
+	// cancelled after the upstream API fetch (e.g. email-mode, which does no
+	// lookups of its own) would still get a full findings slice with a nil error,
+	// as though the aborted run completed (ENG-5123 review, Codex P2).
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// Defensive: drop candidates that aren't syntactically plausible hostnames
 	// (empty, over-length, or carrying interior whitespace/control chars) before
 	// any lookup or emission, so a malformed API record can't reach the graph or

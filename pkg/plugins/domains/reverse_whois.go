@@ -77,7 +77,8 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 		return nil, fmt.Errorf("reverse-whois: parse response: %w", err)
 	}
 
-	// Build an ordered, deduped, capped candidate list. A ViewDNS match is only
+	// Build an ordered, deduped candidate list (the resolve cap is applied
+	// downstream in verifyCandidates). A ViewDNS match is only
 	// a lead (broad substring/token search over the full WHOIS record), so each
 	// candidate is corroborated against its own registrant in verifyCandidates
 	// rather than emitted at a flat score here (ENG-5123).
