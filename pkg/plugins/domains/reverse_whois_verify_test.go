@@ -564,3 +564,75 @@ func TestResolveWithFallback(t *testing.T) {
 		})
 	}
 }
+
+// fakeRDAPDoer drives extractRDAPRegistrantOrg without real network I/O:
+// panicVal (non-nil) makes Do panic; otherwise it returns resp/err verbatim.
+type fakeRDAPDoer struct {
+	resp     *rdap.Response
+	err      error
+	panicVal any
+}
+
+func (f fakeRDAPDoer) Do(*rdap.Request) (*rdap.Response, error) {
+	if f.panicVal != nil {
+		panic(f.panicVal)
+	}
+	return f.resp, f.err
+}
+
+// TestExtractRDAPRegistrantOrg covers the safety-critical RDAP primary branch
+// directly (ENG-5123 review, Claude): a panic anywhere in the lookup/extraction
+// is recovered into an error AND flags the client for discard (never pooled),
+// and the nil-response / wrong-object guards fall through as errors rather than
+// crashing. Hermetic: the doer is a fake, no network. The happy path proves a
+// well-formed *rdap.Domain yields the registrant org and keeps the client
+// poolable.
+func TestExtractRDAPRegistrantOrg(t *testing.T) {
+	t.Run("panic is recovered and flags client for discard", func(t *testing.T) {
+		org, panicked, err := extractRDAPRegistrantOrg(context.Background(),
+			fakeRDAPDoer{panicVal: "boom in openrdap"}, "example.com")
+		require.Error(t, err)
+		assert.True(t, panicked, "a panicked client must be discarded, not pooled")
+		assert.Empty(t, org)
+		assert.Contains(t, err.Error(), "recovered panic")
+	})
+
+	t.Run("transport error passes through, client stays poolable", func(t *testing.T) {
+		wantErr := errors.New("dial tcp: connection refused")
+		org, panicked, err := extractRDAPRegistrantOrg(context.Background(),
+			fakeRDAPDoer{err: wantErr}, "example.com")
+		require.Error(t, err)
+		assert.False(t, panicked, "a transport error leaves the client's maps intact")
+		assert.Empty(t, org)
+		assert.ErrorIs(t, err, wantErr)
+	})
+
+	t.Run("nil response is guarded, not dereferenced", func(t *testing.T) {
+		org, panicked, err := extractRDAPRegistrantOrg(context.Background(),
+			fakeRDAPDoer{resp: nil, err: nil}, "example.com")
+		require.Error(t, err)
+		assert.False(t, panicked)
+		assert.Empty(t, org)
+		assert.Contains(t, err.Error(), "nil response")
+	})
+
+	t.Run("wrong response object type is guarded", func(t *testing.T) {
+		org, panicked, err := extractRDAPRegistrantOrg(context.Background(),
+			fakeRDAPDoer{resp: &rdap.Response{Object: "not a *rdap.Domain"}}, "example.com")
+		require.Error(t, err)
+		assert.False(t, panicked)
+		assert.Empty(t, org)
+		assert.Contains(t, err.Error(), "unexpected response object")
+	})
+
+	t.Run("well-formed domain yields registrant org", func(t *testing.T) {
+		resp := &rdap.Response{Object: &rdap.Domain{
+			Entities: []rdap.Entity{registrantEntity("Acme Corp", "")},
+		}}
+		org, panicked, err := extractRDAPRegistrantOrg(context.Background(),
+			fakeRDAPDoer{resp: resp}, "acme.com")
+		require.NoError(t, err)
+		assert.False(t, panicked)
+		assert.Equal(t, "Acme Corp", org)
+	})
+}
