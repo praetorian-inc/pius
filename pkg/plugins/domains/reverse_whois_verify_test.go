@@ -10,11 +10,86 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openrdap/rdap"
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// vcardProp builds a single-string jCard property for test fixtures.
+func vcardProp(name, value string) *rdap.VCardProperty {
+	return &rdap.VCardProperty{Name: name, Type: "text", Value: value}
+}
+
+// registrantEntity builds an Entity with the "registrant" role and a vCard
+// carrying the given org/fn (empty string = property omitted).
+func registrantEntity(org, fn string) rdap.Entity {
+	var props []*rdap.VCardProperty
+	props = append(props, vcardProp("version", "4.0"))
+	if org != "" {
+		props = append(props, vcardProp("org", org))
+	}
+	if fn != "" {
+		props = append(props, vcardProp("fn", fn))
+	}
+	return rdap.Entity{Roles: []string{"registrant"}, VCard: &rdap.VCard{Properties: props}}
+}
+
+// TestRegistrantOrgFromDomain covers the jCard extraction the RDAP primary path
+// relies on: org preferred over fn, fn fallback, no-registrant, masked-registrar,
+// and the nil-vCard / role-mismatch guards (ENG-5123 review, Claude — the
+// jCard parser had no direct unit coverage).
+func TestRegistrantOrgFromDomain(t *testing.T) {
+	tests := []struct {
+		name string
+		dom  *rdap.Domain
+		want string
+	}{
+		{
+			name: "org preferred over fn",
+			dom:  &rdap.Domain{Entities: []rdap.Entity{registrantEntity("Acme Corporation", "John Doe")}},
+			want: "Acme Corporation",
+		},
+		{
+			name: "fn fallback when org absent",
+			dom:  &rdap.Domain{Entities: []rdap.Entity{registrantEntity("", "John Doe")}},
+			want: "John Doe",
+		},
+		{
+			name: "masked registrar org is returned verbatim (classified downstream)",
+			dom:  &rdap.Domain{Entities: []rdap.Entity{registrantEntity("REDACTED FOR PRIVACY", "")}},
+			want: "REDACTED FOR PRIVACY",
+		},
+		{
+			name: "no registrant entity",
+			dom: &rdap.Domain{Entities: []rdap.Entity{
+				{Roles: []string{"administrative"}, VCard: &rdap.VCard{Properties: []*rdap.VCardProperty{vcardProp("org", "Admin LLC")}}},
+			}},
+			want: "",
+		},
+		{
+			name: "registrant with nil vCard",
+			dom:  &rdap.Domain{Entities: []rdap.Entity{{Roles: []string{"registrant"}, VCard: nil}}},
+			want: "",
+		},
+		{
+			name: "no entities at all",
+			dom:  &rdap.Domain{},
+			want: "",
+		},
+		{
+			name: "org value whitespace-trimmed",
+			dom:  &rdap.Domain{Entities: []rdap.Entity{registrantEntity("  Globex GmbH  ", "")}},
+			want: "Globex GmbH",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, registrantOrgFromDomain(tt.dom))
+		})
+	}
+}
 
 // blockingResolver blocks each lookup until its context is cancelled, then
 // surfaces the context error. It models a slow/unresponsive registrant source so

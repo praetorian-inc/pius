@@ -10,6 +10,48 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestSSRFSafeControl proves the dial guard rejects non-public referral targets
+// (metadata address, RFC1918, loopback, CGNAT, link-local) while allowing a
+// public IP — the check that keeps an attacker-controlled WHOIS referral from
+// turning the runner into an internal prober (ENG-5123 review, Gemini).
+func TestSSRFSafeControl(t *testing.T) {
+	blocked := []string{
+		"169.254.169.254:43", // cloud metadata (link-local)
+		"127.0.0.1:43",       // loopback
+		"10.0.0.1:43",        // RFC1918
+		"192.168.1.1:43",     // RFC1918
+		"172.16.0.1:43",      // RFC1918
+		"100.64.0.1:43",      // CGNAT 100.64/10
+		"[::1]:43",           // IPv6 loopback
+		"[fd00::1]:43",       // IPv6 ULA
+		"0.0.0.0:43",         // unspecified
+	}
+	for _, addr := range blocked {
+		assert.Error(t, ssrfSafeControl("tcp", addr, nil), "must reject %s", addr)
+	}
+
+	allowed := []string{
+		"8.8.8.8:43",                // public v4
+		"[2001:4860:4860::8888]:43", // public v6
+	}
+	for _, addr := range allowed {
+		assert.NoError(t, ssrfSafeControl("tcp", addr, nil), "must allow %s", addr)
+	}
+
+	// A hostname that never resolved to an IP (Control sees the literal) is rejected.
+	assert.Error(t, ssrfSafeControl("tcp", "whois.example.com:43", nil))
+}
+
+// TestWhoisRaw_SSRFGuardBlocksInternalReferral proves the guard fires end-to-end
+// on the dial path: a referral pointing at an internal address is refused before
+// any connection is attempted (ENG-5123 review, Gemini). Hermetic: no socket is
+// ever opened because Control rejects pre-connect.
+func TestWhoisRaw_SSRFGuardBlocksInternalReferral(t *testing.T) {
+	_, err := whoisRaw(context.Background(), "example.com", "127.0.0.1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ssrf guard")
+}
+
 func TestExtractReferral_IanaRefer(t *testing.T) {
 	raw := "refer:        whois.verisign-grs.com\n\ndomain:       COM\n"
 	assert.Equal(t, "whois.verisign-grs.com", extractReferral(raw))

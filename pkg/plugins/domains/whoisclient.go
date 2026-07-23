@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -24,6 +25,46 @@ const (
 	// review, Codex — broader whoisclient hardening tracked as ENG-5167).
 	maxWhoisResponseBytes = 1 << 20
 )
+
+// isDisallowedDialIP reports whether ip is in a range we must never dial when
+// following an untrusted WHOIS referral: loopback, link-local (incl. the cloud
+// metadata address 169.254.169.254), private (RFC1918 / IPv6 ULA), carrier-grade
+// NAT (100.64.0.0/10, not covered by IsPrivate), unspecified, or multicast.
+// Legitimate public-registry WHOIS servers resolve to routable public IPs, so
+// this is a no-op for real lookups.
+func isDisallowedDialIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil && ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+		return true // 100.64.0.0/10 CGNAT
+	}
+	return false
+}
+
+// ssrfSafeControl is a net.Dialer.Control hook that refuses to connect to a
+// non-public address. It runs after DNS resolution and immediately before the
+// connect syscall, so the address it sees is the one the socket will actually
+// use — closing the DNS-rebinding TOCTOU window a resolve-then-check guard would
+// leave open (ENG-5123 review, Gemini).
+func ssrfSafeControl(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("ssrf guard: malformed dial address %q: %w", address, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("ssrf guard: non-IP dial address %q", host)
+	}
+	if isDisallowedDialIP(ip) {
+		return fmt.Errorf("ssrf guard: refusing to dial non-public address %s", ip)
+	}
+	return nil
+}
 
 // whoisQuery performs a raw WHOIS lookup, following server referrals.
 // It starts at whois.iana.org and follows "refer:" or "whois:" directives
@@ -72,7 +113,16 @@ func whoisRaw(ctx context.Context, domain, server string) (string, error) {
 
 	addr := net.JoinHostPort(server, whoisPort)
 
-	dialer := net.Dialer{Timeout: queryTimeout}
+	// SSRF guard: the reverse-whois verifier now follows WHOIS referrals for up to
+	// maxReverseWhoisCandidates domains pulled from third-party APIs (ViewDNS /
+	// Whoxy), and a referral server is read straight out of that untrusted WHOIS
+	// text (extractReferral). Without a guard an attacker could seed a domain whose
+	// WHOIS record refers to an internal address (RFC1918 / loopback / link-local),
+	// turning the runner into a blind internal prober. The Control hook rejects the
+	// connection AFTER DNS resolution and immediately BEFORE connect, so it is safe
+	// against DNS-rebinding TOCTOU and covers hostname referrals that resolve to
+	// internal IPs, not just literal-IP referrals (ENG-5123 review, Gemini).
+	dialer := net.Dialer{Timeout: queryTimeout, Control: ssrfSafeControl}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return "", err
