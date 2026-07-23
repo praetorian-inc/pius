@@ -13,6 +13,16 @@ const (
 	whoisPort     = "43"
 	defaultServer = "whois.iana.org"
 	queryTimeout  = 10 * time.Second
+
+	// maxWhoisResponseBytes caps a single WHOIS response. A raw WHOIS record is a
+	// few KB; 1 MiB is generous headroom for verbose registries while bounding the
+	// worst case. The reverse-whois verifier drives this read for up to
+	// maxReverseWhoisCandidates domains at reverseWhoisWorkers concurrency, so an
+	// unbounded io.ReadAll here is a memory-amplification vector: a hostile or
+	// broken WHOIS server could stream unbounded data on each of the concurrent
+	// sockets. The cap turns that into a bounded, per-read ceiling (ENG-5123
+	// review, Codex — broader whoisclient hardening tracked as ENG-5167).
+	maxWhoisResponseBytes = 1 << 20
 )
 
 // whoisQuery performs a raw WHOIS lookup, following server referrals.
@@ -106,7 +116,9 @@ func boundedDeadline(ctx context.Context) time.Time {
 // deadline. On any error the ctx cause is preferred, so callers see
 // cancellation/deadline rather than a generic "closed network connection"
 // (ENG-5123 review — the WHOIS fallback must honor the budget, not just a fixed
-// per-read timer). A separate byte cap on the response is tracked as ENG-5167.
+// per-read timer). The read is byte-capped at maxWhoisResponseBytes so a hostile
+// or broken server can't amplify memory across the concurrent reverse-whois
+// sockets; further whoisclient hardening is tracked as ENG-5167.
 func readAllWithContext(ctx context.Context, conn net.Conn) ([]byte, error) {
 	_ = conn.SetDeadline(boundedDeadline(ctx))
 
@@ -120,7 +132,7 @@ func readAllWithContext(ctx context.Context, conn net.Conn) ([]byte, error) {
 		}
 	}()
 
-	resp, err := io.ReadAll(conn)
+	resp, err := io.ReadAll(io.LimitReader(conn, maxWhoisResponseBytes))
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr

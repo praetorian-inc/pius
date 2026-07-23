@@ -89,6 +89,30 @@ func TestReadAllWithContext_HonorsDeadline(t *testing.T) {
 	assert.Less(t, elapsed, 2*time.Second, "past deadline must end the read promptly")
 }
 
+// TestReadAllWithContext_CapsResponseSize proves a server that streams more than
+// maxWhoisResponseBytes is truncated at the cap rather than read unbounded — the
+// memory-amplification guard the reverse-whois verifier relies on when driving
+// this read for many candidates concurrently (ENG-5123 review). Hermetic:
+// net.Pipe, no network.
+func TestReadAllWithContext_CapsResponseSize(t *testing.T) {
+	client, server := net.Pipe()
+	// net.Pipe is unbuffered, so the oversized Write below blocks once the reader
+	// stops at the cap; closing the client at test end unblocks and reaps it.
+	defer func() { _ = client.Close() }()
+	go func() {
+		big := make([]byte, maxWhoisResponseBytes+4096)
+		_, _ = server.Write(big)
+		_ = server.Close()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+
+	resp, err := readAllWithContext(ctx, client)
+	require.NoError(t, err)
+	assert.Len(t, resp, maxWhoisResponseBytes, "response must be capped at maxWhoisResponseBytes")
+}
+
 // TestReadAllWithContext_ReadsFullResponse proves the happy path still returns
 // the complete payload and leaves no error when the peer sends data then closes.
 func TestReadAllWithContext_ReadsFullResponse(t *testing.T) {

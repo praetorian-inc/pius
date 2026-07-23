@@ -124,6 +124,11 @@ var orgLegalSuffixes = map[string]bool{
 	"pty": true, "oy": true, "ab": true, "as": true, "kk": true,
 	"pte": true, "sa": true, "srl": true, "spa": true, "ag": true,
 	"kg": true, "aps": true, "oyj": true,
+	// Full-word spellings of forms already covered in abbreviated form above, so
+	// "Walmart Incorporated" normalizes the same as "Walmart Inc." (ENG-5123
+	// review, Gemini). These remain generic legal-form words — disambiguating
+	// tokens (group, holdings, international, systems) are still excluded.
+	"corporation": true, "incorporated": true, "company": true, "limited": true,
 }
 
 // normalizeOrg lowercases, tokenizes, and strips legal-suffix tokens so that
@@ -279,6 +284,15 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 			plugins.SetConfidence(&f, confReverseWhoisUnverified)
 			findings = append(findings, f)
 		}
+		// Re-check before returning: the plausibility filter and the scoring loop
+		// above do no context-aware work, so a caller that cancelled after the
+		// entry check would otherwise still get a full findings slice with a nil
+		// error. Bracketing the email path with entry + pre-return checks keeps it
+		// consistent with the resolve path's post-g.Wait check (ENG-5123 review,
+		// Codex P2).
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return findings, nil
 	}
 
@@ -411,21 +425,40 @@ func (r *rdapWhoisResolver) viaRDAP(ctx context.Context, domain string) (registr
 		r.clientPool = &sync.Pool{New: func() any { return &rdap.Client{} }}
 	})
 	client := r.clientPool.Get().(*rdap.Client)
-	// Recover a panic inside Do into an error so a single malformed response can't
-	// crash the whole pius run (which would lose every finding); it then falls
-	// through to WHOIS like any other RDAP failure. A client that panicked
-	// mid-Lookup may have a half-written registries map, so it is NOT returned to
-	// the pool — a fresh one is created on next Get (Gemini review, ENG-5123).
+	// Recover a panic anywhere in the RDAP extraction into an error so a single
+	// malformed response can't crash the whole pius run (which would lose every
+	// finding); it then falls through to WHOIS like any other RDAP failure. The
+	// recover must wrap the ENTIRE extraction, not just Do: parsing the jCard
+	// (registrantOrgFromDomain → openrdap's VCard.GetFirst/Property.Values) runs
+	// over attacker-influenced registry data and can itself panic on a malformed
+	// entry, and that panic would be unrecovered in the errgroup goroutine. A
+	// client that panicked mid-Lookup may have a half-written registries map, so
+	// it is NOT returned to the pool — a fresh one is created on next Get (Gemini
+	// review + ENG-5123 review, Claude critical).
 	returnToPool := true
-	resp, err := func() (resp *rdap.Response, err error) {
+	org, err := func() (org string, err error) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				returnToPool = false
-				resp, err = nil, fmt.Errorf("rdap: recovered panic resolving %q: %v", domain, rec)
+				org, err = "", fmt.Errorf("rdap: recovered panic resolving %q: %v", domain, rec)
 			}
 		}()
 		req := rdap.NewDomainRequest(domain).WithContext(ctx)
-		return client.Do(req)
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", err
+		}
+		// Defensive: openrdap should never return (nil, nil), but guard it so a nil
+		// response falls through to WHOIS like any other RDAP miss rather than
+		// panicking on resp.Object.
+		if resp == nil {
+			return "", fmt.Errorf("rdap: nil response for %q", domain)
+		}
+		dom, ok := resp.Object.(*rdap.Domain)
+		if !ok || dom == nil {
+			return "", fmt.Errorf("rdap: unexpected response object for %q", domain)
+		}
+		return registrantOrgFromDomain(dom), nil
 	}()
 	if returnToPool {
 		r.clientPool.Put(client)
@@ -433,20 +466,7 @@ func (r *rdapWhoisResolver) viaRDAP(ctx context.Context, domain string) (registr
 	if err != nil {
 		return registrantResult{}, err
 	}
-	// Defensive: openrdap should never return (nil, nil), but the recover above
-	// only guards the Do call — a nil resp here would panic on resp.Object in the
-	// errgroup goroutine, an unrecovered panic that crashes the whole pius run and
-	// loses every finding (exactly what the recover exists to prevent). Guard it so
-	// a nil response falls through to WHOIS like any other RDAP miss (ENG-5123
-	// review, Claude critical).
-	if resp == nil {
-		return registrantResult{}, fmt.Errorf("rdap: nil response for %q", domain)
-	}
-	dom, ok := resp.Object.(*rdap.Domain)
-	if !ok || dom == nil {
-		return registrantResult{}, fmt.Errorf("rdap: unexpected response object for %q", domain)
-	}
-	return newRegistrantResult(registrantOrgFromDomain(dom)), nil
+	return newRegistrantResult(org), nil
 }
 
 func (r *rdapWhoisResolver) viaWHOIS(ctx context.Context, domain string) (registrantResult, error) {
