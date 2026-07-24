@@ -10,10 +10,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSSRFSafeControl proves the dial guard rejects non-public referral targets
-// (metadata address, RFC1918, loopback, CGNAT, link-local) while allowing a
-// public IP — the check that keeps an attacker-controlled WHOIS referral from
-// turning the runner into an internal prober (ENG-5123 review, Gemini).
+// TestSSRFSafeControl proves the dial guard rejects every non-public referral
+// target — metadata address, RFC1918, loopback, CGNAT, link-local, plus the
+// IANA special-use ranges the method checks miss (benchmarking, reserved/Class E,
+// broadcast, protocol assignments, TEST-NET-1/2/3, 6to4 anycast, and the IPv6
+// documentation / discard-only prefixes) — while allowing a public IP. This is
+// the check that keeps an attacker-controlled WHOIS referral from turning the
+// runner into an internal prober (ENG-5123 review, Gemini + Codex).
 func TestSSRFSafeControl(t *testing.T) {
 	blocked := []string{
 		"169.254.169.254:43", // cloud metadata (link-local)
@@ -22,8 +25,19 @@ func TestSSRFSafeControl(t *testing.T) {
 		"192.168.1.1:43",     // RFC1918
 		"172.16.0.1:43",      // RFC1918
 		"100.64.0.1:43",      // CGNAT 100.64/10
+		"198.18.0.1:43",      // benchmarking 198.18.0.0/15
+		"198.19.255.1:43",    // benchmarking 198.18.0.0/15 (upper half)
+		"240.0.0.1:43",       // reserved/Class E 240.0.0.0/4
+		"255.255.255.255:43", // limited broadcast
+		"192.0.0.1:43",       // IETF protocol assignments 192.0.0.0/24
+		"192.0.2.1:43",       // TEST-NET-1
+		"198.51.100.1:43",    // TEST-NET-2
+		"203.0.113.1:43",     // TEST-NET-3
+		"192.88.99.1:43",     // 6to4 relay anycast
 		"[::1]:43",           // IPv6 loopback
 		"[fd00::1]:43",       // IPv6 ULA
+		"[2001:db8::1]:43",   // IPv6 documentation 2001:db8::/32
+		"[100::1]:43",        // IPv6 discard-only 100::/64
 		"0.0.0.0:43",         // unspecified
 	}
 	for _, addr := range blocked {

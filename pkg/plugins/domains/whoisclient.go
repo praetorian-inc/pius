@@ -27,11 +27,15 @@ const (
 )
 
 // isDisallowedDialIP reports whether ip is in a range we must never dial when
-// following an untrusted WHOIS referral: loopback, link-local (incl. the cloud
-// metadata address 169.254.169.254), private (RFC1918 / IPv6 ULA), carrier-grade
-// NAT (100.64.0.0/10, not covered by IsPrivate), unspecified, or multicast.
-// Legitimate public-registry WHOIS servers resolve to routable public IPs, so
-// this is a no-op for real lookups.
+// following an untrusted WHOIS referral. Following attacker-influenced referral
+// text, the guard is a strict "public unicast only" filter, not a spot-check:
+// the method checks cover loopback, link-local (incl. the cloud metadata address
+// 169.254.169.254), private (RFC1918 / IPv6 ULA), unspecified, and multicast;
+// the explicit ranges below add every other IANA special-use / non-routable
+// block the method checks miss — CGNAT, benchmarking, reserved/Class E, IETF
+// protocol assignments, 6to4-relay anycast, and the TEST-NET / documentation
+// ranges (ENG-5123 review, Codex). Legitimate public-registry WHOIS servers
+// resolve to routable public IPs, so this is a no-op for real lookups.
 func isDisallowedDialIP(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -40,8 +44,37 @@ func isDisallowedDialIP(ip net.IP) bool {
 		ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() {
 		return true
 	}
-	if ip4 := ip.To4(); ip4 != nil && ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
-		return true // 100.64.0.0/10 CGNAT
+	if ip4 := ip.To4(); ip4 != nil {
+		switch {
+		case ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127: // 100.64.0.0/10 CGNAT
+			return true
+		case ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19): // 198.18.0.0/15 benchmarking
+			return true
+		case ip4[0] >= 240: // 240.0.0.0/4 reserved/Class E (+255.255.255.255 broadcast)
+			return true
+		case ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0: // 192.0.0.0/24 IETF protocol assignments
+			return true
+		case ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2: // 192.0.2.0/24 TEST-NET-1
+			return true
+		case ip4[0] == 198 && ip4[1] == 51 && ip4[2] == 100: // 198.51.100.0/24 TEST-NET-2
+			return true
+		case ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113: // 203.0.113.0/24 TEST-NET-3
+			return true
+		case ip4[0] == 192 && ip4[1] == 88 && ip4[2] == 99: // 192.88.99.0/24 6to4 relay anycast
+			return true
+		}
+		return false
+	}
+	// Genuine IPv6 (To4()==nil) special-use ranges not caught by the method checks:
+	// documentation (2001:db8::/32) and the discard-only prefix (100::/64).
+	if len(ip) == net.IPv6len {
+		if ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x0d && ip[3] == 0xb8 { // 2001:db8::/32
+			return true
+		}
+		if ip[0] == 0x01 && ip[1] == 0x00 &&
+			ip[2] == 0 && ip[3] == 0 && ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0 { // 100::/64
+			return true
+		}
 	}
 	return false
 }

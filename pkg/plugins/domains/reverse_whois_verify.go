@@ -3,6 +3,7 @@ package domains
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -303,8 +304,15 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		resolveCount = maxReverseWhoisCandidates
 	}
 
+	// Pre-fill EVERY candidate with the unverified mid-band score up front, not
+	// just the un-resolved overflow (indices >= resolveCount): a resolve worker
+	// that panics (recovered below) or never runs must still leave a score inside
+	// the needs_review band [0.35,0.65). The make() zero value 0.0 falls under the
+	// discard floor and would silently drop the candidate — violating
+	// de-rank-never-drop (Gemini review, ENG-5123). Successful workers overwrite
+	// their index with the decided band.
 	scores := make([]float64, len(cands))
-	for i := resolveCount; i < len(cands); i++ {
+	for i := range scores {
 		scores[i] = confReverseWhoisUnverified
 	}
 
@@ -323,6 +331,20 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 	for i := 0; i < resolveCount; i++ {
 		i := i
 		g.Go(func() error {
+			// The RDAP path recovers its own panics (extractRDAPRegistrantOrg) so it
+			// can drop a poisoned pooled client, but the WHOIS fallback runs
+			// whoisparser.Parse over untrusted third-party WHOIS text with no such
+			// guard. An unrecovered panic in ANY resolver would propagate out of this
+			// errgroup goroutine and crash the whole pius run — losing every finding.
+			// Recover here as the worker-level backstop: the candidate keeps its
+			// pre-filled unverified score, so a single malformed record de-ranks that
+			// one candidate instead of taking down the pass (Gemini review, ENG-5123).
+			defer func() {
+				if rec := recover(); rec != nil {
+					slog.Warn("reverse-whois: recovered panic resolving candidate registrant; scoring unverified",
+						"domain", cands[i].domain, "panic", rec)
+				}
+			}()
 			res, err := r.resolveRegistrant(gctx, cands[i].domain)
 			scores[i] = decideConfidence(queryOrg, res, err)
 			return nil

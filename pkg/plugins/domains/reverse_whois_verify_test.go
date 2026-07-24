@@ -102,6 +102,26 @@ func (blockingResolver) resolveRegistrant(ctx context.Context, _ string) (regist
 	return registrantResult{}, ctx.Err()
 }
 
+// panickingResolver panics on a designated domain and resolves the rest cleanly.
+// It models the real hazard the worker-level recover() guards: whoisparser.Parse
+// panicking on a malformed third-party WHOIS record. It lets a test prove that a
+// single poisoned candidate keeps its pre-filled unverified score instead of
+// crashing the whole pass (ENG-5123 review, Gemini).
+type panickingResolver struct {
+	panicOn map[string]bool
+	byOK    map[string]registrantResult
+}
+
+func (p *panickingResolver) resolveRegistrant(_ context.Context, domain string) (registrantResult, error) {
+	if p.panicOn[domain] {
+		panic("simulated whoisparser panic on malformed record for " + domain)
+	}
+	if r, ok := p.byOK[domain]; ok {
+		return r, nil
+	}
+	return registrantResult{}, nil
+}
+
 // stubResolver is a hermetic registrantResolver: it returns canned results per
 // domain with no network access, and records which domains were queried so
 // tests can assert (e.g.) that filtered candidates never trigger a lookup.
@@ -331,6 +351,35 @@ func TestVerifyCandidates_OrderPreservedAllEmitted(t *testing.T) {
 	assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(findings[2]), 0.001)
 	// De-ranked mismatch is still in the needs_review band, not discarded.
 	assert.True(t, plugins.NeedsReview(findings[1]))
+}
+
+// TestVerifyCandidates_ResolverPanicScoresUnverified proves a resolver panic on
+// one candidate (e.g. whoisparser.Parse blowing up on a malformed WHOIS record)
+// is recovered at the worker level: the pass does NOT crash, every candidate is
+// still emitted, and the poisoned candidate keeps the pre-filled unverified
+// mid-band score instead of falling to the 0.0 discard floor — de-rank, never
+// drop, even under panic (ENG-5123 review, Gemini).
+func TestVerifyCandidates_ResolverPanicScoresUnverified(t *testing.T) {
+	res := &panickingResolver{
+		panicOn: map[string]bool{"boom.com": true},
+		byOK:    map[string]registrantResult{"first.com": org("Acme Corp")},
+	}
+	cands := []candidate{
+		{domain: "first.com", finding: plugins.Finding{Value: "first.com"}},
+		{domain: "boom.com", finding: plugins.Finding{Value: "boom.com"}},
+		{domain: "third.com", finding: plugins.Finding{Value: "third.com"}},
+	}
+	findings, err := verifyCandidates(context.Background(), res, "Acme", cands)
+	require.NoError(t, err)
+	require.Len(t, findings, 3, "a panic on one candidate must not drop any finding")
+	assert.Equal(t, "boom.com", findings[1].Value)
+	// The panicked candidate keeps the pre-filled unverified score, staying inside
+	// the needs_review band rather than the 0.0 discard floor.
+	assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(findings[1]), 0.001)
+	assert.True(t, plugins.NeedsReview(findings[1]))
+	// A clean sibling still scores corroborated — the recover() is scoped per
+	// worker and does not poison the rest of the pass.
+	assert.InDelta(t, confReverseWhoisCorroborated, plugins.Confidence(findings[0]), 0.001)
 }
 
 // TestVerifyCandidates_DropsImplausibleDomains proves malformed candidates
