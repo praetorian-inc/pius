@@ -38,7 +38,14 @@ func TestSSRFSafeControl(t *testing.T) {
 		"[fd00::1]:43",       // IPv6 ULA
 		"[2001:db8::1]:43",   // IPv6 documentation 2001:db8::/32
 		"[100::1]:43",        // IPv6 discard-only 100::/64
-		"0.0.0.0:43",         // unspecified
+		// IPv6 transition prefixes that embed an internal IPv4 target — the v6
+		// literal must be rejected so it can't smuggle an internal v4 past the
+		// v4 guard (ENG-5123 review, CodeRabbit).
+		"[2002:a9fe:a9fe::]:43", // 6to4 wrapping 169.254.169.254 (metadata)
+		"[2002:0a00:0001::]:43", // 6to4 wrapping 10.0.0.1 (RFC1918)
+		"[2001:0:0a00:1::]:43",  // Teredo 2001::/32
+		"[64:ff9b::a00:1]:43",   // NAT64 64:ff9b::/96 wrapping 10.0.0.1
+		"0.0.0.0:43",            // unspecified
 	}
 	for _, addr := range blocked {
 		assert.Error(t, ssrfSafeControl("tcp", addr, nil), "must reject %s", addr)
