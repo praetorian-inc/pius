@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strings"
 	"syscall"
@@ -69,10 +70,11 @@ func isDisallowedDialIP(ip net.IP) bool {
 		return false
 	}
 	// Genuine IPv6 (To4()==nil) special-use ranges not caught by the method checks.
-	// The transition/tunnel prefixes matter most here: 6to4, Teredo, and NAT64 all
-	// EMBED an IPv4 address, so without denying them an attacker could smuggle an
-	// internal IPv4 target (e.g. 169.254.169.254 or an RFC1918 host) past the v4
-	// guard as an IPv6 literal referral (ENG-5123 review, CodeRabbit).
+	// The transition/tunnel prefixes matter most here: 6to4, Teredo, and NAT64
+	// (both the well-known 64:ff9b::/96 and the RFC 8215 local-use 64:ff9b:1::/48)
+	// all EMBED an IPv4 address, so without denying them an attacker could smuggle
+	// an internal IPv4 target (e.g. 169.254.169.254 or an RFC1918 host) past the v4
+	// guard as an IPv6 literal referral (ENG-5123 review, CodeRabbit + Codex).
 	if len(ip) == net.IPv6len {
 		switch {
 		case ip[0] == 0x20 && ip[1] == 0x02: // 2002::/16 6to4 (embeds IPv4)
@@ -83,7 +85,10 @@ func isDisallowedDialIP(ip net.IP) bool {
 			return true
 		case ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
 			ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0 &&
-			ip[8] == 0 && ip[9] == 0 && ip[10] == 0 && ip[11] == 0: // 64:ff9b::/96 NAT64 (embeds IPv4)
+			ip[8] == 0 && ip[9] == 0 && ip[10] == 0 && ip[11] == 0: // 64:ff9b::/96 well-known NAT64 (embeds IPv4)
+			return true
+		case ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
+			ip[4] == 0x00 && ip[5] == 0x01: // 64:ff9b:1::/48 local-use NAT64, RFC 8215 (embeds IPv4)
 			return true
 		case ip[0] == 0x01 && ip[1] == 0x00 &&
 			ip[2] == 0 && ip[3] == 0 && ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0: // 100::/64 discard-only
@@ -235,6 +240,13 @@ func readAllWithContext(ctx context.Context, conn net.Conn) ([]byte, error) {
 			return nil, ctxErr
 		}
 		return nil, err
+	}
+	// A read that lands exactly on the cap was (almost certainly) truncated. Log it
+	// so a verbose registry record that then fails to parse is distinguishable from
+	// a whoisparser bug rather than failing silently (ENG-5123 review, Gemini).
+	if len(resp) == maxWhoisResponseBytes {
+		slog.Warn("whois: response reached size cap and may be truncated",
+			"cap_bytes", maxWhoisResponseBytes)
 	}
 	return resp, nil
 }

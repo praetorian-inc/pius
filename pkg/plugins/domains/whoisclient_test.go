@@ -44,7 +44,8 @@ func TestSSRFSafeControl(t *testing.T) {
 		"[2002:a9fe:a9fe::]:43", // 6to4 wrapping 169.254.169.254 (metadata)
 		"[2002:0a00:0001::]:43", // 6to4 wrapping 10.0.0.1 (RFC1918)
 		"[2001:0:0a00:1::]:43",  // Teredo 2001::/32
-		"[64:ff9b::a00:1]:43",   // NAT64 64:ff9b::/96 wrapping 10.0.0.1
+		"[64:ff9b::a00:1]:43",   // well-known NAT64 64:ff9b::/96 wrapping 10.0.0.1
+		"[64:ff9b:1::a00:1]:43", // local-use NAT64 64:ff9b:1::/48 (RFC 8215) wrapping 10.0.0.1
 		"0.0.0.0:43",            // unspecified
 	}
 	for _, addr := range blocked {
