@@ -25,6 +25,7 @@ func TestSSRFSafeControl(t *testing.T) {
 		"192.168.1.1:43",     // RFC1918
 		"172.16.0.1:43",      // RFC1918
 		"100.64.0.1:43",      // CGNAT 100.64/10
+		"0.0.0.1:43",         // "this network" 0.0.0.0/8 (nonzero — IsUnspecified misses it)
 		"198.18.0.1:43",      // benchmarking 198.18.0.0/15
 		"198.19.255.1:43",    // benchmarking 198.18.0.0/15 (upper half)
 		"240.0.0.1:43",       // reserved/Class E 240.0.0.0/4
@@ -97,6 +98,16 @@ func TestExtractReferral_NoReferral(t *testing.T) {
 func TestExtractReferral_StripsProtocol(t *testing.T) {
 	raw := "Registrar WHOIS Server: https://whois.example.com/\n"
 	assert.Equal(t, "whois.example.com", extractReferral(raw))
+}
+
+// TestWhoisDialAddr proves a referral that already carries a port isn't
+// double-appended into a malformed "host:43:43" dial target, while a bare
+// hostname still gets the standard WHOIS port (ENG-5123 review, Gemini).
+func TestWhoisDialAddr(t *testing.T) {
+	assert.Equal(t, "whois.nic.uk:43", whoisDialAddr("whois.nic.uk"))
+	assert.Equal(t, "whois.example.com:43", whoisDialAddr("https://whois.example.com/"))
+	assert.Equal(t, "whois.example.com:43", whoisDialAddr("whois.example.com:43"))       // explicit port honored, not doubled
+	assert.Equal(t, "whois.registry.net:4343", whoisDialAddr("whois.registry.net:4343")) // non-standard explicit port preserved
 }
 
 func TestBoundedDeadline_UsesCtxDeadlineWhenSooner(t *testing.T) {

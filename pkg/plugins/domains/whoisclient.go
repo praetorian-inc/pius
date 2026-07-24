@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"strings"
 	"syscall"
 	"time"
@@ -27,71 +28,77 @@ const (
 	maxWhoisResponseBytes = 1 << 20
 )
 
+// disallowedDialPrefixes is the full set of non-public IP ranges we must never
+// dial when following an untrusted WHOIS referral. It is a strict "public
+// unicast only" allowlist expressed as its complement: every IANA
+// special-purpose / non-routable prefix from the IPv4 Special-Purpose Address
+// Registry and its IPv6 counterpart. Earlier rounds spot-added ranges to a
+// byte-switch one reviewer finding at a time (CGNAT, benchmarking, Class E,
+// TEST-NETs, the IPv6 transition prefixes, then local-use NAT64, then
+// 0.0.0.0/8); enumerating the registries in full is the durable shape and stops
+// the whack-a-mole (ENG-5123 review — Codex, Gemini, CodeRabbit).
+//
+// The IPv6 transition prefixes (6to4 2002::/16, Teredo 2001::/32, and NAT64
+// 64:ff9b::/96 + the RFC 8215 local-use 64:ff9b:1::/48) each EMBED an IPv4
+// address, so denying them stops an internal v4 target (e.g. 169.254.169.254 or
+// an RFC1918 host) from being smuggled past the v4 guard as a v6 literal.
+// Legitimate public-registry WHOIS servers resolve to routable public IPs, so
+// this is a no-op for real lookups.
+var disallowedDialPrefixes = func() []netip.Prefix {
+	cidrs := []string{
+		// IPv4 — IANA IPv4 Special-Purpose Address Registry (complete).
+		"0.0.0.0/8",       // "this network" (RFC 1122) — IsUnspecified only catches 0.0.0.0
+		"10.0.0.0/8",      // RFC1918 private
+		"100.64.0.0/10",   // CGNAT (RFC 6598)
+		"127.0.0.0/8",     // loopback
+		"169.254.0.0/16",  // link-local (incl. cloud metadata 169.254.169.254)
+		"172.16.0.0/12",   // RFC1918 private
+		"192.0.0.0/24",    // IETF protocol assignments
+		"192.0.2.0/24",    // TEST-NET-1 (documentation)
+		"192.88.99.0/24",  // 6to4 relay anycast
+		"192.168.0.0/16",  // RFC1918 private
+		"198.18.0.0/15",   // benchmarking
+		"198.51.100.0/24", // TEST-NET-2 (documentation)
+		"203.0.113.0/24",  // TEST-NET-3 (documentation)
+		"224.0.0.0/4",     // multicast
+		"240.0.0.0/4",     // reserved/Class E (incl. 255.255.255.255 broadcast)
+		// IPv6 — special-purpose ranges (incl. the v4-embedding transition prefixes).
+		"::1/128",        // loopback
+		"::/128",         // unspecified
+		"::ffff:0:0/96",  // IPv4-mapped (defense-in-depth; Unmap normalizes these to v4 first)
+		"64:ff9b::/96",   // well-known NAT64 (embeds IPv4)
+		"64:ff9b:1::/48", // local-use NAT64, RFC 8215 (embeds IPv4)
+		"100::/64",       // discard-only
+		"2001::/23",      // IETF protocol assignments (incl. Teredo 2001::/32)
+		"2001:db8::/32",  // documentation
+		"2002::/16",      // 6to4 (embeds IPv4)
+		"fc00::/7",       // unique local (IPv6 ULA)
+		"fe80::/10",      // link-local unicast
+		"ff00::/8",       // multicast
+	}
+	prefixes := make([]netip.Prefix, 0, len(cidrs))
+	for _, c := range cidrs {
+		prefixes = append(prefixes, netip.MustParsePrefix(c))
+	}
+	return prefixes
+}()
+
 // isDisallowedDialIP reports whether ip is in a range we must never dial when
-// following an untrusted WHOIS referral. Following attacker-influenced referral
-// text, the guard is a strict "public unicast only" filter, not a spot-check:
-// the method checks cover loopback, link-local (incl. the cloud metadata address
-// 169.254.169.254), private (RFC1918 / IPv6 ULA), unspecified, and multicast;
-// the explicit ranges below add every other IANA special-use / non-routable
-// block the method checks miss — CGNAT, benchmarking, reserved/Class E, IETF
-// protocol assignments, 6to4-relay anycast, the TEST-NET / documentation ranges
-// (ENG-5123 review, Codex), and the IPv6 transition prefixes that embed an IPv4
-// address (6to4, Teredo, NAT64) so an internal v4 target can't be smuggled past
-// the v4 guard as a v6 literal (ENG-5123 review, CodeRabbit). Legitimate
-// public-registry WHOIS servers resolve to routable public IPs, so this is a
-// no-op for real lookups.
+// following an untrusted WHOIS referral. It denies anything matching
+// disallowedDialPrefixes, so only genuine public-unicast addresses pass.
 func isDisallowedDialIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() {
-		return true
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true // unparseable length — fail closed
 	}
-	if ip4 := ip.To4(); ip4 != nil {
-		switch {
-		case ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127: // 100.64.0.0/10 CGNAT
-			return true
-		case ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19): // 198.18.0.0/15 benchmarking
-			return true
-		case ip4[0] >= 240: // 240.0.0.0/4 reserved/Class E (+255.255.255.255 broadcast)
-			return true
-		case ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0: // 192.0.0.0/24 IETF protocol assignments
-			return true
-		case ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2: // 192.0.2.0/24 TEST-NET-1
-			return true
-		case ip4[0] == 198 && ip4[1] == 51 && ip4[2] == 100: // 198.51.100.0/24 TEST-NET-2
-			return true
-		case ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113: // 203.0.113.0/24 TEST-NET-3
-			return true
-		case ip4[0] == 192 && ip4[1] == 88 && ip4[2] == 99: // 192.88.99.0/24 6to4 relay anycast
-			return true
-		}
-		return false
-	}
-	// Genuine IPv6 (To4()==nil) special-use ranges not caught by the method checks.
-	// The transition/tunnel prefixes matter most here: 6to4, Teredo, and NAT64
-	// (both the well-known 64:ff9b::/96 and the RFC 8215 local-use 64:ff9b:1::/48)
-	// all EMBED an IPv4 address, so without denying them an attacker could smuggle
-	// an internal IPv4 target (e.g. 169.254.169.254 or an RFC1918 host) past the v4
-	// guard as an IPv6 literal referral (ENG-5123 review, CodeRabbit + Codex).
-	if len(ip) == net.IPv6len {
-		switch {
-		case ip[0] == 0x20 && ip[1] == 0x02: // 2002::/16 6to4 (embeds IPv4)
-			return true
-		case ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x00 && ip[3] == 0x00: // 2001::/32 Teredo (embeds IPv4)
-			return true
-		case ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x0d && ip[3] == 0xb8: // 2001:db8::/32 documentation
-			return true
-		case ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
-			ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0 &&
-			ip[8] == 0 && ip[9] == 0 && ip[10] == 0 && ip[11] == 0: // 64:ff9b::/96 well-known NAT64 (embeds IPv4)
-			return true
-		case ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
-			ip[4] == 0x00 && ip[5] == 0x01: // 64:ff9b:1::/48 local-use NAT64, RFC 8215 (embeds IPv4)
-			return true
-		case ip[0] == 0x01 && ip[1] == 0x00 &&
-			ip[2] == 0 && ip[3] == 0 && ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0: // 100::/64 discard-only
+	// Normalize IPv4-mapped IPv6 (::ffff:a.b.c.d) to its v4 form so the IPv4
+	// special-purpose prefixes catch an internal target wrapped as a v6 literal.
+	addr = addr.Unmap()
+	for _, p := range disallowedDialPrefixes {
+		if p.Contains(addr) {
 			return true
 		}
 	}
@@ -157,13 +164,25 @@ func whoisQuery(ctx context.Context, domain string) (string, error) {
 	return lastRaw, nil
 }
 
-// whoisRaw sends a single WHOIS query to the given server and returns the raw response.
-func whoisRaw(ctx context.Context, domain, server string) (string, error) {
+// whoisDialAddr normalizes a (possibly untrusted) referral server string into a
+// host:port dial target: it strips any URL scheme / trailing slash and honors an
+// explicit port when the referral already carries one (e.g.
+// "whois.example.com:43"), otherwise appends the standard WHOIS port. Without the
+// explicit-port check, a port-qualified referral would be double-appended into a
+// malformed "host:43:43" address that never dials (ENG-5123 review, Gemini).
+func whoisDialAddr(server string) string {
 	server = strings.TrimPrefix(server, "http://")
 	server = strings.TrimPrefix(server, "https://")
 	server = strings.TrimSuffix(server, "/")
+	if _, _, err := net.SplitHostPort(server); err == nil {
+		return server // already host:port — don't double-append
+	}
+	return net.JoinHostPort(server, whoisPort)
+}
 
-	addr := net.JoinHostPort(server, whoisPort)
+// whoisRaw sends a single WHOIS query to the given server and returns the raw response.
+func whoisRaw(ctx context.Context, domain, server string) (string, error) {
+	addr := whoisDialAddr(server)
 
 	// SSRF guard: the reverse-whois verifier now follows WHOIS referrals for up to
 	// maxReverseWhoisCandidates domains pulled from third-party APIs (ViewDNS /
