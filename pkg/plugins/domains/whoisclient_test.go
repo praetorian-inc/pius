@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	whoisparser "github.com/likexian/whois-parser"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -402,4 +403,48 @@ func TestWhoisPlugin_Run_CancelledContextDoesNotEmit(t *testing.T) {
 	assert.True(t, errors.Is(err, context.Canceled), "error must wrap context.Canceled, got %v", err)
 	assert.Empty(t, findings, "no preseeds may be emitted from a salvaged partial record on a cancelled run")
 	assert.Equal(t, 2, calls, "the third-server hop must not run: ctx.Err() salvages lastRaw at the loop top")
+}
+
+// TestWhoisPlugin_Run_RecoversParserPanic proves the deferred recover in
+// WhoisPlugin.Run catches a panic raised while parsing an untrusted WHOIS
+// record and de-grades it to a logged error + no preseeds, instead of letting
+// the panic unwind through the errgroup goroutine and crash the whole pius run
+// (ENG-5123 review, Gemini). whoisparser.Parse (v1.24.21) is defensive enough
+// that no adversarial raw input reliably panics it — which is exactly why the
+// package-level whoisParseFn seam exists: injecting a panicking parse is the
+// only way to exercise the guard. Hermetic: both the network seam (whoisRawFn,
+// via stubWhoisRawFn) and the parse seam (whoisParseFn) are stubbed, so no
+// socket, DNS, or real WHOIS/RDAP call happens.
+func TestWhoisPlugin_Run_RecoversParserPanic(t *testing.T) {
+	// Drive whoisQuery to a successful, network-free result. The bootstrap seed
+	// (defaultServer) must refer once past itself, because whoisQuery never
+	// salvages the seed record alone (seed-guard invariant); the referred-to
+	// server then returns a benign record with NO further referral, so the loop
+	// breaks with lastRaw set and whoisQuery returns that non-empty record. The
+	// raw content is irrelevant — the injected parse below ignores it entirely.
+	// stubWhoisRawFn restores whoisRawFn automatically via t.Cleanup.
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		if server == defaultServer {
+			return "refer: whois.registrar.test\n", nil // advance past the bootstrap seed
+		}
+		return "Domain Name: example.com\n", nil // benign post-referral record, no refer line
+	})
+
+	// Inject a parse that panics, standing in for a malformed third-party record
+	// that trips the parser. Save/restore the seam via defer.
+	orig := whoisParseFn
+	defer func() { whoisParseFn = orig }()
+	whoisParseFn = func(string) (whoisparser.WhoisInfo, error) {
+		panic("synthetic parse panic")
+	}
+
+	// If Run re-panicked (i.e. the guard were removed) the panic would unwind
+	// past this call and crash the test binary — so merely REACHING the
+	// assertions below is itself proof that the deferred recover fired.
+	findings, err := (&WhoisPlugin{}).Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+	assert.Error(t, err, "a recovered parser panic must surface as an error")
+	assert.Contains(t, err.Error(), "recovered panic", "error must name the recovered panic")
+	assert.Contains(t, err.Error(), "example.com", "error must name the domain whose record panicked")
+	assert.Empty(t, findings, "no preseeds may be emitted when parsing panicked")
 }
