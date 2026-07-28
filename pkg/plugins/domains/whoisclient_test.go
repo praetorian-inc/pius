@@ -41,6 +41,8 @@ func TestSSRFSafeControl(t *testing.T) {
 		"192.88.99.1:43",     // 6to4 relay anycast
 		"[::1]:43",           // IPv6 loopback
 		"[fd00::1]:43",       // IPv6 ULA
+		"[fec0::1]:43",       // deprecated IPv6 site-local (RFC 3879), non-public
+		"[fec0::abcd:1]:43",  // deprecated IPv6 site-local (RFC 3879), second point in fec0::/10
 		"[2001:db8::1]:43",   // IPv6 documentation 2001:db8::/32
 		"[100::1]:43",        // IPv6 discard-only 100::/64
 		// IPv6 transition prefixes that embed an internal IPv4 target — the v6

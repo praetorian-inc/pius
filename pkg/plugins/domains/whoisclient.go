@@ -74,6 +74,7 @@ var disallowedDialPrefixes = func() []netip.Prefix {
 		"2002::/16",      // 6to4 (embeds IPv4)
 		"fc00::/7",       // unique local (IPv6 ULA)
 		"fe80::/10",      // link-local unicast
+		"fec0::/10",      // deprecated site-local (RFC 3879) — non-public, absent from the current IANA registry
 		"ff00::/8",       // multicast
 	}
 	prefixes := make([]netip.Prefix, 0, len(cidrs))
@@ -84,8 +85,9 @@ var disallowedDialPrefixes = func() []netip.Prefix {
 }()
 
 // isDisallowedDialIP reports whether ip is in a range we must never dial when
-// following an untrusted WHOIS referral. It denies anything matching
-// disallowedDialPrefixes, so only genuine public-unicast addresses pass.
+// following an untrusted WHOIS referral. It fails closed by default: only
+// genuine global-unicast, non-private addresses pass, and the enumerated
+// disallowedDialPrefixes then reject the global-unicast-but-non-public ranges.
 func isDisallowedDialIP(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -97,6 +99,17 @@ func isDisallowedDialIP(ip net.IP) bool {
 	// Normalize IPv4-mapped IPv6 (::ffff:a.b.c.d) to its v4 form so the IPv4
 	// special-purpose prefixes catch an internal target wrapped as a v6 literal.
 	addr = addr.Unmap()
+	// Fail closed: only genuine global-unicast, non-private addresses may pass.
+	// The enumerated denylist below then rejects the ranges that are
+	// global-unicast per the stdlib predicates but still non-public (CGNAT,
+	// documentation, benchmarking, Class E, the v4-embedding transition
+	// prefixes, and deprecated site-local fec0::/10). This inverts the guard
+	// from "allow unless listed" to "deny unless proven public", so a
+	// non-public range nobody enumerated no longer slips through (ENG-5123
+	// review, Codex).
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() {
+		return true
+	}
 	for _, p := range disallowedDialPrefixes {
 		if p.Contains(addr) {
 			return true
