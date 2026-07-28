@@ -198,6 +198,14 @@ func whoisDialAddr(server string) string {
 	server = strings.TrimSuffix(server, "/")
 	if host, _, err := net.SplitHostPort(server); err == nil {
 		server = host // drop the untrusted explicit port — WHOIS is tcp/43 only
+	} else {
+		// A bracketed IPv6 literal WITHOUT a port (e.g. "[2001:db8::1]")
+		// makes SplitHostPort fail; strip the brackets so JoinHostPort
+		// re-wraps it once instead of producing a malformed
+		// "[[2001:db8::1]]:43" that never dials (ENG-5123 review, Gemini).
+		// A hostname or a bare (unbracketed) IPv6 carries no brackets, so
+		// this is a no-op for them.
+		server = strings.TrimSuffix(strings.TrimPrefix(server, "["), "]")
 	}
 	return net.JoinHostPort(server, whoisPort)
 }

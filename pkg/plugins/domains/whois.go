@@ -44,6 +44,15 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 		return nil, fmt.Errorf("whois: lookup failed for %q: %w", domain, err)
 	}
 
+	// whoisQuery is shared with the reverse-whois verifier, where a caller
+	// cancellation deliberately salvages the last post-referral record
+	// (recall-safe). WhoisPlugin has no such recall contract: a cancelled run
+	// must abort, not emit preseeds from a salvaged partial record. Re-check the
+	// context before parsing/emitting (ENG-5123 review, Codex).
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	parsed, err := whoisparser.Parse(raw)
 	if err != nil {
 		slog.Warn("whois: parse failed, skipping preseed extraction", "domain", domain, "error", err)

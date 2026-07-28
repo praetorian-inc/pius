@@ -2,11 +2,13 @@ package domains
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -123,6 +125,11 @@ func TestWhoisDialAddr(t *testing.T) {
 	// A bracketed IPv6 referral with a port round-trips: the port is dropped and
 	// the address is re-bracketed with :43.
 	assert.Equal(t, "[2001:db8::1]:43", whoisDialAddr("[2001:db8::1]:8080"))
+	// A bracketed IPv6 literal WITHOUT a port makes SplitHostPort fail; the
+	// else-branch must strip the brackets so JoinHostPort re-wraps the address
+	// exactly once as "[2001:db8::1]:43" rather than double-bracketing into the
+	// malformed "[[2001:db8::1]]:43" that never dials (ENG-5123 review, Gemini).
+	assert.Equal(t, "[2001:db8::1]:43", whoisDialAddr("[2001:db8::1]"))
 }
 
 func TestBoundedDeadline_UsesCtxDeadlineWhenSooner(t *testing.T) {
@@ -334,4 +341,65 @@ func TestWhoisQuery_CtxCancelAfterReferralSalvages(t *testing.T) {
 
 	require.NoError(t, err, "a cancellation after a referral advanced must salvage the post-referral record")
 	assert.Equal(t, tldRecord, got, "must return the salvaged post-referral TLD record")
+}
+
+// TestWhoisPlugin_Run_CancelledContextDoesNotEmit pins Fix A: whoisQuery is shared
+// with the reverse-whois verifier, where a caller cancellation deliberately
+// SALVAGES the last post-referral record (recall-safe, nil error). WhoisPlugin has
+// no such recall contract — a cancelled run must ABORT, not emit preseeds parsed
+// from that salvaged partial record. The stub drives whoisQuery into its
+// salvage-on-cancel branch (a post-referral hop sets lastRaw, then the context is
+// cancelled so the next loop-top ctx.Err() check returns (lastRaw, nil)), and Run
+// must re-check the context and return the ctx error with NO findings rather than
+// parsing the salvaged record (ENG-5123 review, Codex).
+func TestWhoisPlugin_Run_CancelledContextDoesNotEmit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var calls int
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		calls++
+		switch server {
+		case defaultServer:
+			// Bootstrap seed hop: refer onward to the registrar server. The seed
+			// record is NOT salvageable (server == defaultServer), so lastRaw stays
+			// empty here and only the referral matters.
+			return "refer: whois.registrar.test\n", nil
+		case "whois.registrar.test":
+			// Post-referral hop: a real registrant record that whoisparser.Parse
+			// accepts (the "Domain Name:" line satisfies its validity check) AND
+			// that yields preseeds (registrant org/name/email) AND that ALSO refers
+			// onward to a THIRD server via "Registrar WHOIS Server:" (so lastRaw is
+			// set AND the loop would continue). Cancel the context right before
+			// returning so the next loop-top ctx.Err() check fires and whoisQuery
+			// returns (lastRaw, nil) — the salvage-on-cancel path. Without Fix A's
+			// guard, Run would parse THIS record into 3 preseeds and return them with
+			// a nil error; the guard makes it abort with the ctx error instead.
+			cancel()
+			return "Domain Name: EXAMPLE.COM\n" +
+				"Registry Domain ID: 2336799_DOMAIN_COM-VRSN\n" +
+				"Registrar WHOIS Server: whois.second.test\n" +
+				"Registrar: Example Registrar, LLC\n" +
+				"Creation Date: 1995-08-14T04:00:00Z\n" +
+				"Registrant Organization: Acme Corp\n" +
+				"Registrant Name: John Doe\n" +
+				"Registrant Email: admin@acme.com\n", nil
+		default:
+			// The third-server hop must never run: the ctx.Err() check at the loop
+			// top returns the salvaged record first.
+			t.Fatalf("unexpected server queried after cancel: %q", server)
+			return "", nil
+		}
+	})
+
+	findings, err := (&WhoisPlugin{}).Run(ctx, plugins.Input{Domain: "example.com"})
+
+	// assert (not require) so that when Fix A's guard is removed a single run
+	// exhibits every caught assertion at once: without the guard Run parses the
+	// salvaged record into 3 preseeds and returns them with a nil error, so the
+	// error-present, error-is-Canceled, AND findings-empty checks all fail
+	// together — each assertion is independently mutation-proven.
+	assert.Error(t, err, "a cancelled Run must abort, not emit salvaged preseeds")
+	assert.True(t, errors.Is(err, context.Canceled), "error must wrap context.Canceled, got %v", err)
+	assert.Empty(t, findings, "no preseeds may be emitted from a salvaged partial record on a cancelled run")
+	assert.Equal(t, 2, calls, "the third-server hop must not run: ctx.Err() salvages lastRaw at the loop top")
 }
