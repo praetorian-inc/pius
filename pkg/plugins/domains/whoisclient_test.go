@@ -2,6 +2,7 @@ package domains
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -100,14 +101,28 @@ func TestExtractReferral_StripsProtocol(t *testing.T) {
 	assert.Equal(t, "whois.example.com", extractReferral(raw))
 }
 
-// TestWhoisDialAddr proves a referral that already carries a port isn't
-// double-appended into a malformed "host:43:43" dial target, while a bare
-// hostname still gets the standard WHOIS port (ENG-5123 review, Gemini).
+// TestWhoisDialAddr proves whoisDialAddr always normalizes a (possibly
+// untrusted) referral server to the standard WHOIS port tcp/43: it appends :43
+// to a bare host, strips scheme/trailing slash, and DROPS any explicit port a
+// referral carries. WHOIS is tcp/43 by protocol, so honoring a non-43 port
+// would let a hostile WHOIS record steer the plugin into probing arbitrary
+// public host:port pairs (the SSRF guard blocks non-public IPs, not a public
+// host on an arbitrary port). Strip-then-append also keeps a :43 referral from
+// being double-appended into a malformed "host:43:43" (ENG-5123 review, Gemini
+// + Codex).
 func TestWhoisDialAddr(t *testing.T) {
 	assert.Equal(t, "whois.nic.uk:43", whoisDialAddr("whois.nic.uk"))
 	assert.Equal(t, "whois.example.com:43", whoisDialAddr("https://whois.example.com/"))
-	assert.Equal(t, "whois.example.com:43", whoisDialAddr("whois.example.com:43"))       // explicit port honored, not doubled
-	assert.Equal(t, "whois.registry.net:4343", whoisDialAddr("whois.registry.net:4343")) // non-standard explicit port preserved
+	assert.Equal(t, "whois.example.com:43", whoisDialAddr("whois.example.com:43")) // :43 stripped then re-appended, never doubled into host:43:43
+	// Security: a hostile referral carrying a non-standard port must be
+	// normalized back to tcp/43, closing the arbitrary-port-probing vector — the
+	// SSRF guard only blocks non-public IPs, not a public host on any port
+	// (ENG-5123 review, Codex).
+	assert.Equal(t, "evil.example.com:43", whoisDialAddr("evil.example.com:22"))
+	assert.Equal(t, "whois.registry.net:43", whoisDialAddr("whois.registry.net:4343")) // non-standard port dropped, not preserved
+	// A bracketed IPv6 referral with a port round-trips: the port is dropped and
+	// the address is re-bracketed with :43.
+	assert.Equal(t, "[2001:db8::1]:43", whoisDialAddr("[2001:db8::1]:8080"))
 }
 
 func TestBoundedDeadline_UsesCtxDeadlineWhenSooner(t *testing.T) {
@@ -137,7 +152,7 @@ func TestReadAllWithContext_HonorsCancellation(t *testing.T) {
 	cancel() // already cancelled: watcher must close the conn and unblock the read
 
 	start := time.Now()
-	_, err := readAllWithContext(ctx, client)
+	_, err := readAllWithContext(ctx, client, "example.com", "whois.example.com")
 	elapsed := time.Since(start)
 
 	require.Error(t, err)
@@ -156,7 +171,7 @@ func TestReadAllWithContext_HonorsDeadline(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := readAllWithContext(ctx, client)
+	_, err := readAllWithContext(ctx, client, "example.com", "whois.example.com")
 	elapsed := time.Since(start)
 
 	require.Error(t, err)
@@ -183,7 +198,7 @@ func TestReadAllWithContext_CapsResponseSize(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 
-	resp, err := readAllWithContext(ctx, client)
+	resp, err := readAllWithContext(ctx, client, "example.com", "whois.example.com")
 	require.NoError(t, err)
 	assert.Len(t, resp, maxWhoisResponseBytes, "response must be capped at maxWhoisResponseBytes")
 }
@@ -200,7 +215,123 @@ func TestReadAllWithContext_ReadsFullResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 
-	resp, err := readAllWithContext(ctx, client)
+	resp, err := readAllWithContext(ctx, client, "example.com", "whois.example.com")
 	require.NoError(t, err)
 	assert.Equal(t, "Registrant: Acme Corp\n", string(resp))
+}
+
+// stubWhoisRawFn reassigns the whoisRawFn production seam to fn for the duration
+// of the test and restores the original via t.Cleanup. This lets whoisQuery's
+// referral/salvage state machine be driven hermetically — no socket, no DNS —
+// by returning canned raw records keyed by the server being queried.
+func stubWhoisRawFn(t *testing.T, fn func(ctx context.Context, domain, server string) (string, error)) {
+	t.Helper()
+	prev := whoisRawFn
+	whoisRawFn = fn
+	t.Cleanup(func() { whoisRawFn = prev })
+}
+
+// TestWhoisQuery_SeedOnlyChainReturnsError pins Fix A's core invariant: when only
+// the bootstrap seed (whois.iana.org) answers and it carries NO referral, the
+// chain never advances past the seed, so whoisQuery returns the seed-guard error
+// (never the seed record) and the caller scores the candidate unverified 0.50.
+// The seed's response is the TLD registry record, not the registrant's, so
+// salvaging it would hand the caller a wrong-entity record it cannot distinguish
+// from a real one.
+func TestWhoisQuery_SeedOnlyChainReturnsError(t *testing.T) {
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		require.Equal(t, defaultServer, server, "only the bootstrap seed should be queried")
+		// A seed record with NO referral line: extractReferral returns "" so the
+		// loop breaks at the seed and lastRaw is never set.
+		return "domain: COM\norganisation: VeriSign Global Registry Services\n", nil
+	})
+
+	got, err := whoisQuery(context.Background(), "example.com")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no record beyond bootstrap seed")
+	assert.Empty(t, got, "no salvageable record should be returned for a seed-only chain")
+}
+
+// TestWhoisQuery_PostReferralSalvageReturnsPostReferralRecord pins the
+// de-rank-never-drop salvage: the seed refers to a TLD server that returns a real
+// registrant record whose own referral points to a registrar server that ERRORS.
+// whoisQuery must salvage the TLD server's post-referral record (nil error), NOT
+// the seed record — a later hop failing does not discard an already-advanced
+// post-referral record.
+func TestWhoisQuery_PostReferralSalvageReturnsPostReferralRecord(t *testing.T) {
+	const (
+		tldServer       = "whois.tld.example"
+		registrarServer = "whois.registrar.example"
+		seedRecord      = "refer: whois.tld.example\ndomain: EXAMPLE\n"
+		tldRecord       = "Domain Name: EXAMPLE.COM\nRegistrant Organization: Acme Corp\nRegistrar WHOIS Server: whois.registrar.example\n"
+	)
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		switch server {
+		case defaultServer:
+			return seedRecord, nil // seed refers onward to the TLD server
+		case tldServer:
+			return tldRecord, nil // real registrant record, refers to the registrar
+		case registrarServer:
+			return "", fmt.Errorf("dial tcp: connection refused") // registrar hop fails
+		default:
+			t.Fatalf("unexpected server queried: %q", server)
+			return "", nil
+		}
+	})
+
+	got, err := whoisQuery(context.Background(), "example.com")
+
+	require.NoError(t, err, "a failed registrar hop must not discard the salvaged TLD record")
+	assert.Equal(t, tldRecord, got, "must return the post-referral TLD record")
+	assert.NotEqual(t, seedRecord, got, "must NOT salvage the bootstrap seed record")
+}
+
+// TestWhoisQuery_CtxCancelAfterSeedReturnsError pins the ctx-error path when
+// cancellation is observed with nothing salvageable: the seed answers (with a
+// referral so the chain would otherwise continue) but ctx is cancelled before the
+// next hop runs. Because only the seed answered, lastRaw is empty and whoisQuery
+// returns the ctx error, not a record.
+func TestWhoisQuery_CtxCancelAfterSeedReturnsError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		require.Equal(t, defaultServer, server, "only the seed should be reached before cancellation")
+		cancel() // cancel so the NEXT loop iteration observes it with lastRaw still empty
+		return "refer: whois.tld.example\n", nil
+	})
+
+	got, err := whoisQuery(ctx, "example.com")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, got, "nothing salvageable → no record on the cancelled path")
+}
+
+// TestWhoisQuery_CtxCancelAfterReferralSalvages pins the other ctx-error branch:
+// once a referral has advanced past the seed and set lastRaw, an observed
+// cancellation salvages that post-referral record with a nil error rather than
+// discarding it — the budget-honoring path stays recall-safe.
+func TestWhoisQuery_CtxCancelAfterReferralSalvages(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	const (
+		tldServer = "whois.tld.example"
+		tldRecord = "Registrant Organization: Acme Corp\nRegistrar WHOIS Server: whois.registrar.example\n"
+	)
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		switch server {
+		case defaultServer:
+			return "refer: whois.tld.example\n", nil // advance past the seed
+		case tldServer:
+			cancel() // now lastRaw holds the TLD record; cancel so the next iteration bails
+			return tldRecord, nil
+		default:
+			t.Fatalf("unexpected server queried after cancel: %q", server)
+			return "", nil
+		}
+	})
+
+	got, err := whoisQuery(ctx, "example.com")
+
+	require.NoError(t, err, "a cancellation after a referral advanced must salvage the post-referral record")
+	assert.Equal(t, tldRecord, got, "must return the salvaged post-referral TLD record")
 }

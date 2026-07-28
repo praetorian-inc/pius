@@ -3,6 +3,7 @@ package domains
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -684,4 +685,122 @@ func TestExtractRDAPRegistrantOrg(t *testing.T) {
 		assert.False(t, panicked)
 		assert.Equal(t, "Acme Corp", org)
 	})
+}
+
+// TestVerifyCandidates_DeRankOrderingAndLiteralAnchors pins the de-rank ORDERING
+// that is the whole point of verify-after-retrieve: as EMITTED scores,
+// corroborated > unverified > mismatch. It also anchors the mismatch band to the
+// LITERAL 0.40 (mirroring the literal 0.60 corroborated anchor in
+// reverse_whois_test.go). The existing mismatch assertions compare against the
+// confReverseWhoisMismatch CONSTANT, so raising that constant above the
+// unverified 0.50 (e.g. 0.40 → 0.62) moves prod and test together and stays
+// green while silently inverting the ranking. The literal anchor and the
+// ordering assertions below both fail under that mutation (ENG-5123 #1).
+func TestVerifyCandidates_DeRankOrderingAndLiteralAnchors(t *testing.T) {
+	stub := &stubResolver{
+		byDomain: map[string]registrantResult{
+			"corroborated.com": org("Acme Corp"),    // sim high → corroborated
+			"unverified.com":   {},                  // no registrant → unverified
+			"mismatch.com":     org("Walmart Inc."), // present, unmasked, disjoint → mismatch
+		},
+	}
+	cands := []candidate{
+		{domain: "corroborated.com", finding: plugins.Finding{Value: "corroborated.com"}},
+		{domain: "unverified.com", finding: plugins.Finding{Value: "unverified.com"}},
+		{domain: "mismatch.com", finding: plugins.Finding{Value: "mismatch.com"}},
+	}
+	findings, err := verifyCandidates(context.Background(), stub, "Acme", cands)
+	require.NoError(t, err)
+	require.Len(t, findings, 3)
+
+	corr := plugins.Confidence(findings[0])
+	unver := plugins.Confidence(findings[1])
+	mism := plugins.Confidence(findings[2])
+
+	// Literal band anchors — NOT the package constants, so a constant edit cannot
+	// move the expectation together with the emission.
+	assert.InDelta(t, 0.60, corr, 0.001, "corroborated must emit at the literal 0.60 top-of-band")
+	assert.InDelta(t, 0.50, unver, 0.001, "unverified must emit at the literal 0.50 mid-band")
+	assert.InDelta(t, 0.40, mism, 0.001, "mismatch must emit at the literal 0.40 bottom-of-band")
+
+	// Explicit ORDERING of emitted scores: corroborated > unverified > mismatch.
+	assert.Greater(t, corr, unver, "corroborated must outrank unverified")
+	assert.Greater(t, unver, mism, "unverified must outrank mismatch (the feature's whole deliverable)")
+}
+
+// TestVerifyCandidates_CapLimitsCallsNotRecall pins that maxReverseWhoisCandidates
+// caps resolver CALLS, never output (ENG-5123 #3). With one more candidate than
+// the cap, the resolver is invoked at most cap times, yet every candidate —
+// including the overflow — is still emitted (de-rank-never-drop). A
+// `cands = cands[:resolveCount]` truncation drops the overflow finding and fails
+// require.Len; dropping the cap entirely makes the call count exceed the cap.
+func TestVerifyCandidates_CapLimitsCallsNotRecall(t *testing.T) {
+	total := maxReverseWhoisCandidates + 1 // crosses the resolver-call cap by exactly one
+	stub := &stubResolver{byDomain: map[string]registrantResult{}}
+	cands := make([]candidate, 0, total)
+	for i := 0; i < total; i++ {
+		d := fmt.Sprintf("cand-%d.example.com", i)
+		stub.byDomain[d] = org("Acme Corp") // every candidate WOULD corroborate if resolved
+		cands = append(cands, candidate{domain: d, finding: plugins.Finding{Value: d}})
+	}
+
+	findings, err := verifyCandidates(context.Background(), stub, "Acme", cands)
+	require.NoError(t, err)
+
+	// Recall: every candidate is still emitted — the cap limits resolver CALLS,
+	// never output. Truncation would drop the overflow finding here.
+	require.Len(t, findings, total, "candidates beyond the cap must still be emitted, never truncated")
+
+	// Calls: the resolver is invoked at most maxReverseWhoisCandidates times.
+	assert.Len(t, stub.calls, maxReverseWhoisCandidates, "resolver must be called at most cap times")
+
+	// The overflow candidate (index == cap) was NOT resolved, so it keeps the
+	// unverified mid-band score — de-ranked, never dropped — and output order is
+	// preserved through the cap boundary.
+	overflow := findings[maxReverseWhoisCandidates]
+	assert.Equal(t, cands[maxReverseWhoisCandidates].domain, overflow.Value, "output order preserved through the cap")
+	assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(overflow), 0.001,
+		"a candidate beyond the cap is emitted unverified WITHOUT a lookup")
+	assert.False(t, stub.queried(overflow.Value), "the overflow candidate must not be resolved")
+
+	// A resolved candidate below the cap corroborates (0.60), proving resolution
+	// did happen up to the boundary — the cap is where calls stop, not recall.
+	assert.InDelta(t, confReverseWhoisCorroborated, plugins.Confidence(findings[0]), 0.001)
+}
+
+// TestResolveWithFallback_PerStepTimeoutsAreIndependent proves each resolver step
+// (RDAP, then the WHOIS fallback) gets its OWN timeout derived fresh from the
+// incoming budget, not one shared deadline. The RDAP step burns a measurable
+// slice of wall-clock before falling through; because the WHOIS step's context
+// is created AFTER that, its deadline lands strictly later than the RDAP step's.
+// Collapsing the two context.WithTimeout calls into a single shared context
+// would give both steps the SAME deadline (gap 0), so this pins the per-step
+// independence the review added (ENG-5123 review, Codex P2).
+func TestResolveWithFallback_PerStepTimeoutsAreIndependent(t *testing.T) {
+	const rdapCost = 30 * time.Millisecond
+
+	var rdapDeadline, whoisDeadline time.Time
+	var rdapHasDL, whoisHasDL bool
+
+	rdapFn := func(ctx context.Context, _ string) (registrantResult, error) {
+		rdapDeadline, rdapHasDL = ctx.Deadline()
+		time.Sleep(rdapCost)           // burn a measurable slice of the step budget
+		return registrantResult{}, nil // not Found → force fall-through to WHOIS
+	}
+	whoisFn := func(ctx context.Context, _ string) (registrantResult, error) {
+		whoisDeadline, whoisHasDL = ctx.Deadline()
+		return registrantResult{Org: "WHOIS Org", Found: true}, nil
+	}
+
+	res, err := resolveWithFallback(context.Background(), "example.com", rdapFn, whoisFn)
+	require.NoError(t, err)
+	require.Equal(t, "WHOIS Org", res.Org, "WHOIS fallback must have run")
+	require.True(t, rdapHasDL, "RDAP step must carry its own per-step deadline")
+	require.True(t, whoisHasDL, "WHOIS step must carry its own per-step deadline")
+
+	// Independent steps: the WHOIS deadline is created after the RDAP step ran,
+	// so it is later by ~rdapCost. A single shared context yields gap == 0.
+	gap := whoisDeadline.Sub(rdapDeadline)
+	assert.GreaterOrEqual(t, gap, 10*time.Millisecond,
+		"each step must get an independent per-step timeout, not one shared budget (gap==0 means collapsed)")
 }

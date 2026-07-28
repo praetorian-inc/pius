@@ -129,6 +129,17 @@ func ssrfSafeControl(_, address string, _ syscall.RawConn) error {
 // It starts at whois.iana.org and follows "refer:" or "whois:" directives
 // until it reaches the authoritative registrar server.
 //
+// Invariant: the returned record always comes from a server reached by
+// following at least one referral, NEVER from the whois.iana.org bootstrap
+// seed alone. The seed's response is the TLD *registry* record — its org is
+// the registry operator's, not the registrant's — so salvaging it would hand
+// the caller a wrong-entity record it cannot distinguish from a real one
+// (false corroboration or false de-rank). If the chain breaks before
+// advancing past the seed, an error is returned instead; the caller scores
+// that as unverified (mid-band 0.50), so honesty costs no recall. A record
+// from a post-referral hop (e.g. the TLD server when the registrar hop fails)
+// is still salvaged under de-rank-never-drop.
+//
 // Every hop is bounded by ctx: the referral loop bails as soon as ctx is
 // cancelled or its deadline passes, and whoisRaw honors ctx on the socket read.
 // This keeps the fallback path inside the overall verification budget instead of
@@ -140,18 +151,22 @@ func whoisQuery(ctx context.Context, domain string) (string, error) {
 	for i := 0; i < 5; i++ { // max 5 referrals to prevent loops
 		if err := ctx.Err(); err != nil {
 			if lastRaw != "" {
-				return lastRaw, nil // return last successful result
+				return lastRaw, nil // return last post-referral result
 			}
 			return "", err
 		}
-		raw, err := whoisRaw(ctx, domain, server)
+		raw, err := whoisRawFn(ctx, domain, server)
 		if err != nil {
 			if lastRaw != "" {
-				return lastRaw, nil // return last successful result
+				return lastRaw, nil // return last post-referral result
 			}
 			return "", fmt.Errorf("whois query to %s: %w", server, err)
 		}
-		lastRaw = raw
+		// Only a post-referral record is salvageable: the bootstrap seed's
+		// response describes the TLD registry, not the domain's registrant.
+		if !strings.EqualFold(server, defaultServer) {
+			lastRaw = raw
+		}
 
 		// Look for referral to a more specific server
 		refer := extractReferral(raw)
@@ -161,24 +176,36 @@ func whoisQuery(ctx context.Context, domain string) (string, error) {
 		server = refer
 	}
 
+	if lastRaw == "" {
+		return "", fmt.Errorf("whois query for %s: no record beyond bootstrap seed %s", domain, defaultServer)
+	}
 	return lastRaw, nil
 }
 
 // whoisDialAddr normalizes a (possibly untrusted) referral server string into a
-// host:port dial target: it strips any URL scheme / trailing slash and honors an
-// explicit port when the referral already carries one (e.g.
-// "whois.example.com:43"), otherwise appends the standard WHOIS port. Without the
-// explicit-port check, a port-qualified referral would be double-appended into a
-// malformed "host:43:43" address that never dials (ENG-5123 review, Gemini).
+// host:port dial target: it strips any URL scheme / trailing slash, DROPS any
+// explicit port the referral carries, and always dials the standard WHOIS port.
+// WHOIS is tcp/43 by protocol, so a non-43 port in a referral is never
+// legitimate — honoring it would let a hostile WHOIS record steer the plugin
+// into probing arbitrary public host:port pairs (the SSRF guard blocks
+// non-public IPs, not public-host:any-port). Strip-then-append also keeps a
+// port-qualified referral like "whois.example.com:43" from being
+// double-appended into a malformed "host:43:43" address (ENG-5123 review,
+// Gemini + Codex).
 func whoisDialAddr(server string) string {
 	server = strings.TrimPrefix(server, "http://")
 	server = strings.TrimPrefix(server, "https://")
 	server = strings.TrimSuffix(server, "/")
-	if _, _, err := net.SplitHostPort(server); err == nil {
-		return server // already host:port — don't double-append
+	if host, _, err := net.SplitHostPort(server); err == nil {
+		server = host // drop the untrusted explicit port — WHOIS is tcp/43 only
 	}
 	return net.JoinHostPort(server, whoisPort)
 }
+
+// whoisRawFn is indirected through a var so tests can drive whoisQuery's
+// referral/salvage state machine without real network I/O. Production code
+// leaves it as whoisRaw; only tests reassign it (restoring via defer).
+var whoisRawFn = whoisRaw
 
 // whoisRaw sends a single WHOIS query to the given server and returns the raw response.
 func whoisRaw(ctx context.Context, domain, server string) (string, error) {
@@ -210,7 +237,7 @@ func whoisRaw(ctx context.Context, domain, server string) (string, error) {
 		return "", err
 	}
 
-	resp, err := readAllWithContext(ctx, conn)
+	resp, err := readAllWithContext(ctx, conn, domain, server)
 	if err != nil {
 		return "", err
 	}
@@ -240,7 +267,7 @@ func boundedDeadline(ctx context.Context) time.Time {
 // per-read timer). The read is byte-capped at maxWhoisResponseBytes so a hostile
 // or broken server can't amplify memory across the concurrent reverse-whois
 // sockets; further whoisclient hardening is tracked as ENG-5167.
-func readAllWithContext(ctx context.Context, conn net.Conn) ([]byte, error) {
+func readAllWithContext(ctx context.Context, conn net.Conn, domain, server string) ([]byte, error) {
 	_ = conn.SetDeadline(boundedDeadline(ctx))
 
 	stop := make(chan struct{})
@@ -265,6 +292,7 @@ func readAllWithContext(ctx context.Context, conn net.Conn) ([]byte, error) {
 	// a whoisparser bug rather than failing silently (ENG-5123 review, Gemini).
 	if len(resp) == maxWhoisResponseBytes {
 		slog.Warn("whois: response reached size cap and may be truncated",
+			"server", server, "domain", domain,
 			"cap_bytes", maxWhoisResponseBytes)
 	}
 	return resp, nil
