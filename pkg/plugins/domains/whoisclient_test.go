@@ -53,6 +53,8 @@ func TestSSRFSafeControl(t *testing.T) {
 		"[2001:0:0a00:1::]:43",  // Teredo 2001::/32
 		"[64:ff9b::a00:1]:43",   // well-known NAT64 64:ff9b::/96 wrapping 10.0.0.1
 		"[64:ff9b:1::a00:1]:43", // local-use NAT64 64:ff9b:1::/48 (RFC 8215) wrapping 10.0.0.1
+		"[::127.0.0.1]:43",      // IPv4-compatible IPv6 (::/96), embeds loopback 127.0.0.1 — must be refused (Codex P1)
+		"[::1.2.3.4]:43",        // second point in ::/96, proves range rejection not just the loopback case
 		"0.0.0.0:43",            // unspecified
 	}
 	for _, addr := range blocked {

@@ -38,10 +38,11 @@ const (
 // 0.0.0.0/8); enumerating the registries in full is the durable shape and stops
 // the whack-a-mole (ENG-5123 review — Codex, Gemini, CodeRabbit).
 //
-// The IPv6 transition prefixes (6to4 2002::/16, Teredo 2001::/32, and NAT64
-// 64:ff9b::/96 + the RFC 8215 local-use 64:ff9b:1::/48) each EMBED an IPv4
-// address, so denying them stops an internal v4 target (e.g. 169.254.169.254 or
-// an RFC1918 host) from being smuggled past the v4 guard as a v6 literal.
+// The IPv6 v4-embedding prefixes — IPv4-compatible ::/96 (deprecated), 6to4
+// 2002::/16, Teredo 2001::/32, and NAT64 64:ff9b::/96 + the RFC 8215 local-use
+// 64:ff9b:1::/48 — each EMBED an IPv4 address, so denying them stops an internal
+// v4 target (e.g. 169.254.169.254 or an RFC1918 host) from being smuggled past
+// the v4 guard as a v6 literal.
 // Legitimate public-registry WHOIS servers resolve to routable public IPs, so
 // this is a no-op for real lookups.
 var disallowedDialPrefixes = func() []netip.Prefix {
@@ -66,6 +67,7 @@ var disallowedDialPrefixes = func() []netip.Prefix {
 		"::1/128",        // loopback
 		"::/128",         // unspecified
 		"::ffff:0:0/96",  // IPv4-mapped (defense-in-depth; Unmap normalizes these to v4 first)
+		"::/96",          // IPv4-compatible IPv6 (RFC 4291 §2.5.5.1, deprecated & removed from the IANA registry) — embeds an internal v4 target (e.g. ::127.0.0.1); Unmap does NOT normalize it, so the fail-closed gate misses it (ENG-5123 review, Codex P1)
 		"64:ff9b::/96",   // well-known NAT64 (embeds IPv4)
 		"64:ff9b:1::/48", // local-use NAT64, RFC 8215 (embeds IPv4)
 		"100::/64",       // discard-only
