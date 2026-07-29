@@ -73,6 +73,194 @@ func TestSSRFSafeControl(t *testing.T) {
 	assert.Error(t, ssrfSafeControl("tcp", "whois.example.com:43", nil))
 }
 
+// TestSSRFGuard_IANARegistryExhaustive encodes the full offline audit of
+// isDisallowedDialIP against the IANA IPv4 and IPv6 Special-Purpose Address
+// Registries plus the IPv6 Address Space registry (snapshot 2026-07-28, the
+// same snapshot disallowedDialPrefixes mirrors) as a permanent hermetic test.
+// The two-layer guard was rebuilt after bot reviewers found gaps one range at
+// a time (ENG-5123 rounds 4-5: fec0::/10, ::/96); this table pins EVERY
+// registry row — first address, an interior point (first host bit set), and
+// the last address of each blocked range — plus every Reserved-by-IETF IPv6
+// top-level block, the deliberately-allowed Globally-Reachable=True rows, and
+// public allow anchors, so no future one-off review round is possible: any
+// regression in either layer (the structural 2000::/3 gate or the enumerated
+// prefix list) fails a named case here. Hermetic: isDisallowedDialIP is pure,
+// no socket is ever opened.
+func TestSSRFGuard_IANARegistryExhaustive(t *testing.T) {
+	type probe struct {
+		ip      string
+		blocked bool
+		reason  string // registry row / RFC this case pins
+	}
+
+	cases := []probe{
+		// ─── GROUP 1: IANA IPv4 Special-Purpose Address Registry — every
+		// non-Globally-Reachable row must be BLOCKED (first / interior / last). ───
+		{"0.0.0.0", true, `"this network" 0.0.0.0/8 (RFC 791/1122) — first (unspecified)`},
+		{"0.128.0.0", true, `"this network" 0.0.0.0/8 — interior (IsUnspecified misses nonzero hosts; the /8 entry is load-bearing)`},
+		{"0.255.255.255", true, `"this network" 0.0.0.0/8 — last`},
+		{"10.0.0.0", true, "RFC1918 private 10.0.0.0/8 — first"},
+		{"10.128.0.0", true, "RFC1918 private 10.0.0.0/8 — interior"},
+		{"10.255.255.255", true, "RFC1918 private 10.0.0.0/8 — last"},
+		{"100.64.0.0", true, "CGNAT shared space 100.64.0.0/10 (RFC 6598) — first"},
+		{"100.96.0.0", true, "CGNAT shared space 100.64.0.0/10 — interior"},
+		{"100.127.255.255", true, "CGNAT shared space 100.64.0.0/10 — last"},
+		{"127.0.0.0", true, "loopback 127.0.0.0/8 (RFC 1122) — first"},
+		{"127.128.0.0", true, "loopback 127.0.0.0/8 — interior"},
+		{"127.255.255.255", true, "loopback 127.0.0.0/8 — last"},
+		{"169.254.0.0", true, "link-local 169.254.0.0/16 (RFC 3927) — first"},
+		{"169.254.128.0", true, "link-local 169.254.0.0/16 — interior (cloud metadata 169.254.169.254 lives here)"},
+		{"169.254.255.255", true, "link-local 169.254.0.0/16 — last"},
+		{"172.16.0.0", true, "RFC1918 private 172.16.0.0/12 — first"},
+		{"172.24.0.0", true, "RFC1918 private 172.16.0.0/12 — interior"},
+		{"172.31.255.255", true, "RFC1918 private 172.16.0.0/12 — last"},
+		{"192.0.0.0", true, "IETF Protocol Assignments 192.0.0.0/24 (RFC 6890) — first"},
+		{"192.0.0.128", true, "IETF Protocol Assignments 192.0.0.0/24 — interior"},
+		{"192.0.0.255", true, "IETF Protocol Assignments 192.0.0.0/24 — last"},
+		{"192.0.2.0", true, "TEST-NET-1 documentation 192.0.2.0/24 (RFC 5737) — first"},
+		{"192.0.2.128", true, "TEST-NET-1 documentation 192.0.2.0/24 — interior"},
+		{"192.0.2.255", true, "TEST-NET-1 documentation 192.0.2.0/24 — last"},
+		{"192.88.99.0", true, "deprecated 6to4 relay anycast 192.88.99.0/24 (RFC 7526) — first"},
+		{"192.88.99.128", true, "deprecated 6to4 relay anycast 192.88.99.0/24 — interior"},
+		{"192.88.99.255", true, "deprecated 6to4 relay anycast 192.88.99.0/24 — last"},
+		{"192.168.0.0", true, "RFC1918 private 192.168.0.0/16 — first"},
+		{"192.168.128.0", true, "RFC1918 private 192.168.0.0/16 — interior"},
+		{"192.168.255.255", true, "RFC1918 private 192.168.0.0/16 — last"},
+		{"198.18.0.0", true, "benchmarking 198.18.0.0/15 (RFC 2544) — first"},
+		{"198.19.0.0", true, "benchmarking 198.18.0.0/15 — interior"},
+		{"198.19.255.255", true, "benchmarking 198.18.0.0/15 — last"},
+		{"198.51.100.0", true, "TEST-NET-2 documentation 198.51.100.0/24 (RFC 5737) — first"},
+		{"198.51.100.128", true, "TEST-NET-2 documentation 198.51.100.0/24 — interior"},
+		{"198.51.100.255", true, "TEST-NET-2 documentation 198.51.100.0/24 — last"},
+		{"203.0.113.0", true, "TEST-NET-3 documentation 203.0.113.0/24 (RFC 5737) — first"},
+		{"203.0.113.128", true, "TEST-NET-3 documentation 203.0.113.0/24 — interior"},
+		{"203.0.113.255", true, "TEST-NET-3 documentation 203.0.113.0/24 — last"},
+		{"224.0.0.0", true, "multicast 224.0.0.0/4 (RFC 5771) — first"},
+		{"232.0.0.0", true, "multicast 224.0.0.0/4 — interior"},
+		{"239.255.255.255", true, "multicast 224.0.0.0/4 — last"},
+		{"240.0.0.0", true, "reserved/Class E 240.0.0.0/4 (RFC 1112 §4) — first"},
+		{"248.0.0.0", true, "reserved/Class E 240.0.0.0/4 — interior"},
+		{"255.255.255.255", true, "limited broadcast 255.255.255.255/32 (RFC 8190) — also the last address of Class E 240.0.0.0/4"},
+
+		// ─── GROUP 2: IPv4 Globally-Reachable=True rows. Standalone GR=True
+		// rows are routable anycast services, deliberately NOT blocked; GR=True
+		// sub-rows INSIDE blocked parents stay blocked (deliberate conservative
+		// overblock — no WHOIS servers live there). ───
+		{"192.31.196.1", false, "AS112-v4 192.31.196.0/24 (RFC 7535, GR=True) — routable anycast service, deliberately not blocked"},
+		{"192.52.193.1", false, "AMT 192.52.193.0/24 (RFC 7450, GR=True) — routable anycast service, deliberately not blocked"},
+		{"192.175.48.1", false, "AS112 Direct Delegation 192.175.48.0/24 (RFC 7534, GR=True) — routable anycast service, deliberately not blocked"},
+		{"192.0.0.9", true, "PCP anycast 192.0.0.9/32 (RFC 7723, GR=True) inside blocked parent 192.0.0.0/24 — deliberate conservative overblock"},
+		{"192.0.0.10", true, "Traversal-Using-Relays anycast 192.0.0.10/32 (RFC 8155, GR=True) inside blocked parent 192.0.0.0/24 — deliberate conservative overblock"},
+
+		// ─── GROUP 3: IANA IPv6 Special-Purpose Address Registry (plus the
+		// deprecated registry-removed ranges) — must be BLOCKED
+		// (first / interior / last per prefix). ───
+		{"::1", true, "loopback ::1/128 (RFC 4291)"},
+		{"::", true, "unspecified ::/128 (RFC 4291)"},
+		// ::/96 IPv4-compatible (RFC 4291 §2.5.5.1, deprecated & removed from
+		// the registry) — embeds an internal v4 target; Unmap does NOT
+		// normalize it (ENG-5123 r5, Codex P1). ::/96's literal first address
+		// is :: itself (pinned above as ::/128), so probe three distinct points.
+		{"::1.2.3.4", true, "IPv4-compatible ::/96 (deprecated, RFC 4291) — interior, proves range rejection"},
+		{"::127.0.0.1", true, "IPv4-compatible ::/96 wrapping loopback 127.0.0.1 — the ENG-5123 r5 Codex P1 finding, stays pinned"},
+		{"::255.255.255.255", true, "IPv4-compatible ::/96 — last address (0:0:0:0:0:0:ffff:ffff; NOT IPv4-mapped, group 6 is zero)"},
+		{"64:ff9b::", true, "well-known NAT64 64:ff9b::/96 (RFC 6052, GR=True but embeds an IPv4 target — deliberately blocked) — first"},
+		{"64:ff9b::8000:0", true, "well-known NAT64 64:ff9b::/96 — interior"},
+		{"64:ff9b::ffff:ffff", true, "well-known NAT64 64:ff9b::/96 — last"},
+		{"64:ff9b:1::", true, "local-use NAT64 64:ff9b:1::/48 (RFC 8215, embeds IPv4) — first"},
+		{"64:ff9b:1:8000::", true, "local-use NAT64 64:ff9b:1::/48 — interior"},
+		{"64:ff9b:1:ffff:ffff:ffff:ffff:ffff", true, "local-use NAT64 64:ff9b:1::/48 — last"},
+		{"100::", true, "discard-only 100::/64 (RFC 6666) — first"},
+		{"100::8000:0:0:0", true, "discard-only 100::/64 — interior"},
+		{"100::ffff:ffff:ffff:ffff", true, "discard-only 100::/64 — last"},
+		{"100:0:0:1::", true, "dummy prefix 100:0:0:1::/64 (RFC 9780, registry row added 2025-04, the row the old enumeration missed) — first"},
+		{"100:0:0:1:8000::", true, "dummy prefix 100:0:0:1::/64 (RFC 9780) — interior"},
+		{"100:0:0:1:ffff:ffff:ffff:ffff", true, "dummy prefix 100:0:0:1::/64 (RFC 9780) — last"},
+		{"2001::", true, "IETF Protocol Assignments 2001::/23 (RFC 2928) — first (also the Teredo 2001::/32 base)"},
+		{"2001:100::", true, "IETF Protocol Assignments 2001::/23 — interior (first host bit)"},
+		{"2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff", true, "IETF Protocol Assignments 2001::/23 — last"},
+		{"2001::1", true, "Teredo 2001::/32 (RFC 4380) — GR sub-row inside blocked parent 2001::/23, deliberate conservative overblock"},
+		{"2001:2::1", true, "benchmarking 2001:2::/48 (RFC 5180) inside blocked parent 2001::/23"},
+		{"2001:20::1", true, "ORCHIDv2 2001:20::/28 (RFC 7343) inside blocked parent 2001::/23"},
+		{"2001:db8::", true, "documentation 2001:db8::/32 (RFC 3849) — first"},
+		{"2001:db8:8000::", true, "documentation 2001:db8::/32 — interior"},
+		{"2001:db8:ffff:ffff:ffff:ffff:ffff:ffff", true, "documentation 2001:db8::/32 — last"},
+		{"2002::", true, "6to4 2002::/16 (RFC 3056, embeds IPv4) — first"},
+		{"2002:8000::", true, "6to4 2002::/16 — interior"},
+		{"2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff", true, "6to4 2002::/16 — last"},
+		// 3fff::/20 sits INSIDE 2000::/3, so the structural gate cannot catch
+		// it — this enumerated entry is load-bearing (mutation-proven).
+		{"3fff::", true, "documentation 3fff::/20 (RFC 9637, registry row added 2024) — first"},
+		{"3fff:800::", true, "documentation 3fff::/20 (RFC 9637) — interior (first host bit)"},
+		{"3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff", true, "documentation 3fff::/20 (RFC 9637) — last"},
+		{"5f00::", true, "SRv6 SIDs 5f00::/16 (RFC 9602) — first"},
+		{"5f00:8000::", true, "SRv6 SIDs 5f00::/16 — interior"},
+		{"5f00:ffff:ffff:ffff:ffff:ffff:ffff:ffff", true, "SRv6 SIDs 5f00::/16 — last"},
+		{"fc00::", true, "unique local fc00::/7 (RFC 4193) — first"},
+		{"fd00::", true, "unique local fc00::/7 — interior (fd00::/8 half)"},
+		{"fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", true, "unique local fc00::/7 — last"},
+		{"fe80::", true, "link-local unicast fe80::/10 (RFC 4291) — first"},
+		{"fea0::", true, "link-local unicast fe80::/10 — interior"},
+		{"febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff", true, "link-local unicast fe80::/10 — last"},
+		{"fec0::", true, "deprecated site-local fec0::/10 (RFC 3879, removed from the registry) — first"},
+		{"fec0::1", true, "deprecated site-local fec0::/10 — the ENG-5123 r4 finding, stays pinned"},
+		{"fee0::", true, "deprecated site-local fec0::/10 — interior"},
+		{"feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", true, "deprecated site-local fec0::/10 — last"},
+		{"ff00::", true, "multicast ff00::/8 (RFC 4291) — first"},
+		{"ff80::", true, "multicast ff00::/8 — interior"},
+		{"ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", true, "multicast ff00::/8 — last"},
+
+		// ─── GROUP 4: Reserved-by-IETF IPv6 space (IANA IPv6 Address Space
+		// registry) — every top-level block outside 2000::/3 must be BLOCKED
+		// by the STRUCTURAL gate alone; none of these appear in the enumerated
+		// list (except where noted), so these cases pin the gate itself. ───
+		{"100:0:0:2::1", true, "reserved 0100::/8 space between/outside the two enumerated /64s (100::/64, 100:0:0:1::/64) — only the structural gate catches it (mutation-proven)"},
+		{"100::ffff", true, "inside discard-only 100::/64 (0100:0:0:0::ffff) — blocked by BOTH the gate and the enumeration"},
+		{"200::1", true, "deprecated OSI NSAP-mapped 200::/7 (RFC 4048) — reserved by IETF, gate-blocked"},
+		{"400::1", true, "reserved 400::/6 (IPv6 Address Space registry) — gate-blocked"},
+		{"800::1", true, "reserved 800::/5 — gate-blocked"},
+		{"1000::1", true, "reserved 1000::/4 — gate-blocked"},
+		{"1fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", true, "last address below 2000:: — lower boundary of the structural gate"},
+		{"4000::1", true, "reserved 4000::/3 — first block above 3fff:ffff…, upper boundary of the gate"},
+		{"5f01::1", true, "returned 6bone 5f00::/8 (RFC 1897, returned) but OUTSIDE SRv6 5f00::/16 — gate-blocked, not enumeration-blocked"},
+		{"6000::1", true, "reserved 6000::/3 — gate-blocked"},
+		{"8000::1", true, "reserved 8000::/3 — gate-blocked"},
+		{"a000::1", true, "reserved a000::/3 — gate-blocked"},
+		{"c000::1", true, "reserved c000::/3 — gate-blocked"},
+		{"e000::1", true, "reserved e000::/4 — gate-blocked"},
+		{"f000::1", true, "reserved f000::/5 — gate-blocked"},
+		{"f800::1", true, "reserved f800::/6 — gate-blocked"},
+		{"fe00::1", true, "reserved fe00::/9 (NOT link-local fe80::/10) — gate-blocked; the range nobody would have enumerated"},
+
+		// ─── GROUP 5: public allow anchors + boundaries — must be ALLOWED
+		// (0 public regressions), plus mapped-internal must be BLOCKED. ───
+		{"8.8.8.8", false, "Google Public DNS — public v4 anchor"},
+		{"1.1.1.1", false, "Cloudflare DNS — public v4 anchor"},
+		{"::ffff:8.8.8.8", false, "IPv4-mapped public (::ffff:0:0/96) — Unmap normalizes to 8.8.8.8, judged by the embedded v4, allowed"},
+		{"2001:4860:4860::8888", false, "Google Public DNS — public v6 anchor (ARIN space)"},
+		{"2606:4700:4700::1111", false, "Cloudflare DNS — public v6 anchor (ARIN space)"},
+		{"2a00:1450:4001:800::200e", false, "RIPE-region public v6 anchor (google.com)"},
+		{"2400:cb00::1", false, "APNIC-region public v6 anchor (Cloudflare)"},
+		{"2c0f:fb50::1", false, "AFRINIC-region public v6 anchor (Google ZA)"},
+		{"2800:3f0::1", false, "LACNIC-region public v6 anchor (Google AR)"},
+		{"2000::1", false, "first address of global unicast 2000::/3 — lower boundary of the structural gate, allowed"},
+		{"3ffe::1", false, "returned 6bone 3ffe::/16 — unallocated-but-allocatable global unicast inside 2000::/3; bogon filtering deliberately out of scope, allowed"},
+		{"2620:4f:8000::1", false, "AS112 Direct Delegation 2620:4f:8000::/48 (RFC 7534, GR=True standalone row) — routable anycast service, deliberately allowed"},
+		{"::ffff:10.0.0.1", true, "IPv4-mapped RFC1918 — Unmap yields 10.0.0.1, mapped-internal must be blocked"},
+		{"::ffff:169.254.169.254", true, "IPv4-mapped cloud metadata — Unmap yields 169.254.169.254, mapped-internal must be blocked"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.ip, func(t *testing.T) {
+			ip := net.ParseIP(tc.ip)
+			require.NotNilf(t, ip, "net.ParseIP(%q) must parse — bad literal in the table", tc.ip)
+			got := isDisallowedDialIP(ip)
+			assert.Equalf(t, tc.blocked, got,
+				"isDisallowedDialIP(%s): want blocked=%v — %s", tc.ip, tc.blocked, tc.reason)
+		})
+	}
+}
+
 // TestWhoisRaw_SSRFGuardBlocksInternalReferral proves the guard fires end-to-end
 // on the dial path: a referral pointing at an internal address is refused before
 // any connection is attempted (ENG-5123 review, Gemini). Hermetic: no socket is

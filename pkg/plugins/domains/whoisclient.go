@@ -28,15 +28,41 @@ const (
 	maxWhoisResponseBytes = 1 << 20
 )
 
-// disallowedDialPrefixes is the full set of non-public IP ranges we must never
-// dial when following an untrusted WHOIS referral. It is a strict "public
-// unicast only" allowlist expressed as its complement: every IANA
-// special-purpose / non-routable prefix from the IPv4 Special-Purpose Address
-// Registry and its IPv6 counterpart. Earlier rounds spot-added ranges to a
-// byte-switch one reviewer finding at a time (CGNAT, benchmarking, Class E,
-// TEST-NETs, the IPv6 transition prefixes, then local-use NAT64, then
-// 0.0.0.0/8); enumerating the registries in full is the durable shape and stops
-// the whack-a-mole (ENG-5123 review — Codex, Gemini, CodeRabbit).
+// disallowedDialPrefixes is the enumerated layer of the two-layer "public
+// unicast only" guard on untrusted WHOIS referrals (see isDisallowedDialIP):
+//
+//   - Layer 1 (structural): a genuine IPv6 address outside 2000::/3 is denied
+//     wholesale (see v6GlobalUnicast) — covering ALL Reserved-by-IETF and
+//     deprecated IPv6 space, present and future, without enumerating it.
+//   - Layer 2 (enumerated, this list): mirrors the IANA IPv4 and IPv6
+//     Special-Purpose Address Registries (snapshot 2026-07-28) for every row
+//     that is not Globally Reachable=True, plus multicast/Class E, plus the
+//     deprecated registry-removed ranges (site-local fec0::/10,
+//     IPv4-compatible ::/96).
+//
+// Earlier rounds spot-added ranges to a byte-switch one reviewer finding at a
+// time (CGNAT, benchmarking, Class E, TEST-NETs, the IPv6 transition prefixes,
+// then local-use NAT64, then 0.0.0.0/8, then fec0::/10 and ::/96); the two
+// layers together are the durable shape and stop the whack-a-mole (ENG-5123
+// review — Codex, Gemini, CodeRabbit).
+//
+// Deliberate boundaries of the enumeration:
+//
+//   - Standalone Globally-Reachable=True registry rows (AS112 192.31.196.0/24
+//     and 192.175.48.0/24, AMT 192.52.193.0/24, Direct Delegation AS112
+//     2620:4f:8000::/48) are ALLOWED — truly routable anycast services, not
+//     internal pivots.
+//   - 64:ff9b::/96 (NAT64) is blocked despite Globally Reachable=True because
+//     it embeds an IPv4 target.
+//   - Globally-reachable sub-rows inside blocked parents (192.0.0.9/.10
+//     anycast inside 192.0.0.0/24; the PCP/AMT/AS112/ORCHIDv2/DETs sub-blocks
+//     inside 2001::/23) stay blocked — conservative; no WHOIS servers live
+//     there.
+//   - Unallocated-but-allocatable global unicast inside 2000::/3 (e.g. the
+//     returned 6bone 3ffe::/16) is ALLOWED — bogon filtering is a moving
+//     target and out of scope.
+//   - IPv4-mapped ::ffff:0:0/96 is judged by its embedded v4 address after
+//     Unmap: mapped-public is allowed, mapped-internal is blocked.
 //
 // The IPv6 v4-embedding prefixes — IPv4-compatible ::/96 (deprecated), 6to4
 // 2002::/16, Teredo 2001::/32, and NAT64 64:ff9b::/96 + the RFC 8215 local-use
@@ -71,9 +97,12 @@ var disallowedDialPrefixes = func() []netip.Prefix {
 		"64:ff9b::/96",   // well-known NAT64 (embeds IPv4)
 		"64:ff9b:1::/48", // local-use NAT64, RFC 8215 (embeds IPv4)
 		"100::/64",       // discard-only
+		"100:0:0:1::/64", // dummy prefix (RFC 9780) — non-routable; NOT inside 100::/64, a registry row added 2025-04 that the old enumeration missed
 		"2001::/23",      // IETF protocol assignments (incl. Teredo 2001::/32)
 		"2001:db8::/32",  // documentation
 		"2002::/16",      // 6to4 (embeds IPv4)
+		"3fff::/20",      // documentation (RFC 9637, added 2024) — inside 2000::/3, so the structural gate cannot catch it; this entry is load-bearing
+		"5f00::/16",      // SRv6 SIDs (RFC 9602) — outside 2000::/3 (redundant with the structural gate; listed to keep the enumeration mirroring the registry)
 		"fc00::/7",       // unique local (IPv6 ULA)
 		"fe80::/10",      // link-local unicast
 		"fec0::/10",      // deprecated site-local (RFC 3879) — non-public, absent from the current IANA registry
@@ -86,10 +115,26 @@ var disallowedDialPrefixes = func() []netip.Prefix {
 	return prefixes
 }()
 
+// v6GlobalUnicast is the only block IANA has ever allocated for IPv6 global
+// unicast ("IANA unicast address assignments are currently limited to the
+// IPv6 unicast address range of 2000::/3" — IANA IPv6 Address Space registry).
+// Every genuine v6 address outside it is reserved, deprecated (::/96
+// IPv4-compatible, fec0::/10 site-local, 200::/7 NSAP, returned 6bone
+// 5f00::/8), or special-purpose (ULA, link-local, multicast, the v4-embedding
+// translation prefixes) — never a legitimate public WHOIS server. Denying
+// !2000::/3 structurally closes the whole class instead of enumerating its
+// members one bot-review round at a time (ENG-5123 rounds 4-5: fec0::/10,
+// ::/96). If IANA ever allocates unicast outside 2000::/3 the guard fails
+// closed: the dial is refused and logged, and the candidate scores unverified
+// (0.50) under de-rank-never-drop — recall-safe.
+var v6GlobalUnicast = netip.MustParsePrefix("2000::/3")
+
 // isDisallowedDialIP reports whether ip is in a range we must never dial when
 // following an untrusted WHOIS referral. It fails closed by default: only
-// genuine global-unicast, non-private addresses pass, and the enumerated
-// disallowedDialPrefixes then reject the global-unicast-but-non-public ranges.
+// genuine global-unicast, non-private addresses pass, the structural IPv6 gate
+// then denies any genuine v6 address outside 2000::/3 (see v6GlobalUnicast),
+// and the enumerated disallowedDialPrefixes finally reject the remaining
+// global-unicast-but-non-public ranges.
 func isDisallowedDialIP(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -110,6 +155,11 @@ func isDisallowedDialIP(ip net.IP) bool {
 	// non-public range nobody enumerated no longer slips through (ENG-5123
 	// review, Codex).
 	if !addr.IsGlobalUnicast() || addr.IsPrivate() {
+		return true
+	}
+	// Structural IPv6 gate: see v6GlobalUnicast. addr is already Unmap()ed, so
+	// Is6() here means a genuine v6 address, not an IPv4-mapped one.
+	if addr.Is6() && !v6GlobalUnicast.Contains(addr) {
 		return true
 	}
 	for _, p := range disallowedDialPrefixes {
