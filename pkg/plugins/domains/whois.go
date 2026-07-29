@@ -33,25 +33,55 @@ func (p *WhoisPlugin) Accepts(input plugins.Input) bool {
 	return input.Domain != ""
 }
 
-func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
+func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []plugins.Finding, err error) {
 	domain := rootDomain(input.Domain)
 	if domain == "" {
 		return nil, fmt.Errorf("whois: unable to determine root domain from %q", input.Domain)
 	}
+
+	// whoisparser.Parse runs over untrusted third-party WHOIS text. The
+	// reverse-whois verifier already wraps its identical Parse call in a
+	// worker-level recover (reverse_whois_verify.go) because plugins execute
+	// inside an errgroup goroutine (runner/run.go) with no framework-level
+	// recover — an unrecovered panic there crashes the whole pius run. Guard
+	// this sibling call site the same way so a malformed record during primary
+	// discovery de-grades to a logged error + no preseeds instead of a crash
+	// (ENG-5123 review, Gemini).
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Warn("whois: recovered panic parsing WHOIS record; emitting no preseeds",
+				"domain", domain, "panic", rec)
+			findings = nil
+			err = fmt.Errorf("whois: recovered panic parsing record for %q: %v", domain, rec)
+		}
+	}()
 
 	raw, err := whoisQuery(ctx, domain)
 	if err != nil {
 		return nil, fmt.Errorf("whois: lookup failed for %q: %w", domain, err)
 	}
 
-	parsed, err := whoisparser.Parse(raw)
-	if err != nil {
-		slog.Warn("whois: parse failed, skipping preseed extraction", "domain", domain, "error", err)
+	// whoisQuery is shared with the reverse-whois verifier, where a caller
+	// cancellation deliberately salvages the last post-referral record
+	// (recall-safe). WhoisPlugin has no such recall contract: a cancelled run
+	// must abort, not emit preseeds from a salvaged partial record. Re-check the
+	// context before parsing/emitting (ENG-5123 review, Codex).
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	parsed, perr := whoisParseFn(raw)
+	if perr != nil {
+		slog.Warn("whois: parse failed, skipping preseed extraction", "domain", domain, "error", perr)
 		return nil, nil
 	}
 
 	return extractPreseeds(parsed), nil
 }
+
+// whoisParseFn is a seam over whoisparser.Parse so the panic-recover in
+// WhoisPlugin.Run can be exercised by a test that injects a panicking parse.
+var whoisParseFn = whoisparser.Parse
 
 // whoisPrivacyNames contains name-field values used by WHOIS privacy
 // services. These appear as registrant name but don't identify a real person.
