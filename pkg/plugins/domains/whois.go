@@ -172,12 +172,34 @@ var whoisPrivacyGuards = map[string]bool{
 // That is a separate behavior change with its own recall risk, outside
 // ENG-5404's scope.
 //
+// Every entry below names the redaction ACTION ("redacted", "withheld",
+// "masked"). That is the membership rule, and it is what keeps the table from
+// drifting back into wording enumeration: a token qualifies only if its presence
+// as a whole token IS the evidence of redaction, in any word order.
+//
 // EXCLUDED marker — "privacy": the ticket floated a bare "privacy" token as a
 // candidate marker; it was considered and rejected. Genuine organizations carry
 // it as a whole token (e.g. "Privacy International", a real NGO), so it would
 // mask real registrants — and it buys nothing, because the multi-word privacy
 // wordings ("whois privacy", "privacy protect, llc", "redacted for privacy", …)
 // are already covered by tiers 1 and 2.
+//
+// EXCLUDED marker — "gdpr": the ticket floated it too, and it was carried here
+// in the first cut before review (Codex, PR #106) pushed back. It fails the
+// membership rule above: GDPR is the legal REASON a registrant is hidden, not
+// the hiding itself, so it is not evidence on its own. A registrant genuinely
+// named for the statute ("GDPR Register B.V.", "The GDPR Institute") would be
+// read as a placeholder, and because the query org is compared against every
+// candidate, a GDPR-named CUSTOMER would lose corroboration on all of its own
+// domains at once — 0.60 to 0.50 across the board, plus a wasted WHOIS lookup
+// each. Against that it buys no reach: the real registrar wordings that carry
+// the statute carry an action word beside it ("REDACTED FOR GDPR",
+// "GDPR Masked", "Data Protected by GDPR"), so all three remain masked: the
+// first two through the "redacted" and "masked" markers here, and the third
+// through tier 2's "data protected" guard phrase, which the substring pass
+// answers before tier 3 is reached. Asserted by
+// TestIsMaskedOrg_PrivacyMarkers, which keeps those wordings in the masked set
+// and a statute-named org in the genuine set.
 var whoisPrivacyMarkerTokens = map[string]bool{
 	"redacted":  true,
 	"redaction": true,
@@ -185,7 +207,6 @@ var whoisPrivacyMarkerTokens = map[string]bool{
 	"withheld":  true,
 	"masked":    true,
 	"masking":   true,
-	"gdpr":      true,
 }
 
 // whoisPrivacyMarkerPhrases are marker RUNS of CONSECUTIVE tokens whose

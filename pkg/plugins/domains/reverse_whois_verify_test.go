@@ -336,8 +336,11 @@ func TestIsMaskedOrg_PrivacyMarkers(t *testing.T) {
 	masked := []string{
 		"DATA REDACTED",       // the live cloudflare.com wording (ENG-5404)
 		"   data redacted   ", // case- and whitespace-insensitive, per AC1
-		"REDACTED FOR GDPR",
-		"GDPR Masked",
+		// Statute-named wordings stay masked WITHOUT a bare "gdpr" marker: the
+		// action word beside the statute is what fires (ENG-5404, Codex review).
+		"REDACTED FOR GDPR",      // via "redacted"
+		"GDPR Masked",            // via "masked"
+		"Data Protected by GDPR", // via tier 2's "data protected" guard phrase
 		"Redacted | EU registrant",
 		"Registrant Withheld",
 		"Data Protected by Registrar",
@@ -355,6 +358,8 @@ func TestIsMaskedOrg_PrivacyMarkers(t *testing.T) {
 		"Maskell Group",         // contains "mask"
 		"Privacy International", // a real NGO — bare "privacy" is NOT a marker
 		"Leica Biosystems",
+		"GDPR Register B.V.", // a statute-named org — "gdpr" is NOT a marker
+		"The GDPR Institute",
 	}
 	for _, org := range genuine {
 		assert.Falsef(t, isMaskedOrg(org), "%q is a real organization name", org)
