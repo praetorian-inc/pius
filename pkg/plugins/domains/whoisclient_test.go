@@ -1140,3 +1140,190 @@ func TestWhoisPlugin_Run_RecoversParserPanic(t *testing.T) {
 	assert.Contains(t, err.Error(), "example.com", "error must name the domain whose record panicked")
 	assert.Empty(t, findings, "no preseeds may be emitted when parsing panicked")
 }
+
+// whoisRegistrantRecord is a post-referral record that whoisparser.Parse accepts
+// (the "Domain Name:" line satisfies its validity check) and that yields
+// preseeds, so a test driving WhoisPlugin.Run past the warn site at whois.go:114
+// can assert on BOTH the emitted preseeds and the emitted log record.
+const whoisRegistrantRecord = "Domain Name: EXAMPLE.COM\n" +
+	"Registrant Organization: Acme Corp\n" +
+	"Registrant Name: John Doe\n" +
+	"Registrant Email: admin@acme.com\n"
+
+// whoisIncompleteWarnMsg is the compile-time-constant message at whois.go:115.
+// It is message-position text, which is why the log-injection safety argument in
+// whois.go:102-113 can rest entirely on slog escaping the ATTRIBUTE values —
+// asserted by TestWhoisPlugin_Run_IncompleteWarnEscapesNewlineInDomainAttr.
+const whoisIncompleteWarnMsg = "whois: referral chain incomplete; preseeds may be partial"
+
+// TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds pins ENG-5405's
+// "observable, not gating" contract at WhoisPlugin.Run's warn site: a truncated
+// referral chain must be REPORTED (so a thin preseed set is attributable) while
+// recall stays exactly as it was (so the report can never suppress a preseed).
+// Both halves are asserted together, because a fix that warns but drops the
+// findings would satisfy either one alone.
+//
+// The caller ctx stays CLEAN throughout. That is what separates this regime from
+// TestWhoisPlugin_Run_CancelledContextDoesNotEmit above: the re-check at
+// whois.go:69 returns first on a cancelled run, which is why the two ctx-caused
+// arms (whoisclient.go:258 and :332, both whoisIncompleteDeadline) are
+// unreachable here and are deliberately NOT table rows below. The table covers
+// exactly the two salvage arms a clean ctx can reach, and asserts the reason each
+// one actually produces — so the attribute is pinned to whoisQuery's real
+// classification rather than to any single hardcoded string.
+func TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds(t *testing.T) {
+	tests := []struct {
+		name       string
+		wantReason whoisIncompleteness
+		raw        func(server string) (string, error)
+	}{
+		{
+			// Salvage arm whoisclient.go:334. The seed refers to a TLD server that
+			// answers with a real registrant record referring onward; the registrar
+			// hop's transport then fails with ctx still clean, so whoisQuery salvages
+			// the TLD record and classifies it on ctx.Err()==nil -> referral_failed.
+			name:       "referral hop transport failure",
+			wantReason: whoisIncompleteReferral,
+			raw: func(server string) (string, error) {
+				switch server {
+				case defaultServer:
+					return "refer: whois.tld.test\n", nil // advance past the bootstrap seed
+				case "whois.tld.test":
+					return whoisRegistrantRecord + "Registrar WHOIS Server: whois.registrar.test\n", nil
+				default:
+					return "", errors.New("synthetic referral transport failure")
+				}
+			},
+		},
+		{
+			// Salvage arm whoisclient.go:360. Every hop answers, but each one refers
+			// onward to a fresh server, so the loop exits on maxWhoisReferrals with
+			// pendingRefer still set: lastRaw is a mid-chain record, not the chain's
+			// endpoint -> referral_budget.
+			name:       "hop budget exhausted with a referral pending",
+			wantReason: whoisIncompleteHops,
+			raw: func(server string) (string, error) {
+				if server == defaultServer {
+					return "refer: hop1.test\n", nil
+				}
+				// "next-"+server is always distinct from server, so the chain never
+				// terminates via the refer==server equality break.
+				return whoisRegistrantRecord + "Registrar WHOIS Server: next-" + server + "\n", nil
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		// No t.Parallel anywhere in this test: captureSlog swaps the GLOBAL slog
+		// default handler, so concurrent cases would cross-talk.
+		t.Run(tt.name, func(t *testing.T) {
+			logs := captureSlog(t)
+			stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+				return tt.raw(server)
+			})
+
+			findings, err := (&WhoisPlugin{}).Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+			// (1) Recall is UNCHANGED. The whole point of ENG-5405 is that the
+			// partiality is observable without becoming a gate, so a salvaged
+			// partial record must still parse into preseeds and return a nil error.
+			require.NoError(t, err, "a salvaged partial record must not be turned into an error")
+			require.NotEmpty(t, findings, "preseeds from a salvaged partial record must still be emitted")
+			assert.Contains(t, findingValues(findings), "Acme Corp",
+				"the salvaged record's registrant org must survive into the preseeds")
+
+			// (2) The partiality is reported exactly once, with the domain and the
+			// reason whoisQuery actually classified.
+			rec := findLogRecord(t, logs(), whoisIncompleteWarnMsg)
+			assert.Equal(t, "example.com", rec["domain"], "the warn must name the domain it describes")
+			assert.Equal(t, string(tt.wantReason), rec["reason"],
+				"the warn must carry the reason whoisQuery classified, not a fixed value")
+		})
+	}
+}
+
+// TestWhoisPlugin_Run_CompleteChainEmitsNoIncompleteWarn is the negative half of
+// the pair above, and it is the assertion that makes the predicate itself
+// load-bearing: without it an UNCONDITIONAL slog.Warn — the guard hoisted out of
+// its `if incomplete != whoisComplete` — would satisfy every assertion in
+// TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds and pass.
+func TestWhoisPlugin_Run_CompleteChainEmitsNoIncompleteWarn(t *testing.T) {
+	logs := captureSlog(t)
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		if server == defaultServer {
+			return "refer: whois.registrar.test\n", nil // advance past the bootstrap seed
+		}
+		// No referral line, so extractReferral returns "" and the chain ends
+		// NATURALLY: pendingRefer is cleared and whoisQuery reports whoisComplete.
+		return whoisRegistrantRecord, nil
+	})
+
+	findings, err := (&WhoisPlugin{}).Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+	// Non-vacuity guard: a Run that errored or emitted nothing would also emit no
+	// warn, and the assertion below would pass without the warn site having been
+	// reached at all. Requiring the preseeds first proves control flow got past
+	// whois.go:114 and evaluated the predicate.
+	require.NoError(t, err)
+	require.NotEmpty(t, findings, "a complete chain must still emit preseeds, proving the warn site was reached")
+
+	assert.False(t, hasLogRecord(logs(), whoisIncompleteWarnMsg),
+		"a referral chain that ran to a natural end must emit no incompleteness warn")
+}
+
+// TestWhoisPlugin_Run_IncompleteWarnEscapesNewlineInDomainAttr converts
+// whois.go:102-113's log-injection claim from a prose assertion into an executed
+// one. That comment concedes rootDomain is a SHAPE normalizer, not a sanitizer —
+// it bounds no length and rejects no control characters, and capmodel.Domain
+// reaches it unvalidated — so safety rests ENTIRELY on slog escaping
+// value-position strings. This drives a newline-bearing domain through the warn
+// site and asserts the forged record does not materialize.
+func TestWhoisPlugin_Run_IncompleteWarnEscapesNewlineInDomainAttr(t *testing.T) {
+	// VACUITY TRAP: rootDomain keeps only the LAST TWO LABELS, so a payload placed
+	// in a leading label (e.g. "evil\nlevel=ERROR msg=forged.example.com") is
+	// STRIPPED before reaching the log site and the test would then prove nothing.
+	// The newline must therefore live INSIDE one of the surviving labels:
+	// splitting on "." gives ["a", "exa\nlevel=ERROR msg=forged\nmple", "com"], so
+	// the last two labels carry the newline through. The explicit precondition
+	// below FAILS the test if that ever stops holding.
+	const payloadDomain = "a.exa\nlevel=ERROR msg=forged\nmple.com"
+
+	logs := captureSlog(t)
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		if server == defaultServer {
+			return "refer: whois.tld.test\n", nil
+		}
+		if server == "whois.tld.test" {
+			return whoisRegistrantRecord + "Registrar WHOIS Server: whois.registrar.test\n", nil
+		}
+		// Fail the registrar hop with a clean ctx so the warn site is reached.
+		return "", errors.New("synthetic referral transport failure")
+	})
+
+	_, err := (&WhoisPlugin{}).Run(context.Background(), plugins.Input{Domain: payloadDomain})
+	require.NoError(t, err)
+
+	recs := logs()
+	rec := findLogRecord(t, recs, whoisIncompleteWarnMsg)
+
+	// PRECONDITION — this is the difference between testing escaping and testing
+	// nothing. If rootDomain stripped the payload there would be no control
+	// character left to escape, and the injection assertions below would pass for
+	// the wrong reason.
+	domainAttr, ok := rec["domain"].(string)
+	require.True(t, ok, "domain attribute must decode as a string, got %T", rec["domain"])
+	require.Contains(t, domainAttr, "\n",
+		"PRECONDITION: the newline must survive rootDomain into the logged attribute, else this test is vacuous")
+	require.Contains(t, domainAttr, "level=error msg=forged",
+		"PRECONDITION: the injection payload must actually reach the log site")
+
+	// The claim itself: the newline was escaped INSIDE the quoted attribute value,
+	// so it could neither terminate the record nor forge a second one. Two
+	// independent witnesses: captureSlog json.Unmarshals each line and would fail
+	// outright on a record split by a raw newline, and the payload's own
+	// "msg=forged" never becomes a record's message.
+	assert.Len(t, recs, 1, "an embedded newline must not forge an additional log record")
+	for _, r := range recs {
+		assert.NotEqual(t, "forged", r["msg"], "the payload must never land in message position")
+	}
+}
