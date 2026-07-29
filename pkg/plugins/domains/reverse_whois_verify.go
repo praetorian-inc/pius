@@ -521,7 +521,7 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 // payload, no registrant org (PII), no referral hostname read from WHOIS text, and
 // the message strings are compile-time constants so nothing can forge a log line
 // (security-review.md §3).
-func summarizeVerifyPass(total, resolved int, outcomes []candidateOutcome) {
+func summarizeVerifyPass(total, attempted int, outcomes []candidateOutcome) {
 	var deadline, referral, hops, failed, panicked int
 	for _, o := range outcomes {
 		switch o.incomplete {
@@ -539,24 +539,40 @@ func summarizeVerifyPass(total, resolved int, outcomes []candidateOutcome) {
 			panicked++
 		}
 	}
-	if deadline+referral+hops+failed+panicked == 0 {
+	// The cap is the FOURTH degradation arm, alongside the three per-candidate
+	// buckets and the panic bucket. Candidates past maxReverseWhoisCandidates are
+	// never looked up, so their zero-valued outcomes entries read as whoisComplete
+	// — summing the buckets alone would call a pass over 5000 candidates that
+	// attempted only 500 "complete" at Info level, which is exactly the
+	// silent-degradation class ENG-5405 exists to remove, reappearing at the cap
+	// boundary. attempted < total is truncation and must degrade the pass.
+	if deadline+referral+hops+failed+panicked == 0 && attempted >= total {
 		slog.Info("reverse-whois: verification pass complete",
-			"candidates", total, "resolved", resolved)
+			"candidates", total, "attempted", attempted)
 		return
 	}
-	// budget_seconds is logged because reverseWhoisTotalBudget is a var that tests
+	// attempted (NOT "resolved"): the count of candidates a lookup was started for,
+	// capped at maxReverseWhoisCandidates. It says nothing about how many resolved
+	// successfully — a pass can legitimately read candidates=14 attempted=14
+	// lookup_failed=14, and naming this "resolved" would tell an operator that all
+	// fourteen verified when none did.
+	//
+	// budget_ms is logged because reverseWhoisTotalBudget is a var that tests
 	// shorten: recording the EFFECTIVE budget is what makes this line
-	// self-diagnosing for the deferred sizing follow-up. The worker count is
-	// deliberately NOT logged — it is a compile-time constant, so it is noise.
+	// self-diagnosing for the deferred sizing follow-up. Milliseconds, not seconds:
+	// integer-dividing a sub-second budget by time.Second floors to 0, so the
+	// self-diagnosing denominator reported "budget 0s" — i.e. misconfigured — for a
+	// budget that was fine. The worker count is deliberately NOT logged — it is a
+	// compile-time constant, so it is noise.
 	slog.Warn("reverse-whois: verification pass degraded; some candidates were not fully verified",
 		"candidates", total,
-		"resolved", resolved,
+		"attempted", attempted,
 		"incomplete_deadline", deadline,
 		"incomplete_referral", referral,
 		"incomplete_referral_budget", hops,
 		"lookup_failed", failed,
 		"panicked", panicked,
-		"budget_seconds", int(reverseWhoisTotalBudget/time.Second),
+		"budget_ms", int(reverseWhoisTotalBudget/time.Millisecond),
 	)
 }
 

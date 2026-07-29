@@ -70,14 +70,25 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 		return nil, err
 	}
 
-	// A referral hop that failed after the registry answered leaves ctx clean, so
-	// the re-check above does not fire and emitting is correct: the salvaged
-	// record is a real registry response, just less specific, and preseeds are
-	// additive discovery where a MISSING seed is the failure mode. Report the
-	// partiality so a thin preseed set is attributable, but never gate emission
-	// on it (ENG-5405). Only `domain` (already root-normalized) and the closed
-	// whoisIncompleteness constant are logged — never the raw record or the
-	// unbounded referral server string.
+	// An incomplete chain reaches this point in one of two regimes, and the
+	// re-check above is what separates them — do not read it as unreachable for
+	// incomplete records:
+	//
+	//   - ctx-CAUSED partiality (the deadline/cancel expired mid-chain, which
+	//     whoisQuery classifies as whoisIncompleteDeadline): ctx.Err() is non-nil,
+	//     so the re-check fires and we already returned. Correct — a cancelled run
+	//     must abort, not emit preseeds from a salvaged partial record.
+	//   - a GENUINE transport failure on a referral hop after the registry
+	//     answered: ctx stays clean, so control falls through to here and emitting
+	//     is correct — the salvaged record is a real registry response, just less
+	//     specific, and preseeds are additive discovery where a MISSING seed is the
+	//     failure mode.
+	//
+	// So this warn-and-emit path serves the second regime (plus a hop budget
+	// exhausted with a referral pending). Report the partiality so a thin preseed
+	// set is attributable, but never gate emission on it (ENG-5405). Only `domain`
+	// (already root-normalized) and the closed whoisIncompleteness constant are
+	// logged — never the raw record or the unbounded referral server string.
 	if incomplete != whoisComplete {
 		slog.Warn("whois: referral chain incomplete; preseeds may be partial",
 			"domain", domain, "reason", incomplete)

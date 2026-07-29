@@ -931,8 +931,14 @@ func TestVerifyCandidates_DeRankOrderingAndLiteralAnchors(t *testing.T) {
 // including the overflow — is still emitted (de-rank-never-drop). A
 // `cands = cands[:resolveCount]` truncation drops the overflow finding and fails
 // require.Len; dropping the cap entirely makes the call count exceed the cap.
-func TestVerifyCandidates_CapLimitsCallsNotRecall(t *testing.T) {
-	total := maxReverseWhoisCandidates + 1 // crosses the resolver-call cap by exactly one
+// capCrossingCandidates builds exactly maxReverseWhoisCandidates+1 candidates —
+// crossing the resolver-call cap by exactly one — alongside a resolver that WOULD
+// corroborate every one of them if it were asked. Shared by the two tests that
+// need that boundary crossed by one, so the construction cannot drift apart
+// between them: one asserts what the cap does to calls and recall, the other what
+// it does to the pass summary.
+func capCrossingCandidates() (*stubResolver, []candidate) {
+	total := maxReverseWhoisCandidates + 1
 	stub := &stubResolver{byDomain: map[string]registrantResult{}}
 	cands := make([]candidate, 0, total)
 	for i := 0; i < total; i++ {
@@ -940,6 +946,12 @@ func TestVerifyCandidates_CapLimitsCallsNotRecall(t *testing.T) {
 		stub.byDomain[d] = org("Acme Corp") // every candidate WOULD corroborate if resolved
 		cands = append(cands, candidate{domain: d, finding: plugins.Finding{Value: d}})
 	}
+	return stub, cands
+}
+
+func TestVerifyCandidates_CapLimitsCallsNotRecall(t *testing.T) {
+	stub, cands := capCrossingCandidates()
+	total := len(cands)
 
 	findings, err := verifyCandidates(context.Background(), stub, "Acme", cands)
 	require.NoError(t, err)
@@ -963,6 +975,73 @@ func TestVerifyCandidates_CapLimitsCallsNotRecall(t *testing.T) {
 	// A resolved candidate below the cap corroborates (0.60), proving resolution
 	// did happen up to the boundary — the cap is where calls stop, not recall.
 	assert.InDelta(t, confReverseWhoisCorroborated, plugins.Confidence(findings[0]), 0.001)
+}
+
+// TestVerifyCandidates_CapTruncationDegradesThePass covers ENG-5405 fix A2 and
+// discharges Phase 9 finding D4 in the same three assertions.
+//
+// A2: candidates past maxReverseWhoisCandidates are never looked up, so their
+// zero-valued candidateOutcome entries read as whoisComplete. Summing the reason
+// buckets ALONE therefore called a pass over 5000 candidates that attempted only
+// 500 "complete" at slog.Info — exactly the silent-degradation class ENG-5405
+// exists to remove, reappearing at the cap boundary. The cap is the FOURTH
+// degradation arm, so `attempted < total` must degrade the pass. Note the shape:
+// every one of the 500 attempted lookups here corroborates cleanly, so truncation
+// is the ONLY thing degrading this pass — a bucket-sum-only predicate emits the
+// clean Info line and this test fails.
+//
+// D4: summarizeVerifyPass(total, attempted int, ...) has two adjacent same-type int
+// params. Every other call site passes EQUAL values (the end-to-end degraded test
+// asserts both to 7, the direct-call subtests pass 7,7 and 3,3), so transposing
+// the production arguments left the whole suite green. 501 vs 500 is the only
+// shape that pins the argument order, which is why candidates and attempted are
+// asserted here as two DIFFERENT values rather than one repeated one.
+func TestVerifyCandidates_CapTruncationDegradesThePass(t *testing.T) {
+	// The 501/500 literals below are spelled out rather than derived from the cap,
+	// so a change to the constant cannot move expectation and emission together.
+	// This guard makes such a change fail loudly here instead of drifting silently.
+	require.Equal(t, 500, maxReverseWhoisCandidates, "the literals below assume the cap is 500")
+
+	logs := captureSlog(t)
+	stub, cands := capCrossingCandidates()
+
+	findings, err := verifyCandidates(context.Background(), stub, "Acme", cands)
+	require.NoError(t, err)
+	require.Len(t, findings, 501, "de-rank never drop: the cap bounds calls, never output")
+
+	recs := logs()
+	// Resolve the summary record WITHOUT keying on its message. One record per pass
+	// is the contract at either level, and this pass emits nothing else (no panic,
+	// no lookup error). Deliberate: it keeps the two count assertions below
+	// reachable even when the degraded/clean verdict itself regresses, so the D4
+	// argument-order pin is proven independently of the A2 predicate pin instead of
+	// being hidden behind a require that aborts first.
+	require.Len(t, recs, 1, "exactly one pass-summary record, whatever its level; got %v", recs)
+	rec := recs[0]
+
+	// D4: two DIFFERENT values. A transposed call site swaps these and fails here.
+	assert.EqualValues(t, 501, rec["candidates"],
+		"candidates is the full input size, INCLUDING the overflow that was never looked up")
+	assert.EqualValues(t, 500, rec["attempted"],
+		"attempted is the lookups started, capped at maxReverseWhoisCandidates")
+	assert.NotEqual(t, rec["candidates"], rec["attempted"],
+		"the two counts must be distinguishable here, or the argument order is unpinned")
+
+	// A2: and the verdict on those counts is the degraded one.
+	assert.False(t, hasLogRecord(recs, verifyPassMsgClean),
+		"A2: a pass that never looked at one of its 501 candidates must NOT report itself complete")
+	assert.Equal(t, verifyPassMsgDegraded, rec["msg"], "truncation must emit the degraded line")
+	assert.Equal(t, slog.LevelWarn.String(), rec["level"])
+
+	// Truncation is the SOLE degradation: no per-candidate bucket fired. This is
+	// what makes the degraded verdict above attributable to `attempted < total`
+	// rather than to some incidental lookup failure.
+	for _, k := range []string{
+		"incomplete_deadline", "incomplete_referral", "incomplete_referral_budget",
+		"lookup_failed", "panicked",
+	} {
+		assert.EqualValues(t, 0, rec[k], "%s must be zero: truncation alone degraded this pass", k)
+	}
 }
 
 // TestResolveWithFallback_PerStepTimeoutsAreIndependent proves each resolver step
@@ -1497,7 +1576,10 @@ func TestVerifyCandidates_DegradedPassIsCountedAndEmitsEveryCandidate(t *testing
 	rec := findLogRecord(t, logs(), verifyPassMsgDegraded)
 	assert.Equal(t, slog.LevelWarn.String(), rec["level"])
 	assert.EqualValues(t, len(order), rec["candidates"])
-	assert.EqualValues(t, len(order), rec["resolved"])
+	// "attempted", not "resolved": the key counts lookups STARTED, and this pass is
+	// the proof the old name misled — every one of these seven was attempted, yet
+	// several were truncated and one failed outright, so none of them "resolved".
+	assert.EqualValues(t, len(order), rec["attempted"])
 	assert.EqualValues(t, 1, rec["incomplete_deadline"])
 	assert.EqualValues(t, 2, rec["incomplete_referral"], "truncated.example.com AND salvaged-org.example.com")
 	assert.EqualValues(t, 1, rec["incomplete_referral_budget"])
@@ -1593,7 +1675,7 @@ func TestVerifyCandidates_IncompleteTallyIsRaceFreeUnderConcurrency(t *testing.T
 	rec := findLogRecord(t, logs(), verifyPassMsgDegraded)
 	assert.Equal(t, slog.LevelWarn.String(), rec["level"])
 	assert.EqualValues(t, total, rec["candidates"])
-	assert.EqualValues(t, total, rec["resolved"])
+	assert.EqualValues(t, total, rec["attempted"])
 	assert.EqualValues(t, want[whoisIncompleteDeadline], rec["incomplete_deadline"])
 	assert.EqualValues(t, want[whoisIncompleteReferral], rec["incomplete_referral"])
 	assert.EqualValues(t, want[whoisIncompleteHops], rec["incomplete_referral_budget"])
@@ -1633,13 +1715,17 @@ func TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload(t *testing.T) {
 		rec := findLogRecord(t, recs, verifyPassMsgDegraded)
 		assert.Equal(t, slog.LevelWarn.String(), rec["level"])
 		assert.EqualValues(t, 7, rec["candidates"])
-		assert.EqualValues(t, 7, rec["resolved"])
+		assert.EqualValues(t, 7, rec["attempted"])
 		assert.EqualValues(t, 2, rec["incomplete_deadline"])
 		assert.EqualValues(t, 1, rec["incomplete_referral"])
 		assert.EqualValues(t, 1, rec["incomplete_referral_budget"])
 		assert.EqualValues(t, 1, rec["lookup_failed"])
 		assert.EqualValues(t, 1, rec["panicked"])
-		assert.EqualValues(t, 90, rec["budget_seconds"],
+		// budget_ms, in MILLISECONDS: this subtest leaves reverseWhoisTotalBudget at
+		// its package default of 90s, so the effective budget is 90_000ms. The
+		// literal is spelled out rather than derived from the var so that a change to
+		// the default cannot move expectation and emission together.
+		assert.EqualValues(t, 90_000, rec["budget_ms"],
 			"the EFFECTIVE budget is logged, so the line is self-diagnosing")
 
 		// The deny-list invariant, asserted two ways. First structurally: every
@@ -1666,6 +1752,35 @@ func TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload(t *testing.T) {
 		}
 	})
 
+	// ENG-5405 fix A4. The degraded subtest above pins budget_ms at the 90s default,
+	// where seconds and milliseconds are both non-zero and the old field looked
+	// fine. This is the case that exposed the bug: int(budget/time.Second)
+	// floor-divides ANY sub-second budget to 0, so the self-diagnosing denominator
+	// read "budget 0s" — indistinguishable from a misconfigured budget — for a
+	// budget that was perfectly valid. reverseWhoisTotalBudget is a package var
+	// precisely so tests can shorten it; save/restore follows the pattern the
+	// budget-expiry tests already use.
+	t.Run("a sub-second budget reports whole milliseconds, not a floored zero", func(t *testing.T) {
+		orig := reverseWhoisTotalBudget
+		reverseWhoisTotalBudget = 250 * time.Millisecond
+		defer func() { reverseWhoisTotalBudget = orig }()
+
+		logs := captureSlog(t)
+		// One failed candidate is the minimum degradation needed to reach the Warn
+		// line, which is the only line carrying budget_ms.
+		summarizeVerifyPass(1, 1, []candidateOutcome{{failed: true}})
+
+		rec := findLogRecord(t, logs(), verifyPassMsgDegraded)
+		require.IsType(t, float64(0), rec["budget_ms"], "budget_ms must be emitted as a count")
+		// Both the exact value AND non-zero-ness, because they fail for different
+		// reasons: a wrong divisor breaks the first, a seconds-truncating divisor
+		// breaks both, and only the second names the operator-visible symptom.
+		assert.EqualValues(t, 250, rec["budget_ms"],
+			"a 250ms budget must report 250, not a value truncated toward a whole second")
+		assert.Greater(t, rec["budget_ms"].(float64), float64(0),
+			"a sub-second budget must never report as zero — zero reads as misconfigured")
+	})
+
 	t.Run("clean pass logs at info as the positive control", func(t *testing.T) {
 		logs := captureSlog(t)
 		summarizeVerifyPass(3, 3, []candidateOutcome{{}, {}, {}})
@@ -1676,7 +1791,7 @@ func TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload(t *testing.T) {
 		rec := findLogRecord(t, recs, verifyPassMsgClean)
 		assert.Equal(t, slog.LevelInfo.String(), rec["level"])
 		assert.EqualValues(t, 3, rec["candidates"])
-		assert.EqualValues(t, 3, rec["resolved"])
+		assert.EqualValues(t, 3, rec["attempted"])
 		for _, k := range []string{
 			"incomplete_deadline", "incomplete_referral", "incomplete_referral_budget",
 			"lookup_failed", "panicked",

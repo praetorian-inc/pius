@@ -550,6 +550,108 @@ func TestWhoisQuery_CtxCancelAfterReferralSalvages(t *testing.T) {
 		"a cancellation observed mid-chain must report itself as a deadline-expired record")
 }
 
+// TestWhoisQuery_MidHopFailureIsClassifiedByCause pins ENG-5405 fix A1: the
+// post-referral salvage arm classifies on the CAUSE of the hop's failure, not on
+// the call site. Both directions are asserted together because the pair is the
+// test — either verdict alone is satisfiable by a constant.
+//
+// Why this shape and not the existing ctx-cancel test: this whole table keeps ctx
+// LIVE (context.Background(), asserted below) and varies only the error the hop
+// RETURNS. That isolates the errors.Is arms of the classification, because the
+// `ctx.Err() != nil` disjunct is false by construction — so a passing deadline row
+// can ONLY come from unwrapping the hop error. TestWhoisQuery_CtxCancelAfterReferralSalvages
+// reaches whoisIncompleteDeadline the other way, by cancelling inside the stub so
+// the loop-top ctx.Err() check fires; that hand-builds the microsecond window
+// BETWEEN hops and structurally cannot exercise a failure that lands MID-hop.
+// Mid-hop is the path that actually occurs in production: readAllWithContext and
+// dialer.DialContext both prefer the ctx cause over the transport error, so a
+// budget expiry arrives here looking like an ordinary hop error.
+//
+// The split drives OPPOSITE remedies — a failed referral hop means pius is being
+// throttled (pace it), an expired ctx means it is out of budget (resize it) — so
+// collapsing the two buckets is a defect even though recall is identical. Before
+// A1 every hop failure bucketed as whoisIncompleteReferral, which made
+// whoisIncompleteDeadline effectively unreachable in production and broke NO test:
+// that silence is why this table exists.
+func TestWhoisQuery_MidHopFailureIsClassifiedByCause(t *testing.T) {
+	const (
+		tldServer       = "whois.tld.example"
+		registrarServer = "whois.registrar.example"
+		seedRecord      = "refer: whois.tld.example\ndomain: EXAMPLE\n"
+		tldRecord       = "Domain Name: EXAMPLE.COM\n" +
+			"Registrant Organization: Acme Corp\n" +
+			"Registrar WHOIS Server: whois.registrar.example\n"
+	)
+
+	tests := []struct {
+		name   string
+		hopErr error
+		want   whoisIncompleteness
+		why    string
+	}{
+		{
+			name:   "hop error wrapping DeadlineExceeded is a deadline",
+			hopErr: fmt.Errorf("read whois response from %s: %w", registrarServer, context.DeadlineExceeded),
+			want:   whoisIncompleteDeadline,
+			why: "a budget/deadline expiry that lands mid-hop surfaces as a hop error and must " +
+				"bucket as a deadline, not as a throttled referral",
+		},
+		{
+			name:   "hop error wrapping Canceled is a deadline",
+			hopErr: fmt.Errorf("dial %s: %w", registrarServer, context.Canceled),
+			want:   whoisIncompleteDeadline,
+			why:    "a cancellation observed mid-hop is a ctx cause, not a transport failure",
+		},
+		{
+			name:   "a plain transport failure stays a referral failure",
+			hopErr: errors.New("connection reset"),
+			want:   whoisIncompleteReferral,
+			why: "the control direction: a genuine hop failure with a live ctx must NOT be " +
+				"absorbed into the deadline bucket",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Live ctx throughout: this is what makes the deadline rows load-bearing.
+			ctx := context.Background()
+
+			var registrarHops int
+			stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+				switch server {
+				case defaultServer:
+					return seedRecord, nil // registry/bootstrap seed answers, refers onward
+				case tldServer:
+					return tldRecord, nil // post-referral record — this is what gets salvaged
+				case registrarServer:
+					registrarHops++
+					return "", tc.hopErr // the referral hop fails
+				default:
+					t.Fatalf("unexpected whois server %q", server)
+					return "", nil
+				}
+			})
+
+			got, incomplete, err := whoisQuery(ctx, "example.com")
+
+			require.NoError(t, ctx.Err(),
+				"the ctx must stay live, so only the hop error's cause can drive the classification")
+
+			// Recall is UNCHANGED by the classification — de-rank, never drop.
+			require.NoError(t, err, "the salvage arm must still return the payload with a nil error")
+			assert.Equal(t, tldRecord, got, "the salvaged post-referral record is still returned")
+			assert.NotEqual(t, seedRecord, got, "the bootstrap seed record must never be salvaged")
+
+			// The whole point of A1: WHY the record is partial.
+			assert.Equal(t, tc.want, incomplete, tc.why)
+
+			// The failing hop is a `return`, not a `continue`: retrying it would escape
+			// the maxWhoisReferrals bound the salvage arm is inside.
+			assert.Equal(t, 1, registrarHops, "the failed hop must not be retried")
+		})
+	}
+}
+
 // TestWhoisQuery_ReferralHopFailureOnRegistrantLessRecordIsDistinguishable is
 // the AC2 unit-level case for ENG-5405. It differs from
 // TestWhoisQuery_PostReferralSalvageReturnsPostReferralRecord in the payload:

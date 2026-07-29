@@ -2,6 +2,7 @@ package domains
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -239,9 +240,10 @@ func ssrfSafeControl(_, address string, _ syscall.RawConn) error {
 // with a nil error. What is new is that a caller which previously saw only
 // (record, nil) could not tell a truncated chain from a chain that ran to
 // completion and found no registrant — so an incomplete lookup surfaced as
-// found=false, err=nil. Every non-salvaged path reports whoisComplete,
-// including the two error paths: with no payload there is nothing to describe as
-// partial and the error is already the signal (ENG-5405).
+// found=false, err=nil. Every non-salvaged path reports whoisComplete, including
+// all three error paths (the no-salvage deadline arm, the no-salvage hop-error
+// arm, and the "no record beyond bootstrap seed" arm): with no payload there is
+// nothing to describe as partial and the error is already the signal (ENG-5405).
 func whoisQuery(ctx context.Context, domain string) (string, whoisIncompleteness, error) {
 	server := defaultServer
 	var lastRaw string
@@ -261,6 +263,29 @@ func whoisQuery(ctx context.Context, domain string) (string, whoisIncompleteness
 		raw, err := whoisRawFn(ctx, domain, server)
 		if err != nil {
 			if lastRaw != "" {
+				// Classify on the CAUSE of this hop's failure, not on the call site.
+				// Do NOT "simplify" this back to an unconditional
+				// whoisIncompleteReferral: the deeper layers deliberately PREFER the
+				// ctx cause over the transport error (readAllWithContext returns
+				// ctx.Err() when the read unwinds after cancellation, and
+				// dialer.DialContext does the same), so a deadline or budget expiry
+				// that lands MID-hop surfaces here as an ordinary hop error. Bucketing
+				// it by call site would make whoisIncompleteDeadline reachable only in
+				// the microsecond window between hops (the loop-top ctx.Err() check),
+				// and the referral bucket would absorb both classes.
+				//
+				// The split has to hold because it drives OPPOSITE remedies: a
+				// genuinely failed referral hop means pius is being throttled (pace
+				// it), while an expired ctx means it is out of budget (resize it) —
+				// and pacing an already-exhausted budget is actively harmful
+				// (architecture-plan.md §D6, ENG-5405).
+				//
+				// Both arms stay `return`s on purpose: a `continue`/`break` or a
+				// set-a-flag-and-fall-through would escape the maxWhoisReferrals bound
+				// and the loop-top deadline bail.
+				if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					return lastRaw, whoisIncompleteDeadline, nil // last post-referral result
+				}
 				return lastRaw, whoisIncompleteReferral, nil // last post-referral result
 			}
 			return "", whoisComplete, fmt.Errorf("whois query to %s: %w", server, err)
