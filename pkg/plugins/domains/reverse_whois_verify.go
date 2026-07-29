@@ -2,6 +2,7 @@ package domains
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -487,12 +488,34 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		return nil, err
 	}
 
+	// The whoisIncompleteness enum cannot separate "this candidate's own
+	// reverseWhoisLookupTimeout expired" from "the pass-wide
+	// reverseWhoisTotalBudget expired": at the WHOIS layer both are just
+	// ctx.Err() != nil on a derived context (whoisclient.go), and that layer has no
+	// handle on which ancestor fired. This function DOES — it owns bctx. Match on
+	// the DEADLINE identity, not on bctx.Err() != nil: bctx is a
+	// context.WithTimeout, so context.DeadlineExceeded is the only error its own
+	// timer can produce, which makes the match exact. The ctx.Err() re-check above
+	// only proves the caller was clean AT THAT INSTANT; a caller that cancels in
+	// the window between that check and this line would set bctx.Err() to
+	// context.Canceled, and a != nil test would report budget_expired=true for a
+	// run that was actually cancelled. The identity match makes a late
+	// caller-cancel unable to masquerade as a budget expiry (ENG-5405).
+	//
+	// It is deliberately NOT a term in the degraded predicate, and must not become
+	// one: bctx's deadline can fire after every worker has already finished, in
+	// which case nothing was lost and the pass really was clean. Folding it into
+	// the predicate would report a false degradation on a complete pass. It is
+	// reported as its own field so an operator can tell a budget-bounded pass from
+	// a timeout-bounded one without it changing the pass verdict.
+	budgetExpired := errors.Is(bctx.Err(), context.DeadlineExceeded)
+
 	// Placement is load-bearing in BOTH directions. After g.Wait() because that is
 	// the only happens-before barrier that publishes the workers' outcomes[] writes
 	// to this goroutine — reading the slice any earlier is a data race. After the
 	// ctx.Err() re-check because a caller-aborted pass returns an error instead of
 	// findings, and must not claim a pass completed (ENG-5405).
-	summarizeVerifyPass(len(cands), resolveCount, outcomes)
+	summarizeVerifyPass(len(cands), resolveCount, budgetExpired, outcomes)
 
 	findings := make([]plugins.Finding, 0, len(cands))
 	for i, c := range cands {
@@ -521,7 +544,11 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 // payload, no registrant org (PII), no referral hostname read from WHOIS text, and
 // the message strings are compile-time constants so nothing can forge a log line
 // (security-review.md §3).
-func summarizeVerifyPass(total, attempted int, outcomes []candidateOutcome) {
+// budgetExpired reports whether the pass-wide reverseWhoisTotalBudget fired (see
+// its derivation in verifyCandidates). It is reported, never used to decide
+// whether the pass was degraded: a budget that fires after the last worker
+// finished lost nothing.
+func summarizeVerifyPass(total, attempted int, budgetExpired bool, outcomes []candidateOutcome) {
 	var deadline, referral, hops, failed, panicked int
 	for _, o := range outcomes {
 		switch o.incomplete {
@@ -546,9 +573,16 @@ func summarizeVerifyPass(total, attempted int, outcomes []candidateOutcome) {
 	// attempted only 500 "complete" at Info level, which is exactly the
 	// silent-degradation class ENG-5405 exists to remove, reappearing at the cap
 	// boundary. attempted < total is truncation and must degrade the pass.
+	//
+	// budgetExpired is deliberately absent from this predicate — see its
+	// derivation in verifyCandidates. The pass-wide budget can expire after the
+	// last worker returned, so a true here proves nothing was lost; adding it as a
+	// fifth arm would downgrade complete passes to Warn on the strength of a race.
+	// It rides on both records as a field instead.
 	if deadline+referral+hops+failed+panicked == 0 && attempted >= total {
 		slog.Info("reverse-whois: verification pass complete",
-			"candidates", total, "attempted", attempted)
+			"candidates", total, "attempted", attempted,
+			"budget_expired", budgetExpired)
 		return
 	}
 	// attempted (NOT "resolved"): the count of candidates a lookup was started for,
@@ -564,6 +598,13 @@ func summarizeVerifyPass(total, attempted int, outcomes []candidateOutcome) {
 	// self-diagnosing denominator reported "budget 0s" — i.e. misconfigured — for a
 	// budget that was fine. The worker count is deliberately NOT logged — it is a
 	// compile-time constant, so it is noise.
+	//
+	// lookup_timeout_ms is logged BESIDE budget_ms because a pass is bounded by
+	// whichever of the two binds first, and budget_ms alone cannot tell a reader
+	// which one did: incomplete_deadline=6 against a 90000ms budget reads as an
+	// undersized budget until you know each lookup was independently capped at
+	// 10000ms. Both bounds have to be on the record for it to be self-describing.
+	// budget_expired then says which one actually fired for THIS pass.
 	slog.Warn("reverse-whois: verification pass degraded; some candidates were not fully verified",
 		"candidates", total,
 		"attempted", attempted,
@@ -572,7 +613,9 @@ func summarizeVerifyPass(total, attempted int, outcomes []candidateOutcome) {
 		"incomplete_referral_budget", hops,
 		"lookup_failed", failed,
 		"panicked", panicked,
+		"budget_expired", budgetExpired,
 		"budget_ms", int(reverseWhoisTotalBudget/time.Millisecond),
+		"lookup_timeout_ms", int(reverseWhoisLookupTimeout/time.Millisecond),
 	)
 }
 

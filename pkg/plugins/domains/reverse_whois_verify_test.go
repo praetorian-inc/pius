@@ -1707,7 +1707,12 @@ func TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload(t *testing.T) {
 			{panicked: true},
 			{}, // one genuinely clean candidate
 		}
-		summarizeVerifyPass(len(outcomes), len(outcomes), outcomes)
+		// budgetExpired=false: every degradation in this pass comes from a reason
+		// bucket, so the pass-wide budget is not what ended it. The false case is
+		// load-bearing on the Warn record — it is what lets an operator read
+		// "incomplete_deadline=2 budget_expired=false" as six per-lookup timeouts
+		// rather than one exhausted pass budget.
+		summarizeVerifyPass(len(outcomes), len(outcomes), false, outcomes)
 
 		recs := logs()
 		assert.False(t, hasLogRecord(recs, verifyPassMsgClean),
@@ -1727,17 +1732,44 @@ func TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload(t *testing.T) {
 		// the default cannot move expectation and emission together.
 		assert.EqualValues(t, 90_000, rec["budget_ms"],
 			"the EFFECTIVE budget is logged, so the line is self-diagnosing")
+		// lookup_timeout_ms rides beside budget_ms because a pass is bounded by
+		// whichever binds first and one bound alone cannot say which. Whole
+		// milliseconds, spelled as a literal: reverseWhoisLookupTimeout is 10s, so a
+		// `/time.Second` divisor — the exact bug that produced the floored
+		// budget_seconds this file already regression-tests below — would emit 10 here
+		// and be caught.
+		require.Contains(t, rec, "lookup_timeout_ms",
+			"the per-lookup bound must be on the record, not only the pass-wide one")
+		assert.EqualValues(t, 10_000, rec["lookup_timeout_ms"],
+			"reverseWhoisLookupTimeout (10s) must report as 10000 whole milliseconds")
+		// budget_expired is present-and-false, not absent: an absent field would be
+		// indistinguishable from a build that never emitted it.
+		require.Contains(t, rec, "budget_expired",
+			"budget_expired must be emitted unconditionally, including when false")
+		assert.Equal(t, false, rec["budget_expired"],
+			"no pass-wide budget fired here, so the flag must not claim one did")
 
 		// The deny-list invariant, asserted two ways. First structurally: every
-		// attribute other than slog's own time/level/msg must be a COUNT, so no
-		// untrusted string can ride along in a future attribute either.
+		// attribute other than slog's own time/level/msg must be a COUNT or a BOOLEAN
+		// FLAG, so no untrusted string can ride along in a future attribute either.
+		// Both admitted shapes are information-theoretically incapable of carrying
+		// attacker-influenced text: a JSON number is a tally, and a JSON bool is one
+		// bit — neither can smuggle raw WHOIS payload, a registrant org (PII), or the
+		// unbounded attacker-chosen referral hostname. Everything else, string
+		// emphatically included, still fails here; that generality is the point, since
+		// the fields this must catch have not been written yet.
 		for k, v := range rec {
 			switch k {
 			case "time", "level", "msg":
 				continue
 			}
-			assert.IsType(t, float64(0), v,
-				"attribute %q must be a count, not text (got %v) — counts and compile-time constants only", k, v)
+			switch v.(type) {
+			case float64, bool: // counts and compile-time flags only
+			default:
+				assert.Failf(t, "untrusted-content deny-list violated",
+					"attribute %q must be a count or a boolean flag, not text or structured data "+
+						"(got %v of type %T) — counts, booleans, and compile-time constants only", k, v, v)
+			}
 		}
 		// Then by sentinel: nothing recognisable from a WHOIS payload, a registrant
 		// org, or a referral hostname may appear anywhere in the record.
@@ -1767,8 +1799,13 @@ func TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload(t *testing.T) {
 
 		logs := captureSlog(t)
 		// One failed candidate is the minimum degradation needed to reach the Warn
-		// line, which is the only line carrying budget_ms.
-		summarizeVerifyPass(1, 1, []candidateOutcome{{failed: true}})
+		// line, which is the only line carrying budget_ms. budgetExpired=true matches
+		// this scenario's intent: a 250ms pass-wide budget with a lookup that did not
+		// finish is a pass the budget ended, and it pins that the two budget fields
+		// coexist — a shortened budget that fired must report BOTH a non-zero
+		// denominator and the expiry flag, since "budget_expired=true budget_ms=0"
+		// would read as a misconfigured budget rather than a small one.
+		summarizeVerifyPass(1, 1, true, []candidateOutcome{{failed: true}})
 
 		rec := findLogRecord(t, logs(), verifyPassMsgDegraded)
 		require.IsType(t, float64(0), rec["budget_ms"], "budget_ms must be emitted as a count")
@@ -1779,11 +1816,18 @@ func TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload(t *testing.T) {
 			"a 250ms budget must report 250, not a value truncated toward a whole second")
 		assert.Greater(t, rec["budget_ms"].(float64), float64(0),
 			"a sub-second budget must never report as zero — zero reads as misconfigured")
+		assert.Equal(t, true, rec["budget_expired"],
+			"the flag must travel with the denominator so the line says WHICH bound fired")
+		// The per-lookup bound is unaffected by shortening the pass-wide one: they are
+		// independent bounds, and conflating them is what budget_expired exists to
+		// prevent. reverseWhoisLookupTimeout is a const, so this stays 10000 here.
+		assert.EqualValues(t, 10_000, rec["lookup_timeout_ms"],
+			"shortening the pass budget must not move the per-lookup bound")
 	})
 
 	t.Run("clean pass logs at info as the positive control", func(t *testing.T) {
 		logs := captureSlog(t)
-		summarizeVerifyPass(3, 3, []candidateOutcome{{}, {}, {}})
+		summarizeVerifyPass(3, 3, false, []candidateOutcome{{}, {}, {}})
 
 		recs := logs()
 		assert.False(t, hasLogRecord(recs, verifyPassMsgDegraded),
@@ -1792,12 +1836,140 @@ func TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload(t *testing.T) {
 		assert.Equal(t, slog.LevelInfo.String(), rec["level"])
 		assert.EqualValues(t, 3, rec["candidates"])
 		assert.EqualValues(t, 3, rec["attempted"])
+		// budget_expired is on the Info record too, not just the Warn record: a clean
+		// pass that the budget happened to end is still worth distinguishing from one
+		// that finished with budget to spare, and an operator cannot infer it from
+		// absence.
+		require.Contains(t, rec, "budget_expired",
+			"budget_expired must ride on the clean record as well as the degraded one")
+		assert.Equal(t, false, rec["budget_expired"])
 		for _, k := range []string{
 			"incomplete_deadline", "incomplete_referral", "incomplete_referral_budget",
 			"lookup_failed", "panicked",
 		} {
 			assert.NotContains(t, rec, k, "the clean line carries counts only, no zeroed reason keys")
 		}
+		// The two bounds are diagnostics for a pass that lost something; the clean
+		// line does not carry them, so their absence here pins the split.
+		for _, k := range []string{"budget_ms", "lookup_timeout_ms"} {
+			assert.NotContains(t, rec, k,
+				"the bound denominators belong on the degraded line, which is the one an operator debugs")
+		}
+	})
+
+	// ENG-5405 Phase 12. THE assertion that stops budget_expired from being folded
+	// into the degraded predicate. bctx's deadline can fire in the window AFTER the
+	// last worker returned and BEFORE budgetExpired is read, in which case the pass
+	// lost nothing at all: every reason bucket is zero and attempted >= total. If
+	// budgetExpired were a fifth arm of that predicate, this input would Warn
+	// "some candidates were not fully verified" about a pass in which all of them
+	// were — a false degradation manufactured out of a race, which is the same class
+	// of misreporting (an untrue pass verdict) that ENG-5405 exists to remove, only
+	// inverted. The flag rides as a FIELD; it never votes.
+	t.Run("an expired budget on an otherwise clean pass still logs info", func(t *testing.T) {
+		logs := captureSlog(t)
+		summarizeVerifyPass(3, 3, true, []candidateOutcome{{}, {}, {}})
+
+		recs := logs()
+		assert.False(t, hasLogRecord(recs, verifyPassMsgDegraded),
+			"budget_expired must NOT be a term in the degraded predicate: nothing was lost, "+
+				"so warning here would report a degradation that did not happen")
+		// findLogRecord requires exactly one match, so this also proves the summary
+		// did not emit both records.
+		rec := findLogRecord(t, recs, verifyPassMsgClean)
+		assert.Equal(t, slog.LevelInfo.String(), rec["level"])
+		assert.Equal(t, true, rec["budget_expired"],
+			"the expiry is still REPORTED — not suppressed — it just does not change the verdict")
+		assert.EqualValues(t, 3, rec["candidates"])
+		assert.EqualValues(t, 3, rec["attempted"])
+	})
+}
+
+// TestVerifyCandidates_BudgetExpiredReportsWhichBoundEndedThePass drives
+// budget_expired through verifyCandidates rather than handing the bool to
+// summarizeVerifyPass, so what is under test is the DERIVATION
+// (`budgetExpired := bctx.Err() != nil`) and not the parameter's ability to be
+// printed. Passing the bool in directly — as the summarizeVerifyPass subtests
+// above necessarily do — cannot distinguish a correct derivation from a hardcoded
+// false, which is exactly the blindness ENG-5405 is about.
+//
+// Why the field has to exist at all: whoisQuery cannot make this distinction. At
+// the WHOIS layer a per-lookup reverseWhoisLookupTimeout and the pass-wide
+// reverseWhoisTotalBudget are both just `ctx.Err() != nil` on a derived context, so
+// both arrive as whoisIncompleteDeadline. verifyCandidates owns bctx and has
+// already re-checked that the caller's ctx is clean, so it — and only it — can say
+// which bound fired. The two readings send an operator opposite ways: resize the
+// pass budget, or raise the per-lookup timeout.
+func TestVerifyCandidates_BudgetExpiredReportsWhichBoundEndedThePass(t *testing.T) {
+	cands := func(domains ...string) []candidate {
+		out := make([]candidate, 0, len(domains))
+		for _, d := range domains {
+			out = append(out, candidate{domain: d, finding: plugins.Finding{Value: d}})
+		}
+		return out
+	}
+
+	t.Run("a budget that fires with lookups in flight reports true", func(t *testing.T) {
+		// A budget short enough to fire while every lookup is still blocked. This is
+		// the genuine article: blockingResolver holds each lookup until its context is
+		// cancelled, so bctx's deadline is what ends the pass and bctx.Err() is
+		// non-nil by the time the summary reads it.
+		orig := reverseWhoisTotalBudget
+		reverseWhoisTotalBudget = 100 * time.Millisecond
+		defer func() { reverseWhoisTotalBudget = orig }()
+
+		logs := captureSlog(t)
+		in := cands("a.example.com", "b.example.com", "c.example.com", "d.example.com")
+
+		// A live caller ctx: the expiry under test must be OUR internal budget, and a
+		// cancelled caller would have aborted with an error before the summary ran.
+		ctx := context.Background()
+		findings, err := verifyCandidates(ctx, blockingResolver{}, "Acme Corp", in)
+
+		require.NoError(t, err, "an INTERNAL budget expiry is recall-safe, not an error")
+		require.Len(t, findings, len(in), "every candidate is still emitted (de-rank, never drop)")
+		require.NoError(t, ctx.Err(),
+			"the caller ctx must be clean, so budget_expired can only be reporting bctx")
+
+		rec := findLogRecord(t, logs(), verifyPassMsgDegraded)
+		assert.Equal(t, true, rec["budget_expired"],
+			"the pass-wide budget is what ended this pass and the record must say so")
+		// The companion counts, so the record is read as a whole rather than one field
+		// in isolation: every blocked lookup returned its ctx error, so all four land
+		// in the lookup_failed bucket and none in a WHOIS-incompleteness bucket (the
+		// resolver never reached WHOIS).
+		assert.EqualValues(t, len(in), rec["candidates"])
+		assert.EqualValues(t, len(in), rec["attempted"])
+		assert.EqualValues(t, len(in), rec["lookup_failed"])
+		assert.EqualValues(t, 100, rec["budget_ms"],
+			"the EFFECTIVE (shortened) budget is logged, which is what makes the line self-diagnosing")
+		assert.EqualValues(t, 10_000, rec["lookup_timeout_ms"],
+			"the per-lookup bound did NOT fire here — 100ms of budget elapsed, not 10s of lookup — "+
+				"and recording both is the only way the line shows which one bound the pass")
+	})
+
+	t.Run("a pass that finishes inside its budget reports false", func(t *testing.T) {
+		// The negative control, and the half that makes the assertion above
+		// non-vacuous: same code path, budget left at its 90s default, lookups that
+		// return immediately. A hardcoded `true` fails here; a hardcoded `false` fails
+		// above.
+		logs := captureSlog(t)
+		res := &stubResolver{byDomain: map[string]registrantResult{
+			"first.example.com":  org("Acme Corp"),
+			"second.example.com": org("Acme Corp"),
+		}}
+		in := cands("first.example.com", "second.example.com")
+
+		findings, err := verifyCandidates(context.Background(), res, "Acme Corp", in)
+		require.NoError(t, err)
+		require.Len(t, findings, len(in))
+
+		// Both candidates corroborate, nothing failed, attempted == candidates: this
+		// pass is clean, so the verdict is the Info record.
+		rec := findLogRecord(t, logs(), verifyPassMsgClean)
+		assert.Equal(t, slog.LevelInfo.String(), rec["level"])
+		assert.Equal(t, false, rec["budget_expired"],
+			"a pass that finished with budget to spare must not claim the budget fired")
 	})
 }
 

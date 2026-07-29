@@ -72,23 +72,45 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 
 	// An incomplete chain reaches this point in one of two regimes, and the
 	// re-check above is what separates them — do not read it as unreachable for
-	// incomplete records:
+	// incomplete records. The separation is exact because whoisQuery classifies on
+	// ctx.Err() and nothing else, so the re-check above is literally the same
+	// monotone test read a second time:
 	//
-	//   - ctx-CAUSED partiality (the deadline/cancel expired mid-chain, which
-	//     whoisQuery classifies as whoisIncompleteDeadline): ctx.Err() is non-nil,
-	//     so the re-check fires and we already returned. Correct — a cancelled run
-	//     must abort, not emit preseeds from a salvaged partial record.
+	//   - ctx-CAUSED partiality (whoisIncompleteDeadline, i.e. ctx.Err() was
+	//     already non-nil inside whoisQuery): the re-check fires and we already
+	//     returned. Correct — a cancelled run must abort, not emit preseeds from a
+	//     salvaged partial record.
 	//   - a GENUINE transport failure on a referral hop after the registry
 	//     answered: ctx stays clean, so control falls through to here and emitting
 	//     is correct — the salvaged record is a real registry response, just less
 	//     specific, and preseeds are additive discovery where a MISSING seed is the
-	//     failure mode.
+	//     failure mode. Reaching this regime does NOT turn on the hop error's
+	//     identity, which is unusable for the purpose: a clean-ctx stall carries
+	//     either os.ErrDeadlineExceeded or context.DeadlineExceeded,
+	//     nondeterministically, because the dialer's own Timeout is armed both as an
+	//     fd poll deadline and as a context.AfterFunc (a scheduling race; the ratio
+	//     is not a stable property and must not be relied on — see the four-regime
+	//     table in whoisclient.go's salvage arm). Either way ctx.Err() is nil, so
+	//     whoisQuery classifies it whoisIncompleteReferral, which is the right
+	//     answer: it is an unresponsive server, not an exhausted budget.
 	//
 	// So this warn-and-emit path serves the second regime (plus a hop budget
-	// exhausted with a referral pending). Report the partiality so a thin preseed
-	// set is attributable, but never gate emission on it (ENG-5405). Only `domain`
-	// (already root-normalized) and the closed whoisIncompleteness constant are
-	// logged — never the raw record or the unbounded referral server string.
+	// exhausted with a referral pending), and whoisIncompleteDeadline is genuinely
+	// unreachable here. Report the partiality so a thin preseed set is
+	// attributable, but never gate emission on it (ENG-5405).
+	//
+	// Log-injection safety here rests on slog, NOT on any property of `domain`.
+	// rootDomain is a SHAPE normalizer, not a sanitizer: it lowercases, trims outer
+	// whitespace and one trailing dot, and keeps the last two labels — it bounds no
+	// length and rejects no control characters, and capmodel.Domain reaches it
+	// unvalidated. What makes this site safe is that both values are in ATTRIBUTE
+	// VALUE position, and slog's handlers quote and escape value-position strings
+	// (verified against the text, JSON, and default handlers: an embedded
+	// "\nlevel=ERROR ..." comes out as an escaped \n inside a quoted string, so it
+	// cannot forge a log line). Only MESSAGE-position text could, and the message
+	// is a compile-time constant. The raw record and the unbounded referral server
+	// string are still deliberately never logged — that is a PII/volume decision,
+	// independent of injection.
 	if incomplete != whoisComplete {
 		slog.Warn("whois: referral chain incomplete; preseeds may be partial",
 			"domain", domain, "reason", incomplete)

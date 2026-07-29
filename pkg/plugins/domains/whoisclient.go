@@ -2,7 +2,6 @@ package domains
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -263,16 +262,62 @@ func whoisQuery(ctx context.Context, domain string) (string, whoisIncompleteness
 		raw, err := whoisRawFn(ctx, domain, server)
 		if err != nil {
 			if lastRaw != "" {
-				// Classify on the CAUSE of this hop's failure, not on the call site.
-				// Do NOT "simplify" this back to an unconditional
-				// whoisIncompleteReferral: the deeper layers deliberately PREFER the
-				// ctx cause over the transport error (readAllWithContext returns
-				// ctx.Err() when the read unwinds after cancellation, and
-				// dialer.DialContext does the same), so a deadline or budget expiry
-				// that lands MID-hop surfaces here as an ordinary hop error. Bucketing
-				// it by call site would make whoisIncompleteDeadline reachable only in
-				// the microsecond window between hops (the loop-top ctx.Err() check),
-				// and the referral bucket would absorb both classes.
+				// Classify on ctx.Err(), NOT on the call site. An earlier revision of
+				// this branch returned whoisIncompleteReferral unconditionally, so a
+				// deadline that landed MID-hop was bucketed as a transport failure and
+				// whoisIncompleteDeadline was reachable only in the window between hops
+				// (the loop-top ctx.Err() check). That is the defect this fixes.
+				//
+				// ctx.Err() is the COMPLETE test for ctx-caused partiality, not a
+				// partial one: it is monotone (once non-nil it never clears), it is read
+				// here immediately after the failing call, and cancelCtx.cancel sets a
+				// parent's err BEFORE it descends to the children. So an ancestor
+				// deadline or cancel — the per-lookup wctx, the pass-wide budget bctx,
+				// or the caller's own ctx — that fires mid-hop is already visible here,
+				// whatever the hop error itself looks like.
+				//
+				// Never classify on the hop error's IDENTITY — not
+				// context.DeadlineExceeded, not os.ErrDeadlineExceeded, not
+				// net.Error.Timeout(). A clean-ctx stall bounded by the dialer's own
+				// Timeout (queryTimeout, see whoisRaw) is a NONDETERMINISTIC MIXTURE of
+				// the first two identities, so no identity match can separate "we ran
+				// out of budget" from "the server never answered". Measured on
+				// go1.26.2, reading ctx.Err() immediately after the failing call:
+				//
+				//   regime                                  Is(ctxDeadline)  Is(osDeadline)  ctx.Err()
+				//   A dialer.Timeout fires, ctx clean       EITHER (race)    EITHER (race)   nil
+				//   B ctx's own deadline fires              100%             0%              non-nil
+				//   C ctx cancelled                         0% (Canceled)    0%              non-nil
+				//   D conn.SetDeadline read stall, clean    0%               100%            nil
+				//
+				// Regime A's split is a scheduling race in net/fd_unix.go (~110-126):
+				// the dialer's sub-context deadline is armed BOTH as an fd poll
+				// write-deadline and as a context.AfterFunc, so when WaitWrite returns
+				// poll.ErrDeadlineExceeded the select on ctx.Done() decides which
+				// identity escapes — mapErr(ctx.Err()) => net.errTimeout, whose Is
+				// reports context.DeadlineExceeded, when the context timer won the
+				// race; the bare os.ErrDeadlineExceeded when it did not. Same server,
+				// same timeout, either label, decided by goroutine scheduling.
+				//
+				// The RATIO is deliberately not recorded, because it is not a stable
+				// property: two independent probes on this same toolchain, over the
+				// same dialer timeouts of 60ms/250ms/1s, measured INVERTED majorities
+				// (~16-30% vs ~99% context.DeadlineExceeded). Do not rely on either
+				// identity being the common case, and do not write a test that asserts
+				// one — it will be flaky. What both probes agreed on unanimously is all
+				// the code needs: both identities occur, and ctx.Err() was nil in 100%
+				// of regime-A samples.
+				//
+				// So the errors.Is(err, context.DeadlineExceeded) disjunct this
+				// predicate used to carry was ACTIVELY WRONG, not merely redundant. No
+				// rate is needed to condemn it: it fires AT ALL on a clean ctx, and
+				// each time it does it labels an unresponsive referral server
+				// deadline_expired and sends the operator to resize a budget on a path
+				// (WhoisPlugin.Run) that has none. Matching os.ErrDeadlineExceeded or
+				// net.Error.Timeout() would be worse still: that identity occurs in
+				// regime A and ALWAYS in regime D, both with a clean ctx — so it would
+				// mislabel every read stall, deterministically. Only ctx.Err() answers
+				// the question actually being asked.
 				//
 				// The split has to hold because it drives OPPOSITE remedies: a
 				// genuinely failed referral hop means pius is being throttled (pace
@@ -283,7 +328,7 @@ func whoisQuery(ctx context.Context, domain string) (string, whoisIncompleteness
 				// Both arms stay `return`s on purpose: a `continue`/`break` or a
 				// set-a-flag-and-fall-through would escape the maxWhoisReferrals bound
 				// and the loop-top deadline bail.
-				if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				if ctx.Err() != nil {
 					return lastRaw, whoisIncompleteDeadline, nil // last post-referral result
 				}
 				return lastRaw, whoisIncompleteReferral, nil // last post-referral result
