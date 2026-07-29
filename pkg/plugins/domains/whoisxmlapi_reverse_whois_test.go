@@ -265,7 +265,7 @@ func TestWhoisXMLAPIReverseWhois_Run_OrdersMostRecentFirst(t *testing.T) {
 // Dedup keeps the freshest observation, which only holds because dedup runs
 // after the sort.
 func TestWhoisXMLAPIReverseWhois_Run_DedupeKeepsFreshestObservation(t *testing.T) {
-	stale := time.Now().AddDate(-12, 0, 0).Format(time.RFC3339)
+	older := time.Now().AddDate(-12, 0, 0).Format(time.RFC3339)
 	fresh := time.Now().Format(time.RFC3339)
 
 	p := newTestWhoisXMLAPI(t, &stubResolver{}, func(w http.ResponseWriter, r *http.Request) {
@@ -276,9 +276,9 @@ func TestWhoisXMLAPIReverseWhois_Run_DedupeKeepsFreshestObservation(t *testing.T
 		}
 		cursor, _ := body["searchAfter"].(string)
 		if cursor == "" {
-			// Stale copy first: on its own this record would be filtered out.
+			// Older copy first, so first-wins dedupe alone would keep the wrong one.
 			_, _ = fmt.Fprintf(w, `{"nextPageSearchAfter":"next","domainsCount":2,`+
-				`"domainsList":[{"domainName":"dup.com","audit":{"updatedDate":%q}}]}`, stale)
+				`"domainsList":[{"domainName":"dup.com","audit":{"updatedDate":%q}}]}`, older)
 			return
 		}
 		_, _ = fmt.Fprintf(w, `{"nextPageSearchAfter":null,"domainsCount":2,`+
@@ -345,56 +345,97 @@ func TestWhoisXMLAPIReverseWhois_Run_UndecodableFirstPageIsAnError(t *testing.T)
 	assert.Contains(t, err.Error(), "domainsList")
 }
 
-// A stale record must not even trigger a verification lookup.
-func TestWhoisXMLAPIReverseWhois_Run_StaleRecordFilteredBeforeVerification(t *testing.T) {
-	stale := time.Now().AddDate(-12, 0, 0).Format(time.RFC3339)
-	stub := &stubResolver{}
-	p := newTestWhoisXMLAPI(t, stub, func(w http.ResponseWriter, r *http.Request) {
+const liveReversePurchase = `{
+ "nextPageSearchAfter": null,
+ "domainsCount": 12,
+ "domainsList": [
+  {"domainName":"wherewizardsstayuplate.us","audit":{"createdDate":"2026-07-24T22:00:38+00:00","updatedDate":"2026-07-24T22:00:38+00:00"}},
+  {"domainName":"praetorianlabs.dev","audit":{"createdDate":"2025-03-11T11:32:06+00:00","updatedDate":"2025-03-11T11:32:06+00:00"}},
+  {"domainName":"mobilesecurityframework.org","audit":{"createdDate":"2016-07-25T20:52:30+00:00","updatedDate":"2016-07-25T20:52:30+00:00"}},
+  {"domainName":"mobilesecurityframework.us","audit":{"createdDate":"2016-07-24T20:45:46+00:00","updatedDate":"2016-07-24T20:45:46+00:00"}},
+  {"domainName":"praetorians.biz","audit":{"createdDate":"2016-07-10T20:47:41+00:00","updatedDate":"2016-07-10T20:47:41+00:00"}},
+  {"domainName":"riskmobile.org","audit":{"createdDate":"2016-06-12T21:27:34+00:00","updatedDate":"2016-06-12T21:27:34+00:00"}}
+ ]
+}`
+
+// Decade-old audit dates must survive. searchType=current already restricts the
+// result set to live registrations, and the audit block is WhoisXMLAPI's crawl
+// recency rather than the registration's age
+func TestWhoisXMLAPIReverseWhois_Run_KeepsDomainsWithOldAuditDates(t *testing.T) {
+	p := newTestWhoisXMLAPI(t, &stubResolver{}, func(w http.ResponseWriter, r *http.Request) {
 		if decodeReverseRequest(t, r)["mode"] == "preview" {
-			_, _ = w.Write([]byte(`{"domainsCount":2}`))
+			_, _ = w.Write([]byte(`{"domainsCount":12}`))
 			return
 		}
-		_, _ = fmt.Fprintf(w,
-			`{"domainsCount":2,"domainsList":[{"domainName":"fresh.com","audit":{"updatedDate":%q}},`+
-				`{"domainName":"ancient.com","audit":{"updatedDate":%q}}]}`,
-			time.Now().Format(time.RFC3339), stale)
+		_, _ = w.Write([]byte(liveReversePurchase))
 	})
 
-	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Praetorian"})
 	require.NoError(t, err)
-	require.Len(t, findings, 1)
-	assert.Equal(t, "fresh.com", findings[0].Value)
-	assert.False(t, stub.queried("ancient.com"), "stale candidates must not trigger a lookup")
-}
 
-// Audit dates only exist because includeAuditDates is sent as true. If the
-// vendor stopped returning them, treating that as stale would drop every
-// candidate and read as "this pivot owns nothing".
-func TestWhoisXMLAPIRecordStale(t *testing.T) {
-	assert.False(t, whoisXMLAPIRecordStale(time.Now()))
-	assert.True(t, whoisXMLAPIRecordStale(time.Now().AddDate(-11, 0, 0)))
-	assert.False(t, whoisXMLAPIRecordStale(time.Time{}), "unknown audit date must not be treated as stale")
+	got := make([]string, 0, len(findings))
+	for _, f := range findings {
+		got = append(got, f.Value)
+	}
+	// Freshest first, and nothing dropped for age.
+	assert.Equal(t, []string{
+		"wherewizardsstayuplate.us",
+		"praetorianlabs.dev",
+		"mobilesecurityframework.org",
+		"mobilesecurityframework.us",
+		"praetorians.biz",
+		"riskmobile.org",
+	}, got)
 }
 
 func TestWhoisXMLAPIObservedAt(t *testing.T) {
-	got := whoisXMLAPIObservedAt("2025-03-11T00:00:00+00:00")
-	assert.Equal(t, 2025, got.Year())
+	// The live audit format carries a "+00:00" offset rather than "Z".
+	got := whoisXMLAPIObservedAt("2016-07-25T20:52:30+00:00")
+	require.False(t, got.IsZero(), "live audit format must parse")
+	assert.Equal(t, 2016, got.Year())
 
 	assert.True(t, whoisXMLAPIObservedAt("").IsZero(), "absent audit date must parse to zero")
 	assert.True(t, whoisXMLAPIObservedAt("not-a-date").IsZero(), "unparseable audit date must parse to zero")
 }
 
-func TestDecodeWhoisXMLAPIHits_NullAndAbsentAreNotErrors(t *testing.T) {
-	hits, err := decodeWhoisXMLAPIHits(nil)
-	require.NoError(t, err)
-	assert.Empty(t, hits)
+func TestWhoisXMLAPIDomainList_NullAndAbsentAreNotErrors(t *testing.T) {
+	var list whoisXMLAPIDomainList
+	require.NoError(t, json.Unmarshal([]byte("null"), &list))
+	assert.Empty(t, list)
 
-	hits, err = decodeWhoisXMLAPIHits(json.RawMessage("null"))
-	require.NoError(t, err)
-	assert.Empty(t, hits)
+	var resp whoisXMLAPIReverseResponse
+	require.NoError(t, json.Unmarshal([]byte(`{"domainsCount":4}`), &resp))
+	assert.Empty(t, resp.DomainsList, "absent in preview mode")
+}
 
-	_, err = decodeWhoisXMLAPIHits(json.RawMessage(`{"not":"a list"}`))
+func TestWhoisXMLAPIDomainList_DecodesObjectForm(t *testing.T) {
+	var list whoisXMLAPIDomainList
+	require.NoError(t, json.Unmarshal(
+		[]byte(`[{"domainName":"a.com","audit":{"updatedDate":"2025-03-11T00:00:00+00:00"}}]`), &list))
+
+	require.Len(t, list, 1)
+	assert.Equal(t, "a.com", list[0].DomainName)
+	assert.Equal(t, "2025-03-11T00:00:00+00:00", list[0].Audit.UpdatedDate)
+}
+
+// The bare-string form is what the vendor returns when includeAuditDates is
+// false. We always send true, so this is a defensive path: accepting it costs
+// audit dates rather than failing the page.
+func TestWhoisXMLAPIDomainList_DecodesStringForm(t *testing.T) {
+	var list whoisXMLAPIDomainList
+	require.NoError(t, json.Unmarshal([]byte(`["a.com","b.com"]`), &list))
+
+	require.Len(t, list, 2)
+	assert.Equal(t, "a.com", list[0].DomainName)
+	assert.Empty(t, list[0].Audit.UpdatedDate)
+	assert.Equal(t, "b.com", list[1].DomainName)
+}
+
+func TestWhoisXMLAPIDomainList_RejectsNeitherShape(t *testing.T) {
+	var list whoisXMLAPIDomainList
+	err := json.Unmarshal([]byte(`{"not":"a list"}`), &list)
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "domainsList")
 }
 
 func TestWhoisXMLAPIReverseWhois_Run_PreviewFailureIsAnError(t *testing.T) {

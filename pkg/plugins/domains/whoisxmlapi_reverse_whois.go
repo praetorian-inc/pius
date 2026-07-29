@@ -18,10 +18,6 @@ import (
 // queries complete in a single page. The bound only stops a runaway cursor.
 const maxWhoisXMLAPIPages = 10
 
-// whoisXMLAPIStaleAfter mirrors whoxyRecordStale's ten-year window: a record
-// last observed longer ago than this is not evidence of current ownership.
-const whoisXMLAPIStaleAfter = -10
-
 func init() {
 	plugins.Register("whoisxmlapi-reverse-whois", func() plugins.Plugin {
 		return &WhoisXMLAPIReverseWhoisPlugin{client: client.New()}
@@ -81,10 +77,7 @@ func (p *WhoisXMLAPIReverseWhoisPlugin) Run(ctx context.Context, input plugins.I
 
 		body, err := p.reverse(ctx, query, byEmail, "purchase", cursor)
 		if err == nil {
-			var hits []whoisXMLAPIReverseHit
-			if hits, err = decodeWhoisXMLAPIHits(body.DomainsList); err == nil {
-				dated = append(dated, p.candidatesFrom(hits, query)...)
-			}
+			dated = append(dated, p.candidatesFrom(body.DomainsList, query)...)
 		}
 		if err != nil {
 			// preview already proved matches exist, so a failure before any page
@@ -137,9 +130,7 @@ func (p *WhoisXMLAPIReverseWhoisPlugin) reverse(ctx context.Context, query strin
 	}
 
 	// searchType=current is the precision lever: historic includes long-dead
-	// registrations, which is not what current ownership means.
 	request := whoisXMLAPIReverseRequest{
-		APIKey:              apiKey,
 		SearchType:          "current",
 		Mode:                mode,
 		IncludeAuditDates:   true,
@@ -158,8 +149,7 @@ func (p *WhoisXMLAPIReverseWhoisPlugin) reverse(ctx context.Context, query strin
 		"X-Authentication-Token": apiKey,
 	})
 	if err != nil {
-		// The body echoes the apiKey field back, so this is not wrapped.
-		return zero, fmt.Errorf("whoisxmlapi: reverse %s request failed", mode)
+		return zero, fmt.Errorf("whoisxmlapi: reverse %s request failed: %w", mode, err)
 	}
 
 	var body whoisXMLAPIReverseResponse
@@ -174,13 +164,10 @@ type datedCandidate struct {
 	observed time.Time
 }
 
-func (p *WhoisXMLAPIReverseWhoisPlugin) candidatesFrom(hits []whoisXMLAPIReverseHit, query string) []datedCandidate {
+func (p *WhoisXMLAPIReverseWhoisPlugin) candidatesFrom(hits whoisXMLAPIDomainList, query string) []datedCandidate {
 	out := make([]datedCandidate, 0, len(hits))
 	for _, hit := range hits {
 		observed := whoisXMLAPIObservedAt(hit.Audit.UpdatedDate)
-		if whoisXMLAPIRecordStale(observed) {
-			continue
-		}
 		domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hit.DomainName), "."))
 		if domain == "" {
 			continue
@@ -203,33 +190,15 @@ func (p *WhoisXMLAPIReverseWhoisPlugin) candidatesFrom(hits []whoisXMLAPIReverse
 	return out
 }
 
-// decodeWhoisXMLAPIHits decodes the object form of domainsList. The field is
-// absent in preview mode and null when nothing matched, neither of which is an
-// error.
-func decodeWhoisXMLAPIHits(list json.RawMessage) ([]whoisXMLAPIReverseHit, error) {
-	if len(list) == 0 || string(list) == "null" {
-		return nil, nil
-	}
-	var hits []whoisXMLAPIReverseHit
-	if err := json.Unmarshal(list, &hits); err != nil {
-		return nil, fmt.Errorf("decode domainsList: %w", err)
-	}
-	return hits, nil
-}
-
+// whoisXMLAPIObservedAt parses an audit timestamp, returning the zero time when
+// the field is absent or unparseable. Zero sorts last, so records of unknown age
+// rank below dated ones without being discarded. Used for ordering only.
 func whoisXMLAPIObservedAt(updated string) time.Time {
 	t, err := time.Parse(time.RFC3339, updated)
 	if err != nil {
 		return time.Time{}
 	}
 	return t
-}
-
-func whoisXMLAPIRecordStale(observed time.Time) bool {
-	if observed.IsZero() {
-		return false
-	}
-	return observed.Before(time.Now().AddDate(whoisXMLAPIStaleAfter, 0, 0))
 }
 
 // advancedSearchTerm is one field/term predicate. Up to 4 per request, ANDed.
@@ -240,7 +209,6 @@ type advancedSearchTerm struct {
 }
 
 type whoisXMLAPIReverseRequest struct {
-	APIKey              string               `json:"apiKey"`
 	SearchType          string               `json:"searchType"`
 	Mode                string               `json:"mode"`
 	IncludeAuditDates   bool                 `json:"includeAuditDates"`
@@ -249,14 +217,44 @@ type whoisXMLAPIReverseRequest struct {
 }
 
 type whoisXMLAPIReverseResponse struct {
-	NextPageSearchAfter string          `json:"nextPageSearchAfter"`
-	DomainsCount        int             `json:"domainsCount"`
-	DomainsList         json.RawMessage `json:"domainsList"`
+	NextPageSearchAfter string                `json:"nextPageSearchAfter"`
+	DomainsCount        int                   `json:"domainsCount"`
+	DomainsList         whoisXMLAPIDomainList `json:"domainsList"`
 }
 
-// whoisXMLAPIReverseHit is one match. Audit dates are when WhoisXMLAPI first
-// and last observed the record, not registration dates — the same "when was
-// this seen" semantic as Whoxy's query_time, which is what staleness needs.
+// whoisXMLAPIDomainList decodes both documented shapes of domainsList — a bare
+// []string when includeAuditDates is false, []object when true — into the object
+// form. We always send true, so the object form is what arrives; accepting the
+// string form as well means a vendor-side default change costs us audit dates
+// rather than failing the page outright.
+type whoisXMLAPIDomainList []whoisXMLAPIReverseHit
+
+func (l *whoisXMLAPIDomainList) UnmarshalJSON(data []byte) error {
+	// Absent in preview mode, and null when nothing matched. Neither is an error.
+	if len(data) == 0 || string(data) == "null" {
+		*l = nil
+		return nil
+	}
+
+	var hits []whoisXMLAPIReverseHit
+	if err := json.Unmarshal(data, &hits); err == nil {
+		*l = hits
+		return nil
+	}
+
+	var names []string
+	if err := json.Unmarshal(data, &names); err != nil {
+		return fmt.Errorf("domainsList is neither []object nor []string: %w", err)
+	}
+	*l = make(whoisXMLAPIDomainList, 0, len(names))
+	for _, name := range names {
+		*l = append(*l, whoisXMLAPIReverseHit{DomainName: name})
+	}
+	return nil
+}
+
+// whoisXMLAPIReverseHit is one match. The audit block is when WhoisXMLAPI last
+// refreshed its copy of the record, NOT the registration's age
 type whoisXMLAPIReverseHit struct {
 	DomainName string `json:"domainName"`
 	Audit      struct {

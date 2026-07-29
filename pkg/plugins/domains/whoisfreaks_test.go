@@ -144,10 +144,10 @@ func TestWhoisFreaks_Run_ContactFormURLIsNotAnEmailPreseed(t *testing.T) {
 func TestWhoisFreaks_Run_FallsBackToRegistryRaw(t *testing.T) {
 	p := newTestWhoisFreaks(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"domain_registered":"yes","whois_raw_domain":"",` +
-			`"registry_data":{"whois_raw_registery":"Domain Name: thin.example\nRegistrant Organization: Thin Registry Co\n"}}`))
+			`"registry_data":{"whois_raw_registery":"Domain Name: thin-registry.org\nRegistrant Organization: Thin Registry Co\n"}}`))
 	})
 
-	findings, err := p.Run(context.Background(), plugins.Input{Domain: "thin.example"})
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "thin-registry.org"})
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
 	assert.Equal(t, "Thin Registry Co", findings[0].Value)
@@ -179,7 +179,7 @@ func TestWhoisFreaks_Run_NoRawRecordIsAnError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"domain_registered":"yes"}`))
 	})
 
-	_, err := p.Run(context.Background(), plugins.Input{Domain: "empty.example"})
+	_, err := p.Run(context.Background(), plugins.Input{Domain: "empty-record.com"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no raw WHOIS record")
 }

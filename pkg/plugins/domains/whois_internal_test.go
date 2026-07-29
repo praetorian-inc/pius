@@ -11,19 +11,43 @@ import (
 
 func TestRootDomain(t *testing.T) {
 	tests := []struct {
+		name  string
 		input string
 		want  string
 	}{
-		{"example.com", "example.com"},
-		{"sub.example.com", "example.com"},
-		{"deep.sub.example.com", "example.com"},
-		{"EXAMPLE.COM", "example.com"},
-		{"example.com.", "example.com"},
-		{"", ""},
-		{"localhost", ""},
+		{"already registrable", "example.com", "example.com"},
+		{"one subdomain", "sub.example.com", "example.com"},
+		{"deep subdomain", "deep.sub.example.com", "example.com"},
+		{"uppercase normalized", "EXAMPLE.COM", "example.com"},
+		{"trailing dot trimmed", "example.com.", "example.com"},
+		{"whitespace trimmed", "  sub.example.com  ", "example.com"},
+		{"empty", "", ""},
+		{"bare hostname", "localhost", ""},
+
+		// Multi-label ICANN suffixes. The previous last-two-labels heuristic
+		// returned "co.uk" for every one of these, so the vendor was asked about a
+		// public suffix instead of the customer's domain.
+		{"multi-label suffix, registrable", "example.co.uk", "example.co.uk"},
+		{"multi-label suffix, subdomain", "www.example.co.uk", "example.co.uk"},
+		{"multi-label suffix, deep", "a.b.example.co.uk", "example.co.uk"},
+		{"multi-label suffix alone", "co.uk", ""},
+		{"tld alone", "com", ""},
+
+		// Private PSL suffixes collapse to the provider's ICANN-level domain,
+		// which is the only thing in the chain with a WHOIS record.
+		{"cloudfront", "d2anv8h5waxwp1.cloudfront.net", "cloudfront.net"},
+		{"heroku", "myapp.herokuapp.com", "herokuapp.com"},
+		{"s3 bucket", "mybucket.s3.amazonaws.com", "amazonaws.com"},
+		{"api gateway", "abc123.execute-api.us-east-1.amazonaws.com", "amazonaws.com"},
+
+		// IPs are not domains.
+		{"ipv4", "192.0.2.1", ""},
+		{"ipv6", "2001:db8::1", ""},
 	}
 	for _, tt := range tests {
-		assert.Equal(t, tt.want, rootDomain(tt.input), "rootDomain(%q)", tt.input)
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, rootDomain(tt.input), "rootDomain(%q)", tt.input)
+		})
 	}
 }
 

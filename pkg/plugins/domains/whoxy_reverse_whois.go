@@ -165,13 +165,13 @@ func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, query s
 	return resp, nil
 }
 
-// whoxyRecordStale filters out records where Whoxy's query_time (last cache
-// refresh) is older than 10 years. This is guard-core parity — note that
-// query_time is NOT the domain registration date but when Whoxy last crawled it.
+// whoxyRecordStale filters out records whose query_time falls outside
+// reverseWhoisStaleYears. Note that query_time is Whoxy's last cache refresh,
+// NOT the domain registration date.
 func whoxyRecordStale(queryTime string) bool {
 	t, err := time.Parse(time.DateTime, queryTime)
 	if err != nil {
 		return true
 	}
-	return t.Before(time.Now().AddDate(-10, 0, 0))
+	return t.Before(time.Now().AddDate(reverseWhoisStaleYears, 0, 0))
 }

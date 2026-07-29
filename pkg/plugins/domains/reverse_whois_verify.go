@@ -93,6 +93,12 @@ const (
 // regardless.
 var reverseWhoisTotalBudget = 90 * time.Second
 
+// reverseWhoisStaleYears is the observation window for providers that return
+// HISTORIC registrations, where a record last seen longer ago than this is not
+// evidence of current ownership. Negative because it is passed straight to
+// time.Time.AddDate.
+const reverseWhoisStaleYears = -10
+
 // registrantResult is the outcome of resolving a single candidate domain's own
 // registrant organization.
 type registrantResult struct {

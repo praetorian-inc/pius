@@ -49,8 +49,7 @@ type whoisFreaksLiveResponse struct {
 	DomainRegistered string `json:"domain_registered"`
 	RawDomain        string `json:"whois_raw_domain"`
 	RegistryData     struct {
-		// Upstream misspells "registry". Verified live; correcting this tag
-		// silently breaks thin-registry lookups.
+		// Upstream misspells "registry".
 		RawRegistry string `json:"whois_raw_registery"`
 	} `json:"registry_data"`
 }
@@ -72,8 +71,7 @@ func (p *WhoisFreaksPlugin) Run(ctx context.Context, input plugins.Input) ([]plu
 		return nil, nil
 	}
 
-	// Registrar-level raw is preferred because only it carries contacts; thin
-	// registries return the registry-level record alone.
+	// Prefer the registrar-level record: it is the one that carries contacts.
 	raw := body.RawDomain
 	if strings.TrimSpace(raw) == "" {
 		raw = body.RegistryData.RawRegistry
