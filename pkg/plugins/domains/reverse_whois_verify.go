@@ -385,7 +385,64 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 // TLD with no RDAP service, e.g. many ccTLDs).
 type rdapWhoisResolver struct {
 	initOnce   sync.Once
-	clientPool *sync.Pool // pool of *rdap.Client; each is used by one goroutine at a time
+	clientPool chan *rdap.Client // fixed set of clients; each is used by one goroutine at a time
+}
+
+// newRDAPClient is the single construction point for the reverse-whois RDAP
+// client. ENG-5174 must attach the SSRF-safe, body-capped *http.Client at BOTH
+// attach points — HTTP and Bootstrap (e.g. Bootstrap: &bootstrap.Client{HTTP: safeClient}) —
+// because Do otherwise lazily creates an unguarded bootstrap client with its own
+// default *http.Client and an unbounded read of the IANA bootstrap response.
+func newRDAPClient() *rdap.Client { return &rdap.Client{} }
+
+// initClientPool lazily pre-fills the pool with exactly reverseWhoisWorkers
+// clients. Lazy sync.Once init keeps the zero-value resolver usable — both
+// call sites construct it as a bare &rdapWhoisResolver{} literal.
+func (r *rdapWhoisResolver) initClientPool() {
+	r.initOnce.Do(func() {
+		pool := make(chan *rdap.Client, reverseWhoisWorkers)
+		for i := 0; i < reverseWhoisWorkers; i++ {
+			pool <- newRDAPClient()
+		}
+		r.clientPool = pool
+	})
+}
+
+// acquireClient hands out a pooled client, or a fresh one if the pool is
+// momentarily empty. The receive is deliberately non-blocking: under the
+// g.SetLimit(reverseWhoisWorkers) invariant in verifyCandidates at most
+// reverseWhoisWorkers lookups are in flight so the pool never runs dry, but if
+// that invariant is ever violated the fallback degrades to a cold client (a
+// slowdown) instead of a blocked worker (a hang until the pass budget cancels).
+func (r *rdapWhoisResolver) acquireClient() *rdap.Client {
+	r.initClientPool()
+	select {
+	case c := <-r.clientPool:
+		return c
+	default:
+		return newRDAPClient()
+	}
+}
+
+// releaseClient returns a client to the pool. A client that panicked
+// mid-Lookup may hold a half-written registries map, so it is discarded — but
+// its slot is refilled with a FRESH client, or the pool would leak one slot per
+// panic and eventually sit permanently empty. initClientPool runs first (it is
+// idempotent), so the clientPool field read in the select below is always
+// ordered after the sync.Once — race-free even for a caller that releases
+// without ever acquiring (such a call would pre-fill a full pool and simply
+// drop c). The send is non-blocking so a full pool — that case, or the acquire
+// fallback path — drops the extra client for GC, keeping total live clients
+// bounded by in-flight (≤ SetLimit) + stored (≤ reverseWhoisWorkers).
+func (r *rdapWhoisResolver) releaseClient(c *rdap.Client, panicked bool) {
+	r.initClientPool()
+	if panicked {
+		c = newRDAPClient()
+	}
+	select {
+	case r.clientPool <- c:
+	default:
+	}
 }
 
 func (r *rdapWhoisResolver) resolveRegistrant(ctx context.Context, domain string) (registrantResult, error) {
@@ -438,23 +495,30 @@ func (r *rdapWhoisResolver) viaRDAP(ctx context.Context, domain string) (registr
 	// blocking slot starves queued workers of their 10s budget, and a non-blocking
 	// slot bypasses RDAP for ~5 of every 6 concurrent lookups (reverseWhoisWorkers)
 	// so WHOIS silently becomes the primary resolver and takes the rate-limit hit.
-	// Instead give each in-flight lookup its OWN client from a pool: a pooled client
-	// is only ever touched by one goroutine at a time, so its maps stay race-free,
-	// and up to reverseWhoisWorkers clients run RDAP truly in parallel. Each distinct
-	// client warms the DNS bootstrap registry once (24h in-client cache), so the pool
-	// amortizes bootstrap cost across the run (Gemini review, ENG-5123).
-	r.initOnce.Do(func() {
-		r.clientPool = &sync.Pool{New: func() any { return &rdap.Client{} }}
-	})
-	client := r.clientPool.Get().(*rdap.Client)
-	org, panicked, err := extractRDAPRegistrantOrg(ctx, client, domain)
-	// A client that panicked mid-Lookup may have a half-written registries map, so
-	// it is NOT returned to the pool — a fresh one is created on next Get. Any
-	// non-panic outcome (success, transport error, malformed response) leaves the
-	// client's maps intact, so it is safely recycled.
-	if !panicked {
-		r.clientPool.Put(client)
-	}
+	// Instead give each in-flight lookup its OWN client from a fixed pre-filled
+	// pool: a pooled client is only ever touched by one goroutine at a time, so its
+	// maps stay race-free, and up to reverseWhoisWorkers clients run RDAP truly in
+	// parallel. The pool is a buffered channel, NOT a sync.Pool: the runtime's
+	// poolCleanup GC pre-hook evicts sync.Pool items within two GC cycles, and a
+	// 500-candidate pass allocates enough to trigger GC mid-pass, so pooled clients
+	// went cold and re-fetched the rate-limited IANA bootstrap. A channel is a
+	// normal heap-reachable object the GC never evicts, so each persistent client
+	// fetches the bootstrap at most once per pass (ENG-5376).
+	client := r.acquireClient()
+	var (
+		org      string
+		panicked bool
+		err      error
+	)
+	// Release via defer so returning the client is structural rather than
+	// dependent on control flow: no current path skips the release
+	// (extractRDAPRegistrantOrg recovers its own panics and there is no early
+	// return between acquire and release), but the defer also covers a future
+	// early return or a runtime.Goexit. The closure reads panicked at defer
+	// time, after the call below has set it (Gemini review suggestion,
+	// ENG-5376).
+	defer func() { r.releaseClient(client, panicked) }()
+	org, panicked, err = extractRDAPRegistrantOrg(ctx, client, domain)
 	if err != nil {
 		return registrantResult{}, err
 	}
