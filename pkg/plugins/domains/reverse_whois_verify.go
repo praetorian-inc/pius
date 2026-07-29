@@ -176,8 +176,18 @@ const maskedSubstringMinLen = 8
 // and short-circuits the WHOIS leg that may carry the real one. A third tier
 // therefore matches redaction MARKER vocabulary on whole tokens, catching the
 // class instead of chasing registrar wordings one phrase at a time (ENG-5404).
-// It only ever moves a candidate from the mismatch band to the unverified band;
-// nothing is dropped, so de-rank-never-drop (ENG-5123) is preserved.
+// The band effect is asymmetric, and the earlier wording here overstated it
+// (Codex, PR #106 round 2). For a genuine placeholder the candidate moves UP out
+// of the mismatch band (0.40) into unverifiable (0.50) — that is the fix. For a
+// FALSE POSITIVE — a real org carrying marker vocabulary as a whole token, e.g.
+// "Masking Technologies" — it moves DOWN from corroborated (0.60) to
+// unverifiable (0.50). So the guarantee is "never DROPS", not "never demotes":
+// both scores sit inside the needs_review band [0.35, 0.65) and no candidate is
+// ever removed, so de-rank-never-drop (ENG-5123) holds in either direction.
+// That false-positive cost is accepted, and unlike the rejected "gdpr" token it
+// is paid for: these tokens name the redaction ACTION and carry test-proven
+// recall — AC1, isMaskedOrg("DATA REDACTED"), is unreachable without "redacted".
+// See whois.go for the membership rule that holds the table to that vocabulary.
 func isMaskedOrg(v string) bool {
 	key := strings.ToLower(strings.TrimSpace(v))
 	if key == "" {
