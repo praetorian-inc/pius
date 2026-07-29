@@ -144,6 +144,59 @@ var whoisPrivacyGuards = map[string]bool{
 	"id shield":                                            true,
 }
 
+// Redaction MARKER vocabulary (ENG-5404).
+//
+// The two tables above are exact-phrase allowlists, which makes privacy
+// detection structurally fail-open: it fires only when the registrant string is
+// an enumerated wording or a SUPERSTRING of one (the substring pass in
+// isMaskedOrg). Any wording assembled from the same vocabulary in a different
+// order therefore escapes entirely — it is neither enumerated nor a superstring
+// of anything enumerated. "DATA REDACTED", the live cloudflare.com registrant
+// org, is exactly that case: unmistakably a redaction placeholder, yet
+// unreachable by both tiers. Enumerating registrar wordings one at a time loses
+// that race by construction, so detection also keys on the MARKER vocabulary a
+// placeholder carries, independent of word order.
+//
+// Markers are matched on WHOLE TOKENS, never as substrings. That token boundary
+// is what keeps the class fix from becoming a false-positive machine: a genuine
+// org such as "Redactron Systems" contains "redact" but tokenizes to
+// ["redactron", "systems"], so no token equals a marker and it stays unmasked.
+// It is the same false-positive concern maskedSubstringMinLen encodes for the
+// substring pass, enforced structurally rather than by phrase length.
+//
+// SCOPE: these tables are consumed ONLY by isMaskedOrg in
+// reverse_whois_verify.go — the reverse-WHOIS ranking predicate. They are
+// deliberately NOT wired into extractPreseeds: the whoisPrivacyGuards lookup at
+// the "company" branch below is an EXACT-match preseed suppressor, and widening
+// it to marker matching would silently change which preseeds this plugin emits.
+// That is a separate behavior change with its own recall risk, outside
+// ENG-5404's scope.
+//
+// EXCLUDED marker — "privacy": the ticket floated a bare "privacy" token as a
+// candidate marker; it was considered and rejected. Genuine organizations carry
+// it as a whole token (e.g. "Privacy International", a real NGO), so it would
+// mask real registrants — and it buys nothing, because the multi-word privacy
+// wordings ("whois privacy", "privacy protect, llc", "redacted for privacy", …)
+// are already covered by tiers 1 and 2.
+var whoisPrivacyMarkerTokens = map[string]bool{
+	"redacted":  true,
+	"redaction": true,
+	"redact":    true,
+	"withheld":  true,
+	"masked":    true,
+	"masking":   true,
+	"gdpr":      true,
+}
+
+// whoisPrivacyMarkerPhrases are marker RUNS of CONSECUTIVE tokens whose
+// individual words are too generic to mark alone — "data", "not", and
+// "protected" all appear in real org names, so only the adjacent pair is
+// evidence of redaction.
+var whoisPrivacyMarkerPhrases = [][]string{
+	{"data", "protected"},
+	{"not", "disclosed"},
+}
+
 // extractPreseeds pulls registrant organization, name, and email from WHOIS contacts.
 func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
 	type param struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -164,6 +165,19 @@ const maskedSubstringMinLen = 8
 // it, but the substring pass keeps the masked → unverified ranking correct
 // (ENG-5123). Only the org-name guard phrases are used for substring matching;
 // the name-field generics ("admin", "abuse") are too short to match safely.
+//
+// Both of those tiers are keyed on ENUMERATED wordings, which makes them
+// structurally fail-open: they fire only on a listed phrase or a superstring of
+// one, so a placeholder built from the same vocabulary in a different word order
+// is unreachable by either. "DATA REDACTED" — the live cloudflare.com registrant
+// org — is exactly that miss, and it mis-ranks twice: decideConfidence reads the
+// zero token overlap as a clear MISMATCH (0.40) rather than unverifiable (0.50),
+// and resolveWithFallback treats the placeholder as an authoritative registrant
+// and short-circuits the WHOIS leg that may carry the real one. A third tier
+// therefore matches redaction MARKER vocabulary on whole tokens, catching the
+// class instead of chasing registrar wordings one phrase at a time (ENG-5404).
+// It only ever moves a candidate from the mismatch band to the unverified band;
+// nothing is dropped, so de-rank-never-drop (ENG-5123) is preserved.
 func isMaskedOrg(v string) bool {
 	key := strings.ToLower(strings.TrimSpace(v))
 	if key == "" {
@@ -174,6 +188,43 @@ func isMaskedOrg(v string) bool {
 	}
 	for phrase := range whoisPrivacyGuards {
 		if len(phrase) >= maskedSubstringMinLen && strings.Contains(key, phrase) {
+			return true
+		}
+	}
+	// Tier 3: token-boundary marker matching. tokenize (github_org.go) lowercases
+	// and splits on non-alphanumerics, which is precisely the boundary needed here.
+	// normalizeOrg is deliberately NOT used: it strips legal-suffix tokens, a
+	// similarity-comparison concern that would silently drop tokens from a masking
+	// decision.
+	return hasPrivacyMarker(tokenize(key))
+}
+
+// hasPrivacyMarker reports whether tokens carry redaction-placeholder
+// vocabulary. Matching is on whole tokens, never substrings: "Redactron
+// Systems" contains "redact" but tokenizes to ["redactron","systems"] and stays
+// unmasked, which is the false-positive class maskedSubstringMinLen guards
+// against in the substring pass.
+func hasPrivacyMarker(tokens []string) bool {
+	for _, t := range tokens {
+		if whoisPrivacyMarkerTokens[t] {
+			return true
+		}
+	}
+	for _, phrase := range whoisPrivacyMarkerPhrases {
+		if containsTokenRun(tokens, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsTokenRun reports whether run appears as consecutive tokens in tokens.
+func containsTokenRun(tokens, run []string) bool {
+	if len(run) == 0 || len(run) > len(tokens) {
+		return false
+	}
+	for i := 0; i+len(run) <= len(tokens); i++ {
+		if slices.Equal(tokens[i:i+len(run)], run) {
 			return true
 		}
 	}
