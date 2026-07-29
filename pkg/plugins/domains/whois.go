@@ -56,7 +56,7 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 		}
 	}()
 
-	raw, err := whoisQuery(ctx, domain)
+	raw, incomplete, err := whoisQuery(ctx, domain)
 	if err != nil {
 		return nil, fmt.Errorf("whois: lookup failed for %q: %w", domain, err)
 	}
@@ -68,6 +68,19 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 	// context before parsing/emitting (ENG-5123 review, Codex).
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+
+	// A referral hop that failed after the registry answered leaves ctx clean, so
+	// the re-check above does not fire and emitting is correct: the salvaged
+	// record is a real registry response, just less specific, and preseeds are
+	// additive discovery where a MISSING seed is the failure mode. Report the
+	// partiality so a thin preseed set is attributable, but never gate emission
+	// on it (ENG-5405). Only `domain` (already root-normalized) and the closed
+	// whoisIncompleteness constant are logged — never the raw record or the
+	// unbounded referral server string.
+	if incomplete != whoisComplete {
+		slog.Warn("whois: referral chain incomplete; preseeds may be partial",
+			"domain", domain, "reason", incomplete)
 	}
 
 	parsed, perr := whoisParseFn(raw)

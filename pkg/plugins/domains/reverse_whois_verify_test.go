@@ -1,9 +1,13 @@
 package domains
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -12,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	whoisparser "github.com/likexian/whois-parser"
 	"github.com/openrdap/rdap"
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -1044,4 +1049,489 @@ func TestRDAPClientPool_ExclusiveOwnershipUnderConcurrency(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// ---------------------------------------------------------------------------
+// ENG-5405 — incomplete-lookup observability at the resolver and pass level.
+// ---------------------------------------------------------------------------
+
+// tldRecordNoRegistrantOrg is a TLD-registry WHOIS record for a domain that
+// EXISTS but publishes no registrant organization. The "Registrant Country" line
+// is load-bearing: it is what makes whoisparser.Parse yield a non-nil
+// parsed.Registrant whose Organization AND Name are both empty, so viaWHOIS
+// reaches its org == "" branch through a FOUND domain rather than through a nil
+// Registrant. That distinction is the whole point of AC3 — a chain that ran to
+// its natural end and simply had no registrant on record must NOT be reported as
+// incomplete (ENG-5405).
+const tldRecordNoRegistrantOrg = "Domain Name: EXAMPLE.COM\n" +
+	"Registry Domain ID: 123456_DOMAIN_COM-EXAMPLE\n" +
+	"Registrar: Example Registrar, Inc.\n" +
+	"Updated Date: 2024-01-01T00:00:00Z\n" +
+	"Creation Date: 2020-01-01T00:00:00Z\n" +
+	"Domain Status: clientTransferProhibited\n" +
+	"Registrant Country: US\n"
+
+// TestTLDRecordNoRegistrantOrgFixture_ParsesAsFoundDomainWithoutRegistrantOrg
+// pins the precondition the two viaWHOIS tests below silently depend on. Without
+// it, a whoisparser upgrade that started returning ErrNotFoundDomain for this
+// record would make those tests pass for the WRONG reason: viaWHOIS would bail at
+// the Parse error instead of exercising the empty-org branch, and the AC2/AC3
+// distinction they exist to prove would never be evaluated.
+func TestTLDRecordNoRegistrantOrgFixture_ParsesAsFoundDomainWithoutRegistrantOrg(t *testing.T) {
+	parsed, err := whoisparser.Parse(tldRecordNoRegistrantOrg)
+	require.NoError(t, err,
+		"the fixture must parse as a FOUND domain — an error here (e.g. whoisparser.ErrNotFoundDomain) "+
+			"would short-circuit viaWHOIS before the empty-org branch runs")
+	require.NotNil(t, parsed.Registrant,
+		"the Registrant Country line must yield a non-nil Registrant block")
+	assert.Empty(t, parsed.Registrant.Organization, "no registrant organization is published")
+	assert.Empty(t, parsed.Registrant.Name, "and no fallback registrant name either")
+}
+
+// TestViaWHOIS_ReferralHopFailureReportsIncomplete is AC2 at the resolver level:
+// a referral chain whose final hop's transport dies still salvages the
+// post-referral record with a nil error (recall is unchanged), but the caller can
+// now TELL that the record is partial. Before ENG-5405 this returned exactly the
+// same (found=false, err=nil) shape as a clean lookup of a domain with no
+// registrant, which is the blindness the ticket exists to end.
+func TestViaWHOIS_ReferralHopFailureReportsIncomplete(t *testing.T) {
+	const tldRecordWithReferral = tldRecordNoRegistrantOrg +
+		"Registrar WHOIS Server: whois.registrar.example\n"
+
+	var hops []string
+	stubWhoisRawFn(t, func(_ context.Context, domain, server string) (string, error) {
+		hops = append(hops, server)
+		switch server {
+		case defaultServer:
+			return "domain: EXAMPLE.COM\nrefer: whois.tld.example\n", nil
+		case "whois.tld.example":
+			return tldRecordWithReferral, nil
+		case "whois.registrar.example":
+			return "", errors.New("connection refused")
+		default:
+			require.FailNowf(t, "unexpected WHOIS server", "server=%q domain=%q", server, domain)
+			return "", nil
+		}
+	})
+
+	// viaWHOIS never touches its receiver, so a zero-value resolver is safe here
+	// and keeps the test off the RDAP client pool entirely.
+	res, err := (&rdapWhoisResolver{}).viaWHOIS(context.Background(), "example.com")
+
+	require.NoError(t, err, "the recall-safe salvage still returns a nil error")
+	assert.False(t, res.Found, "the truncated record yields no registrant")
+	assert.Equal(t, whoisIncompleteReferral, res.Incomplete,
+		"AC1/AC2: the caller can now tell a truncated lookup from a clean not-found")
+	assert.Equal(t, []string{defaultServer, "whois.tld.example", "whois.registrar.example"}, hops,
+		"the failure must be observed on the registrar hop, not earlier")
+}
+
+// TestViaWHOIS_NoRegistrantOnRecordIsOrdinaryNotFound is AC3: the two states must
+// not collapse in THIS direction either. A chain that ran to its natural end and
+// found no registrant organization is an ordinary not-found, so over-reporting it
+// as incomplete would make the new signal useless — every privacy-protected or
+// thin-registry domain would light up as degraded.
+func TestViaWHOIS_NoRegistrantOnRecordIsOrdinaryNotFound(t *testing.T) {
+	var hops []string
+	stubWhoisRawFn(t, func(_ context.Context, domain, server string) (string, error) {
+		hops = append(hops, server)
+		switch server {
+		case defaultServer:
+			return "domain: EXAMPLE.COM\nrefer: whois.tld.example\n", nil
+		case "whois.tld.example":
+			return tldRecordNoRegistrantOrg, nil // no onward referral: the chain ends here
+		default:
+			require.FailNowf(t, "unexpected WHOIS server", "server=%q domain=%q", server, domain)
+			return "", nil
+		}
+	})
+
+	res, err := (&rdapWhoisResolver{}).viaWHOIS(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.False(t, res.Found, "no registrant organization on record")
+	assert.Equal(t, whoisComplete, res.Incomplete,
+		"AC3: a chain that ran to its natural end must NOT be flagged incomplete")
+	assert.Equal(t, []string{defaultServer, "whois.tld.example"}, hops,
+		"the chain must stop at the TLD server — no onward referral was published")
+}
+
+// TestDecideConfidence_IncompleteAndNotFoundBothScoreUnverified is AC4, the core
+// guarantee: registrantResult.Incomplete is PURELY OBSERVATIONAL. Every
+// incompleteness reason and a genuine no-registrant must score IDENTICALLY, so
+// adding the ENG-5405 signal cannot re-rank a single finding. The band is asserted
+// end-to-end through an emitted finding as well, so the de-rank-never-drop
+// contract is proven at the same time as the raw score.
+func TestDecideConfidence_IncompleteAndNotFoundBothScoreUnverified(t *testing.T) {
+	for name, res := range map[string]registrantResult{
+		"incomplete lookup (deadline mid-chain)":  {Incomplete: whoisIncompleteDeadline},
+		"incomplete lookup (referral hop failed)": {Incomplete: whoisIncompleteReferral},
+		"incomplete lookup (referral budget)":     {Incomplete: whoisIncompleteHops},
+		"genuine no-registrant":                   {},
+	} {
+		res := res
+		t.Run(name, func(t *testing.T) {
+			got := decideConfidence("Acme Corp", res, nil)
+			assert.InDelta(t, confReverseWhoisUnverified, got, 0.001,
+				"AC4: the ENG-5405 observability signal must not change ranking")
+
+			var f plugins.Finding
+			plugins.SetConfidence(&f, got)
+			assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(f), 0.001)
+			assert.True(t, plugins.NeedsReview(f), "the de-rank-never-drop band is unchanged")
+		})
+	}
+}
+
+// verifyPassMsgClean and verifyPassMsgDegraded duplicate summarizeVerifyPass's
+// message strings on purpose: they are independent literal anchors, so silently
+// renaming a production log message breaks a test instead of quietly breaking
+// whatever alerting keys off it.
+const (
+	verifyPassMsgClean    = "reverse-whois: verification pass complete"
+	verifyPassMsgDegraded = "reverse-whois: verification pass degraded; some candidates were not fully verified"
+)
+
+// captureSlog installs a JSON slog handler over a buffer for the duration of the
+// test and returns a closure that decodes whatever was emitted. The PREVIOUS
+// default is captured and restored (rather than assuming the zero default) so
+// this cannot leak into the rest of the package; log's writer/flags are restored
+// too, because slog.SetDefault also rewires the log package and restoring a
+// defaultHandler-backed logger deliberately does not undo that.
+//
+// Reading the buffer is safe without extra synchronisation: slog's handler
+// serialises concurrent writes internally, and every caller below reads only
+// after verifyCandidates has returned, which is downstream of the errgroup's
+// g.Wait() happens-before barrier.
+func captureSlog(t *testing.T) func() []map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	prevLogger := slog.Default()
+	prevWriter, prevFlags := log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prevLogger)
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	})
+	return func() []map[string]any {
+		t.Helper()
+		var recs []map[string]any
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var rec map[string]any
+			require.NoError(t, json.Unmarshal([]byte(line), &rec),
+				"emitted slog record is not valid JSON: %q", line)
+			recs = append(recs, rec)
+		}
+		return recs
+	}
+}
+
+// findLogRecord returns the one record carrying the given message, failing when
+// it is absent or duplicated — "one record per pass" is part of the contract.
+func findLogRecord(t *testing.T, recs []map[string]any, msg string) map[string]any {
+	t.Helper()
+	var found []map[string]any
+	for _, r := range recs {
+		if r["msg"] == msg {
+			found = append(found, r)
+		}
+	}
+	require.Len(t, found, 1, "expected exactly one %q record; emitted records: %v", msg, recs)
+	return found[0]
+}
+
+// hasLogRecord reports whether any record carries the given message.
+func hasLogRecord(recs []map[string]any, msg string) bool {
+	for _, r := range recs {
+		if r["msg"] == msg {
+			return true
+		}
+	}
+	return false
+}
+
+// TestVerifyCandidates_DegradedPassIsCountedAndEmitsEveryCandidate is the
+// behavioural guard on the counter's insertion point. summarizeVerifyPass runs
+// between g.Wait() and the emission loop, so this proves it OBSERVES and nothing
+// more: every candidate is still emitted, in input order, with its score inside
+// the needs_review band — including the ones whose WHOIS leg was truncated.
+func TestVerifyCandidates_DegradedPassIsCountedAndEmitsEveryCandidate(t *testing.T) {
+	logs := captureSlog(t)
+
+	// A salvaged record that DID carry a registrant org: proof the flag is
+	// orthogonal to scoring even when the truncated lookup still corroborated.
+	salvagedWithOrg := org("Acme Corp")
+	salvagedWithOrg.Incomplete = whoisIncompleteReferral
+
+	stub := &stubResolver{
+		byDomain: map[string]registrantResult{
+			"clean-hit.example.com":    org("Acme Corp"),                      // corroborated, complete
+			"truncated.example.com":    {Incomplete: whoisIncompleteReferral}, // salvaged, no registrant
+			"deadline.example.com":     {Incomplete: whoisIncompleteDeadline}, // budget expired mid-chain
+			"hops.example.com":         {Incomplete: whoisIncompleteHops},     // referral budget exhausted
+			"salvaged-org.example.com": salvagedWithOrg,                       // truncated BUT corroborated
+			"clean-miss.example.com":   org("Globex GmbH"),                    // mismatch, complete
+		},
+		errBy: map[string]error{"broken.example.com": errors.New("whois transport failed")},
+	}
+	order := []string{
+		"clean-hit.example.com",
+		"truncated.example.com",
+		"deadline.example.com",
+		"hops.example.com",
+		"broken.example.com",
+		"salvaged-org.example.com",
+		"clean-miss.example.com",
+	}
+	cands := make([]candidate, 0, len(order))
+	for _, d := range order {
+		cands = append(cands, candidate{domain: d, finding: plugins.Finding{Value: d}})
+	}
+
+	findings, err := verifyCandidates(context.Background(), stub, "Acme Corp", cands)
+	require.NoError(t, err)
+	require.Len(t, findings, len(order), "a degraded pass must still emit EVERY candidate")
+	for i, d := range order {
+		assert.Equal(t, d, findings[i].Value, "input order must survive the summary")
+		got := plugins.Confidence(findings[i])
+		assert.GreaterOrEqual(t, got, 0.35, "%s must stay above the discard floor", d)
+		assert.Less(t, got, 0.65, "%s must stay inside the needs_review band", d)
+		assert.True(t, plugins.NeedsReview(findings[i]), "%s must remain flagged for review", d)
+	}
+
+	rec := findLogRecord(t, logs(), verifyPassMsgDegraded)
+	assert.Equal(t, slog.LevelWarn.String(), rec["level"])
+	assert.EqualValues(t, len(order), rec["candidates"])
+	assert.EqualValues(t, len(order), rec["resolved"])
+	assert.EqualValues(t, 1, rec["incomplete_deadline"])
+	assert.EqualValues(t, 2, rec["incomplete_referral"], "truncated.example.com AND salvaged-org.example.com")
+	assert.EqualValues(t, 1, rec["incomplete_referral_budget"])
+	assert.EqualValues(t, 1, rec["lookup_failed"])
+	assert.EqualValues(t, 0, rec["panicked"])
+}
+
+// waveBarrier releases arriving goroutines in waves of `width`, so a test can
+// prove a FULL complement of workers was in flight simultaneously rather than
+// hoping the scheduler overlapped them. The timeout arm is a safety valve: a
+// final partial wave must never hang the suite.
+type waveBarrier struct {
+	width int
+
+	mu      sync.Mutex
+	waiting int
+	gate    chan struct{}
+}
+
+func newWaveBarrier(width int) *waveBarrier {
+	return &waveBarrier{width: width, gate: make(chan struct{})}
+}
+
+func (b *waveBarrier) arrive() {
+	b.mu.Lock()
+	b.waiting++
+	gate := b.gate
+	if b.waiting == b.width {
+		b.waiting = 0
+		b.gate = make(chan struct{}) // re-arm for the next wave
+		close(gate)                  // the whole wave proceeds together
+		b.mu.Unlock()
+		return
+	}
+	b.mu.Unlock()
+	select {
+	case <-gate:
+	case <-time.After(5 * time.Second): // never deadlock a partial wave
+	}
+}
+
+// incompleteResolver returns a canned per-domain result only AFTER synchronising
+// on a wave barrier. Unlike stubResolver — whose every return is whoisComplete —
+// it exists to make concurrent workers actually write the incompleteness state,
+// which is the precondition for -race to have anything to say about the tally.
+type incompleteResolver struct {
+	barrier  *waveBarrier
+	byDomain map[string]registrantResult // read-only once the pass starts
+}
+
+func (r *incompleteResolver) resolveRegistrant(_ context.Context, domain string) (registrantResult, error) {
+	r.barrier.arrive()
+	return r.byDomain[domain], nil
+}
+
+// TestVerifyCandidates_IncompleteTallyIsRaceFreeUnderConcurrency proves the
+// per-reason tally is correct AND race-free when every worker writes it.
+//
+// The shape is load-bearing (ENG-5405 F5): -race is not evidence for this counter
+// unless a test makes concurrent workers write it. Every pre-existing
+// multi-candidate test — including TestVerifyCandidates_CapLimitsCallsNotRecall,
+// which drives 501 candidates — uses a resolver that returns whoisComplete, so
+// under a genuinely racy shared-scalar counter the write never happens and -race
+// reports clean. Hence: 18 candidates (3 x reverseWhoisWorkers, so waves overlap
+// by construction via the barrier), ALL incomplete, spanning all three reasons.
+func TestVerifyCandidates_IncompleteTallyIsRaceFreeUnderConcurrency(t *testing.T) {
+	logs := captureSlog(t)
+
+	const waves = 3
+	total := waves * reverseWhoisWorkers
+	reasons := []whoisIncompleteness{whoisIncompleteDeadline, whoisIncompleteReferral, whoisIncompleteHops}
+
+	byDomain := make(map[string]registrantResult, total)
+	cands := make([]candidate, 0, total)
+	want := map[whoisIncompleteness]int{}
+	for i := 0; i < total; i++ {
+		d := fmt.Sprintf("cand-%02d.example.com", i)
+		reason := reasons[i%len(reasons)] // interleaved, so each wave mixes reasons
+		// A resolved org on every candidate keeps the deny-list assertion below
+		// non-vacuous: real PII flows through the pass it must not log.
+		res := org("Acme Corp")
+		res.Incomplete = reason
+		byDomain[d] = res
+		want[reason]++
+		cands = append(cands, candidate{domain: d, finding: plugins.Finding{Value: d}})
+	}
+	res := &incompleteResolver{barrier: newWaveBarrier(reverseWhoisWorkers), byDomain: byDomain}
+
+	findings, err := verifyCandidates(context.Background(), res, "Acme Corp", cands)
+	require.NoError(t, err)
+	require.Len(t, findings, total, "de-rank never drop: an all-incomplete pass still emits everything")
+
+	rec := findLogRecord(t, logs(), verifyPassMsgDegraded)
+	assert.Equal(t, slog.LevelWarn.String(), rec["level"])
+	assert.EqualValues(t, total, rec["candidates"])
+	assert.EqualValues(t, total, rec["resolved"])
+	assert.EqualValues(t, want[whoisIncompleteDeadline], rec["incomplete_deadline"])
+	assert.EqualValues(t, want[whoisIncompleteReferral], rec["incomplete_referral"])
+	assert.EqualValues(t, want[whoisIncompleteHops], rec["incomplete_referral_budget"])
+	assert.EqualValues(t, 0, rec["lookup_failed"], "no lookup returned an error")
+	assert.EqualValues(t, 0, rec["panicked"], "no worker panicked")
+
+	// The deny-list invariant on the real pass, not a hand-built one: neither the
+	// resolved registrant org nor any candidate hostname may reach the record.
+	raw, err := json.Marshal(rec)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "Acme", "registrant org (PII) must never be logged")
+	assert.NotContains(t, string(raw), "example.com", "no candidate hostname may be logged")
+}
+
+// TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload drives the summary
+// directly over a hand-built []candidateOutcome covering every bucket. Two halves
+// matter equally: the degraded record must break the tally out per reason, and the
+// CLEAN input must still log at Info — the positive control that distinguishes
+// "this pass was not degraded" from "this summary never ran at all".
+func TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload(t *testing.T) {
+	t.Run("degraded pass warns with a per-reason breakdown", func(t *testing.T) {
+		logs := captureSlog(t)
+		outcomes := []candidateOutcome{
+			{incomplete: whoisIncompleteDeadline},
+			{incomplete: whoisIncompleteDeadline},
+			{incomplete: whoisIncompleteReferral},
+			{incomplete: whoisIncompleteHops},
+			{failed: true},
+			{panicked: true},
+			{}, // one genuinely clean candidate
+		}
+		summarizeVerifyPass(len(outcomes), len(outcomes), outcomes)
+
+		recs := logs()
+		assert.False(t, hasLogRecord(recs, verifyPassMsgClean),
+			"a degraded pass must not ALSO claim it completed cleanly")
+		rec := findLogRecord(t, recs, verifyPassMsgDegraded)
+		assert.Equal(t, slog.LevelWarn.String(), rec["level"])
+		assert.EqualValues(t, 7, rec["candidates"])
+		assert.EqualValues(t, 7, rec["resolved"])
+		assert.EqualValues(t, 2, rec["incomplete_deadline"])
+		assert.EqualValues(t, 1, rec["incomplete_referral"])
+		assert.EqualValues(t, 1, rec["incomplete_referral_budget"])
+		assert.EqualValues(t, 1, rec["lookup_failed"])
+		assert.EqualValues(t, 1, rec["panicked"])
+		assert.EqualValues(t, 90, rec["budget_seconds"],
+			"the EFFECTIVE budget is logged, so the line is self-diagnosing")
+
+		// The deny-list invariant, asserted two ways. First structurally: every
+		// attribute other than slog's own time/level/msg must be a COUNT, so no
+		// untrusted string can ride along in a future attribute either.
+		for k, v := range rec {
+			switch k {
+			case "time", "level", "msg":
+				continue
+			}
+			assert.IsType(t, float64(0), v,
+				"attribute %q must be a count, not text (got %v) — counts and compile-time constants only", k, v)
+		}
+		// Then by sentinel: nothing recognisable from a WHOIS payload, a registrant
+		// org, or a referral hostname may appear anywhere in the record.
+		raw, err := json.Marshal(rec)
+		require.NoError(t, err)
+		for _, sentinel := range []string{
+			"Registrant", "Registry Domain ID", "Example Registrar",
+			"Acme", "REDACTED", ".example", "iana.org",
+		} {
+			assert.NotContains(t, string(raw), sentinel,
+				"the summary must leak no WHOIS payload, registrant org, or hostname")
+		}
+	})
+
+	t.Run("clean pass logs at info as the positive control", func(t *testing.T) {
+		logs := captureSlog(t)
+		summarizeVerifyPass(3, 3, []candidateOutcome{{}, {}, {}})
+
+		recs := logs()
+		assert.False(t, hasLogRecord(recs, verifyPassMsgDegraded),
+			"nothing was degraded, so nothing may warn")
+		rec := findLogRecord(t, recs, verifyPassMsgClean)
+		assert.Equal(t, slog.LevelInfo.String(), rec["level"])
+		assert.EqualValues(t, 3, rec["candidates"])
+		assert.EqualValues(t, 3, rec["resolved"])
+		for _, k := range []string{
+			"incomplete_deadline", "incomplete_referral", "incomplete_referral_budget",
+			"lookup_failed", "panicked",
+		} {
+			assert.NotContains(t, rec, k, "the clean line carries counts only, no zeroed reason keys")
+		}
+	})
+}
+
+// TestVerifyCandidates_PanickingCandidateIsCountedNotSilentlyComplete is the
+// direct regression test for ENG-5405 F4. The worker's deferred recover() fires
+// BEFORE the outcomes[i] assignment ever runs, so without the write from inside
+// the deferred func a panicking candidate would tally as complete-and-not-failed
+// — and with it the only degraded candidate in this pass, the summary would flip
+// to the clean Info line, reproducing ENG-5405's exact blindness inside the
+// mechanism built to end it. A panic also gets its OWN bucket: it is not a WHOIS
+// incompleteness and must never be conflated with one.
+func TestVerifyCandidates_PanickingCandidateIsCountedNotSilentlyComplete(t *testing.T) {
+	logs := captureSlog(t)
+	res := &panickingResolver{
+		panicOn: map[string]bool{"boom.example.com": true},
+		byOK: map[string]registrantResult{
+			"first.example.com": org("Acme Corp"),
+			"third.example.com": org("Acme Corp"),
+		},
+	}
+	cands := []candidate{
+		{domain: "first.example.com", finding: plugins.Finding{Value: "first.example.com"}},
+		{domain: "boom.example.com", finding: plugins.Finding{Value: "boom.example.com"}},
+		{domain: "third.example.com", finding: plugins.Finding{Value: "third.example.com"}},
+	}
+
+	findings, err := verifyCandidates(context.Background(), res, "Acme Corp", cands)
+	require.NoError(t, err)
+	require.Len(t, findings, 3, "a panic on one candidate must not drop any finding")
+
+	recs := logs()
+	assert.False(t, hasLogRecord(recs, verifyPassMsgClean),
+		"F4: a pass that recovered a panic must NOT report itself clean")
+	rec := findLogRecord(t, recs, verifyPassMsgDegraded)
+	assert.Equal(t, slog.LevelWarn.String(), rec["level"])
+	assert.EqualValues(t, 1, rec["panicked"])
+	assert.EqualValues(t, 3, rec["candidates"])
+	assert.EqualValues(t, 0, rec["lookup_failed"], "a panic is not a lookup error")
+	assert.EqualValues(t, 0, rec["incomplete_deadline"])
+	assert.EqualValues(t, 0, rec["incomplete_referral"])
+	assert.EqualValues(t, 0, rec["incomplete_referral_budget"],
+		"a panic gets its own bucket and is never conflated with a WHOIS incompleteness")
 }

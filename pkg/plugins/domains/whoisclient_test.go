@@ -446,11 +446,12 @@ func TestWhoisQuery_SeedOnlyChainReturnsError(t *testing.T) {
 		return "domain: COM\norganisation: VeriSign Global Registry Services\n", nil
 	})
 
-	got, err := whoisQuery(context.Background(), "example.com")
+	got, incomplete, err := whoisQuery(context.Background(), "example.com")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no record beyond bootstrap seed")
 	assert.Empty(t, got, "no salvageable record should be returned for a seed-only chain")
+	assert.Equal(t, whoisComplete, incomplete, "an error path reports no partial record")
 }
 
 // TestWhoisQuery_PostReferralSalvageReturnsPostReferralRecord pins the
@@ -480,11 +481,17 @@ func TestWhoisQuery_PostReferralSalvageReturnsPostReferralRecord(t *testing.T) {
 		}
 	})
 
-	got, err := whoisQuery(context.Background(), "example.com")
+	got, incomplete, err := whoisQuery(context.Background(), "example.com")
 
 	require.NoError(t, err, "a failed registrar hop must not discard the salvaged TLD record")
 	assert.Equal(t, tldRecord, got, "must return the post-referral TLD record")
 	assert.NotEqual(t, seedRecord, got, "must NOT salvage the bootstrap seed record")
+	// ENG-5405: the salvage still returns the payload with a nil error (recall is
+	// unchanged and this line pins it), but the caller now also learns WHY the
+	// record is partial, so a truncated chain is no longer indistinguishable from
+	// a chain that completed and found no registrant.
+	assert.Equal(t, whoisIncompleteReferral, incomplete,
+		"a failed registrar hop must report itself as an incomplete referral chain")
 }
 
 // TestWhoisQuery_CtxCancelAfterSeedReturnsError pins the ctx-error path when
@@ -500,11 +507,12 @@ func TestWhoisQuery_CtxCancelAfterSeedReturnsError(t *testing.T) {
 		return "refer: whois.tld.example\n", nil
 	})
 
-	got, err := whoisQuery(ctx, "example.com")
+	got, incomplete, err := whoisQuery(ctx, "example.com")
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Empty(t, got, "nothing salvageable → no record on the cancelled path")
+	assert.Equal(t, whoisComplete, incomplete, "an error path reports no partial record")
 }
 
 // TestWhoisQuery_CtxCancelAfterReferralSalvages pins the other ctx-error branch:
@@ -530,10 +538,127 @@ func TestWhoisQuery_CtxCancelAfterReferralSalvages(t *testing.T) {
 		}
 	})
 
-	got, err := whoisQuery(ctx, "example.com")
+	got, incomplete, err := whoisQuery(ctx, "example.com")
 
 	require.NoError(t, err, "a cancellation after a referral advanced must salvage the post-referral record")
 	assert.Equal(t, tldRecord, got, "must return the salvaged post-referral TLD record")
+	// ENG-5405: recall is unchanged (the require.NoError above pins it), but the
+	// caller now also learns WHY the record is partial — a deadline or
+	// cancellation observed mid-chain — instead of a bit-identical "chain
+	// completed, no registrant".
+	assert.Equal(t, whoisIncompleteDeadline, incomplete,
+		"a cancellation observed mid-chain must report itself as a deadline-expired record")
+}
+
+// TestWhoisQuery_ReferralHopFailureOnRegistrantLessRecordIsDistinguishable is
+// the AC2 unit-level case for ENG-5405. It differs from
+// TestWhoisQuery_PostReferralSalvageReturnsPostReferralRecord in the payload:
+// there the salvaged TLD record HAS a registrant org, so the outcome was never
+// ambiguous. Here it has none, which is exactly the state that used to be
+// indistinguishable from "this domain has no registrant on record".
+func TestWhoisQuery_ReferralHopFailureOnRegistrantLessRecordIsDistinguishable(t *testing.T) {
+	const (
+		seedRecord = "refer: whois.tld.example\ndomain: EXAMPLE\n"
+		// No Registrant Organization and no Registrant Name — but a referral
+		// onward, so the chain is NOT finished.
+		tldRecordNoRegistrant = "Domain Name: EXAMPLE.COM\n" +
+			"Registrar: Example Registrar, Inc.\n" +
+			"Registrar WHOIS Server: whois.registrar.example\n"
+	)
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		switch server {
+		case defaultServer:
+			return seedRecord, nil
+		case "whois.tld.example":
+			return tldRecordNoRegistrant, nil
+		case "whois.registrar.example":
+			return "", errors.New("connection refused") // the referral hop FAILS
+		default:
+			t.Fatalf("unexpected whois server %q", server)
+			return "", nil
+		}
+	})
+
+	got, incomplete, err := whoisQuery(context.Background(), "example.com")
+
+	require.NoError(t, err, "the salvage must not discard the recall-safe payload")
+	assert.Equal(t, tldRecordNoRegistrant, got, "the salvaged post-referral record is returned")
+	assert.Equal(t, whoisIncompleteReferral, incomplete, "and it is reported as partial")
+}
+
+// TestWhoisQuery_RegistrantLessCompleteChainStaysComplete is the AC3
+// unit-level case for ENG-5405 and the mirror of the AC2 case above: the chain
+// runs to its natural end (the post-referral TLD record carries NO onward
+// referral, so the loop breaks) and that record genuinely has no registrant
+// organization on record. This must stay the ORDINARY not-found outcome. Without
+// this case the fix could satisfy AC2 by calling everything incomplete, which
+// collapses the distinction in the other direction.
+func TestWhoisQuery_RegistrantLessCompleteChainStaysComplete(t *testing.T) {
+	const (
+		seedRecord = "refer: whois.tld.example\ndomain: EXAMPLE\n"
+		// No Registrant Organization, no Registrant Name, and NO onward referral:
+		// the chain ends here on its own.
+		tldRecordNoRegistrant = "Domain Name: EXAMPLE.COM\n" +
+			"Registrar: Example Registrar, Inc.\n"
+	)
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		switch server {
+		case defaultServer:
+			return seedRecord, nil
+		case "whois.tld.example":
+			return tldRecordNoRegistrant, nil
+		default:
+			t.Fatalf("unexpected whois server %q", server)
+			return "", nil
+		}
+	})
+
+	got, incomplete, err := whoisQuery(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, tldRecordNoRegistrant, got, "the chain's endpoint record is returned")
+	assert.Equal(t, whoisComplete, incomplete,
+		"a chain that ran to its natural end is complete, even with no registrant")
+}
+
+// TestWhoisQuery_HopBudgetExhaustionWithPendingReferralIsIncomplete covers the
+// third indistinguishable arm ENG-5405 closes: every hop yields a FURTHER
+// referral, so the loop exits on its own maxWhoisReferrals bound with a referral
+// still unfollowed. lastRaw is then a mid-chain record, not the chain's
+// endpoint — previously returned as (record, nil) with no way to tell it apart
+// from a chain that completed and found no registrant.
+func TestWhoisQuery_HopBudgetExhaustionWithPendingReferralIsIncomplete(t *testing.T) {
+	// The seed plus four hops is exactly maxWhoisReferrals queries, and hop 4
+	// still refers onward, so whois.hop5.example is left unfollowed.
+	const hop4Record = "Domain Name: EXAMPLE.COM\nrefer: whois.hop5.example\n"
+
+	var calls int
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		calls++
+		switch server {
+		case defaultServer:
+			return "refer: whois.hop1.example\n", nil
+		case "whois.hop1.example":
+			return "Domain Name: EXAMPLE.COM\nrefer: whois.hop2.example\n", nil
+		case "whois.hop2.example":
+			return "Domain Name: EXAMPLE.COM\nrefer: whois.hop3.example\n", nil
+		case "whois.hop3.example":
+			return "Domain Name: EXAMPLE.COM\nrefer: whois.hop4.example\n", nil
+		case "whois.hop4.example":
+			return hop4Record, nil
+		default:
+			t.Fatalf("unexpected whois server %q: the hop budget must stop the chain at hop 4", server)
+			return "", nil
+		}
+	})
+
+	got, incomplete, err := whoisQuery(context.Background(), "example.com")
+
+	require.NoError(t, err, "hop-budget exhaustion stays recall-safe: the mid-chain record is still returned")
+	assert.Equal(t, hop4Record, got, "the last record the budget allowed is salvaged")
+	assert.Equal(t, whoisIncompleteHops, incomplete,
+		"a budget-exhausted chain with a pending referral must report itself as partial")
+	assert.Equal(t, maxWhoisReferrals, calls, "the chain must stop after exactly maxWhoisReferrals hops")
 }
 
 // TestWhoisPlugin_Run_CancelledContextDoesNotEmit pins Fix A: whoisQuery is shared

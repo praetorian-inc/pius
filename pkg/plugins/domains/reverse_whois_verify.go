@@ -101,6 +101,15 @@ type registrantResult struct {
 	Masked bool
 	// Found is true when a non-empty registrant org was resolved.
 	Found bool
+
+	// Incomplete records why the WHOIS leg that produced this result is known to
+	// be partial; whoisComplete ("") when the chain ran to completion, when WHOIS
+	// never ran (RDAP answered), or when the candidate was never looked up.
+	//
+	// PURELY OBSERVATIONAL: it must never be read by decideConfidence. A salvaged
+	// partial record that DOES yield a registrant org is still scored on its
+	// merits — that recall is what the salvage exists for (ENG-5405 AC4).
+	Incomplete whoisIncompleteness
 }
 
 // registrantResolver resolves a domain's own registrant organization. The prod
@@ -114,6 +123,19 @@ type registrantResolver interface {
 type candidate struct {
 	domain  string
 	finding plugins.Finding
+}
+
+// candidateOutcome is one worker's observability report for one candidate.
+//
+// Written index-disjointly — worker i writes only outcomes[i], exactly like the
+// existing scores[i] — so verifyCandidates stays lock-free and g.Wait() remains
+// the single happens-before barrier that publishes every write (ENG-5123 review;
+// ENG-5405). No mutex and no atomic: either would introduce the first shared
+// mutable state into this fan-out and weaken a property the pass documents.
+type candidateOutcome struct {
+	incomplete whoisIncompleteness // whoisComplete when the WHOIS leg finished, or never ran
+	failed     bool                // resolveRegistrant returned an error
+	panicked   bool                // the worker recovered a panic before scoring
 }
 
 // orgLegalSuffixes are legal-form tokens stripped by normalizeOrg before
@@ -316,6 +338,14 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		scores[i] = confReverseWhoisUnverified
 	}
 
+	// Per-candidate observability, sized len(cands) — NOT resolveCount — so it
+	// indexes identically to scores and a stray index can never be out of range.
+	// Unlike scores this needs no pre-fill loop: the zero candidateOutcome
+	// (whoisComplete, not failed, not panicked) is already the correct reading for
+	// the overflow indices >= resolveCount, which were never looked up, and for any
+	// worker that never ran (ENG-5405).
+	outcomes := make([]candidateOutcome, len(cands))
+
 	// Bound the whole pass, not just each lookup: a candidate can cost up to two
 	// step timeouts plus WHOIS referral hops (see reverseWhoisTotalBudget), so
 	// without a pass-wide cap a large result set against slow resolvers could hold
@@ -341,12 +371,26 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 			// one candidate instead of taking down the pass (Gemini review, ENG-5123).
 			defer func() {
 				if rec := recover(); rec != nil {
+					// recover() fires BEFORE the outcomes[i] assignment below ever runs,
+					// so without this line a panicking candidate would tally as
+					// complete-and-not-failed — recreating ENG-5405's exact blindness
+					// inside the mechanism built to end it. A panic gets its OWN bucket:
+					// it is not a WHOIS incompleteness and must never be conflated with
+					// one (ENG-5405 F4). Still index-disjoint (same worker, same i), so
+					// g.Wait() publishes it like every other write.
+					outcomes[i].panicked = true
 					slog.Warn("reverse-whois: recovered panic resolving candidate registrant; scoring unverified",
 						"domain", cands[i].domain, "panic", rec)
 				}
 			}()
 			res, err := r.resolveRegistrant(gctx, cands[i].domain)
 			scores[i] = decideConfidence(queryOrg, res, err)
+			// Record why this candidate is (or is not) fully verified. res.Incomplete is
+			// PURELY OBSERVATIONAL — decideConfidence above never reads it, so scoring
+			// stays byte-identical to ENG-5123 (ENG-5405 AC4). err is otherwise
+			// discarded by design (see g.Wait's comment below), which is exactly why a
+			// pass where every lookup failed outright would look healthy without this.
+			outcomes[i] = candidateOutcome{incomplete: res.Incomplete, failed: err != nil}
 			return nil
 		})
 	}
@@ -371,6 +415,13 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		return nil, err
 	}
 
+	// Placement is load-bearing in BOTH directions. After g.Wait() because that is
+	// the only happens-before barrier that publishes the workers' outcomes[] writes
+	// to this goroutine — reading the slice any earlier is a data race. After the
+	// ctx.Err() re-check because a caller-aborted pass returns an error instead of
+	// findings, and must not claim a pass completed (ENG-5405).
+	summarizeVerifyPass(len(cands), resolveCount, outcomes)
+
 	findings := make([]plugins.Finding, 0, len(cands))
 	for i, c := range cands {
 		f := c.finding
@@ -378,6 +429,63 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		findings = append(findings, f)
 	}
 	return findings, nil
+}
+
+// summarizeVerifyPass emits the pass's single observability record.
+//
+// One record per pass, not per candidate: maxReverseWhoisCandidates is 500 and
+// pius configures no slog handler (cmd/pius/main.go has no slog.New, no
+// SetDefault, no --log-level flag), so the default handler runs at LevelInfo and
+// slog.Debug is unreachable in production. A per-candidate line would therefore be
+// up to 500 unconditional lines per run, per plugin (ENG-5405).
+//
+// Warn on a degraded pass matches this package's established
+// degraded-but-handled level (the response-cap truncation in whoisclient.go, the
+// recovered worker panic above, runner/run.go). Info on a clean pass is the
+// positive control: it distinguishes "not degraded" from "this summary never ran",
+// which is the only thing that proves the instrumentation is wired at all.
+//
+// NO untrusted content: counts and compile-time constants only — no raw WHOIS
+// payload, no registrant org (PII), no referral hostname read from WHOIS text, and
+// the message strings are compile-time constants so nothing can forge a log line
+// (security-review.md §3).
+func summarizeVerifyPass(total, resolved int, outcomes []candidateOutcome) {
+	var deadline, referral, hops, failed, panicked int
+	for _, o := range outcomes {
+		switch o.incomplete {
+		case whoisIncompleteDeadline:
+			deadline++
+		case whoisIncompleteReferral:
+			referral++
+		case whoisIncompleteHops:
+			hops++
+		}
+		if o.failed {
+			failed++
+		}
+		if o.panicked {
+			panicked++
+		}
+	}
+	if deadline+referral+hops+failed+panicked == 0 {
+		slog.Info("reverse-whois: verification pass complete",
+			"candidates", total, "resolved", resolved)
+		return
+	}
+	// budget_seconds is logged because reverseWhoisTotalBudget is a var that tests
+	// shorten: recording the EFFECTIVE budget is what makes this line
+	// self-diagnosing for the deferred sizing follow-up. The worker count is
+	// deliberately NOT logged — it is a compile-time constant, so it is noise.
+	slog.Warn("reverse-whois: verification pass degraded; some candidates were not fully verified",
+		"candidates", total,
+		"resolved", resolved,
+		"incomplete_deadline", deadline,
+		"incomplete_referral", referral,
+		"incomplete_referral_budget", hops,
+		"lookup_failed", failed,
+		"panicked", panicked,
+		"budget_seconds", int(reverseWhoisTotalBudget/time.Second),
+	)
 }
 
 // rdapWhoisResolver resolves a domain's registrant org via RDAP (primary),
@@ -570,7 +678,7 @@ func extractRDAPRegistrantOrg(ctx context.Context, doer rdapDoer, domain string)
 }
 
 func (r *rdapWhoisResolver) viaWHOIS(ctx context.Context, domain string) (registrantResult, error) {
-	raw, err := whoisQuery(ctx, domain)
+	raw, incomplete, err := whoisQuery(ctx, domain)
 	if err != nil {
 		return registrantResult{}, err
 	}
@@ -585,7 +693,9 @@ func (r *rdapWhoisResolver) viaWHOIS(ctx context.Context, domain string) (regist
 			org = parsed.Registrant.Name
 		}
 	}
-	return newRegistrantResult(org), nil
+	res := newRegistrantResult(org)
+	res.Incomplete = incomplete
+	return res, nil
 }
 
 // newRegistrantResult builds a registrantResult from a raw org string, marking

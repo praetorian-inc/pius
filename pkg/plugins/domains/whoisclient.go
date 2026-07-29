@@ -28,6 +28,30 @@ const (
 	maxWhoisResponseBytes = 1 << 20
 )
 
+// whoisIncompleteness names WHY a WHOIS record is known to be partial.
+//
+// The zero value, whoisComplete, means "the referral chain ran to a natural end"
+// — so a whoisIncompleteness that is never assigned reads as complete, and every
+// pre-existing registrantResult literal keeps its old meaning. This polarity is
+// load-bearing: a `Complete bool` field would default to false and make every
+// existing zero-valued struct claim incompleteness (ENG-5405).
+//
+// It is a string, not an int enum, so the value logs directly as a slog
+// attribute with no String() method to maintain. The set is closed and
+// compile-time constant, which is why it is safe to log where the raw WHOIS
+// payload and the unbounded, attacker-chosen referral server string are not.
+type whoisIncompleteness string
+
+const (
+	whoisComplete           whoisIncompleteness = ""
+	whoisIncompleteDeadline whoisIncompleteness = "deadline_expired" // ctx deadline/cancel observed mid-chain
+	whoisIncompleteReferral whoisIncompleteness = "referral_failed"  // a referral hop's transport failed
+	whoisIncompleteHops     whoisIncompleteness = "referral_budget"  // hop budget exhausted with a referral pending
+)
+
+// maxWhoisReferrals bounds the referral chain to prevent loops.
+const maxWhoisReferrals = 5
+
 // disallowedDialPrefixes is the enumerated layer of the two-layer "public
 // unicast only" guard on untrusted WHOIS referrals (see isDisallowedDialIP):
 //
@@ -209,23 +233,37 @@ func ssrfSafeControl(_, address string, _ syscall.RawConn) error {
 // cancelled or its deadline passes, and whoisRaw honors ctx on the socket read.
 // This keeps the fallback path inside the overall verification budget instead of
 // letting 5 referrals x queryTimeout stack past it (ENG-5123 review).
-func whoisQuery(ctx context.Context, domain string) (string, error) {
+//
+// The second return value reports WHY the returned record is known to be
+// partial. Recall is unchanged: both salvage arms below still return the payload
+// with a nil error. What is new is that a caller which previously saw only
+// (record, nil) could not tell a truncated chain from a chain that ran to
+// completion and found no registrant — so an incomplete lookup surfaced as
+// found=false, err=nil. Every non-salvaged path reports whoisComplete,
+// including the two error paths: with no payload there is nothing to describe as
+// partial and the error is already the signal (ENG-5405).
+func whoisQuery(ctx context.Context, domain string) (string, whoisIncompleteness, error) {
 	server := defaultServer
 	var lastRaw string
+	var pendingRefer string
 
-	for i := 0; i < 5; i++ { // max 5 referrals to prevent loops
+	for i := 0; i < maxWhoisReferrals; i++ {
 		if err := ctx.Err(); err != nil {
 			if lastRaw != "" {
-				return lastRaw, nil // return last post-referral result
+				// Recall-safe salvage, UNCHANGED: return the last post-referral
+				// record rather than dropping the candidate. What is new is the
+				// second return: the caller can now tell this apart from a chain
+				// that ran to completion and found no registrant (ENG-5405).
+				return lastRaw, whoisIncompleteDeadline, nil
 			}
-			return "", err
+			return "", whoisComplete, err
 		}
 		raw, err := whoisRawFn(ctx, domain, server)
 		if err != nil {
 			if lastRaw != "" {
-				return lastRaw, nil // return last post-referral result
+				return lastRaw, whoisIncompleteReferral, nil // last post-referral result
 			}
-			return "", fmt.Errorf("whois query to %s: %w", server, err)
+			return "", whoisComplete, fmt.Errorf("whois query to %s: %w", server, err)
 		}
 		// Only a post-referral record is salvageable: the bootstrap seed's
 		// response describes the TLD registry, not the domain's registrant.
@@ -236,15 +274,22 @@ func whoisQuery(ctx context.Context, domain string) (string, error) {
 		// Look for referral to a more specific server
 		refer := extractReferral(raw)
 		if refer == "" || strings.EqualFold(refer, server) {
+			pendingRefer = "" // the chain ended naturally
 			break
 		}
+		pendingRefer = refer
 		server = refer
 	}
 
 	if lastRaw == "" {
-		return "", fmt.Errorf("whois query for %s: no record beyond bootstrap seed %s", domain, defaultServer)
+		return "", whoisComplete, fmt.Errorf("whois query for %s: no record beyond bootstrap seed %s", domain, defaultServer)
 	}
-	return lastRaw, nil
+	if pendingRefer != "" {
+		// The loop exited on maxWhoisReferrals with a referral still unfollowed,
+		// so lastRaw is a mid-chain record, not the chain's endpoint (ENG-5405).
+		return lastRaw, whoisIncompleteHops, nil
+	}
+	return lastRaw, whoisComplete, nil
 }
 
 // whoisDialAddr normalizes a (possibly untrusted) referral server string into a
