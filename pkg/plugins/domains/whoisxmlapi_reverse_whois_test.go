@@ -398,44 +398,14 @@ func TestWhoisXMLAPIObservedAt(t *testing.T) {
 	assert.True(t, whoisXMLAPIObservedAt("not-a-date").IsZero(), "unparseable audit date must parse to zero")
 }
 
-func TestWhoisXMLAPIDomainList_NullAndAbsentAreNotErrors(t *testing.T) {
-	var list whoisXMLAPIDomainList
-	require.NoError(t, json.Unmarshal([]byte("null"), &list))
-	assert.Empty(t, list)
-
+func TestWhoisXMLAPIReverseResponse_NullAndAbsentDomainsList(t *testing.T) {
 	var resp whoisXMLAPIReverseResponse
 	require.NoError(t, json.Unmarshal([]byte(`{"domainsCount":4}`), &resp))
-	assert.Empty(t, resp.DomainsList, "absent in preview mode")
-}
+	assert.Nil(t, resp.DomainsList, "absent in preview mode")
 
-func TestWhoisXMLAPIDomainList_DecodesObjectForm(t *testing.T) {
-	var list whoisXMLAPIDomainList
-	require.NoError(t, json.Unmarshal(
-		[]byte(`[{"domainName":"a.com","audit":{"updatedDate":"2025-03-11T00:00:00+00:00"}}]`), &list))
-
-	require.Len(t, list, 1)
-	assert.Equal(t, "a.com", list[0].DomainName)
-	assert.Equal(t, "2025-03-11T00:00:00+00:00", list[0].Audit.UpdatedDate)
-}
-
-// The bare-string form is what the vendor returns when includeAuditDates is
-// false. We always send true, so this is a defensive path: accepting it costs
-// audit dates rather than failing the page.
-func TestWhoisXMLAPIDomainList_DecodesStringForm(t *testing.T) {
-	var list whoisXMLAPIDomainList
-	require.NoError(t, json.Unmarshal([]byte(`["a.com","b.com"]`), &list))
-
-	require.Len(t, list, 2)
-	assert.Equal(t, "a.com", list[0].DomainName)
-	assert.Empty(t, list[0].Audit.UpdatedDate)
-	assert.Equal(t, "b.com", list[1].DomainName)
-}
-
-func TestWhoisXMLAPIDomainList_RejectsNeitherShape(t *testing.T) {
-	var list whoisXMLAPIDomainList
-	err := json.Unmarshal([]byte(`{"not":"a list"}`), &list)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "domainsList")
+	require.NoError(t, json.Unmarshal([]byte(`{"nextPageSearchAfter":null,"domainsList":null}`), &resp))
+	assert.Nil(t, resp.DomainsList)
+	assert.Empty(t, resp.NextPageSearchAfter, "null cursor must not become a literal \"null\"")
 }
 
 func TestWhoisXMLAPIReverseWhois_Run_PreviewFailureIsAnError(t *testing.T) {

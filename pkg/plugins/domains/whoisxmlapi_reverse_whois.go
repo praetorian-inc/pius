@@ -164,7 +164,7 @@ type datedCandidate struct {
 	observed time.Time
 }
 
-func (p *WhoisXMLAPIReverseWhoisPlugin) candidatesFrom(hits whoisXMLAPIDomainList, query string) []datedCandidate {
+func (p *WhoisXMLAPIReverseWhoisPlugin) candidatesFrom(hits []whoisXMLAPIReverseHit, query string) []datedCandidate {
 	out := make([]datedCandidate, 0, len(hits))
 	for _, hit := range hits {
 		observed := whoisXMLAPIObservedAt(hit.Audit.UpdatedDate)
@@ -217,40 +217,9 @@ type whoisXMLAPIReverseRequest struct {
 }
 
 type whoisXMLAPIReverseResponse struct {
-	NextPageSearchAfter string                `json:"nextPageSearchAfter"`
-	DomainsCount        int                   `json:"domainsCount"`
-	DomainsList         whoisXMLAPIDomainList `json:"domainsList"`
-}
-
-// whoisXMLAPIDomainList decodes both documented shapes of domainsList — a bare
-// []string when includeAuditDates is false, []object when true — into the object
-// form. We always send true, so the object form is what arrives; accepting the
-// string form as well means a vendor-side default change costs us audit dates
-// rather than failing the page outright.
-type whoisXMLAPIDomainList []whoisXMLAPIReverseHit
-
-func (l *whoisXMLAPIDomainList) UnmarshalJSON(data []byte) error {
-	// Absent in preview mode, and null when nothing matched. Neither is an error.
-	if len(data) == 0 || string(data) == "null" {
-		*l = nil
-		return nil
-	}
-
-	var hits []whoisXMLAPIReverseHit
-	if err := json.Unmarshal(data, &hits); err == nil {
-		*l = hits
-		return nil
-	}
-
-	var names []string
-	if err := json.Unmarshal(data, &names); err != nil {
-		return fmt.Errorf("domainsList is neither []object nor []string: %w", err)
-	}
-	*l = make(whoisXMLAPIDomainList, 0, len(names))
-	for _, name := range names {
-		*l = append(*l, whoisXMLAPIReverseHit{DomainName: name})
-	}
-	return nil
+	NextPageSearchAfter string                  `json:"nextPageSearchAfter"`
+	DomainsCount        int                     `json:"domainsCount"`
+	DomainsList         []whoisXMLAPIReverseHit `json:"domainsList"`
 }
 
 // whoisXMLAPIReverseHit is one match. The audit block is when WhoisXMLAPI last
