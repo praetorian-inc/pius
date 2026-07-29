@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -164,6 +165,40 @@ const maskedSubstringMinLen = 8
 // it, but the substring pass keeps the masked → unverified ranking correct
 // (ENG-5123). Only the org-name guard phrases are used for substring matching;
 // the name-field generics ("admin", "abuse") are too short to match safely.
+//
+// Both of those tiers are keyed on ENUMERATED wordings, which makes them
+// structurally fail-open: they fire only on a listed phrase or a superstring of
+// one, so a placeholder built from the same vocabulary in a different word order
+// is unreachable by either. "DATA REDACTED" — the live cloudflare.com registrant
+// org — is exactly that miss, and it mis-ranks twice: decideConfidence reads the
+// zero token overlap as a clear MISMATCH (0.40) rather than unverifiable (0.50),
+// and resolveWithFallback treats the placeholder as an authoritative registrant
+// and short-circuits the WHOIS leg that may carry the real one. A third tier
+// therefore matches redaction MARKER vocabulary on whole tokens, catching the
+// class instead of chasing registrar wordings one phrase at a time (ENG-5404).
+// Two earlier versions of this comment tried to summarize the change as a
+// DIRECTIONAL band move, and both were wrong (Codex, PR #106 rounds 2 and 3).
+// Direction is not the thing to state. What the tier does is force the DIRECTLY
+// SCORED value to unverifiable (0.50) — which may raise, preserve, or LOWER what
+// that same string would otherwise have scored. Lowering is not exotic: for a
+// query org "Data Inc.", normalizeOrg gives "data" against the placeholder's
+// "data redacted", and tokenSimilarity divides by the SHORTER token set, so the
+// placeholder used to score a spurious 1.0 and corroborate at 0.60. And in the
+// integrated path, masking additionally routes through resolveWithFallback,
+// whose WHOIS result is scored FRESH by decideConfidence and can land in any of
+// the three bands, 0.40 included.
+//
+// The invariant that does hold unconditionally — and all ENG-5123 ever claimed —
+// is "never DROPS", not "never demotes": every outcome stays inside the
+// needs_review band [0.35, 0.65), below ConfidenceHigh, and no candidate is
+// removed, so a human still sees it.
+//
+// The false-positive cost — a real org carrying marker vocabulary as a whole
+// token, e.g. "Masking Technologies" — is accepted, and unlike the rejected
+// "gdpr" token it is paid for: these tokens name the redaction ACTION and carry
+// test-proven recall (AC1, isMaskedOrg("DATA REDACTED"), is unreachable without
+// "redacted"). See whois.go for the membership rule that holds the table to that
+// vocabulary.
 func isMaskedOrg(v string) bool {
 	key := strings.ToLower(strings.TrimSpace(v))
 	if key == "" {
@@ -174,6 +209,43 @@ func isMaskedOrg(v string) bool {
 	}
 	for phrase := range whoisPrivacyGuards {
 		if len(phrase) >= maskedSubstringMinLen && strings.Contains(key, phrase) {
+			return true
+		}
+	}
+	// Tier 3: token-boundary marker matching. tokenize (github_org.go) lowercases
+	// and splits on non-alphanumerics, which is precisely the boundary needed here.
+	// normalizeOrg is deliberately NOT used: it strips legal-suffix tokens, a
+	// similarity-comparison concern that would silently drop tokens from a masking
+	// decision.
+	return hasPrivacyMarker(tokenize(key))
+}
+
+// hasPrivacyMarker reports whether tokens carry redaction-placeholder
+// vocabulary. Matching is on whole tokens, never substrings: "Redactron
+// Systems" contains "redact" but tokenizes to ["redactron","systems"] and stays
+// unmasked, which is the false-positive class maskedSubstringMinLen guards
+// against in the substring pass.
+func hasPrivacyMarker(tokens []string) bool {
+	for _, t := range tokens {
+		if whoisPrivacyMarkerTokens[t] {
+			return true
+		}
+	}
+	for _, phrase := range whoisPrivacyMarkerPhrases {
+		if containsTokenRun(tokens, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsTokenRun reports whether run appears as consecutive tokens in tokens.
+func containsTokenRun(tokens, run []string) bool {
+	if len(run) == 0 || len(run) > len(tokens) {
+		return false
+	}
+	for i := 0; i+len(run) <= len(tokens); i++ {
+		if slices.Equal(tokens[i:i+len(run)], run) {
 			return true
 		}
 	}

@@ -296,6 +296,25 @@ func TestDecideConfidence(t *testing.T) {
 	}
 }
 
+// TestDecideConfidence_RedactedRegistrantScoresUnverified proves the ENG-5404
+// mis-ranking consequence: a redaction placeholder compared against the query
+// org yields zero token overlap and falls into the clear-mismatch branch, so a
+// domain whose registrant is merely hidden is de-ranked as though its registrant
+// contradicted the query. Masked registrants are UNVERIFIABLE, not mismatches.
+// The result is built through newRegistrantResult (as viaRDAP/viaWHOIS do) so
+// the predicate is genuinely exercised rather than stubbed past.
+func TestDecideConfidence_RedactedRegistrantScoresUnverified(t *testing.T) {
+	const queryOrg = "Cloudflare, Inc."
+
+	for _, org := range []string{"DATA REDACTED", "REDACTED FOR GDPR", "GDPR Masked"} {
+		t.Run(org, func(t *testing.T) {
+			got := decideConfidence(queryOrg, newRegistrantResult(org), nil)
+			assert.Equal(t, confReverseWhoisUnverified, got,
+				"a redaction placeholder is unverifiable, not a clear mismatch")
+		})
+	}
+}
+
 func TestIsMaskedOrg(t *testing.T) {
 	assert.True(t, isMaskedOrg("Domains By Proxy, LLC"))
 	assert.True(t, isMaskedOrg("REDACTED FOR PRIVACY"))
@@ -306,6 +325,146 @@ func TestIsMaskedOrg(t *testing.T) {
 	assert.True(t, isMaskedOrg("Registration Private, Domains By Proxy"))
 	assert.False(t, isMaskedOrg("Leica Biosystems"))
 	assert.False(t, isMaskedOrg(""))
+}
+
+// TestIsMaskedOrg_PrivacyMarkers covers ENG-5404. The exact-phrase tables are
+// structurally fail-open against registrar wording variation: detection fires
+// only on an exact wording or a superstring of one, so any wording built from
+// the same vocabulary in a different order escapes. Detection must therefore key
+// on redaction MARKERS carried by the org's tokens, not on enumerated phrases.
+func TestIsMaskedOrg_PrivacyMarkers(t *testing.T) {
+	masked := []string{
+		"DATA REDACTED",       // the live cloudflare.com wording (ENG-5404)
+		"   data redacted   ", // case- and whitespace-insensitive, per AC1
+		// Statute-named wordings stay masked WITHOUT a bare "gdpr" marker: the
+		// action word beside the statute is what fires (ENG-5404, Codex review).
+		"REDACTED FOR GDPR",      // via "redacted"
+		"GDPR Masked",            // via "masked"
+		"Data Protected by GDPR", // via tier 2's "data protected" guard phrase
+		"Redacted | EU registrant",
+		"Registrant Withheld",
+		"Data Protected by Registrar",
+	}
+	for _, org := range masked {
+		assert.Truef(t, isMaskedOrg(org),
+			"%q is a redaction placeholder, not a real registrant", org)
+	}
+
+	// No real-name regression (ENG-5404 AC4). Each of these CONTAINS marker
+	// vocabulary as a substring but not as a whole token — which is exactly why
+	// marker matching is token-bounded rather than substring-based.
+	genuine := []string{
+		"Redactron Systems",     // contains "redact"
+		"Maskell Group",         // contains "mask"
+		"Privacy International", // a real NGO — bare "privacy" is NOT a marker
+		"Leica Biosystems",
+		"GDPR Register B.V.", // a statute-named org — "gdpr" is NOT a marker
+		"The GDPR Institute",
+	}
+	for _, org := range genuine {
+		assert.Falsef(t, isMaskedOrg(org), "%q is a real organization name", org)
+	}
+}
+
+// TestIsMaskedOrg_MarkerPhrasesMatchTokenRuns covers the marker-PHRASE mechanism
+// of tier 3 (whoisPrivacyMarkerPhrases via containsTokenRun), which the tests
+// above never reach: every phrase-shaped string they use is answered by an
+// EARLIER tier. "Data Protected by Registrar" contains the guard phrase "data
+// protected" verbatim, so tier 2's substring pass returns first; "Not Disclosed"
+// is an exact whoisPrivacyNames entry, so tier 1 returns first. Deleting
+// containsTokenRun's match or emptying whoisPrivacyMarkerPhrases would leave
+// those assertions green — the phrases would be asserted only in principle.
+//
+// Every masked input below is therefore chosen to fall THROUGH tiers 1 and 2 so
+// that run matching is what actually decides, and requireTierThree asserts that
+// fall-through rather than assuming it: if a future table edit makes an earlier
+// tier answer one of these strings, the test fails loudly instead of silently
+// re-covering the same ground.
+func TestIsMaskedOrg_MarkerPhrasesMatchTokenRuns(t *testing.T) {
+	// requireTierThree fails unless org escapes tier 1 (exact lookup in either
+	// table) and tier 2 (substring pass over eligible guard phrases), leaving
+	// tier 3 as the only tier that can answer.
+	requireTierThree := func(t *testing.T, org string) {
+		t.Helper()
+		key := strings.ToLower(strings.TrimSpace(org))
+		require.Falsef(t, whoisPrivacyGuards[key],
+			"vacuity guard: %q is an exact whoisPrivacyGuards entry, so tier 1 answers and tier 3 is never reached", key)
+		require.Falsef(t, whoisPrivacyNames[key],
+			"vacuity guard: %q is an exact whoisPrivacyNames entry, so tier 1 answers and tier 3 is never reached", key)
+		for phrase := range whoisPrivacyGuards {
+			if len(phrase) >= maskedSubstringMinLen {
+				require.NotContainsf(t, key, phrase,
+					"vacuity guard: %q contains guard phrase %q, so tier 2's substring pass answers and tier 3 is never reached", key, phrase)
+			}
+		}
+	}
+
+	// {"data","protected"} reached at tier 3. The hyphen means the literal
+	// substring "data protected" is absent (tier 2 misses), but tokenize splits
+	// on non-alphanumerics into ["data","protected","holdings"], where the pair is
+	// a consecutive run.
+	t.Run("data protected run", func(t *testing.T) {
+		const org = "Data-Protected Holdings"
+		requireTierThree(t, org)
+		assert.Truef(t, isMaskedOrg(org),
+			"%q carries the {data protected} marker run across a token boundary; only tier 3 can see it", org)
+	})
+
+	// {"not","disclosed"} reached at tier 3. "not disclosed" is an exact
+	// whoisPrivacyNames entry but is NOT a whoisPrivacyGuards phrase, so tier 2
+	// never scans for it; prefixing a field label defeats tier 1's exact lookup.
+	t.Run("not disclosed run", func(t *testing.T) {
+		const org = "Registrant: Not Disclosed"
+		requireTierThree(t, org)
+		assert.Truef(t, isMaskedOrg(org),
+			"%q carries the {not disclosed} marker run; tier 1's exact lookup misses the labelled form", org)
+	})
+
+	// Non-adjacency negative: both tokens of {"data","protected"} are present but
+	// not consecutive, so containsTokenRun's window comparison must reject them.
+	// This is what makes run matching a RUN check rather than an any-two-tokens
+	// check — without it, a set-membership implementation would pass too.
+	t.Run("tokens present but not adjacent", func(t *testing.T) {
+		const org = "Data Systems Protected Ltd"
+		requireTierThree(t, org)
+		assert.Falsef(t, isMaskedOrg(org),
+			"%q separates \"data\" and \"protected\", so no marker RUN is present and it is a real org", org)
+	})
+
+	// Run longer than the token list: containsTokenRun's len(run) > len(tokens)
+	// early return. A single-token org cannot contain any two-token run, and the
+	// guard keeps the window loop from being entered with a negative bound.
+	t.Run("single token org shorter than every run", func(t *testing.T) {
+		const org = "Cloudflare"
+		requireTierThree(t, org)
+		assert.Falsef(t, isMaskedOrg(org),
+			"%q is one token, shorter than every marker run, and is a real organization", org)
+	})
+}
+
+// TestMaskedSubstringMinLenGuardsTheSubstringPass asserts the length gate that
+// keeps isMaskedOrg's substring pass from firing on an incidental fragment of a
+// real org name (ENG-5404 AC4). The gate is SILENT by construction: a phrase
+// shorter than the constant is skipped by the loop, so adding one would look
+// like a widening while actually being dead weight. Assert every guard phrase
+// clears it, and assert non-vacuously that at least one phrase is eligible.
+func TestMaskedSubstringMinLenGuardsTheSubstringPass(t *testing.T) {
+	eligible := 0
+	for phrase := range whoisPrivacyGuards {
+		assert.GreaterOrEqualf(t, len(phrase), maskedSubstringMinLen,
+			"guard phrase %q is shorter than maskedSubstringMinLen (%d): isMaskedOrg's substring pass skips it silently",
+			phrase, maskedSubstringMinLen)
+		if len(phrase) >= maskedSubstringMinLen {
+			eligible++
+		}
+	}
+	require.NotZero(t, eligible,
+		"vacuity guard: no guard phrase is eligible for the substring pass")
+
+	// Behavioral counterpart: a sub-threshold fragment of a guard phrase must not
+	// mask a real org. "gandi" (5 chars) is a fragment of the guard phrase
+	// "gandi sas"; an org carrying only the fragment stays unmasked.
+	assert.False(t, isMaskedOrg("Gandi Solutions"))
 }
 
 // TestVerifyCandidates_EmailModeShortCircuits proves an empty queryOrg emits
@@ -612,6 +771,38 @@ func TestResolveWithFallback(t *testing.T) {
 			assert.Equal(t, tt.wantWHOIS, whoisRan, "WHOIS fallback ran?")
 			assert.Equal(t, tt.wantOrg, res.Org)
 			assert.Equal(t, tt.wantFound, res.Found)
+		})
+	}
+}
+
+// TestResolveWithFallback_RedactedRDAPRegistrantConsultsWHOIS proves the second
+// ENG-5404 consequence — the fallback, not just the predicate. The "rdap masked
+// registrant" case in TestResolveWithFallback hand-sets Masked:true in a struct
+// literal, so it passes no matter what isMaskedOrg decides and cannot detect a
+// false negative in the predicate. Here the RDAP step builds its result the way
+// production does (newRegistrantResult, as viaRDAP does), so a redaction
+// placeholder the predicate fails to flag reads as an authoritative registrant
+// and short-circuits the early return in resolveWithFallback — the WHOIS leg
+// that may carry the real registrant never runs. Hermetic: fake steps, no network.
+func TestResolveWithFallback_RedactedRDAPRegistrantConsultsWHOIS(t *testing.T) {
+	const realOrg = "Cloudflare, Inc."
+
+	for _, org := range []string{"DATA REDACTED", "REDACTED FOR GDPR", "GDPR Masked"} {
+		t.Run(org, func(t *testing.T) {
+			var whoisRan bool
+			rdapFn := func(context.Context, string) (registrantResult, error) {
+				return newRegistrantResult(org), nil
+			}
+			whoisFn := func(context.Context, string) (registrantResult, error) {
+				whoisRan = true
+				return registrantResult{Org: realOrg, Found: true}, nil
+			}
+
+			res, err := resolveWithFallback(context.Background(), "cloudflare.com", rdapFn, whoisFn)
+			require.NoError(t, err)
+			assert.True(t, whoisRan,
+				"a redacted RDAP registrant must not short-circuit the WHOIS fallback")
+			assert.Equal(t, realOrg, res.Org)
 		})
 	}
 }
