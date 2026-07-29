@@ -76,7 +76,7 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 		return nil, nil
 	}
 
-	return extractPreseeds(parsed), nil
+	return extractPreseeds(parsed, p.Name()), nil
 }
 
 // whoisParseFn is a seam over whoisparser.Parse so the panic-recover in
@@ -218,8 +218,11 @@ var whoisPrivacyMarkerPhrases = [][]string{
 	{"not", "disclosed"},
 }
 
-// extractPreseeds pulls registrant organization, name, and email from WHOIS contacts.
-func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
+// extractPreseeds pulls registrant organization, name, and email from WHOIS
+// contacts. source names the emitting plugin: it becomes the pius_<source>
+// capability attribution in Guard, so each WHOIS provider must pass its own
+// name rather than inherit this file's.
+func extractPreseeds(info whoisparser.WhoisInfo, source string) []plugins.Finding {
 	type param struct {
 		name  string
 		value string
@@ -261,7 +264,7 @@ func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
 			findings = append(findings, plugins.Finding{
 				Type:   plugins.FindingPreseed,
 				Value:  p.value,
-				Source: "whois",
+				Source: source,
 				Data: map[string]any{
 					"preseed_type":  preseedType,
 					"preseed_title": p.value,

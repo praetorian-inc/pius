@@ -1,0 +1,140 @@
+package domains
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/url"
+	"os"
+	"strings"
+
+	"github.com/praetorian-inc/pius/pkg/client"
+	"github.com/praetorian-inc/pius/pkg/plugins"
+)
+
+func init() {
+	plugins.Register("whoisfreaks", func() plugins.Plugin { return &WhoisFreaksPlugin{client: client.New()} })
+}
+
+// WhoisFreaksPlugin resolves a domain's WHOIS record through the WhoisFreaks
+// API and emits the registrant organization, contacts, and emails as preseeds.
+//
+// This is the paid sibling of WhoisPlugin, which reads port-43 directly. Both
+// run: registries increasingly redact port-43 output, and a vendor that
+// aggregates registrar-level records often returns contacts where port-43
+// returns only "REDACTED FOR PRIVACY". The two are additive, not ordered —
+// duplicate preseeds collapse downstream on (type, value).
+type WhoisFreaksPlugin struct {
+	client  *client.Client
+	baseURL string // overridable for tests
+}
+
+func (p *WhoisFreaksPlugin) Name() string { return "whoisfreaks" }
+func (p *WhoisFreaksPlugin) Description() string {
+	return "Domain WHOIS via WhoisFreaks API — extracts registrant organization, contacts, and emails (paid, requires WHOISFREAKS_API_KEY)"
+}
+func (p *WhoisFreaksPlugin) Category() string { return "domain" }
+func (p *WhoisFreaksPlugin) Phase() int       { return 0 }
+func (p *WhoisFreaksPlugin) Mode() string     { return plugins.ModePassive }
+
+func (p *WhoisFreaksPlugin) Accepts(input plugins.Input) bool {
+	return os.Getenv("WHOISFREAKS_API_KEY") != "" && input.Domain != ""
+}
+
+func (p *WhoisFreaksPlugin) apiBase() string {
+	if p.baseURL != "" {
+		return p.baseURL
+	}
+	return "https://api.whoisfreaks.com/v1.0"
+}
+
+type whoisFreaksLiveResponse struct {
+	DomainRegistered string `json:"domain_registered"`
+	RawDomain        string `json:"whois_raw_domain"`
+	RegistryData     struct {
+		// Upstream misspells "registry". Verified live; correcting this tag
+		// silently breaks thin-registry lookups.
+		RawRegistry string `json:"whois_raw_registery"`
+	} `json:"registry_data"`
+}
+
+func (p *WhoisFreaksPlugin) Run(ctx context.Context, input plugins.Input) (findings []plugins.Finding, err error) {
+	domain := rootDomain(input.Domain)
+	if domain == "" {
+		return nil, fmt.Errorf("whoisfreaks: unable to determine root domain from %q", input.Domain)
+	}
+
+	// Same rationale as WhoisPlugin.Run: plugins execute inside an errgroup
+	// goroutine with no framework-level recover, and whoisParseFn runs over
+	// untrusted vendor text.
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Warn("whoisfreaks: recovered panic parsing WHOIS record; emitting no preseeds",
+				"domain", domain, "panic", rec)
+			findings = nil
+			err = fmt.Errorf("whoisfreaks: recovered panic parsing record for %q: %v", domain, rec)
+		}
+	}()
+
+	body, err := p.live(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
+
+	// An in-band definitive negative: the domain is unregistered, so there is
+	// nothing to extract and no error to report.
+	if strings.EqualFold(body.DomainRegistered, "no") {
+		return nil, nil
+	}
+
+	// Registrar-level raw is preferred because only it carries contacts; thin
+	// registries return the registry-level record alone.
+	raw := body.RawDomain
+	if strings.TrimSpace(raw) == "" {
+		raw = body.RegistryData.RawRegistry
+	}
+	if strings.TrimSpace(raw) == "" {
+		return nil, fmt.Errorf("whoisfreaks: no raw WHOIS record returned for %q", domain)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	parsed, perr := whoisParseFn(raw)
+	if perr != nil {
+		slog.Warn("whoisfreaks: parse failed, skipping preseed extraction", "domain", domain, "error", perr)
+		return nil, nil
+	}
+
+	// Reuses WhoisPlugin's extraction so privacy-guard filtering and the
+	// whois+company / whois+name / whois+email typing stay identical across the
+	// two providers.
+	return extractPreseeds(parsed, p.Name()), nil
+}
+
+// live performs the WHOIS lookup. Auth is an `apiKey=` query parameter, so the
+// request URL carries the key — errors here are constructed, never wrapped, so
+// no transport error can echo it.
+func (p *WhoisFreaksPlugin) live(ctx context.Context, domain string) (whoisFreaksLiveResponse, error) {
+	params := url.Values{
+		"apiKey":     {os.Getenv("WHOISFREAKS_API_KEY")},
+		"whois":      {"live"},
+		"domainName": {domain},
+	}
+	reqURL := fmt.Sprintf("%s/whois?%s", p.apiBase(), params.Encode())
+
+	raw, err := p.client.Get(ctx, reqURL)
+	if err != nil {
+		// Do not propagate: the URL contains the API key, and the usage endpoint
+		// echoes it in the response body.
+		return whoisFreaksLiveResponse{}, fmt.Errorf("whoisfreaks: request failed for %q", domain)
+	}
+
+	var body whoisFreaksLiveResponse
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return whoisFreaksLiveResponse{}, fmt.Errorf("whoisfreaks: parse response for %q: %w", domain, err)
+	}
+	return body, nil
+}

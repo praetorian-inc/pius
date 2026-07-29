@@ -135,6 +135,8 @@ Most domain plugins run in Phase 0 (independent, concurrent). Late-stage plugins
 | `passive-dns` | SecurityTrails passive DNS | `SECURITYTRAILS_API_KEY` | Passive | Historical subdomain records |
 | `reverse-whois` | ViewDNS reverse WHOIS | `VIEWDNS_API_KEY` | Passive | 0.50 confidence (unverified → needs-review); registrant email matching |
 | `whoxy-reverse-whois` | Whoxy reverse WHOIS API | `WHOXY_API_KEY` | Passive | Paginated lookup; stale-record filter; 0.50 confidence (unverified → needs-review) |
+| `whoisfreaks` | WhoisFreaks live WHOIS API | `WHOISFREAKS_API_KEY` | Passive | Paid sibling of `whois`; returns contacts where port-43 is redacted |
+| `whoisxmlapi-reverse-whois` | WhoisXMLAPI reverse WHOIS | `WHOISXMLAPI_API_KEY` | Passive | Current registrations only; free preview count before paid query; per-candidate corroboration (verify-after-retrieve) |
 | `builtwith` | BuiltWith tag lookup API | `BUILTWITH_API_KEY` | Passive | Phase 3; correlates domains via shared analytics tracking codes |
 | `dns-brute` | Local DNS resolver | None | **Active** | 50 concurrent goroutines; embedded wordlist |
 | `dns-zone-transfer` | DNS AXFR | None | **Active** | Extracts A, AAAA, CNAME, MX, SRV records |
@@ -348,6 +350,8 @@ Plugins that require API keys check for them in `Accepts()` before running. If t
 | `GITHUB_TOKEN` | `github-org` | No | Raises rate limit from 60 to 5000 req/hr |
 | `SECURITYTRAILS_API_KEY` | `passive-dns` | Yes | SecurityTrails API key |
 | `VIEWDNS_API_KEY` | `reverse-whois` | Yes | ViewDNS.info API key |
+| `WHOISFREAKS_API_KEY` | `whoisfreaks` | Yes | WhoisFreaks API key |
+| `WHOISXMLAPI_API_KEY` | `whoisxmlapi-reverse-whois` | Yes | WhoisXMLAPI API key |
 | `SHODAN_API_KEY` | `favicon-hash` | Yes | Shodan API key |
 | `FOFA_API_KEY` | `favicon-hash` | No | FOFA API key; enables additional scanner |
 | `VIEWDNS_API_KEY` | `reverse-ip` | No | ViewDNS.info API key; enables additional reverse IP source |
