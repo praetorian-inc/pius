@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -111,56 +112,61 @@ func (p *WhoisXMLAPIReverseWhoisPlugin) Run(ctx context.Context, input plugins.I
 		return nil, nil
 	}
 
-	// Accumulate an ordered, deduped candidate list. Staleness filtering happens
-	// here, BEFORE verification, so stale records never trigger a lookup. Each
-	// match is only a lead; corroboration against the candidate's own registrant
-	// happens in verifyCandidates (ENG-5123).
-	var cands []candidate
-	seen := make(map[string]struct{})
+	// Accumulate candidates across pages. Staleness filtering happens here,
+	// BEFORE verification, so stale records never trigger a lookup. Each match is
+	// only a lead; corroboration against the candidate's own registrant happens
+	// in verifyCandidates (ENG-5123).
+	var dated []datedCandidate
 	cursor := ""
 
 	for page := 1; page <= maxWhoisXMLAPIPages; page++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		body, err := p.reverse(ctx, query, byEmail, "purchase", cursor)
-		if err != nil {
-			slog.Warn("whoisxmlapi-reverse-whois: stopping pagination", "page", page, "error", err)
-			break
+		if err == nil {
+			var hits []whoisXMLAPIReverseHit
+			if hits, err = decodeWhoisXMLAPIHits(body.DomainsList); err == nil {
+				dated = append(dated, p.candidatesFrom(hits, query)...)
+			}
 		}
-
-		hits, err := decodeWhoisXMLAPIHits(body.DomainsList)
 		if err != nil {
-			slog.Warn("whoisxmlapi-reverse-whois: stopping pagination", "page", page, "error", err)
+			// preview already proved matches exist, so a failure before any page
+			// succeeded would otherwise return an empty result set — making an
+			// auth, credit or outage failure indistinguishable from "this org owns
+			// no domains". Later pages degrade to partial recall instead.
+			if page == 1 {
+				return nil, err
+			}
+			slog.Warn("whoisxmlapi-reverse-whois: stopping pagination early",
+				"page", page, "collected", len(dated), "error", err)
 			break
-		}
-
-		for _, hit := range hits {
-			if whoisXMLAPIRecordStale(hit.Audit.UpdatedDate) {
-				continue
-			}
-			domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hit.DomainName), "."))
-			if domain == "" {
-				continue
-			}
-			if _, ok := seen[domain]; ok {
-				continue
-			}
-			seen[domain] = struct{}{}
-			cands = append(cands, candidate{
-				domain: domain,
-				finding: plugins.Finding{
-					Type:   plugins.FindingDomain,
-					Value:  domain,
-					Source: p.Name(),
-					Data: map[string]any{
-						"org": query,
-					},
-				},
-			})
 		}
 
 		cursor = body.NextPageSearchAfter
 		if cursor == "" {
 			break
 		}
+		if page == maxWhoisXMLAPIPages {
+			// The cursor is still live, so results are being left behind. Loud
+			// because it is silent data loss rather than a degraded score.
+			slog.Warn("whoisxmlapi-reverse-whois: page cap reached with more results available",
+				"cap", maxWhoisXMLAPIPages, "collected", len(dated))
+		}
+	}
+
+	// Most recent first, then dedupe: UniqueBy keeps the first entry for a
+	// domain, so a domain seen on two pages survives with its freshest
+	// observation. Ordering is not cosmetic — verifyCandidates corroborates only
+	// the first maxReverseWhoisCandidates entries and emits the rest unverified,
+	// so this spends the lookup budget on the freshest records.
+	sort.SliceStable(dated, func(i, j int) bool {
+		return dated[i].observed.After(dated[j].observed)
+	})
+	cands := make([]candidate, 0, len(dated))
+	for _, d := range plugins.UniqueBy(dated, func(d datedCandidate) string { return d.domain }) {
+		cands = append(cands, d.candidate)
 	}
 
 	// Resolve into a local rather than mutating p.resolver: writing shared plugin
@@ -223,6 +229,44 @@ func (p *WhoisXMLAPIReverseWhoisPlugin) reverse(ctx context.Context, query strin
 	return body, nil
 }
 
+// datedCandidate pairs a candidate with when the provider last observed the
+// record, so the list can be ordered most-recent-first before verification.
+type datedCandidate struct {
+	candidate
+	observed time.Time
+}
+
+// candidatesFrom converts one page of hits, dropping stale and malformed
+// domains before they can cost a verification lookup.
+func (p *WhoisXMLAPIReverseWhoisPlugin) candidatesFrom(hits []whoisXMLAPIReverseHit, query string) []datedCandidate {
+	out := make([]datedCandidate, 0, len(hits))
+	for _, hit := range hits {
+		observed := whoisXMLAPIObservedAt(hit.Audit.UpdatedDate)
+		if whoisXMLAPIRecordStale(observed) {
+			continue
+		}
+		domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hit.DomainName), "."))
+		if domain == "" {
+			continue
+		}
+		out = append(out, datedCandidate{
+			candidate: candidate{
+				domain: domain,
+				finding: plugins.Finding{
+					Type:   plugins.FindingDomain,
+					Value:  domain,
+					Source: p.Name(),
+					Data: map[string]any{
+						"org": query,
+					},
+				},
+			},
+			observed: observed,
+		})
+	}
+	return out
+}
+
 // decodeWhoisXMLAPIHits decodes the object form of domainsList. The field is
 // absent in preview mode and null when nothing matched, neither of which is an
 // error.
@@ -237,18 +281,28 @@ func decodeWhoisXMLAPIHits(list json.RawMessage) ([]whoisXMLAPIReverseHit, error
 	return hits, nil
 }
 
+// whoisXMLAPIObservedAt parses an audit timestamp, returning the zero time when
+// the field is absent or unparseable. Zero sorts last, so records of unknown
+// age rank below dated ones without being discarded.
+func whoisXMLAPIObservedAt(updated string) time.Time {
+	t, err := time.Parse(time.RFC3339, updated)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
 // whoisXMLAPIRecordStale reports whether the record was last observed outside
 // the ten-year window.
 //
-// Unlike whoxyRecordStale, an unparseable or absent timestamp is treated as
-// NOT stale. Audit dates are only present because includeAuditDates is sent as
-// true, so a vendor-side format or field change would otherwise drop every
-// candidate and read as "this pivot owns nothing". Keeping them costs a
-// verification lookup, which is the cheaper failure.
-func whoisXMLAPIRecordStale(updated string) bool {
-	t, err := time.Parse(time.RFC3339, updated)
-	if err != nil {
+// Unlike whoxyRecordStale, an unknown (zero) timestamp is treated as NOT stale.
+// Audit dates are only present because includeAuditDates is sent as true, so a
+// vendor-side format or field change would otherwise drop every candidate and
+// read as "this pivot owns nothing". Keeping them costs a verification lookup,
+// which is the cheaper failure.
+func whoisXMLAPIRecordStale(observed time.Time) bool {
+	if observed.IsZero() {
 		return false
 	}
-	return t.Before(time.Now().AddDate(whoisXMLAPIStaleAfter, 0, 0))
+	return observed.Before(time.Now().AddDate(whoisXMLAPIStaleAfter, 0, 0))
 }

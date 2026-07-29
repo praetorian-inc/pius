@@ -231,6 +231,123 @@ func TestWhoisXMLAPIReverseWhois_Run_FollowsCursorAndDedupes(t *testing.T) {
 	assert.Len(t, findings, 2, "a domain repeated across pages must be emitted once")
 }
 
+// verifyCandidates corroborates only the first maxReverseWhoisCandidates
+// entries, so freshest-first ordering decides who gets a lookup.
+func TestWhoisXMLAPIReverseWhois_Run_OrdersMostRecentFirst(t *testing.T) {
+	// Relative dates: absolute ones silently cross the ten-year staleness cutoff
+	// as time passes and turn this into a filtering test.
+	now := time.Now()
+	old := now.AddDate(-9, 0, 0).Format(time.RFC3339)
+	mid := now.AddDate(-4, 0, 0).Format(time.RFC3339)
+	newest := now.AddDate(0, -1, 0).Format(time.RFC3339)
+
+	p := newTestWhoisXMLAPI(t, &stubResolver{}, func(w http.ResponseWriter, r *http.Request) {
+		if decodeReverseRequest(t, r)["mode"] == "preview" {
+			_, _ = w.Write([]byte(`{"domainsCount":4}`))
+			return
+		}
+		// Deliberately returned oldest-first, with one undated record.
+		_, _ = fmt.Fprintf(w, `{"domainsCount":4,"domainsList":[`+
+			`{"domainName":"old.com","audit":{"updatedDate":%q}},`+
+			`{"domainName":"undated.com","audit":{}},`+
+			`{"domainName":"newest.com","audit":{"updatedDate":%q}},`+
+			`{"domainName":"mid.com","audit":{"updatedDate":%q}}]}`, old, newest, mid)
+	})
+
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
+	require.NoError(t, err)
+
+	got := make([]string, 0, len(findings))
+	for _, f := range findings {
+		got = append(got, f.Value)
+	}
+	// Undated sorts last rather than being dropped.
+	assert.Equal(t, []string{"newest.com", "mid.com", "old.com", "undated.com"}, got)
+}
+
+// Dedup keeps the freshest observation, which only holds because dedup runs
+// after the sort.
+func TestWhoisXMLAPIReverseWhois_Run_DedupeKeepsFreshestObservation(t *testing.T) {
+	stale := time.Now().AddDate(-12, 0, 0).Format(time.RFC3339)
+	fresh := time.Now().Format(time.RFC3339)
+
+	p := newTestWhoisXMLAPI(t, &stubResolver{}, func(w http.ResponseWriter, r *http.Request) {
+		body := decodeReverseRequest(t, r)
+		if body["mode"] == "preview" {
+			_, _ = w.Write([]byte(`{"domainsCount":2}`))
+			return
+		}
+		cursor, _ := body["searchAfter"].(string)
+		if cursor == "" {
+			// Stale copy first: on its own this record would be filtered out.
+			_, _ = fmt.Fprintf(w, `{"nextPageSearchAfter":"next","domainsCount":2,`+
+				`"domainsList":[{"domainName":"dup.com","audit":{"updatedDate":%q}}]}`, stale)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"nextPageSearchAfter":null,"domainsCount":2,`+
+			`"domainsList":[{"domainName":"dup.com","audit":{"updatedDate":%q}}]}`, fresh)
+	})
+
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "dup.com", findings[0].Value)
+}
+
+// preview proved matches exist, so a first-page purchase failure must not read
+// as "this org owns no domains".
+func TestWhoisXMLAPIReverseWhois_Run_FirstPurchasePageFailureIsAnError(t *testing.T) {
+	p := newTestWhoisXMLAPI(t, &stubResolver{}, func(w http.ResponseWriter, r *http.Request) {
+		if decodeReverseRequest(t, r)["mode"] == "preview" {
+			_, _ = w.Write([]byte(`{"domainsCount":12}`))
+			return
+		}
+		w.WriteHeader(http.StatusPaymentRequired)
+	})
+
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Praetorian"})
+	require.Error(t, err, "a failed paid lookup must not be reported as an empty result")
+	assert.Empty(t, findings)
+}
+
+// A later-page failure keeps what was already collected: partial recall beats
+// discarding a successful first page.
+func TestWhoisXMLAPIReverseWhois_Run_LaterPageFailureKeepsPartialResults(t *testing.T) {
+	p := newTestWhoisXMLAPI(t, &stubResolver{}, func(w http.ResponseWriter, r *http.Request) {
+		body := decodeReverseRequest(t, r)
+		if body["mode"] == "preview" {
+			_, _ = w.Write([]byte(`{"domainsCount":2}`))
+			return
+		}
+		if cursor, _ := body["searchAfter"].(string); cursor == "" {
+			_, _ = w.Write([]byte(`{"nextPageSearchAfter":"next","domainsCount":2,` +
+				`"domainsList":[{"domainName":"first.com","audit":{"updatedDate":"2025-03-11T00:00:00+00:00"}}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "first.com", findings[0].Value)
+}
+
+// A malformed first page is as opaque to the caller as a transport failure.
+func TestWhoisXMLAPIReverseWhois_Run_UndecodableFirstPageIsAnError(t *testing.T) {
+	p := newTestWhoisXMLAPI(t, &stubResolver{}, func(w http.ResponseWriter, r *http.Request) {
+		if decodeReverseRequest(t, r)["mode"] == "preview" {
+			_, _ = w.Write([]byte(`{"domainsCount":3}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"domainsCount":3,"domainsList":{"not":"a list"}}`))
+	})
+
+	_, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "domainsList")
+}
+
 // A stale record must not even trigger a verification lookup.
 func TestWhoisXMLAPIReverseWhois_Run_StaleRecordFilteredBeforeVerification(t *testing.T) {
 	stale := time.Now().AddDate(-12, 0, 0).Format(time.RFC3339)
@@ -240,10 +357,10 @@ func TestWhoisXMLAPIReverseWhois_Run_StaleRecordFilteredBeforeVerification(t *te
 			_, _ = w.Write([]byte(`{"domainsCount":2}`))
 			return
 		}
-		_, _ = w.Write([]byte(fmt.Sprintf(
+		_, _ = fmt.Fprintf(w,
 			`{"domainsCount":2,"domainsList":[{"domainName":"fresh.com","audit":{"updatedDate":%q}},`+
 				`{"domainName":"ancient.com","audit":{"updatedDate":%q}}]}`,
-			time.Now().Format(time.RFC3339), stale)))
+			time.Now().Format(time.RFC3339), stale)
 	})
 
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
@@ -257,10 +374,17 @@ func TestWhoisXMLAPIReverseWhois_Run_StaleRecordFilteredBeforeVerification(t *te
 // vendor stopped returning them, treating that as stale would drop every
 // candidate and read as "this pivot owns nothing".
 func TestWhoisXMLAPIRecordStale(t *testing.T) {
-	assert.False(t, whoisXMLAPIRecordStale(time.Now().Format(time.RFC3339)))
-	assert.True(t, whoisXMLAPIRecordStale(time.Now().AddDate(-11, 0, 0).Format(time.RFC3339)))
-	assert.False(t, whoisXMLAPIRecordStale(""), "absent audit date must not be treated as stale")
-	assert.False(t, whoisXMLAPIRecordStale("not-a-date"), "unparseable audit date must not be treated as stale")
+	assert.False(t, whoisXMLAPIRecordStale(time.Now()))
+	assert.True(t, whoisXMLAPIRecordStale(time.Now().AddDate(-11, 0, 0)))
+	assert.False(t, whoisXMLAPIRecordStale(time.Time{}), "unknown audit date must not be treated as stale")
+}
+
+func TestWhoisXMLAPIObservedAt(t *testing.T) {
+	got := whoisXMLAPIObservedAt("2025-03-11T00:00:00+00:00")
+	assert.Equal(t, 2025, got.Year())
+
+	assert.True(t, whoisXMLAPIObservedAt("").IsZero(), "absent audit date must parse to zero")
+	assert.True(t, whoisXMLAPIObservedAt("not-a-date").IsZero(), "unparseable audit date must parse to zero")
 }
 
 func TestDecodeWhoisXMLAPIHits_NullAndAbsentAreNotErrors(t *testing.T) {

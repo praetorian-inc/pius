@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 
+	whoisparser "github.com/likexian/whois-parser"
+
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
@@ -59,23 +61,11 @@ type whoisFreaksLiveResponse struct {
 	} `json:"registry_data"`
 }
 
-func (p *WhoisFreaksPlugin) Run(ctx context.Context, input plugins.Input) (findings []plugins.Finding, err error) {
+func (p *WhoisFreaksPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	domain := rootDomain(input.Domain)
 	if domain == "" {
 		return nil, fmt.Errorf("whoisfreaks: unable to determine root domain from %q", input.Domain)
 	}
-
-	// Same rationale as WhoisPlugin.Run: plugins execute inside an errgroup
-	// goroutine with no framework-level recover, and whoisParseFn runs over
-	// untrusted vendor text.
-	defer func() {
-		if rec := recover(); rec != nil {
-			slog.Warn("whoisfreaks: recovered panic parsing WHOIS record; emitting no preseeds",
-				"domain", domain, "panic", rec)
-			findings = nil
-			err = fmt.Errorf("whoisfreaks: recovered panic parsing record for %q: %v", domain, rec)
-		}
-	}()
 
 	body, err := p.live(ctx, domain)
 	if err != nil {
@@ -102,7 +92,7 @@ func (p *WhoisFreaksPlugin) Run(ctx context.Context, input plugins.Input) (findi
 		return nil, err
 	}
 
-	parsed, perr := whoisParseFn(raw)
+	parsed, perr := parseWhoisRecordSafely(raw)
 	if perr != nil {
 		slog.Warn("whoisfreaks: parse failed, skipping preseed extraction", "domain", domain, "error", perr)
 		return nil, nil
@@ -112,6 +102,22 @@ func (p *WhoisFreaksPlugin) Run(ctx context.Context, input plugins.Input) (findi
 	// whois+company / whois+name / whois+email typing stay identical across the
 	// two providers.
 	return extractPreseeds(parsed, p.Name()), nil
+}
+
+// parseWhoisRecordSafely wraps the parser in a recover scoped to that one call.
+//
+// whoisparser.Parse runs over untrusted vendor text, and plugins execute inside
+// an errgroup goroutine with no framework-level recover, so a panic there takes
+// down the whole pius run. WhoisPlugin.Run guards its own Parse call the same
+// way (ENG-5123 review); only the parse needs it — nothing else on this path can
+// panic.
+func parseWhoisRecordSafely(raw string) (info whoisparser.WhoisInfo, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("recovered panic parsing WHOIS record: %v", rec)
+		}
+	}()
+	return whoisParseFn(raw)
 }
 
 // live performs the WHOIS lookup. Auth is an `apiKey=` query parameter, so the

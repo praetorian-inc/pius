@@ -219,9 +219,9 @@ var whoisPrivacyMarkerPhrases = [][]string{
 }
 
 // extractPreseeds pulls registrant organization, name, and email from WHOIS
-// contacts. source names the emitting plugin: it becomes the pius_<source>
-// capability attribution in Guard, so each WHOIS provider must pass its own
-// name rather than inherit this file's.
+// contacts. source names the emitting plugin and becomes the finding's Source,
+// which downstream consumers key provenance and per-source scoring on — so each
+// WHOIS provider must pass its own name rather than inherit this file's.
 func extractPreseeds(info whoisparser.WhoisInfo, source string) []plugins.Finding {
 	type param struct {
 		name  string
