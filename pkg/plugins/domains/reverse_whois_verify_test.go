@@ -881,7 +881,7 @@ func TestRDAPClientPool_SurvivesGC(t *testing.T) {
 		original[c] = struct{}{}
 		r.releaseClient(c, false)
 	}
-	held = nil // drop the only local handles; the pool channel now holds the set
+	clear(held) // zero the six element pointers so the pool channel is the only reference when GC runs
 
 	for cycle := 0; cycle < 3; cycle++ {
 		// Two back-to-back collections per cycle, with the clients sitting ONLY

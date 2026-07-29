@@ -505,8 +505,20 @@ func (r *rdapWhoisResolver) viaRDAP(ctx context.Context, domain string) (registr
 	// normal heap-reachable object the GC never evicts, so each persistent client
 	// fetches the bootstrap at most once per pass (ENG-5376).
 	client := r.acquireClient()
-	org, panicked, err := extractRDAPRegistrantOrg(ctx, client, domain)
-	r.releaseClient(client, panicked)
+	var (
+		org      string
+		panicked bool
+		err      error
+	)
+	// Release via defer so returning the client is structural rather than
+	// dependent on control flow: no current path skips the release
+	// (extractRDAPRegistrantOrg recovers its own panics and there is no early
+	// return between acquire and release), but the defer also covers a future
+	// early return or a runtime.Goexit. The closure reads panicked at defer
+	// time, after the call below has set it (Gemini review suggestion,
+	// ENG-5376).
+	defer func() { r.releaseClient(client, panicked) }()
+	org, panicked, err = extractRDAPRegistrantOrg(ctx, client, domain)
 	if err != nil {
 		return registrantResult{}, err
 	}
