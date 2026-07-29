@@ -101,7 +101,7 @@ For name-resolution plugins where mapping may be ambiguous, use `plugins.SetConf
 
 The reverse-whois domain plugins (`reverse-whois` over ViewDNS, `whoxy-reverse-whois` over Whoxy) do **not** trust the third-party API's match list at face value. Candidate domains returned by the API are corroborated against the query org before scoring, in `reverse_whois_verify.go`:
 
-- **`registrantResolver`** resolves each candidate's registrant org — **RDAP primary** (`github.com/openrdap/rdap`, pooled per-worker `*rdap.Client` via `sync.Pool` since a shared client is unsafe for concurrent `Do`), **WHOIS fallback** (`whoisclient.go`) when RDAP yields nothing. `registrantOrgFromDomain` reads the registrant entity's jCard `org` (falling back to `fn`).
+- **`registrantResolver`** resolves each candidate's registrant org — **RDAP primary** (`github.com/openrdap/rdap`, pooled per-worker `*rdap.Client` via a pre-filled fixed-size channel that survives GC — a shared client is unsafe for concurrent `Do`, and `sync.Pool` evicted warm clients mid-pass (ENG-5376)), **WHOIS fallback** (`whoisclient.go`) when RDAP yields nothing. `registrantOrgFromDomain` reads the registrant entity's jCard `org` (falling back to `fn`).
 - **`verifyCandidates`** compares the resolved registrant org against the query org (normalized similarity) and assigns per-candidate confidence rather than one flat score:
   - corroborated (similarity ≥ 0.60) → `confReverseWhoisCorroborated` = 0.60
   - masked / unresolved registrant → `confReverseWhoisUnverified` = 0.50 (`needs_review`)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -803,4 +804,244 @@ func TestResolveWithFallback_PerStepTimeoutsAreIndependent(t *testing.T) {
 	gap := whoisDeadline.Sub(rdapDeadline)
 	assert.GreaterOrEqual(t, gap, 10*time.Millisecond,
 		"each step must get an independent per-step timeout, not one shared budget (gap==0 means collapsed)")
+}
+
+// drainClientPool empties the resolver's pool via non-blocking receives and
+// returns every client it held, in order. Callers own re-filling the pool if
+// the test continues to use it. Purely channel mechanics — no network.
+func drainClientPool(r *rdapWhoisResolver) []*rdap.Client {
+	var out []*rdap.Client
+	for {
+		select {
+		case c := <-r.clientPool:
+			out = append(out, c)
+		default:
+			return out
+		}
+	}
+}
+
+// TestRDAPClientPool_PrewarmedFixedSize proves the pool is pre-warmed with
+// exactly reverseWhoisWorkers distinct, non-nil clients at fixed capacity, and
+// that a bare zero-value literal is usable — both prod call sites construct
+// the resolver as &rdapWhoisResolver{} and rely on lazy sync.Once init
+// (ENG-5376).
+func TestRDAPClientPool_PrewarmedFixedSize(t *testing.T) {
+	r := &rdapWhoisResolver{} // zero value, exactly as the prod call sites build it
+	r.initClientPool()
+	require.NotNil(t, r.clientPool, "zero-value resolver must self-initialize its pool")
+	assert.Equal(t, reverseWhoisWorkers, cap(r.clientPool),
+		"pool capacity must be fixed at the worker bound")
+
+	drained := drainClientPool(r)
+	require.Len(t, drained, reverseWhoisWorkers,
+		"pool must be pre-warmed FULL up front, not filled lazily on demand")
+	seen := make(map[*rdap.Client]struct{}, len(drained))
+	for _, c := range drained {
+		require.NotNil(t, c, "a pre-warmed slot must never hold a nil client")
+		seen[c] = struct{}{}
+	}
+	assert.Len(t, seen, reverseWhoisWorkers,
+		"every pre-warmed client must be a distinct instance — shared clients race in rdap.Client.Do")
+
+	// Init is once-only: a second init call must not swap in a fresh pool or
+	// refill the (deliberately drained) existing one.
+	r.initClientPool()
+	assert.Zero(t, len(r.clientPool), "initClientPool must be idempotent, not re-fill or replace the pool")
+	assert.Equal(t, reverseWhoisWorkers, cap(r.clientPool))
+}
+
+// TestRDAPClientPool_SurvivesGC is the regression test for ENG-5376 AC1: the
+// pooled clients must survive garbage collection. The old sync.Pool did NOT —
+// the runtime's poolCleanup GC pre-hook demotes pool contents to a victim
+// cache on one collection and drops them on the next, so a mid-pass GC
+// silently replaced every warm client (and its 24h in-client bootstrap cache)
+// with a cold fresh one. A buffered channel is ordinary heap-reachable memory
+// the GC never evicts. The discriminating assertion is pointer IDENTITY: after
+// GC cycles, the pool must still hand back exactly the original client set,
+// never a silent replacement. Proven to fail against a sync.Pool-backed
+// equivalent (mutation proof, Phase 14).
+func TestRDAPClientPool_SurvivesGC(t *testing.T) {
+	r := &rdapWhoisResolver{}
+	r.initClientPool()
+
+	// Record the identity set of the six pre-warmed clients, then put them all
+	// back so the pool is the only place the resolver references them when GC
+	// runs. The `original` map ALSO keeps the objects allocated — deliberately:
+	// that pins their addresses so a cold replacement can never reuse an
+	// original's address and alias it, which would make the identity comparison
+	// vacuous. It does NOT mask the regression this test exists to catch:
+	// sync.Pool eviction is the POOL dropping its reference (poolCleanup clears
+	// the pool's slots unconditionally), not the object being freed, so the old
+	// primitive fails this test even with `original` holding the pointers.
+	held := drainClientPool(r)
+	require.Len(t, held, reverseWhoisWorkers)
+	original := make(map[*rdap.Client]struct{}, reverseWhoisWorkers)
+	for _, c := range held {
+		original[c] = struct{}{}
+		r.releaseClient(c, false)
+	}
+	held = nil // drop the only local handles; the pool channel now holds the set
+
+	for cycle := 0; cycle < 3; cycle++ {
+		// Two back-to-back collections per cycle, with the clients sitting ONLY
+		// in the pool: sync.Pool needs exactly this pattern to evict (first GC
+		// demotes to the victim cache, second drops the victim cache), so a
+		// single GC per acquire/release round could let the victim cache hide
+		// the regression. A channel pool survives any number of collections.
+		runtime.GC()
+		runtime.GC()
+
+		batch := make([]*rdap.Client, 0, reverseWhoisWorkers)
+		for i := 0; i < reverseWhoisWorkers; i++ {
+			c := r.acquireClient()
+			require.NotNil(t, c)
+			_, ok := original[c]
+			assert.True(t, ok,
+				"cycle %d: pool handed back a client outside the original pre-warmed set — a warm client was silently replaced after GC (the sync.Pool failure mode, ENG-5376 AC1)", cycle)
+			batch = append(batch, c)
+		}
+		for _, c := range batch {
+			r.releaseClient(c, false)
+		}
+	}
+
+	// After all collections, the pool holds exactly the original identity set —
+	// same six pointers, nothing evicted, nothing swapped for a fresh client.
+	final := drainClientPool(r)
+	require.Len(t, final, reverseWhoisWorkers)
+	got := make(map[*rdap.Client]struct{}, len(final))
+	for _, c := range final {
+		got[c] = struct{}{}
+	}
+	assert.Equal(t, original, got, "pool must survive GC with its original clients intact")
+	// Keep the originals' addresses pinned until every identity comparison above
+	// has run, so no assertion ever compared against a recycled address.
+	runtime.KeepAlive(original)
+}
+
+// TestRDAPClientPool_PanicRefillKeepsPoolFull proves a poisoned client
+// (panicked mid-Lookup, possibly holding a half-written registries map) is
+// discarded on release AND its slot is refilled with a fresh client. This is a
+// genuine channel-pool regression risk the old primitive never had: sync.Pool
+// got replacements for free from New, but a channel slot lost to a discard is
+// lost forever unless releaseClient explicitly refills it — one leak per panic
+// until the pool sits permanently empty. Repeating well past the pool size
+// proves there is no slow starvation.
+func TestRDAPClientPool_PanicRefillKeepsPoolFull(t *testing.T) {
+	r := &rdapWhoisResolver{}
+	r.initClientPool()
+
+	for i := 0; i < 20; i++ {
+		c := r.acquireClient()
+		require.NotNil(t, c, "iteration %d: acquire from a maintained pool", i)
+		r.releaseClient(c, true) // poisoned: discard, refill the slot
+
+		// (b)+(c): the pool is back to full strength — no slot leaked, even after
+		// more panics than the pool has slots.
+		remaining := drainClientPool(r)
+		require.Len(t, remaining, reverseWhoisWorkers,
+			"iteration %d: a panic discard must refill the slot, or the pool starves one slot per panic", i)
+		for _, p := range remaining {
+			require.NotNil(t, p)
+			// (a): the poisoned pointer itself must never re-enter the pool.
+			assert.NotSame(t, c, p,
+				"iteration %d: the poisoned client must be discarded, not pooled", i)
+			r.releaseClient(p, false)
+		}
+	}
+}
+
+// TestRDAPClientPool_AcquireDoesNotBlockWhenEmpty proves an empty pool
+// degrades to a fresh cold client instead of parking the worker. Under the
+// g.SetLimit(reverseWhoisWorkers) invariant the pool never runs dry, but if
+// that invariant is ever violated the failure mode must be a slowdown, not a
+// hang until the pass budget cancels. Non-blocking is asserted structurally:
+// the call runs on the test goroutine with nothing that could ever unblock a
+// blocking receive, so returning at all proves the non-blocking select.
+func TestRDAPClientPool_AcquireDoesNotBlockWhenEmpty(t *testing.T) {
+	r := &rdapWhoisResolver{}
+	handedOut := make(map[*rdap.Client]struct{}, reverseWhoisWorkers)
+	for i := 0; i < reverseWhoisWorkers; i++ {
+		c := r.acquireClient() // first call also proves zero-value lazy init on the acquire path
+		require.NotNil(t, c)
+		handedOut[c] = struct{}{}
+	}
+	require.Len(t, handedOut, reverseWhoisWorkers)
+	require.Zero(t, len(r.clientPool), "pool must be fully drained before the overflow acquire")
+
+	extra := r.acquireClient()
+	require.NotNil(t, extra, "an empty pool must still yield a usable client")
+	_, recycled := handedOut[extra]
+	assert.False(t, recycled,
+		"the overflow client must be FRESH — recycling one still in flight would race in rdap.Client.Do")
+}
+
+// TestRDAPClientPool_ReleaseDoesNotBlockWhenFull proves releasing into a full
+// pool drops the extra client for GC instead of blocking or growing the pool,
+// keeping total live clients bounded. This covers both callers of that path:
+// a release-without-acquire, and an acquire-fallback cold client coming home
+// to a pool that refilled meanwhile. Non-blocking is asserted structurally:
+// each call runs on the test goroutine with no receiver that could ever drain
+// the full channel, so returning at all proves the non-blocking send.
+func TestRDAPClientPool_ReleaseDoesNotBlockWhenFull(t *testing.T) {
+	r := &rdapWhoisResolver{}
+	r.initClientPool() // pool starts full
+
+	for i := 0; i < reverseWhoisWorkers+3; i++ {
+		r.releaseClient(newRDAPClient(), false)
+		assert.Equal(t, reverseWhoisWorkers, len(r.clientPool),
+			"iteration %d: an overflow release must be dropped, never grow the pool past its fixed size", i)
+	}
+	assert.Equal(t, reverseWhoisWorkers, cap(r.clientPool))
+}
+
+// TestRDAPClientPool_ExclusiveOwnershipUnderConcurrency proves ENG-5376 AC2:
+// no client is ever held by two goroutines at once — the whole reason the pool
+// exists, since openrdap's Client.Do writes an unsynchronized registries map.
+// Many more goroutines than pool slots hammer acquire→work→release while a
+// mutex-guarded in-use set flags any pointer handed out twice concurrently.
+// Run under -race, which additionally checks the pool's own internals. No
+// sleeps: contention comes from goroutine count, not wall-clock.
+func TestRDAPClientPool_ExclusiveOwnershipUnderConcurrency(t *testing.T) {
+	r := &rdapWhoisResolver{}
+
+	const goroutines = 4 * reverseWhoisWorkers
+	const iterations = 200
+
+	var mu sync.Mutex
+	inUse := make(map[*rdap.Client]struct{})
+
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				c := r.acquireClient()
+				if c == nil {
+					t.Error("acquireClient returned nil under concurrency")
+					return
+				}
+				mu.Lock()
+				if _, held := inUse[c]; held {
+					mu.Unlock()
+					t.Errorf("client %p handed to two goroutines at once — exclusive ownership violated (ENG-5376 AC2)", c)
+					return
+				}
+				inUse[c] = struct{}{}
+				mu.Unlock()
+
+				runtime.Gosched() // brief hold: widen the window for a double hand-out to surface
+
+				// Un-mark BEFORE releasing: once the client is back in the pool it
+				// may legitimately be re-acquired immediately.
+				mu.Lock()
+				delete(inUse, c)
+				mu.Unlock()
+				r.releaseClient(c, false)
+			}
+		}()
+	}
+	wg.Wait()
 }
