@@ -1565,12 +1565,39 @@ func TestVerifyCandidates_DegradedPassIsCountedAndEmitsEveryCandidate(t *testing
 	findings, err := verifyCandidates(context.Background(), stub, "Acme Corp", cands)
 	require.NoError(t, err)
 	require.Len(t, findings, len(order), "a degraded pass must still emit EVERY candidate")
+	// Per-candidate VALUE anchors, not just the band. The three band assertions
+	// below carry de-rank-never-drop and are kept, but a band is satisfied by ANY
+	// score inside it: band-only assertions still pass when incompleteness leaks
+	// into the ranking (e.g. every truncated candidate pushed to the 0.40 floor
+	// while staying inside [0.35, 0.65)) — precisely what "the flag is purely
+	// observational and never enters scoring" forbids. Only an exact expectation
+	// per candidate can catch that. salvaged-org.example.com is the load-bearing
+	// row: truncated AND corroborated at once, so it proves the flag is
+	// orthogonal to scoring even when both hold simultaneously.
+	//
+	// Literals, NOT the package constants — same convention as the de-rank
+	// ordering test above, so a constant edit cannot move the expectation
+	// together with the emission.
+	wantConfidence := map[string]float64{
+		"clean-hit.example.com":    0.60, // corroborated, complete lookup
+		"truncated.example.com":    0.50, // salvaged, no registrant org -> unverified
+		"deadline.example.com":     0.50, // salvaged, no registrant org -> unverified
+		"hops.example.com":         0.50, // salvaged, no registrant org -> unverified
+		"broken.example.com":       0.50, // lookup error -> unverified
+		"salvaged-org.example.com": 0.60, // TRUNCATED yet corroborated: same as a clean hit
+		"clean-miss.example.com":   0.40, // registrant org disjoint from query -> mismatch
+	}
 	for i, d := range order {
 		assert.Equal(t, d, findings[i].Value, "input order must survive the summary")
 		got := plugins.Confidence(findings[i])
 		assert.GreaterOrEqual(t, got, 0.35, "%s must stay above the discard floor", d)
 		assert.Less(t, got, 0.65, "%s must stay inside the needs_review band", d)
 		assert.True(t, plugins.NeedsReview(findings[i]), "%s must remain flagged for review", d)
+
+		want, ok := wantConfidence[d]
+		require.True(t, ok, "%s has no expected confidence: the fixture and the expectation table have drifted apart", d)
+		assert.InDelta(t, want, got, 0.001,
+			"%s must emit exactly %.2f — its confidence is decided by registrant corroboration ALONE, never by whether the WHOIS leg finished", d, want)
 	}
 
 	rec := findLogRecord(t, logs(), verifyPassMsgDegraded)
@@ -1854,6 +1881,26 @@ func TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload(t *testing.T) {
 		for _, k := range []string{"budget_ms", "lookup_timeout_ms"} {
 			assert.NotContains(t, rec, k,
 				"the bound denominators belong on the degraded line, which is the one an operator debugs")
+		}
+		// The same structural deny-list the degraded record is held to, applied here
+		// too. The absence checks above name only the keys that exist TODAY; they say
+		// nothing about the type of a key added tomorrow, so without this sweep the
+		// clean line is the unguarded half of the pair — and it is emitted on every
+		// successful pass, which makes it the higher-volume leak if a string ever
+		// lands on it. Counts and boolean flags only; slog's own time/level/msg are
+		// the framing, not attributes.
+		for k, v := range rec {
+			switch k {
+			case "time", "level", "msg":
+				continue
+			}
+			switch v.(type) {
+			case float64, bool: // counts and compile-time flags only
+			default:
+				assert.Failf(t, "untrusted-content deny-list violated on the CLEAN record",
+					"attribute %q must be a count or a boolean flag, not text or structured data "+
+						"(got %v of type %T) — the clean line is held to the same bar as the degraded one", k, v, v)
+			}
 		}
 	})
 
