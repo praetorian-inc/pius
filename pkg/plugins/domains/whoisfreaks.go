@@ -21,12 +21,6 @@ func init() {
 
 // WhoisFreaksPlugin resolves a domain's WHOIS record through the WhoisFreaks
 // API and emits the registrant organization, contacts, and emails as preseeds.
-//
-// This is the paid sibling of WhoisPlugin, which reads port-43 directly. Both
-// run: registries increasingly redact port-43 output, and a vendor that
-// aggregates registrar-level records often returns contacts where port-43
-// returns only "REDACTED FOR PRIVACY". The two are additive, not ordered —
-// duplicate preseeds collapse downstream on (type, value).
 type WhoisFreaksPlugin struct {
 	client  *client.Client
 	baseURL string // overridable for tests
@@ -98,19 +92,10 @@ func (p *WhoisFreaksPlugin) Run(ctx context.Context, input plugins.Input) ([]plu
 		return nil, nil
 	}
 
-	// Reuses WhoisPlugin's extraction so privacy-guard filtering and the
-	// whois+company / whois+name / whois+email typing stay identical across the
-	// two providers.
 	return extractPreseeds(parsed, p.Name()), nil
 }
 
 // parseWhoisRecordSafely wraps the parser in a recover scoped to that one call.
-//
-// whoisparser.Parse runs over untrusted vendor text, and plugins execute inside
-// an errgroup goroutine with no framework-level recover, so a panic there takes
-// down the whole pius run. WhoisPlugin.Run guards its own Parse call the same
-// way (ENG-5123 review); only the parse needs it — nothing else on this path can
-// panic.
 func parseWhoisRecordSafely(raw string) (info whoisparser.WhoisInfo, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -120,9 +105,6 @@ func parseWhoisRecordSafely(raw string) (info whoisparser.WhoisInfo, err error) 
 	return whoisParseFn(raw)
 }
 
-// live performs the WHOIS lookup. Auth is an `apiKey=` query parameter, so the
-// request URL carries the key — errors here are constructed, never wrapped, so
-// no transport error can echo it.
 func (p *WhoisFreaksPlugin) live(ctx context.Context, domain string) (whoisFreaksLiveResponse, error) {
 	params := url.Values{
 		"apiKey":     {os.Getenv("WHOISFREAKS_API_KEY")},

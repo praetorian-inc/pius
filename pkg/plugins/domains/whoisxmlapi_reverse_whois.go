@@ -30,12 +30,6 @@ func init() {
 
 // WhoisXMLAPIReverseWhoisPlugin discovers related domains by reverse-WHOIS
 // query against WhoisXMLAPI, the paid sibling of WhoxyReverseWhoisPlugin.
-//
-// Two properties make it worth running alongside Whoxy rather than instead of
-// it: searchType=current restricts matches to live registrations (verified
-// live, exact company="Praetorian" returns 12 under `current` against 164 under
-// `historic`), and the free preview mode yields a match count without spending
-// a credit.
 type WhoisXMLAPIReverseWhoisPlugin struct {
 	client   *client.Client
 	baseURL  string             // overridable for tests
@@ -61,41 +55,6 @@ func (p *WhoisXMLAPIReverseWhoisPlugin) apiBase() string {
 	return "https://reverse-whois.whoisxmlapi.com/api/v2"
 }
 
-// advancedSearchTerm is one field/term predicate. Up to 4 per request, ANDed.
-type advancedSearchTerm struct {
-	Field      string `json:"field"`
-	Term       string `json:"term"`
-	ExactMatch bool   `json:"exactMatch,omitempty"`
-}
-
-type whoisXMLAPIReverseRequest struct {
-	APIKey              string               `json:"apiKey"`
-	SearchType          string               `json:"searchType"`
-	Mode                string               `json:"mode"`
-	IncludeAuditDates   bool                 `json:"includeAuditDates"`
-	SearchAfter         string               `json:"searchAfter,omitempty"`
-	AdvancedSearchTerms []advancedSearchTerm `json:"advancedSearchTerms"`
-}
-
-// whoisXMLAPIReverseResponse mirrors the documented output. domainsList is
-// polymorphic — []string when includeAuditDates is false, []object when true —
-// so it is held raw and decoded here, which always requests the object form.
-type whoisXMLAPIReverseResponse struct {
-	NextPageSearchAfter string          `json:"nextPageSearchAfter"`
-	DomainsCount        int             `json:"domainsCount"`
-	DomainsList         json.RawMessage `json:"domainsList"`
-}
-
-// whoisXMLAPIReverseHit is one match. Audit dates are when WhoisXMLAPI first
-// and last observed the record, not registration dates — the same "when was
-// this seen" semantic as Whoxy's query_time, which is what staleness needs.
-type whoisXMLAPIReverseHit struct {
-	DomainName string `json:"domainName"`
-	Audit      struct {
-		UpdatedDate string `json:"updatedDate"`
-	} `json:"audit"`
-}
-
 func (p *WhoisXMLAPIReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	// Active seed: org name by default, registrant email when only Email is set.
 	query, byEmail := input.OrgName, false
@@ -112,10 +71,6 @@ func (p *WhoisXMLAPIReverseWhoisPlugin) Run(ctx context.Context, input plugins.I
 		return nil, nil
 	}
 
-	// Accumulate candidates across pages. Staleness filtering happens here,
-	// BEFORE verification, so stale records never trigger a lookup. Each match is
-	// only a lead; corroboration against the candidate's own registrant happens
-	// in verifyCandidates (ENG-5123).
 	var dated []datedCandidate
 	cursor := ""
 
@@ -149,18 +104,11 @@ func (p *WhoisXMLAPIReverseWhoisPlugin) Run(ctx context.Context, input plugins.I
 			break
 		}
 		if page == maxWhoisXMLAPIPages {
-			// The cursor is still live, so results are being left behind. Loud
-			// because it is silent data loss rather than a degraded score.
 			slog.Warn("whoisxmlapi-reverse-whois: page cap reached with more results available",
 				"cap", maxWhoisXMLAPIPages, "collected", len(dated))
 		}
 	}
 
-	// Most recent first, then dedupe: UniqueBy keeps the first entry for a
-	// domain, so a domain seen on two pages survives with its freshest
-	// observation. Ordering is not cosmetic — verifyCandidates corroborates only
-	// the first maxReverseWhoisCandidates entries and emits the rest unverified,
-	// so this spends the lookup budget on the freshest records.
 	sort.SliceStable(dated, func(i, j int) bool {
 		return dated[i].observed.After(dated[j].observed)
 	})
@@ -169,14 +117,10 @@ func (p *WhoisXMLAPIReverseWhoisPlugin) Run(ctx context.Context, input plugins.I
 		cands = append(cands, d.candidate)
 	}
 
-	// Resolve into a local rather than mutating p.resolver: writing shared plugin
-	// state inside Run() would be a data race if an instance were ever reused.
 	resolver := p.resolver
 	if resolver == nil {
 		resolver = &rdapWhoisResolver{}
 	}
-	// input.OrgName drives corroboration; email-mode (OrgName == "") short-
-	// circuits inside verifyCandidates. Data["org"] provenance stays the query.
 	return verifyCandidates(ctx, resolver, input.OrgName, cands)
 }
 
@@ -187,10 +131,6 @@ func (p *WhoisXMLAPIReverseWhoisPlugin) reverse(ctx context.Context, query strin
 
 	apiKey := os.Getenv("WHOISXMLAPI_API_KEY")
 
-	// "Email" is the union field, covering registrant, admin, billing and tech
-	// addresses in one query. exactMatch is only honoured for a documented
-	// subset of fields — for every email field it is ignored and treated as true
-	// anyway, so it is omitted rather than sent as an explicit false.
 	term := advancedSearchTerm{Field: "Email", Term: query}
 	if !byEmail {
 		term = advancedSearchTerm{Field: "RegistrantContact.Organization", Term: query, ExactMatch: true}
@@ -229,15 +169,11 @@ func (p *WhoisXMLAPIReverseWhoisPlugin) reverse(ctx context.Context, query strin
 	return body, nil
 }
 
-// datedCandidate pairs a candidate with when the provider last observed the
-// record, so the list can be ordered most-recent-first before verification.
 type datedCandidate struct {
 	candidate
 	observed time.Time
 }
 
-// candidatesFrom converts one page of hits, dropping stale and malformed
-// domains before they can cost a verification lookup.
 func (p *WhoisXMLAPIReverseWhoisPlugin) candidatesFrom(hits []whoisXMLAPIReverseHit, query string) []datedCandidate {
 	out := make([]datedCandidate, 0, len(hits))
 	for _, hit := range hits {
@@ -281,9 +217,6 @@ func decodeWhoisXMLAPIHits(list json.RawMessage) ([]whoisXMLAPIReverseHit, error
 	return hits, nil
 }
 
-// whoisXMLAPIObservedAt parses an audit timestamp, returning the zero time when
-// the field is absent or unparseable. Zero sorts last, so records of unknown
-// age rank below dated ones without being discarded.
 func whoisXMLAPIObservedAt(updated string) time.Time {
 	t, err := time.Parse(time.RFC3339, updated)
 	if err != nil {
@@ -292,17 +225,41 @@ func whoisXMLAPIObservedAt(updated string) time.Time {
 	return t
 }
 
-// whoisXMLAPIRecordStale reports whether the record was last observed outside
-// the ten-year window.
-//
-// Unlike whoxyRecordStale, an unknown (zero) timestamp is treated as NOT stale.
-// Audit dates are only present because includeAuditDates is sent as true, so a
-// vendor-side format or field change would otherwise drop every candidate and
-// read as "this pivot owns nothing". Keeping them costs a verification lookup,
-// which is the cheaper failure.
 func whoisXMLAPIRecordStale(observed time.Time) bool {
 	if observed.IsZero() {
 		return false
 	}
 	return observed.Before(time.Now().AddDate(whoisXMLAPIStaleAfter, 0, 0))
+}
+
+// advancedSearchTerm is one field/term predicate. Up to 4 per request, ANDed.
+type advancedSearchTerm struct {
+	Field      string `json:"field"`
+	Term       string `json:"term"`
+	ExactMatch bool   `json:"exactMatch,omitempty"`
+}
+
+type whoisXMLAPIReverseRequest struct {
+	APIKey              string               `json:"apiKey"`
+	SearchType          string               `json:"searchType"`
+	Mode                string               `json:"mode"`
+	IncludeAuditDates   bool                 `json:"includeAuditDates"`
+	SearchAfter         string               `json:"searchAfter,omitempty"`
+	AdvancedSearchTerms []advancedSearchTerm `json:"advancedSearchTerms"`
+}
+
+type whoisXMLAPIReverseResponse struct {
+	NextPageSearchAfter string          `json:"nextPageSearchAfter"`
+	DomainsCount        int             `json:"domainsCount"`
+	DomainsList         json.RawMessage `json:"domainsList"`
+}
+
+// whoisXMLAPIReverseHit is one match. Audit dates are when WhoisXMLAPI first
+// and last observed the record, not registration dates — the same "when was
+// this seen" semantic as Whoxy's query_time, which is what staleness needs.
+type whoisXMLAPIReverseHit struct {
+	DomainName string `json:"domainName"`
+	Audit      struct {
+		UpdatedDate string `json:"updatedDate"`
+	} `json:"audit"`
 }

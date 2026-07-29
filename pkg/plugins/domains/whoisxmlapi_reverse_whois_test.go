@@ -16,9 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Real purchase response for exact company="Praetorian", searchType=current.
-// nextPageSearchAfter is JSON null, and domainsList is the object form because
-// includeAuditDates is always sent as true.
 const whoisXMLAPIRealPurchase = `{
  "nextPageSearchAfter": null,
  "domainsCount": 2,
