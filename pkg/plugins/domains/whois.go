@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/mail"
 	"strings"
 
 	whoisparser "github.com/likexian/whois-parser"
+	"golang.org/x/net/publicsuffix"
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
@@ -273,20 +275,72 @@ func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
 	return findings
 }
 
-// rootDomain extracts the registrable domain (e.g., "example.com" from "sub.example.com").
-// Uses a simple heuristic: take the last two labels. This covers the common case;
-// multi-level TLDs (e.g., ".co.uk") are not handled here — WHOIS servers typically
-// resolve them correctly regardless.
-func rootDomain(domain string) string {
-	domain = strings.TrimSuffix(strings.TrimSpace(strings.ToLower(domain)), ".")
-	parts := strings.Split(domain, ".")
-	if len(parts) < 2 {
+// rootDomain returns the domain to look up WHOIS for.
+//
+// For ICANN-managed suffixes it is the eTLD+1:
+//
+//	"app.praetorian.com" → "praetorian.com"
+//	"www.example.co.uk"  → "example.co.uk"
+//
+// For privately-managed suffixes (shared cloud infrastructure) it is the
+// ICANN-level eTLD+1 of the suffix, since the sub-suffix has no registration of
+// its own — the provider's domain is what WHOIS can answer for:
+//
+//	"d2anv8h5waxwp1.cloudfront.net"              → "cloudfront.net"
+//	"myapp.herokuapp.com"                        → "herokuapp.com"
+//	"mybucket.s3.amazonaws.com"                  → "amazonaws.com"
+//	"abc123.execute-api.us-east-1.amazonaws.com" → "amazonaws.com"
+//
+// Returns "" for input with no registrable domain (a bare hostname, a bare
+// suffix, or an IP address).
+func rootDomain(hostname string) string {
+	hostname = strings.TrimSuffix(strings.TrimSpace(strings.ToLower(hostname)), ".")
+	if hostname == "" {
 		return ""
 	}
-	if len(parts) == 2 {
-		return domain
+
+	// IPs are not domains.
+	if net.ParseIP(hostname) != nil {
+		return ""
 	}
-	return strings.Join(parts[len(parts)-2:], ".")
+
+	// Repeatedly compute eTLD+1 until the result sits under an ICANN-managed
+	// suffix. Normal domains return on the first iteration; hosts under a private
+	// PSL suffix walk up through the suffix until they reach the ICANN-level
+	// registrable domain.
+	domain := hostname
+	for range strings.Count(hostname, ".") + 1 {
+		etld1, err := publicsuffix.EffectiveTLDPlusOne(domain)
+		if err != nil {
+			// domain IS a suffix, so it has no registrable part. When that suffix is
+			// ICANN-managed there is nothing beneath it to look up — "co.uk" is a
+			// public suffix, not a domain.
+			if ps, icann := publicsuffix.PublicSuffix(domain); icann && ps == domain {
+				return ""
+			}
+			// Step up one label; if what remains is exactly an ICANN suffix, the
+			// label we just dropped made this the registrable domain.
+			_, remainder, ok := strings.Cut(domain, ".")
+			if !ok {
+				return ""
+			}
+			if tld, icann := publicsuffix.PublicSuffix(remainder); icann && tld == remainder {
+				return domain
+			}
+			domain = remainder
+			continue
+		}
+
+		tld, icann := publicsuffix.PublicSuffix(etld1)
+		if icann {
+			return etld1
+		}
+		if tld == domain {
+			return domain
+		}
+		domain = tld
+	}
+	return ""
 }
 
 func isEmail(s string) bool {
