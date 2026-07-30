@@ -148,6 +148,7 @@ var piusCredentialMapping = map[string]string{
 	"viewdns_api_key":        "VIEWDNS_API_KEY",
 	"whoxy_api_key":          "WHOXY_API_KEY",
 	"whoisfreaks_api_key":    "WHOISFREAKS_API_KEY",
+	"whoisxmlapi_api_key":    "WHOISXMLAPI_API_KEY",
 	"builtwith_api_key":      "BUILTWITH_API_KEY",
 	"github_token":           "GITHUB_TOKEN",
 }

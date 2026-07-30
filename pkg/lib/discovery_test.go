@@ -27,8 +27,8 @@ func TestDiscovery_Input(t *testing.T) {
 func TestDiscovery_Parameters(t *testing.T) {
 	d := &Discovery{}
 	params := d.Parameters()
-	// 4 base + 18 API key + 6 plugin config parameters = 28 total
-	assert.Len(t, params, 28)
+	// 4 base + 19 API key + 6 plugin config parameters = 29 total
+	assert.Len(t, params, 29)
 
 	names := make([]string, len(params))
 	for i, p := range params {
@@ -138,8 +138,8 @@ func TestDomainDiscovery_Input(t *testing.T) {
 func TestDomainDiscovery_Parameters(t *testing.T) {
 	d := &DomainDiscovery{}
 	params := d.Parameters()
-	// 4 base + 18 API key + 6 plugin config parameters = 28 total
-	assert.Len(t, params, 28)
+	// 4 base + 19 API key + 6 plugin config parameters = 29 total
+	assert.Len(t, params, 29)
 
 	// Verify default mode is "all" (not "passive" like preseed variant)
 	for _, p := range params {

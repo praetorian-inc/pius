@@ -136,6 +136,7 @@ Most domain plugins run in Phase 0 (independent, concurrent). Late-stage plugins
 | `reverse-whois` | ViewDNS reverse WHOIS | `VIEWDNS_API_KEY` | Passive | 0.50 confidence (unverified → needs-review); registrant email matching |
 | `whoxy-reverse-whois` | Whoxy reverse WHOIS API | `WHOXY_API_KEY` | Passive | Paginated lookup; stale-record filter; 0.50 confidence (unverified → needs-review) |
 | `whoisfreaks` | WhoisFreaks live WHOIS API | `WHOISFREAKS_API_KEY` | Passive | Paid sibling of `whois`; returns contacts where port-43 is redacted |
+| `whoisxmlapi-reverse-whois` | WhoisXMLAPI reverse WHOIS | `WHOISXMLAPI_API_KEY` | Passive | Current registrations only; free preview count before paid query; per-candidate corroboration (verify-after-retrieve) |
 | `builtwith` | BuiltWith tag lookup API | `BUILTWITH_API_KEY` | Passive | Phase 3; correlates domains via shared analytics tracking codes |
 | `dns-brute` | Local DNS resolver | None | **Active** | 50 concurrent goroutines; embedded wordlist |
 | `dns-zone-transfer` | DNS AXFR | None | **Active** | Extracts A, AAAA, CNAME, MX, SRV records |
@@ -350,6 +351,7 @@ Plugins that require API keys check for them in `Accepts()` before running. If t
 | `SECURITYTRAILS_API_KEY` | `passive-dns` | Yes | SecurityTrails API key |
 | `VIEWDNS_API_KEY` | `reverse-whois` | Yes | ViewDNS.info API key |
 | `WHOISFREAKS_API_KEY` | `whoisfreaks` | Yes | WhoisFreaks API key |
+| `WHOISXMLAPI_API_KEY` | `whoisxmlapi-reverse-whois` | Yes | WhoisXMLAPI API key |
 | `SHODAN_API_KEY` | `favicon-hash` | Yes | Shodan API key |
 | `FOFA_API_KEY` | `favicon-hash` | No | FOFA API key; enables additional scanner |
 | `VIEWDNS_API_KEY` | `reverse-ip` | No | ViewDNS.info API key; enables additional reverse IP source |
@@ -405,7 +407,7 @@ run flags:
 
 ### Which Pius plugins run by default without API keys?
 
-All passive plugins that accept the provided input run by default. Passive plugins with API key requirements (apollo, passive-dns, reverse-whois, whoxy-reverse-whois, whoisfreaks) are silently skipped if their environment variable is not set. Active plugins (dns-brute, dns-zone-transfer, doh-enum, favicon-hash) only run with `--mode active` or `--mode all`.
+All passive plugins that accept the provided input run by default. Passive plugins with API key requirements (apollo, passive-dns, reverse-whois, whoxy-reverse-whois, whoisfreaks, whoisxmlapi-reverse-whois) are silently skipped if their environment variable is not set. Active plugins (dns-brute, dns-zone-transfer, doh-enum, favicon-hash) only run with `--mode active` or `--mode all`.
 
 ### How does Pius discover IP ranges and CIDRs?
 
@@ -468,7 +470,7 @@ RDAP plugins (arin, ripe, lacnic) make live HTTP queries to each registry's RDAP
 
 **Solutions**:
 1. Add `--domain` to unlock crt-sh and DNS plugins
-2. Set `APOLLO_API_KEY`, `SECURITYTRAILS_API_KEY`, or `VIEWDNS_API_KEY` for those plugins. For WHOIS-based domain discovery, set `WHOISFREAKS_API_KEY` (live WHOIS contacts where port-43 is redacted) and `WHOXY_API_KEY` (reverse WHOIS portfolios)
+2. Set `APOLLO_API_KEY`, `SECURITYTRAILS_API_KEY`, or `VIEWDNS_API_KEY` for those plugins. For WHOIS-based domain discovery, set `WHOISFREAKS_API_KEY` (live WHOIS contacts where port-43 is redacted) and `WHOXY_API_KEY` / `WHOISXMLAPI_API_KEY` (reverse WHOIS portfolios)
 3. Run `pius list` to confirm which plugins are registered
 
 ### APNIC/AFRINIC results are stale
