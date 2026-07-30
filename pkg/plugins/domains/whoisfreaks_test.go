@@ -15,9 +15,6 @@ import (
 
 const whoisFreaksTestKey = "whoisfreaks-key-must-never-leak"
 
-// Captured from the live API for praetorian.com, trimmed to the contact block.
-// Note the redacted name/street beside a populated Organization, and an email
-// that is a contact-form URL rather than an address.
 const whoisFreaksRealRaw = `
 Domain Name: praetorian.com
 Registrar WHOIS Server: whois.squarespace.domains

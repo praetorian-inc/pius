@@ -45,62 +45,6 @@ func (p *WhoisFreaksPlugin) apiBase() string {
 	return "https://api.whoisfreaks.com/v1.0"
 }
 
-type whoisFreaksLiveResponse struct {
-	DomainRegistered string `json:"domain_registered"`
-	RawDomain        string `json:"whois_raw_domain"`
-	RegistryData     struct {
-		// Upstream misspells "registry".
-		RawRegistry string `json:"whois_raw_registery"`
-	} `json:"registry_data"`
-	// RegistrantContact is the vendor's own parsed contact block. It is the ONLY
-	// contact source for ccTLDs — see structuredWhoisInfo.
-	RegistrantContact struct {
-		Name         string `json:"name"`
-		Company      string `json:"company"`
-		EmailAddress string `json:"email_address"`
-	} `json:"registrant_contact"`
-}
-
-// hasStructuredContact reports whether the vendor returned any parsed contact
-// field, masked or not. Distinguishes "no record came back" from "a record came
-// back but every field is a redaction placeholder".
-func (r whoisFreaksLiveResponse) hasStructuredContact() bool {
-	c := r.RegistrantContact
-	return c.Company != "" || c.Name != "" || c.EmailAddress != ""
-}
-
-// structuredWhoisInfo adapts the vendor's parsed contact block into the shape
-// whoisparser produces, so the structured path and the raw path both flow
-// through extractPreseeds and get identical filtering and typing.
-//
-// This exists because WhoisFreaks omits raw WHOIS text entirely for ccTLDs.
-// Verified 2026-07-29: praetorian.com and bbc.com (gTLD) return
-// whois_raw_domain plus registry_data; bbc.co.uk and siemens.de (ccTLD) return
-// NEITHER, while still populating registrant_contact. A raw-only reader
-// therefore emitted nothing for every ccTLD asset — siemens.de was discarding
-// "Siemens AG" and domainmanagement.cc@siemens.com.
-//
-// Redaction placeholders are dropped HERE rather than in extractPreseeds:
-// isMaskedOrg's vocabulary already recognises them, and Nominet's
-// "redacted@nominet.uk" would otherwise become a whois+email pivot matching
-// every redacted .uk domain. extractPreseeds is shared with the port-43 plugin
-// and deliberately left alone — the raw path keeps its existing behaviour.
-func (r whoisFreaksLiveResponse) structuredWhoisInfo() whoisparser.WhoisInfo {
-	contact := whoisparser.Contact{
-		Organization: blankIfMasked(r.RegistrantContact.Company),
-		Name:         blankIfMasked(r.RegistrantContact.Name),
-		Email:        blankIfMasked(r.RegistrantContact.EmailAddress),
-	}
-	return whoisparser.WhoisInfo{Registrant: &contact}
-}
-
-func blankIfMasked(v string) string {
-	if isMaskedOrg(v) {
-		return ""
-	}
-	return v
-}
-
 func (p *WhoisFreaksPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	domain := rootDomain(input.Domain)
 	if domain == "" {
@@ -176,4 +120,41 @@ func (p *WhoisFreaksPlugin) live(ctx context.Context, domain string) (whoisFreak
 		return whoisFreaksLiveResponse{}, fmt.Errorf("whoisfreaks: parse response for %q: %w", domain, err)
 	}
 	return body, nil
+}
+
+type whoisFreaksLiveResponse struct {
+	DomainRegistered string `json:"domain_registered"`
+	RawDomain        string `json:"whois_raw_domain"`
+	RegistryData     struct {
+		// Upstream misspells "registry".
+		RawRegistry string `json:"whois_raw_registery"`
+	} `json:"registry_data"`
+	// RegistrantContact is the vendor's own parsed contact block. It is the ONLY
+	// contact source for ccTLDs — see structuredWhoisInfo.
+	RegistrantContact struct {
+		Name         string `json:"name"`
+		Company      string `json:"company"`
+		EmailAddress string `json:"email_address"`
+	} `json:"registrant_contact"`
+}
+
+func (r whoisFreaksLiveResponse) hasStructuredContact() bool {
+	c := r.RegistrantContact
+	return c.Company != "" || c.Name != "" || c.EmailAddress != ""
+}
+
+func (r whoisFreaksLiveResponse) structuredWhoisInfo() whoisparser.WhoisInfo {
+	contact := whoisparser.Contact{
+		Organization: blankIfMasked(r.RegistrantContact.Company),
+		Name:         blankIfMasked(r.RegistrantContact.Name),
+		Email:        blankIfMasked(r.RegistrantContact.EmailAddress),
+	}
+	return whoisparser.WhoisInfo{Registrant: &contact}
+}
+
+func blankIfMasked(v string) string {
+	if isMaskedOrg(v) {
+		return ""
+	}
+	return v
 }
