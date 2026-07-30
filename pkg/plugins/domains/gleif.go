@@ -12,12 +12,11 @@ import (
 )
 
 func init() {
-	plugins.Register("gleif", func() plugins.Plugin {
-		return &GLEIFPlugin{
-			client:  client.New(),
-			baseURL: "",
-		}
-	})
+	plugins.Register("gleif", func() plugins.Plugin { return NewGLEIFPlugin(client.New()) })
+}
+
+func NewGLEIFPlugin(c *client.Client) *GLEIFPlugin {
+	return &GLEIFPlugin{client: c}
 }
 
 // GLEIFPlugin discovers corporate parents and subsidiaries via the GLEIF LEI registry.
