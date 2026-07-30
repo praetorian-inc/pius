@@ -353,7 +353,7 @@ func TestPiusCredentialMapping_CoversAllPlugins(t *testing.T) {
 		"securitytrails_api_key", "virustotal_api_key", "binaryedge_api_key",
 		"apollo_api_key", "censys_api_key", "censys_api_token", "censys_org_id", "viewdns_api_key",
 		"github_token",
-		"whoxy_api_key", "builtwith_api_key",
+		"whoxy_api_key", "whoisfreaks_api_key", "builtwith_api_key",
 	}
 
 	assert.Len(t, piusCredentialMapping, len(expectedParams))

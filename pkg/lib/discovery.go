@@ -32,6 +32,7 @@ var pluginNames = []string{
 	"shodan", "dnsdb", "crunchbase", "opencorporates",
 	"proxycurl", "diffbot", "securitytrails", "virustotal",
 	"binaryedge", "censys", "viewdns", "whoxy-reverse-whois",
+	"whoisfreaks",
 	"builtwith",
 }
 
@@ -64,6 +65,7 @@ func piusParams(defaultMode string) []capability.Parameter {
 		capability.String("censys_org_id", "Censys organization ID"),
 		capability.String("viewdns_api_key", "ViewDNS API key"),
 		capability.String("whoxy_api_key", "Whoxy API key"),
+		capability.String("whoisfreaks_api_key", "WhoisFreaks API key"),
 		capability.String("builtwith_api_key", "BuiltWith API key"),
 		capability.String("analytics_ids", "Comma-separated analytics tracking IDs"),
 

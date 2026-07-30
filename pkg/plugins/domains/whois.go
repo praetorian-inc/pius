@@ -78,7 +78,7 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 		return nil, nil
 	}
 
-	return extractPreseeds(parsed), nil
+	return extractPreseeds(parsed, p.Name()), nil
 }
 
 // whoisParseFn is a seam over whoisparser.Parse so the panic-recover in
@@ -221,7 +221,7 @@ var whoisPrivacyMarkerPhrases = [][]string{
 }
 
 // extractPreseeds pulls registrant organization, name, and email from WHOIS contacts.
-func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
+func extractPreseeds(info whoisparser.WhoisInfo, source string) []plugins.Finding {
 	type param struct {
 		name  string
 		value string
@@ -263,7 +263,7 @@ func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
 			findings = append(findings, plugins.Finding{
 				Type:   plugins.FindingPreseed,
 				Value:  p.value,
-				Source: "whois",
+				Source: source,
 				Data: map[string]any{
 					"preseed_type":  preseedType,
 					"preseed_title": p.value,

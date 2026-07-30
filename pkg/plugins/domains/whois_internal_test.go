@@ -65,7 +65,7 @@ func TestExtractPreseeds_WithContacts(t *testing.T) {
 		},
 	}
 
-	findings := extractPreseeds(info)
+	findings := extractPreseeds(info, "whois")
 
 	// Expect: company=Acme Corp, name=John Doe, email=admin@acme.com, name=Jane Smith
 	// Acme Corp from Administrative is deduped
@@ -86,7 +86,7 @@ func TestExtractPreseeds_WithContacts(t *testing.T) {
 
 func TestExtractPreseeds_NilContacts(t *testing.T) {
 	info := whoisparser.WhoisInfo{}
-	findings := extractPreseeds(info)
+	findings := extractPreseeds(info, "whois")
 	assert.Empty(t, findings)
 }
 
@@ -98,7 +98,7 @@ func TestExtractPreseeds_EmptyFields(t *testing.T) {
 			Email:        "",
 		},
 	}
-	findings := extractPreseeds(info)
+	findings := extractPreseeds(info, "whois")
 	assert.Empty(t, findings)
 }
 
@@ -110,7 +110,7 @@ func TestExtractPreseeds_PrivacyGuardBlocksCompany(t *testing.T) {
 			Email:        "proxy@domainsbyproxy.com",
 		},
 	}
-	findings := extractPreseeds(info)
+	findings := extractPreseeds(info, "whois")
 	for _, f := range findings {
 		preseedType, _ := f.Data["preseed_type"].(string)
 		assert.NotEqual(t, "whois+company", preseedType, "privacy guard org should be filtered")
@@ -123,7 +123,7 @@ func TestExtractPreseeds_PrivacyGuardCaseInsensitive(t *testing.T) {
 			Organization: "DOMAINS BY PROXY, LLC",
 		},
 	}
-	findings := extractPreseeds(info)
+	findings := extractPreseeds(info, "whois")
 	for _, f := range findings {
 		preseedType, _ := f.Data["preseed_type"].(string)
 		assert.NotEqual(t, "whois+company", preseedType, "case-insensitive privacy guard check")
@@ -136,7 +136,7 @@ func TestExtractPreseeds_LegitimateOrgNotFiltered(t *testing.T) {
 			Organization: "Acme Corporation",
 		},
 	}
-	findings := extractPreseeds(info)
+	findings := extractPreseeds(info, "whois")
 	require.Len(t, findings, 1)
 	assert.Equal(t, "whois+company", findings[0].Data["preseed_type"])
 	assert.Equal(t, "Acme Corporation", findings[0].Value)
