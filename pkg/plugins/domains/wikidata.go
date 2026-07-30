@@ -34,9 +34,14 @@ func init() {
 // Free public endpoint — no API key required.
 // Results are cached in ~/.pius/cache/ with a 24-hour TTL.
 type WikidataPlugin struct {
-	httpClient httpDoer         // for testing
-	baseURL    string           // override for testing; default "https://query.wikidata.org/sparql"
-	apiCache   *cache.APICache  // injected in tests; nil = lazy init on first Run
+	httpClient httpDoer        // for testing
+	baseURL    string          // override for testing; default "https://query.wikidata.org/sparql"
+	apiCache   *cache.APICache // injected in tests; nil = lazy init on first Run
+	noCache    bool            // set by NewWikidataPlugin; skips the on-disk cache entirely
+}
+
+func NewWikidataPlugin(hc *http.Client) *WikidataPlugin {
+	return &WikidataPlugin{httpClient: hc, noCache: true}
 }
 
 // httpDoer allows mocking HTTP requests in tests.
@@ -66,6 +71,9 @@ func (p *WikidataPlugin) sparqlEndpoint() string {
 // getCache returns the APICache, initializing it lazily on first use.
 // Returns nil if the cache directory cannot be created (non-fatal).
 func (p *WikidataPlugin) getCache() *cache.APICache {
+	if p.noCache {
+		return nil
+	}
 	if p.apiCache != nil {
 		return p.apiCache
 	}
@@ -145,12 +153,12 @@ func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 					Value:  domain,
 					Source: p.Name(),
 					Data: map[string]any{
-						"org":           input.OrgName,
-						"subsidiary":    r.EntityLabel.Value,
-						"wikidata_id":   extractEntityID(r.Entity.Value),
-						"website":       r.Website.Value,
-						"relationship":  r.Relation.Value,
-						"method":        "wikidata-sparql",
+						"org":          input.OrgName,
+						"subsidiary":   r.EntityLabel.Value,
+						"wikidata_id":  extractEntityID(r.Entity.Value),
+						"website":      r.Website.Value,
+						"relationship": r.Relation.Value,
+						"method":       "wikidata-sparql",
 					},
 				}
 				// Direct website from Wikidata is high confidence
