@@ -1426,6 +1426,427 @@ func TestViaWHOIS_NoRegistrantOnRecordIsOrdinaryNotFound(t *testing.T) {
 		"the chain must stop at the TLD server — no onward referral was published")
 }
 
+// TestViaWHOIS_WhoisQueryErrorCarriesNoIncompletenessReason pins the PREMISE that
+// viaWHOIS's whoisQuery-error branch is built on. That branch discards the
+// whoisIncompleteness it was handed and returns a bare registrantResult{}, and its
+// comment justifies the discard with a claim about a DIFFERENT function: that
+// whoisQuery reports whoisComplete on every path that returns a non-nil error. A
+// claim about another function is exactly the kind a comment cannot enforce — if
+// whoisQuery ever started reporting a real reason alongside an error, the discard
+// would silently begin losing it and nothing here would fail.
+//
+// So both halves are asserted, per row:
+//
+//   - the PREMISE, read straight off whoisQuery: error non-nil, no payload, and
+//     the reason is whoisComplete. This is what makes the discard lossless.
+//   - the CONSEQUENCE, read off viaWHOIS: the error surfaces and the result is the
+//     ZERO registrantResult — not merely whoisComplete, so no other field can be
+//     fabricated on this path either.
+//
+// The rows are whoisQuery's three no-salvage error returns, which are all the ways
+// it can produce a non-nil error: a first-hop transport failure, a chain that never
+// advances past the bootstrap seed, and a ctx that was already done at the loop
+// top. Enumerating all three is the point — the comment says "EVERY path", and a
+// single row would only pin one of them.
+func TestViaWHOIS_WhoisQueryErrorCarriesNoIncompletenessReason(t *testing.T) {
+	// A seed record with NO referral: extractReferral finds nothing, so the loop
+	// breaks at the seed and lastRaw is never set. The seed's own response is never
+	// salvageable — it describes the TLD registry, not the registrant.
+	const seedRecordNoReferral = "domain: COM\norganisation: VeriSign Global Registry Services\n"
+
+	tests := []struct {
+		name string
+		// newCtx builds the ctx both calls run under. Only the pre-cancelled row
+		// returns a non-clean one.
+		newCtx func() (context.Context, context.CancelFunc)
+		// respond answers a hop. nil means the stub must never be reached at all.
+		respond func(t *testing.T, server string) (string, error)
+		// wantHops is the exact server sequence ONE call must dial; nil = no dial.
+		wantHops        []string
+		wantErrContains string
+		why             string
+	}{
+		{
+			name:   "first-hop transport failure never reaches a salvageable record",
+			newCtx: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
+			respond: func(t *testing.T, server string) (string, error) {
+				require.Equal(t, defaultServer, server, "the chain must die on the bootstrap seed hop")
+				return "", errors.New("dial tcp: connection refused")
+			},
+			wantHops:        []string{defaultServer},
+			wantErrContains: "whois query to",
+			why: "the seed hop failed, so lastRaw was never set and there is no partial record to " +
+				"describe — the error is the whole signal",
+		},
+		{
+			name:   "chain that never advances past the bootstrap seed",
+			newCtx: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
+			respond: func(t *testing.T, server string) (string, error) {
+				require.Equal(t, defaultServer, server, "with no referral the chain cannot advance")
+				return seedRecordNoReferral, nil
+			},
+			wantHops:        []string{defaultServer},
+			wantErrContains: "no record beyond bootstrap seed",
+			why: "the seed answered, but a seed-only record is deliberately NOT salvaged, so there is " +
+				"still no partial record — reporting a reason here would describe a payload the " +
+				"caller never receives",
+		},
+		{
+			name: "ctx already done before the first hop",
+			newCtx: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel() // done before whoisQuery's loop-top check runs
+				return ctx, func() {}
+			},
+			respond:         nil, // must never be reached
+			wantHops:        nil,
+			wantErrContains: context.Canceled.Error(),
+			why: "a ctx that was already done aborts at the loop top with nothing dialed, so this is " +
+				"the one error path where whoisComplete is not merely correct but the only option",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := tc.newCtx()
+			defer cancel()
+
+			// whoisQuery drives its hops sequentially on the calling goroutine, so a
+			// plain slice needs no synchronisation. It is reset before each of the two
+			// calls so wantHops describes ONE call's dials, not the sum of both.
+			var hops []string
+			stubWhoisRawFn(t, func(_ context.Context, domain, server string) (string, error) {
+				hops = append(hops, server)
+				if tc.respond == nil {
+					require.FailNowf(t, "WHOIS must not be dialed",
+						"a pre-cancelled ctx must abort before any hop; got server=%q domain=%q", server, domain)
+					return "", nil
+				}
+				return tc.respond(t, server)
+			})
+
+			// Half 1 — the PREMISE, straight off whoisQuery. This is the assertion that
+			// fails if whoisQuery ever starts reporting a reason on an error path, which
+			// is the change that would make viaWHOIS's discard lossy.
+			hops = nil
+			raw, incomplete, queryErr := whoisQuery(ctx, "example.com")
+			require.Error(t, queryErr, "row premise: this chain must make whoisQuery FAIL, not salvage")
+			assert.Contains(t, queryErr.Error(), tc.wantErrContains,
+				"row premise: the error must come from the intended no-salvage path")
+			assert.Empty(t, raw, "an error path yields no payload, salvaged or otherwise")
+			assert.Equal(t, whoisComplete, incomplete,
+				"whoisQuery must report whoisComplete on EVERY non-nil-error return — this is the "+
+					"premise viaWHOIS's discard depends on: %s", tc.why)
+			assert.Equal(t, tc.wantHops, hops, "premise half must dial exactly the expected hops")
+
+			// Half 2 — the CONSEQUENCE, off viaWHOIS: the error surfaces and the result
+			// is the ZERO value. Asserting the whole struct (not just .Incomplete) means
+			// no field can be invented on this path.
+			hops = nil
+			res, err := (&rdapWhoisResolver{}).viaWHOIS(ctx, "example.com")
+			require.Error(t, err, "a failed WHOIS lookup must surface its error")
+			assert.Contains(t, err.Error(), tc.wantErrContains,
+				"and it must be whoisQuery's error, propagated unwrapped-over")
+			assert.Equal(t, registrantResult{}, res,
+				"with no record there is nothing to describe as partial, so viaWHOIS returns the ZERO "+
+					"result — a fabricated reason here would send the operator after a truncation "+
+					"that never happened")
+			assert.Equal(t, whoisComplete, res.Incomplete,
+				"stated explicitly as well as via the zero-value check, because whoisComplete is the "+
+					"zero value and that coincidence is what makes the discard safe")
+			assert.Equal(t, tc.wantHops, hops, "consequence half must dial exactly the same hops")
+		})
+	}
+}
+
+// salvagedStubWithReferral is a post-referral WHOIS response that whoisparser
+// REJECTS while still publishing an onward referral — the shape a TLD server's
+// redirect stub or throttle banner has. It is the payload for the damaged-partial
+// case: whoisQuery salvages it as (lastRaw, <reason>, nil), and viaWHOIS then
+// fails to parse it, so the reason has to survive an ERROR return or the
+// deadline / referral / hop-budget attribution is lost for exactly this input.
+//
+// Two properties are load-bearing, and both are asserted (never assumed) by
+// TestSalvagedStubWithReferralFixture_IsRejectedYetStillReferrable below:
+//
+//   - No `domain[ name]:`-shaped line — in fact no "domain" substring at all.
+//     BOTH of whoisparser's domain regexes (searchDomainRx1/Rx2) require a literal
+//     "domain", so its absence makes searchDomain return "" and Parse bail with
+//     ErrDomainDataInvalid via getDomainErrorType before a single field is read.
+//     Omitting the word is what makes the rejection structural rather than
+//     incidental to some phrase whoisparser happens to special-case.
+//   - A "Registrar WHOIS Server:" line, one of the three prefixes extractReferral
+//     accepts, so the chain still advances to a further hop and whoisQuery can
+//     reach its salvage arms at all.
+//
+// The wording deliberately avoids every phrase in whoisparser's not-found /
+// blocked / premium / reserved / limit-exceeded key lists, so the rejection is
+// ErrDomainDataInvalid specifically and the fixture assertion can pin it.
+const salvagedStubWithReferral = "% This WHOIS service is temporarily unable to answer your request.\n" +
+	"% Please try again later.\n" +
+	"Registrar WHOIS Server: whois.registrar.example\n"
+
+// TestSalvagedStubWithReferralFixture_IsRejectedYetStillReferrable is the
+// NON-VACUITY guard for the two tests below. Both of them are worthless if the
+// payload actually parses: viaWHOIS would return through its success path, the
+// error branch the fix lives on would never execute, and both tests would pass
+// while asserting nothing about the fix. So the precondition is asserted rather
+// than commented — a whois-parser bump that starts accepting this text fails
+// HERE, loudly, instead of silently hollowing out the regression guards.
+func TestSalvagedStubWithReferralFixture_IsRejectedYetStillReferrable(t *testing.T) {
+	_, err := whoisparser.Parse(salvagedStubWithReferral)
+	require.Error(t, err,
+		"the fixture MUST fail to parse — a nil error here means the tests below no longer "+
+			"exercise viaWHOIS's parse-error path at all")
+	assert.ErrorIs(t, err, whoisparser.ErrDomainDataInvalid,
+		"no domain-name line → searchDomain finds nothing → getDomainErrorType's default arm")
+
+	assert.NotContains(t, strings.ToLower(salvagedStubWithReferral), "domain",
+		"the rejection must be structural: both whoisparser domain regexes require a literal "+
+			"\"domain\", so the fixture must not contain the word anywhere")
+	assert.Equal(t, "whois.registrar.example", extractReferral(salvagedStubWithReferral),
+		"and the record must STILL refer onward, or whoisQuery never advances far enough to salvage it")
+}
+
+// TestViaWHOIS_UnparseableSalvagedRecordKeepsItsIncompletenessReason is the
+// regression guard for the confirmed Codex finding on PR #108: viaWHOIS returned
+// a bare registrantResult{} alongside the parse error, discarding the
+// whoisIncompleteness that whoisQuery had just reported.
+//
+// The damaged-partial case is where that mattered. whoisQuery's salvage arms hand
+// back (lastRaw, <reason>, nil), and lastRaw is ANY post-referral response —
+// including a stub or banner whoisparser rejects. verifyCandidates reads
+// res.Incomplete and err TOGETHER (`outcomes[i] = candidateOutcome{incomplete:
+// res.Incomplete, failed: err != nil}`), so dropping the reason on the error path
+// left the pass record showing only lookup_failed: the deadline / referral /
+// hop-budget attribution that ENG-5405 exists to produce was lost for precisely
+// the input that needed it most.
+//
+// The chain is three hops because lastRaw is only ever set from a NON-defaultServer
+// response: bootstrap seed → refers to the TLD server; the TLD server answers with
+// the unparseable stub AND a further referral; the registrar hop dies. Both salvage
+// arms are covered — the rows differ only in the ctx state at the failing hop,
+// which is the sole discriminator whoisQuery classifies on.
+func TestViaWHOIS_UnparseableSalvagedRecordKeepsItsIncompletenessReason(t *testing.T) {
+	const (
+		tldServer       = "whois.tld.example"
+		registrarServer = "whois.registrar.example"
+		seedRecord      = "domain: EXAMPLE.COM\nrefer: whois.tld.example\n"
+	)
+
+	tests := []struct {
+		name string
+		// newCtx builds the ctx viaWHOIS runs under. Both rows build an
+		// expiring/cancellable one, so neither gets its verdict from the ctx's type —
+		// only from whether it actually fired.
+		newCtx func() (context.Context, context.CancelFunc)
+		// atFailingHop runs inside the whoisRawFn stub on the registrar hop, just
+		// before it fails, so the ctx state and the hop failure are simultaneous.
+		// nil leaves the ctx clean.
+		atFailingHop func(ctx context.Context)
+		want         whoisIncompleteness
+		why          string
+	}{
+		{
+			name:   "referral hop transport failure keeps referral_failed",
+			newCtx: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
+			want:   whoisIncompleteReferral,
+			why: "the salvaged stub could not be parsed, but the chain's failure mode is still known: " +
+				"a referral hop's transport died on a CLEAN ctx. Collapsing this to a bare " +
+				"lookup_failed tells the operator to resize a budget that never bound the pass",
+		},
+		{
+			name: "deadline landing inside the failing hop keeps deadline_expired",
+			newCtx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 50*time.Millisecond)
+			},
+			// Block until the REAL deadline fires, so the deadline arm is reached by an
+			// expiry observed mid-hop rather than by a convenient explicit cancel.
+			atFailingHop: func(ctx context.Context) { <-ctx.Done() },
+			want:         whoisIncompleteDeadline,
+			why: "the same unparseable payload under an EXPIRED ctx must keep the opposite reason — " +
+				"the two drive opposite operator remedies (resize the budget vs. pace the leg), so a " +
+				"parse failure must not erase the distinction",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			// NON-VACUITY, asserted per row: if this payload ever parses, viaWHOIS
+			// returns through its success path and this row proves nothing.
+			_, parseErr := whoisparser.Parse(salvagedStubWithReferral)
+			require.Error(t, parseErr,
+				"row precondition: the salvaged payload must be REJECTED by whoisparser, or the "+
+					"error path carrying the fix never runs")
+			require.NotEqual(t, whoisComplete, tc.want,
+				"row precondition: a whoisComplete expectation would be satisfiable by a chain that "+
+					"never truncated at all")
+
+			ctx, cancel := tc.newCtx()
+			defer cancel()
+
+			// whoisQuery drives the hops sequentially on this goroutine, so plain
+			// appends here need no synchronisation.
+			var hops []string
+			stubWhoisRawFn(t, func(hopCtx context.Context, domain, server string) (string, error) {
+				hops = append(hops, server)
+				switch server {
+				case defaultServer:
+					return seedRecord, nil // seed refers onward; lastRaw stays unset here
+				case tldServer:
+					// Post-referral, so this becomes lastRaw — and it is the payload
+					// whoisparser will reject. It still refers onward, so the chain
+					// continues and can reach a salvage arm.
+					return salvagedStubWithReferral, nil
+				case registrarServer:
+					if tc.atFailingHop != nil {
+						tc.atFailingHop(hopCtx)
+					}
+					return "", errors.New("dial tcp: connection refused")
+				default:
+					require.FailNowf(t, "unexpected WHOIS server", "server=%q domain=%q", server, domain)
+					return "", nil
+				}
+			})
+
+			res, err := (&rdapWhoisResolver{}).viaWHOIS(ctx, "example.com")
+
+			// The discriminator, asserted per row (ctx.Err() is monotone, so reading it
+			// after the call reads the value the classifier saw).
+			if tc.want == whoisIncompleteDeadline {
+				require.Error(t, ctx.Err(), "this row's premise is an expired ctx at the failing hop")
+			} else {
+				require.NoError(t, ctx.Err(), "this row's premise is a CLEAN ctx at the failing hop")
+			}
+
+			// BOTH halves are the assertion. The error is what makes the case damaging
+			// (it is the branch that used to discard the reason), and the reason is what
+			// the fix preserves — either one alone is satisfiable without the fix.
+			require.Error(t, err, "an unparseable salvaged record must still surface the parse error")
+			assert.ErrorIs(t, err, whoisparser.ErrDomainDataInvalid,
+				"and it is the parse error specifically, not the hop's transport error")
+			assert.Equal(t, tc.want, res.Incomplete, tc.why)
+
+			assert.False(t, res.Found, "nothing was parsed, so no registrant was resolved")
+			assert.Empty(t, res.Org)
+			assert.Equal(t, []string{defaultServer, tldServer, registrarServer}, hops,
+				"lastRaw is only set from a post-referral response, so the salvage requires all three hops")
+		})
+	}
+}
+
+// whoisOnlyResolver is a registrantResolver that runs the REAL production policy
+// (resolveWithFallback) with the RDAP leg forced to miss, so every candidate lands
+// on the REAL viaWHOIS while the pass stays hermetic — the only seam is the
+// stubbed whoisRawFn, so no socket and no DNS. This matters for the pass-level
+// test below: a hand-canned stubResolver could only RESTATE viaWHOIS's return
+// shape from memory, and a stub that returns a reason alongside an error would
+// keep passing even after production stopped doing so. Driving the real function
+// is what makes the assertion a regression guard rather than a tautology.
+type whoisOnlyResolver struct{}
+
+func (whoisOnlyResolver) resolveRegistrant(ctx context.Context, domain string) (registrantResult, error) {
+	rdapMiss := func(context.Context, string) (registrantResult, error) {
+		return registrantResult{}, errors.New("rdap step disabled for this hermetic test")
+	}
+	// viaWHOIS never touches its receiver, so a zero-value resolver keeps this off
+	// the RDAP client pool entirely.
+	return resolveWithFallback(ctx, domain, rdapMiss, (&rdapWhoisResolver{}).viaWHOIS)
+}
+
+// TestVerifyCandidates_UnparseableSalvagedRecordTalliesBothFailedAndItsReason is
+// the observable end state of the fix, at the level an operator actually reads:
+// the pass's single degraded record. One candidate's WHOIS leg salvages a partial
+// record that then fails to parse, and that ONE candidate must appear in BOTH
+// lookup_failed and incomplete_referral.
+//
+// The overlap is the behaviour under test, not an accident: "the lookup failed AND
+// the chain was known to be partial" are both true, and reporting only the first
+// is the blindness the ticket removes. (summarizeVerifyPass's comment says the
+// counters are not a partition; this is the case that makes that true, and it is
+// safe because the buckets are only ever summed in a test-for-zero predicate.)
+//
+// Before the fix incomplete_referral would read 0 here while lookup_failed read 1.
+// The second, clean candidate is the control: it proves the reason is attributed to
+// the truncated candidate specifically and not stamped on the whole pass.
+func TestVerifyCandidates_UnparseableSalvagedRecordTalliesBothFailedAndItsReason(t *testing.T) {
+	logs := captureSlog(t)
+
+	const (
+		tldServer       = "whois.tld.example"
+		registrarServer = "whois.registrar.example"
+		seedRecord      = "domain: EXAMPLE.COM\nrefer: whois.tld.example\n"
+		// A chain that runs to its natural end and carries a corroborating
+		// registrant: no onward referral, so whoisComplete.
+		cleanTLDRecord = "Domain Name: CLEAN.EXAMPLE.COM\n" +
+			"Registrar: Example Registrar, Inc.\n" +
+			"Registrant Organization: Acme Corp\n"
+	)
+	const (
+		cleanDomain     = "clean.example.com"
+		truncatedDomain = "truncated.example.com"
+	)
+
+	// Stateless by construction: the stub only reads its arguments, so the two
+	// workers may drive it concurrently without synchronisation. t.Errorf (not
+	// Fatalf) on an unexpected hop, because this runs on worker goroutines.
+	stubWhoisRawFn(t, func(_ context.Context, domain, server string) (string, error) {
+		switch {
+		case server == defaultServer:
+			return seedRecord, nil
+		case server == tldServer && domain == cleanDomain:
+			return cleanTLDRecord, nil
+		case server == tldServer && domain == truncatedDomain:
+			return salvagedStubWithReferral, nil // salvageable, unparseable, refers onward
+		case server == registrarServer && domain == truncatedDomain:
+			return "", errors.New("dial tcp: connection refused")
+		default:
+			t.Errorf("unexpected WHOIS hop: server=%q domain=%q", server, domain)
+			return "", errors.New("unexpected hop")
+		}
+	})
+
+	order := []string{cleanDomain, truncatedDomain}
+	cands := make([]candidate, 0, len(order))
+	for _, d := range order {
+		cands = append(cands, candidate{domain: d, finding: plugins.Finding{Value: d}})
+	}
+
+	findings, err := verifyCandidates(context.Background(), whoisOnlyResolver{}, "Acme Corp", cands)
+	require.NoError(t, err)
+	require.Len(t, findings, len(order), "de-rank, never drop: both candidates are still emitted")
+
+	// Literals, not the package constants — same convention as the de-rank ordering
+	// tests above, so a constant edit cannot move expectation and emission together.
+	wantConfidence := map[string]float64{
+		cleanDomain:     0.60, // complete chain, registrant corroborates the query org
+		truncatedDomain: 0.50, // nothing parsed → unverified, exactly as a plain lookup error scores
+	}
+	for i, d := range order {
+		assert.Equal(t, d, findings[i].Value, "input order must survive the summary")
+		assert.InDelta(t, wantConfidence[d], plugins.Confidence(findings[i]), 0.001,
+			"%s must score on registrant corroboration ALONE — the incompleteness reason is "+
+				"observational and must not enter ranking", d)
+	}
+
+	rec := findLogRecord(t, logs(), verifyPassMsgDegraded)
+	assert.Equal(t, slog.LevelWarn.String(), rec["level"])
+	assert.EqualValues(t, 2, rec["candidates"])
+	assert.EqualValues(t, 2, rec["attempted"])
+	assert.EqualValues(t, 1, rec["lookup_failed"],
+		"the parse error IS a failed lookup and must still be counted as one")
+	assert.EqualValues(t, 1, rec["incomplete_referral"],
+		"AND the same candidate keeps its reason bucket — the two counters are deliberately "+
+			"NON-DISJOINT here; before the fix this read 0 and the attribution was lost")
+	assert.EqualValues(t, 0, rec["incomplete_deadline"], "the failing hop ran under a clean ctx")
+	assert.EqualValues(t, 0, rec["incomplete_referral_budget"], "the chain died on a hop, not on the hop budget")
+	assert.EqualValues(t, 0, rec["panicked"])
+	assert.False(t, hasLogRecord(logs(), verifyPassMsgClean),
+		"a pass carrying a truncated candidate must never also claim it completed cleanly")
+}
+
 // TestDecideConfidence_IncompleteAndNotFoundBothScoreUnverified is AC4, the core
 // guarantee: registrantResult.Incomplete is PURELY OBSERVATIONAL. Every
 // incompleteness reason and a genuine no-registrant must score IDENTICALLY, so

@@ -544,6 +544,10 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 // payload, no registrant org (PII), no referral hostname read from WHOIS text, and
 // the message strings are compile-time constants so nothing can forge a log line
 // (security-review.md §3).
+//
+// The counters are NOT a partition of candidates: a candidate whose salvaged
+// record failed to parse counts in BOTH lookup_failed and its reason bucket (see
+// viaWHOIS), so do not read the record as a disjoint breakdown.
 // budgetExpired reports whether the pass-wide reverseWhoisTotalBudget fired (see
 // its derivation in verifyCandidates). It is reported, never used to decide
 // whether the pass was degraded: a budget that fires after the last worker
@@ -811,11 +815,32 @@ func extractRDAPRegistrantOrg(ctx context.Context, doer rdapDoer, domain string)
 func (r *rdapWhoisResolver) viaWHOIS(ctx context.Context, domain string) (registrantResult, error) {
 	raw, incomplete, err := whoisQuery(ctx, domain)
 	if err != nil {
+		// Nothing to preserve here: whoisQuery reports whoisComplete on EVERY path
+		// that returns a non-nil error (whoisclient.go), so incomplete is the zero
+		// value and registrantResult{} already carries it.
 		return registrantResult{}, err
 	}
 	parsed, err := whoisparser.Parse(raw)
 	if err != nil {
-		return registrantResult{}, err
+		// Carry the reason out WITH the error. whoisQuery salvages a partial chain as
+		// (lastRaw, <reason>, nil), and lastRaw is any post-referral response —
+		// including a redirect stub or throttle banner that whoisparser.Parse rejects
+		// (no `domain:`-shaped line → ErrDomainDataInvalid/ErrDomainLimitExceed). The
+		// caller reads res.Incomplete unconditionally, alongside err, at
+		// `outcomes[i] = candidateOutcome{incomplete: res.Incomplete, failed: err != nil}`
+		// above, so returning the reason on this error path is what keeps a
+		// salvaged-but-unparseable record's deadline/referral/hop-budget attribution
+		// instead of collapsing it to a bare lookup_failed — the exact blindness
+		// ENG-5405 exists to remove.
+		//
+		// This deliberately makes lookup_failed and the three reason buckets
+		// NON-DISJOINT for this one case: a single candidate increments both, because
+		// "the lookup failed AND we know the chain was partial" is the true statement
+		// and dropping either half would be a lie. Safe because the only place the
+		// buckets are ever summed is summarizeVerifyPass's clean-predicate
+		// (deadline+referral+hops+failed+panicked == 0), which tests for zero and is
+		// therefore unaffected by double-counting a non-zero candidate.
+		return registrantResult{Incomplete: incomplete}, err
 	}
 	org := ""
 	if parsed.Registrant != nil {
