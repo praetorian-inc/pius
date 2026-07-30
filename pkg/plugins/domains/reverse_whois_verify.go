@@ -2,6 +2,7 @@ package domains
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -93,6 +94,14 @@ const (
 // regardless.
 var reverseWhoisTotalBudget = 90 * time.Second
 
+// errReverseWhoisBudgetExpired exists SOLELY as the context.Cause discriminator
+// that lets verifyCandidates prove the pass-wide reverseWhoisTotalBudget — and
+// not some ancestor deadline — is what cancelled the verification pass, which is
+// the whole meaning of the budget_expired log field. It is never returned to a
+// caller and never wrapped into a plugin error; the only thing that ever reads it
+// is budgetFired, via context.Cause (ENG-5405).
+var errReverseWhoisBudgetExpired = errors.New("reverse-whois: pass verification budget expired")
+
 // registrantResult is the outcome of resolving a single candidate domain's own
 // registrant organization.
 type registrantResult struct {
@@ -102,6 +111,15 @@ type registrantResult struct {
 	Masked bool
 	// Found is true when a non-empty registrant org was resolved.
 	Found bool
+
+	// Incomplete records why the WHOIS leg that produced this result is known to
+	// be partial; whoisComplete ("") when the chain ran to completion, when WHOIS
+	// never ran (RDAP answered), or when the candidate was never looked up.
+	//
+	// PURELY OBSERVATIONAL: it must never be read by decideConfidence. A salvaged
+	// partial record that DOES yield a registrant org is still scored on its
+	// merits — that recall is what the salvage exists for (ENG-5405 AC4).
+	Incomplete whoisIncompleteness
 }
 
 // registrantResolver resolves a domain's own registrant organization. The prod
@@ -115,6 +133,19 @@ type registrantResolver interface {
 type candidate struct {
 	domain  string
 	finding plugins.Finding
+}
+
+// candidateOutcome is one worker's observability report for one candidate.
+//
+// Written index-disjointly — worker i writes only outcomes[i], exactly like the
+// existing scores[i] — so verifyCandidates stays lock-free and g.Wait() remains
+// the single happens-before barrier that publishes every write (ENG-5123 review;
+// ENG-5405). No mutex and no atomic: either would introduce the first shared
+// mutable state into this fan-out and weaken a property the pass documents.
+type candidateOutcome struct {
+	incomplete whoisIncompleteness // whoisComplete when the WHOIS leg finished, or never ran
+	failed     bool                // resolveRegistrant returned an error
+	panicked   bool                // the worker recovered a panic before scoring
 }
 
 // orgLegalSuffixes are legal-form tokens stripped by normalizeOrg before
@@ -388,6 +419,14 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		scores[i] = confReverseWhoisUnverified
 	}
 
+	// Per-candidate observability, sized len(cands) — NOT resolveCount — so it
+	// indexes identically to scores and a stray index can never be out of range.
+	// Unlike scores this needs no pre-fill loop: the zero candidateOutcome
+	// (whoisComplete, not failed, not panicked) is already the correct reading for
+	// the overflow indices >= resolveCount, which were never looked up, and for any
+	// worker that never ran (ENG-5405).
+	outcomes := make([]candidateOutcome, len(cands))
+
 	// Bound the whole pass, not just each lookup: a candidate can cost up to two
 	// step timeouts plus WHOIS referral hops (see reverseWhoisTotalBudget), so
 	// without a pass-wide cap a large result set against slow resolvers could hold
@@ -395,7 +434,7 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 	// fires sees a cancelled context, returns an error, and is scored unverified —
 	// capping worst-case runtime without dropping anything. Per-step timeouts are
 	// owned by resolveWithFallback, derived from gctx, so this budget bounds them.
-	bctx, cancelBudget := context.WithTimeout(ctx, reverseWhoisTotalBudget)
+	bctx, cancelBudget := context.WithTimeoutCause(ctx, reverseWhoisTotalBudget, errReverseWhoisBudgetExpired)
 	defer cancelBudget()
 
 	g, gctx := errgroup.WithContext(bctx)
@@ -413,12 +452,26 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 			// one candidate instead of taking down the pass (Gemini review, ENG-5123).
 			defer func() {
 				if rec := recover(); rec != nil {
+					// recover() fires BEFORE the outcomes[i] assignment below ever runs,
+					// so without this line a panicking candidate would tally as
+					// complete-and-not-failed — recreating ENG-5405's exact blindness
+					// inside the mechanism built to end it. A panic gets its OWN bucket:
+					// it is not a WHOIS incompleteness and must never be conflated with
+					// one (ENG-5405 F4). Still index-disjoint (same worker, same i), so
+					// g.Wait() publishes it like every other write.
+					outcomes[i].panicked = true
 					slog.Warn("reverse-whois: recovered panic resolving candidate registrant; scoring unverified",
 						"domain", cands[i].domain, "panic", rec)
 				}
 			}()
 			res, err := r.resolveRegistrant(gctx, cands[i].domain)
 			scores[i] = decideConfidence(queryOrg, res, err)
+			// Record why this candidate is (or is not) fully verified. res.Incomplete is
+			// PURELY OBSERVATIONAL — decideConfidence above never reads it, so scoring
+			// stays byte-identical to ENG-5123 (ENG-5405 AC4). err is otherwise
+			// discarded by design (see g.Wait's comment below), which is exactly why a
+			// pass where every lookup failed outright would look healthy without this.
+			outcomes[i] = candidateOutcome{incomplete: res.Incomplete, failed: err != nil}
 			return nil
 		})
 	}
@@ -443,6 +496,55 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		return nil, err
 	}
 
+	// The whoisIncompleteness enum cannot separate "this candidate's own
+	// reverseWhoisLookupTimeout expired" from "the pass-wide
+	// reverseWhoisTotalBudget expired": at the WHOIS layer both are just
+	// ctx.Err() != nil on a derived context (whoisclient.go), and that layer has no
+	// handle on which ancestor fired. This function DOES — it owns bctx.
+	//
+	// Discriminate on the CAUSE, not on bctx.Err(): matching the
+	// context.DeadlineExceeded identity was NOT exact. It did correctly exclude a
+	// late caller CANCEL, which yields context.Canceled — but it did NOT exclude a
+	// late caller DEADLINE, and that is the case it got wrong. bctx is derived from
+	// ctx, which carries a deadline in production (runner.DefaultPipelineTimeout),
+	// and Go cancels a child with the PARENT's error, so a parent deadline sets
+	// bctx.Err() to context.DeadlineExceeded even though bctx's own timer never
+	// fired. In that shape there is in fact no 90s bound in play to report at all:
+	// once the parent's remaining time is under the budget, WithDeadline caps the
+	// child to the parent's deadline and arms no timer of its own. The ctx.Err()
+	// re-check above only proves the caller was clean AT THAT INSTANT, so a caller
+	// deadline landing between that check and this line reported budget_expired=true
+	// for a pass the pass-wide budget never bounded — sending an operator to resize a
+	// bound that was not the binding one (credit: Codex, PR #108). That window is two
+	// adjacent statements with no blocking call between them, so this was a
+	// low-probability race, not a routine misreport; it is worth fixing because
+	// making exactly this distinction is the field's entire purpose.
+	//
+	// context.Cause against a private sentinel is exact in BOTH directions:
+	// WithTimeoutCause installs errReverseWhoisBudgetExpired only when bctx's OWN
+	// timer fires, and any parent-propagated cancellation — deadline or cancel alike
+	// — leaves context.Cause(bctx) as the parent's cause, never the sentinel. The
+	// deferred cancelBudget() likewise leaves context.Canceled. So neither a late
+	// caller cancel nor a late caller deadline can masquerade as a budget expiry: the
+	// field now means precisely "the pass-wide budget fired", and nothing outside
+	// this function can forge it. budgetFired holds the predicate so it can be
+	// exercised directly (ENG-5405).
+	//
+	// It is deliberately NOT a term in the degraded predicate, and must not become
+	// one: bctx's deadline can fire after every worker has already finished, in
+	// which case nothing was lost and the pass really was clean. Folding it into
+	// the predicate would report a false degradation on a complete pass. It is
+	// reported as its own field so an operator can tell a budget-bounded pass from
+	// a timeout-bounded one without it changing the pass verdict.
+	budgetExpired := budgetFired(bctx)
+
+	// Placement is load-bearing in BOTH directions. After g.Wait() because that is
+	// the only happens-before barrier that publishes the workers' outcomes[] writes
+	// to this goroutine — reading the slice any earlier is a data race. After the
+	// ctx.Err() re-check because a caller-aborted pass returns an error instead of
+	// findings, and must not claim a pass completed (ENG-5405).
+	summarizeVerifyPass(len(cands), resolveCount, budgetExpired, outcomes)
+
 	findings := make([]plugins.Finding, 0, len(cands))
 	for i, c := range cands {
 		f := c.finding
@@ -450,6 +552,114 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		findings = append(findings, f)
 	}
 	return findings, nil
+}
+
+// budgetFired reports whether bctx was cancelled by its OWN
+// reverseWhoisTotalBudget timer rather than by anything the caller did. It is the
+// sole reader of errReverseWhoisBudgetExpired: context.Cause returns that
+// sentinel only for the timer WithTimeoutCause armed in verifyCandidates, so a
+// caller cancel, a caller deadline, and the deferred cancelBudget() all report
+// false. Split out of verifyCandidates so the discrimination can be exercised
+// directly on constructed contexts instead of by racing a real pass (ENG-5405).
+func budgetFired(bctx context.Context) bool {
+	return errors.Is(context.Cause(bctx), errReverseWhoisBudgetExpired)
+}
+
+// summarizeVerifyPass emits the pass's single observability record.
+//
+// One record per pass, not per candidate: maxReverseWhoisCandidates is 500 and
+// pius configures no slog handler (cmd/pius/main.go has no slog.New, no
+// SetDefault, no --log-level flag), so the default handler runs at LevelInfo and
+// slog.Debug is unreachable in production. A per-candidate line would therefore be
+// up to 500 unconditional lines per run, per plugin (ENG-5405).
+//
+// Warn on a degraded pass matches this package's established
+// degraded-but-handled level (the response-cap truncation in whoisclient.go, the
+// recovered worker panic above, runner/run.go). Info on a clean pass is the
+// positive control: it distinguishes "not degraded" from "this summary never ran",
+// which is the only thing that proves the instrumentation is wired at all.
+//
+// NO untrusted content: counts and compile-time constants only — no raw WHOIS
+// payload, no registrant org (PII), no referral hostname read from WHOIS text, and
+// the message strings are compile-time constants so nothing can forge a log line
+// (security-review.md §3).
+//
+// The counters are NOT a partition of candidates: a candidate whose salvaged
+// record failed to parse counts in BOTH lookup_failed and its reason bucket (see
+// viaWHOIS), so do not read the record as a disjoint breakdown.
+// budgetExpired reports whether the pass-wide reverseWhoisTotalBudget fired (see
+// its derivation in verifyCandidates). It is reported, never used to decide
+// whether the pass was degraded: a budget that fires after the last worker
+// finished lost nothing.
+func summarizeVerifyPass(total, attempted int, budgetExpired bool, outcomes []candidateOutcome) {
+	var deadline, referral, hops, failed, panicked int
+	for _, o := range outcomes {
+		switch o.incomplete {
+		case whoisIncompleteDeadline:
+			deadline++
+		case whoisIncompleteReferral:
+			referral++
+		case whoisIncompleteHops:
+			hops++
+		}
+		if o.failed {
+			failed++
+		}
+		if o.panicked {
+			panicked++
+		}
+	}
+	// The cap is the FOURTH degradation arm, alongside the three per-candidate
+	// buckets and the panic bucket. Candidates past maxReverseWhoisCandidates are
+	// never looked up, so their zero-valued outcomes entries read as whoisComplete
+	// — summing the buckets alone would call a pass over 5000 candidates that
+	// attempted only 500 "complete" at Info level, which is exactly the
+	// silent-degradation class ENG-5405 exists to remove, reappearing at the cap
+	// boundary. attempted < total is truncation and must degrade the pass.
+	//
+	// budgetExpired is deliberately absent from this predicate — see its
+	// derivation in verifyCandidates. The pass-wide budget can expire after the
+	// last worker returned, so a true here proves nothing was lost; adding it as a
+	// fifth arm would downgrade complete passes to Warn on the strength of a race.
+	// It rides on both records as a field instead.
+	if deadline+referral+hops+failed+panicked == 0 && attempted >= total {
+		slog.Info("reverse-whois: verification pass complete",
+			"candidates", total, "attempted", attempted,
+			"budget_expired", budgetExpired)
+		return
+	}
+	// attempted (NOT "resolved"): the count of candidates a lookup was started for,
+	// capped at maxReverseWhoisCandidates. It says nothing about how many resolved
+	// successfully — a pass can legitimately read candidates=14 attempted=14
+	// lookup_failed=14, and naming this "resolved" would tell an operator that all
+	// fourteen verified when none did.
+	//
+	// budget_ms is logged because reverseWhoisTotalBudget is a var that tests
+	// shorten: recording the EFFECTIVE budget is what makes this line
+	// self-diagnosing for the deferred sizing follow-up. Milliseconds, not seconds:
+	// integer-dividing a sub-second budget by time.Second floors to 0, so the
+	// self-diagnosing denominator reported "budget 0s" — i.e. misconfigured — for a
+	// budget that was fine. The worker count is deliberately NOT logged — it is a
+	// compile-time constant, so it is noise.
+	//
+	// lookup_timeout_ms is logged BESIDE budget_ms because a pass is bounded by
+	// whichever of the two binds first, and budget_ms alone cannot tell a reader
+	// which one did: incomplete_deadline=6 against a 90000ms budget reads as an
+	// undersized budget until you know each lookup was independently capped at
+	// 10000ms. Both bounds have to be on the record for it to be self-describing.
+	// budget_expired then says which one actually fired for THIS pass.
+	slog.Warn("reverse-whois: verification pass degraded; some candidates were not fully verified",
+		"candidates", total,
+		"attempted", attempted,
+		"incomplete_deadline", deadline,
+		"incomplete_referral", referral,
+		"incomplete_referral_budget", hops,
+		"lookup_failed", failed,
+		"panicked", panicked,
+		"budget_expired", budgetExpired,
+		"budget_ms", int(reverseWhoisTotalBudget/time.Millisecond),
+		"lookup_timeout_ms", int(reverseWhoisLookupTimeout/time.Millisecond),
+	)
 }
 
 // rdapWhoisResolver resolves a domain's registrant org via RDAP (primary),
@@ -642,13 +852,34 @@ func extractRDAPRegistrantOrg(ctx context.Context, doer rdapDoer, domain string)
 }
 
 func (r *rdapWhoisResolver) viaWHOIS(ctx context.Context, domain string) (registrantResult, error) {
-	raw, err := whoisQuery(ctx, domain)
+	raw, incomplete, err := whoisQuery(ctx, domain)
 	if err != nil {
+		// Nothing to preserve here: whoisQuery reports whoisComplete on EVERY path
+		// that returns a non-nil error (whoisclient.go), so incomplete is the zero
+		// value and registrantResult{} already carries it.
 		return registrantResult{}, err
 	}
 	parsed, err := whoisparser.Parse(raw)
 	if err != nil {
-		return registrantResult{}, err
+		// Carry the reason out WITH the error. whoisQuery salvages a partial chain as
+		// (lastRaw, <reason>, nil), and lastRaw is any post-referral response —
+		// including a redirect stub or throttle banner that whoisparser.Parse rejects
+		// (no `domain:`-shaped line → ErrDomainDataInvalid/ErrDomainLimitExceed). The
+		// caller reads res.Incomplete unconditionally, alongside err, at
+		// `outcomes[i] = candidateOutcome{incomplete: res.Incomplete, failed: err != nil}`
+		// above, so returning the reason on this error path is what keeps a
+		// salvaged-but-unparseable record's deadline/referral/hop-budget attribution
+		// instead of collapsing it to a bare lookup_failed — the exact blindness
+		// ENG-5405 exists to remove.
+		//
+		// This deliberately makes lookup_failed and the three reason buckets
+		// NON-DISJOINT for this one case: a single candidate increments both, because
+		// "the lookup failed AND we know the chain was partial" is the true statement
+		// and dropping either half would be a lie. Safe because the only place the
+		// buckets are ever summed is summarizeVerifyPass's clean-predicate
+		// (deadline+referral+hops+failed+panicked == 0), which tests for zero and is
+		// therefore unaffected by double-counting a non-zero candidate.
+		return registrantResult{Incomplete: incomplete}, err
 	}
 	org := ""
 	if parsed.Registrant != nil {
@@ -657,7 +888,9 @@ func (r *rdapWhoisResolver) viaWHOIS(ctx context.Context, domain string) (regist
 			org = parsed.Registrant.Name
 		}
 	}
-	return newRegistrantResult(org), nil
+	res := newRegistrantResult(org)
+	res.Incomplete = incomplete
+	return res, nil
 }
 
 // newRegistrantResult builds a registrantResult from a raw org string, marking
