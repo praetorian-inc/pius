@@ -2356,10 +2356,20 @@ func TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload(t *testing.T) {
 // TestVerifyCandidates_BudgetExpiredReportsWhichBoundEndedThePass drives
 // budget_expired through verifyCandidates rather than handing the bool to
 // summarizeVerifyPass, so what is under test is the DERIVATION
-// (`budgetExpired := bctx.Err() != nil`) and not the parameter's ability to be
-// printed. Passing the bool in directly — as the summarizeVerifyPass subtests
-// above necessarily do — cannot distinguish a correct derivation from a hardcoded
-// false, which is exactly the blindness ENG-5405 is about.
+// (`budgetExpired := errors.Is(context.Cause(bctx), errReverseWhoisBudgetExpired)`)
+// and not the parameter's ability to be printed. Passing the bool in directly — as
+// the summarizeVerifyPass subtests above necessarily do — cannot distinguish a
+// correct derivation from a hardcoded false, which is exactly the blindness
+// ENG-5405 is about.
+//
+// This test is one half of the guard on that derivation; the other half is
+// TestReverseWhoisBudgetSentinel_DiscriminatesOwnExpiryFromAncestorCancellation,
+// which pins the CAUSE comparison against every regime that can end bctx —
+// including the ancestor-deadline regime whose end-to-end form is unreachable (see
+// that test's comment for why). What THIS test uniquely holds is the
+// context.WithTimeoutCause construction: it is the only test in which a real
+// pass-budget expiry has to carry errReverseWhoisBudgetExpired as its cause, so
+// reverting that call to a plain context.WithTimeout fails here.
 //
 // Why the field has to exist at all: whoisQuery cannot make this distinction. At
 // the WHOIS layer a per-lookup reverseWhoisLookupTimeout and the pass-wide
@@ -2480,4 +2490,222 @@ func TestVerifyCandidates_PanickingCandidateIsCountedNotSilentlyComplete(t *test
 	assert.EqualValues(t, 0, rec["incomplete_referral"])
 	assert.EqualValues(t, 0, rec["incomplete_referral_budget"],
 		"a panic gets its own bucket and is never conflated with a WHOIS incompleteness")
+}
+
+// ancestorDeadlineRegime names the one row of the table below on which the old and
+// new budget_expired expressions disagree. It is declared once and used twice — in
+// the table and in the post-loop assertion — so the "exactly one regime disagrees"
+// claim cannot drift away from the row it is about.
+const ancestorDeadlineRegime = "an ANCESTOR deadline fires: the defect"
+
+// TestReverseWhoisBudgetSentinel_DiscriminatesOwnExpiryFromAncestorCancellation is
+// the ENG-5405 / PR #108 budget_expired defect (credit: Codex, P2) written as an
+// executable fact, and the regression guard for the sentinel that closed it.
+//
+// verifyCandidates derives bctx from the CALLER's ctx, which in production carries
+// the runner's own deadline. When a parent's deadline fires, Go propagates the
+// cancellation down to the child carrying the PARENT's error — and that error is
+// also context.DeadlineExceeded. So the old predicate
+//
+//	errors.Is(bctx.Err(), context.DeadlineExceeded)
+//
+// could not tell "bctx's own 90s pass budget fired" from "the caller's deadline
+// fired": it reported budget_expired=true for a pass the pass-wide budget never
+// bounded, sending an operator to resize a bound that was not the binding one. The
+// fix pairs context.WithTimeoutCause with a private sentinel and reads the CAUSE,
+// which only bctx's own timer can install — the predicate production exposes as
+// budgetFired().
+//
+// The table evaluates BOTH expressions over every way bctx can reach done, and each
+// row asserts both columns plus the bctx.Err()/context.Cause(bctx) pair they read.
+// The load-bearing row is ancestorDeadlineRegime: old==true (wrong), new==false
+// (right). Note that bctx.Err() there is byte-identical to the two real-expiry rows
+// — that identity IS the defect, and it is why no amount of care with bctx.Err()
+// could have fixed this. The post-loop assertion pins that exactly one regime
+// disagrees and which one, so a future "simplification" back toward an Err()-shaped
+// test cannot quietly re-widen the match.
+//
+// The new column calls the production budgetFired() rather than restating its body,
+// so this is a mutation guard and not a self-fulfilling one: reverting that function
+// to the errors.Is(bctx.Err(), context.DeadlineExceeded) identity match makes the
+// ancestorDeadlineRegime row fail (and the post-loop assertion with it). Calling it
+// also makes deleting or renaming budgetFired — or its sentinel — a compile error
+// here.
+//
+// Why this is a unit test over the two expressions and NOT an end-to-end pass where
+// a caller deadline fires and a record is still emitted: that pass does not exist.
+// The window the defect lives in is between two ADJACENT statements in
+// verifyCandidates — the `if err := ctx.Err(); err != nil { return nil, err }`
+// re-check and the budgetExpired read a few lines later. If the caller's ctx is
+// done, the re-check returns the error FIRST and summarizeVerifyPass is never
+// reached, so there is no record to assert budget_expired on. Hitting the window
+// deterministically would require adding a production seam (an injected hook
+// between those two statements) for the sake of a log field, which is not a trade
+// worth making. This gap is deliberate and reasoned, not an oversight — do not
+// "fill" it with a sleep-and-hope test, which would be flaky in exchange for
+// nothing. The complementary half of the production expression — the
+// WithTimeoutCause construction itself — is covered end-to-end by
+// TestVerifyCandidates_BudgetExpiredReportsWhichBoundEndedThePass: revert that call
+// to a plain context.WithTimeout and a genuine expiry stops carrying the sentinel
+// as its cause, so the flag reports false and that test fails.
+//
+// Hermetic and deterministic (ENG-5405 AC5): no network, no WHOIS, no RDAP, no
+// resolver, and no mutation of reverseWhoisTotalBudget. Every row waits on
+// <-bctx.Done() instead of sleeping a fixed slice, so the single-digit-millisecond
+// deadlines carry no timing flake — a slow machine makes the wait longer, never
+// wrong.
+func TestReverseWhoisBudgetSentinel_DiscriminatesOwnExpiryFromAncestorCancellation(t *testing.T) {
+	const (
+		// soon fires promptly; far cannot fire within the test. Neither is ever slept
+		// through — they are only ever waited on via <-bctx.Done().
+		soon = 5 * time.Millisecond
+		far  = 30 * time.Second
+	)
+
+	tests := []struct {
+		name string
+		// parent builds the ancestor bctx is derived from, exactly as
+		// verifyCandidates receives its caller ctx. endParent is invoked AFTER the
+		// child exists, so a cancelling ancestor cancels a live child rather than
+		// handing WithTimeoutCause an already-done parent; it is a no-op for the rows
+		// whose ancestor ends on its own timer.
+		parent func(t *testing.T) (ctx context.Context, endParent func())
+		// childTimeout stands in for the pass-wide reverseWhoisTotalBudget.
+		childTimeout time.Duration
+		// wantErr is bctx.Err() once done — what the OLD predicate read. Three of the
+		// four rows agree here, which is precisely why it could not discriminate.
+		wantErr error
+		// wantCause is context.Cause(bctx) once done — what the NEW predicate reads.
+		wantCause error
+		wantOld   bool // errors.Is(bctx.Err(), context.DeadlineExceeded) — pre-fix
+		wantNew   bool // budgetFired(bctx) — shipped
+	}{
+		{
+			// A real pass-budget expiry with no ancestor bound at all: the simplest
+			// form of the case budget_expired exists to report.
+			name: "bctx's own timer fires with no ancestor deadline: a real budget expiry",
+			parent: func(*testing.T) (context.Context, func()) {
+				return context.Background(), func() {}
+			},
+			childTimeout: soon,
+			wantErr:      context.DeadlineExceeded,
+			wantCause:    errReverseWhoisBudgetExpired,
+			wantOld:      true,
+			wantNew:      true,
+		},
+		{
+			// The PRODUCTION shape of a real expiry: the runner's ctx does carry a
+			// deadline, the 90s budget is just nearer. Kept as its own row because a
+			// parent WITH a deadline takes a different branch inside
+			// context.WithDeadlineCause than a parent without one, and the fix has to
+			// hold on the branch production actually takes.
+			name: "bctx's own timer fires inside a FAR ancestor deadline: production shape",
+			parent: func(t *testing.T) (context.Context, func()) {
+				ctx, cancel := context.WithTimeout(context.Background(), far)
+				t.Cleanup(cancel)
+				return ctx, func() {}
+			},
+			childTimeout: soon,
+			wantErr:      context.DeadlineExceeded,
+			wantCause:    errReverseWhoisBudgetExpired,
+			wantOld:      true,
+			wantNew:      true,
+		},
+		{
+			// THE defect. The ancestor's deadline fires and Go propagates it into bctx
+			// with the ancestor's error, so bctx.Err() is context.DeadlineExceeded —
+			// indistinguishable from the two rows above — while the pass-wide budget
+			// still had ~30s left and never bounded anything. old==true is the bug
+			// reported as a fact; new==false is the fix.
+			name: ancestorDeadlineRegime,
+			parent: func(t *testing.T) (context.Context, func()) {
+				ctx, cancel := context.WithTimeout(context.Background(), soon)
+				t.Cleanup(cancel)
+				return ctx, func() {}
+			},
+			childTimeout: far,
+			wantErr:      context.DeadlineExceeded,
+			wantCause:    context.DeadlineExceeded,
+			wantOld:      true,
+			wantNew:      false,
+		},
+		{
+			// An explicit ancestor cancel (user interrupt). The old predicate already
+			// got this one right — context.Canceled is not context.DeadlineExceeded —
+			// so it is the control proving the new expression did not merely trade one
+			// wrong answer for another: it must still say false here.
+			name: "an ANCESTOR cancel fires: not a budget expiry either",
+			parent: func(t *testing.T) (context.Context, func()) {
+				ctx, cancel := context.WithCancel(context.Background())
+				t.Cleanup(cancel)
+				return ctx, cancel
+			},
+			childTimeout: far,
+			wantErr:      context.Canceled,
+			wantCause:    context.Canceled,
+			wantOld:      false,
+			wantNew:      false,
+		},
+	}
+
+	// Subtests below are sequential, so appending from inside them needs no
+	// synchronization and the post-loop assertion sees a complete list.
+	var disagreed []string
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			parent, endParent := tc.parent(t)
+
+			// Constructed EXACTLY as verifyCandidates constructs it: the caller's ctx,
+			// the pass-wide budget, the private sentinel as the cause. A less faithful
+			// construction would not be testing the fix.
+			bctx, cancelBudget := context.WithTimeoutCause(parent, tc.childTimeout, errReverseWhoisBudgetExpired)
+			defer cancelBudget()
+
+			endParent()
+
+			// Wait for the transition instead of sleeping past it: the two expressions
+			// are only meaningful once bctx is done, and context.Cause is nil before
+			// then. A regime that somehow never fires hangs here and surfaces as a test
+			// timeout — a loud failure, never a wrong answer read too early.
+			<-bctx.Done()
+
+			// The two expressions under comparison, evaluated on the same context in
+			// the same instant. oldPredicate is the pre-fix production line written out
+			// verbatim — it has to be inline, because the whole point is that it no
+			// longer exists in production. newPredicate calls the SHIPPED
+			// budgetFired(), not a copy of its body: that is what makes every row below
+			// a live guard on production code rather than a tautology about a string
+			// this test also wrote.
+			oldPredicate := errors.Is(bctx.Err(), context.DeadlineExceeded)
+			newPredicate := budgetFired(bctx)
+
+			// The inputs first, so a failure below reads as "the context did something
+			// unexpected" rather than "the predicate is wrong".
+			require.ErrorIs(t, bctx.Err(), tc.wantErr,
+				"bctx.Err() is the OLD predicate's only input; this row's regime must produce it")
+			require.ErrorIs(t, context.Cause(bctx), tc.wantCause,
+				"context.Cause(bctx) is the NEW predicate's only input, and WithTimeoutCause "+
+					"installs the sentinel if and only if bctx's OWN timer fired")
+
+			assert.Equal(t, tc.wantOld, oldPredicate,
+				"errors.Is(bctx.Err(), context.DeadlineExceeded) — the pre-fix expression")
+			assert.Equal(t, tc.wantNew, newPredicate,
+				"budgetFired(bctx) — the shipped predicate; true here must mean the pass-wide "+
+					"budget, and nothing else, ended the pass")
+
+			if oldPredicate != newPredicate {
+				disagreed = append(disagreed, tc.name)
+			}
+		})
+	}
+
+	// The whole point of the fix, stated once over the whole table: the two
+	// expressions differ on exactly ONE regime, and it is the ancestor-deadline one.
+	// Zero disagreements would mean the fix changed nothing (or that the
+	// ancestor-deadline row stopped exercising propagation); more than one would mean
+	// it changed a case it had no business changing.
+	require.Equal(t, []string{ancestorDeadlineRegime}, disagreed,
+		"the cause sentinel must fix the ancestor-deadline regime and ONLY that regime")
 }

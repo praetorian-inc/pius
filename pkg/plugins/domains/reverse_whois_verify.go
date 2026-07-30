@@ -94,6 +94,14 @@ const (
 // regardless.
 var reverseWhoisTotalBudget = 90 * time.Second
 
+// errReverseWhoisBudgetExpired exists SOLELY as the context.Cause discriminator
+// that lets verifyCandidates prove the pass-wide reverseWhoisTotalBudget — and
+// not some ancestor deadline — is what cancelled the verification pass, which is
+// the whole meaning of the budget_expired log field. It is never returned to a
+// caller and never wrapped into a plugin error; the only thing that ever reads it
+// is budgetFired, via context.Cause (ENG-5405).
+var errReverseWhoisBudgetExpired = errors.New("reverse-whois: pass verification budget expired")
+
 // registrantResult is the outcome of resolving a single candidate domain's own
 // registrant organization.
 type registrantResult struct {
@@ -426,7 +434,7 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 	// fires sees a cancelled context, returns an error, and is scored unverified —
 	// capping worst-case runtime without dropping anything. Per-step timeouts are
 	// owned by resolveWithFallback, derived from gctx, so this budget bounds them.
-	bctx, cancelBudget := context.WithTimeout(ctx, reverseWhoisTotalBudget)
+	bctx, cancelBudget := context.WithTimeoutCause(ctx, reverseWhoisTotalBudget, errReverseWhoisBudgetExpired)
 	defer cancelBudget()
 
 	g, gctx := errgroup.WithContext(bctx)
@@ -492,15 +500,35 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 	// reverseWhoisLookupTimeout expired" from "the pass-wide
 	// reverseWhoisTotalBudget expired": at the WHOIS layer both are just
 	// ctx.Err() != nil on a derived context (whoisclient.go), and that layer has no
-	// handle on which ancestor fired. This function DOES — it owns bctx. Match on
-	// the DEADLINE identity, not on bctx.Err() != nil: bctx is a
-	// context.WithTimeout, so context.DeadlineExceeded is the only error its own
-	// timer can produce, which makes the match exact. The ctx.Err() re-check above
-	// only proves the caller was clean AT THAT INSTANT; a caller that cancels in
-	// the window between that check and this line would set bctx.Err() to
-	// context.Canceled, and a != nil test would report budget_expired=true for a
-	// run that was actually cancelled. The identity match makes a late
-	// caller-cancel unable to masquerade as a budget expiry (ENG-5405).
+	// handle on which ancestor fired. This function DOES — it owns bctx.
+	//
+	// Discriminate on the CAUSE, not on bctx.Err(): matching the
+	// context.DeadlineExceeded identity was NOT exact. It did correctly exclude a
+	// late caller CANCEL, which yields context.Canceled — but it did NOT exclude a
+	// late caller DEADLINE, and that is the case it got wrong. bctx is derived from
+	// ctx, which carries a deadline in production (runner.DefaultPipelineTimeout),
+	// and Go cancels a child with the PARENT's error, so a parent deadline sets
+	// bctx.Err() to context.DeadlineExceeded even though bctx's own timer never
+	// fired. In that shape there is in fact no 90s bound in play to report at all:
+	// once the parent's remaining time is under the budget, WithDeadline caps the
+	// child to the parent's deadline and arms no timer of its own. The ctx.Err()
+	// re-check above only proves the caller was clean AT THAT INSTANT, so a caller
+	// deadline landing between that check and this line reported budget_expired=true
+	// for a pass the pass-wide budget never bounded — sending an operator to resize a
+	// bound that was not the binding one (credit: Codex, PR #108). That window is two
+	// adjacent statements with no blocking call between them, so this was a
+	// low-probability race, not a routine misreport; it is worth fixing because
+	// making exactly this distinction is the field's entire purpose.
+	//
+	// context.Cause against a private sentinel is exact in BOTH directions:
+	// WithTimeoutCause installs errReverseWhoisBudgetExpired only when bctx's OWN
+	// timer fires, and any parent-propagated cancellation — deadline or cancel alike
+	// — leaves context.Cause(bctx) as the parent's cause, never the sentinel. The
+	// deferred cancelBudget() likewise leaves context.Canceled. So neither a late
+	// caller cancel nor a late caller deadline can masquerade as a budget expiry: the
+	// field now means precisely "the pass-wide budget fired", and nothing outside
+	// this function can forge it. budgetFired holds the predicate so it can be
+	// exercised directly (ENG-5405).
 	//
 	// It is deliberately NOT a term in the degraded predicate, and must not become
 	// one: bctx's deadline can fire after every worker has already finished, in
@@ -508,7 +536,7 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 	// the predicate would report a false degradation on a complete pass. It is
 	// reported as its own field so an operator can tell a budget-bounded pass from
 	// a timeout-bounded one without it changing the pass verdict.
-	budgetExpired := errors.Is(bctx.Err(), context.DeadlineExceeded)
+	budgetExpired := budgetFired(bctx)
 
 	// Placement is load-bearing in BOTH directions. After g.Wait() because that is
 	// the only happens-before barrier that publishes the workers' outcomes[] writes
@@ -524,6 +552,17 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		findings = append(findings, f)
 	}
 	return findings, nil
+}
+
+// budgetFired reports whether bctx was cancelled by its OWN
+// reverseWhoisTotalBudget timer rather than by anything the caller did. It is the
+// sole reader of errReverseWhoisBudgetExpired: context.Cause returns that
+// sentinel only for the timer WithTimeoutCause armed in verifyCandidates, so a
+// caller cancel, a caller deadline, and the deferred cancelBudget() all report
+// false. Split out of verifyCandidates so the discrimination can be exercised
+// directly on constructed contexts instead of by racing a real pass (ENG-5405).
+func budgetFired(bctx context.Context) bool {
+	return errors.Is(context.Cause(bctx), errReverseWhoisBudgetExpired)
 }
 
 // summarizeVerifyPass emits the pass's single observability record.
