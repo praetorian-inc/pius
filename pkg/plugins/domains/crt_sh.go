@@ -12,12 +12,16 @@ import (
 )
 
 func init() {
-	plugins.Register("crt-sh", func() plugins.Plugin { return &CRTShPlugin{client: client.New()} })
+	plugins.Register("crt-sh", func() plugins.Plugin { return NewCRTShPlugin(client.New()) })
 }
 
 type CRTShPlugin struct {
 	client  *client.Client
 	baseURL string // override for testing
+}
+
+func NewCRTShPlugin(c *client.Client) *CRTShPlugin {
+	return &CRTShPlugin{client: c}
 }
 
 func (p *CRTShPlugin) crtshBase() string {
@@ -27,11 +31,13 @@ func (p *CRTShPlugin) crtshBase() string {
 	return "https://crt.sh"
 }
 
-func (p *CRTShPlugin) Name() string        { return "crt-sh" }
-func (p *CRTShPlugin) Description() string { return "crt.sh: discovers domains via Certificate Transparency logs" }
-func (p *CRTShPlugin) Category() string    { return "domain" }
-func (p *CRTShPlugin) Phase() int          { return 0 }
-func (p *CRTShPlugin) Mode() string        { return plugins.ModePassive }
+func (p *CRTShPlugin) Name() string { return "crt-sh" }
+func (p *CRTShPlugin) Description() string {
+	return "crt.sh: discovers domains via Certificate Transparency logs"
+}
+func (p *CRTShPlugin) Category() string { return "domain" }
+func (p *CRTShPlugin) Phase() int       { return 0 }
+func (p *CRTShPlugin) Mode() string     { return plugins.ModePassive }
 
 // Accepts if we have a domain or org name to search
 func (p *CRTShPlugin) Accepts(input plugins.Input) bool {

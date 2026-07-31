@@ -27,8 +27,12 @@ type Client struct {
 
 // New creates a Client with default timeout and retry settings.
 func New() *Client {
+	return NewWithHTTPClient(&http.Client{Timeout: defaultTimeout})
+}
+
+func NewWithHTTPClient(hc *http.Client) *Client {
 	return &Client{
-		http:    &http.Client{Timeout: defaultTimeout},
+		http:    hc,
 		retries: defaultRetries,
 	}
 }
