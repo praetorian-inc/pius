@@ -13,6 +13,13 @@ func init() {
 		if err != nil {
 			slog.Warn("cache init failed, plugin will be disabled", "plugin", "afrinic", "error", err)
 		}
-		return newRPSLPlugin(RPSLConfigs["afrinic"], c)
+		return newRPSLPlugin(rpslConfig{
+			name:        "afrinic",
+			description: "AFRINIC RPSL: resolves org handles to CIDR blocks",
+			cacheURL:    cache.AFRINICAllURL,
+			metaKey:     "afrinic_handles",
+			registry:    "afrinic",
+			mode:        plugins.ModePassive,
+		}, c)
 	})
 }

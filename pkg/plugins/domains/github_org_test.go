@@ -114,9 +114,9 @@ func TestTokenSimilarity(t *testing.T) {
 		min  float64
 	}{
 		{"Praetorian", "Praetorian", 1.0},
-		{"Praetorian", "Praetorian Security", 1.0},      // shorter (1 token) fully matches
-		{"Praetorian Security", "Praetorian Inc", 0.49}, // 1/2 = 0.50
-		{"Acme Corp", "Acme Corporation", 0.49},         // "acme" matches, "corp" != "corporation" = 1/2 = 0.50
+		{"Praetorian", "Praetorian Security", 1.0},  // shorter (1 token) fully matches
+		{"Praetorian Security", "Praetorian Inc", 0.49},  // 1/2 = 0.50
+		{"Acme Corp", "Acme Corporation", 0.49}, // "acme" matches, "corp" != "corporation" = 1/2 = 0.50
 		{"Google", "Apple", 0.0},
 		{"", "Google", 0.0},
 	}

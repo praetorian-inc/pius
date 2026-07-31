@@ -32,13 +32,6 @@ func init() {
 type DNSPermutationPlugin struct {
 	resolver string   // DNS resolver address (host:port)
 	wordlist []string // alteration words for permutations
-	lookup   Resolver // set by NewDNSPermutationPlugin; replaces direct DNS queries
-}
-
-// NewDNSPermutationPlugin builds the plugin around a caller-supplied resolver.
-// See Resolver in dns_brute.go.
-func NewDNSPermutationPlugin(lookup Resolver) *DNSPermutationPlugin {
-	return &DNSPermutationPlugin{resolver: dnsDefaultResolver, wordlist: parseWordlist(defaultPermutationWordlist), lookup: lookup}
 }
 
 func (p *DNSPermutationPlugin) Name() string { return "dns-permutation" }
@@ -115,7 +108,7 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				ips, err := p.resolveIPs(ctx, fqdn)
+				ips, err := resolveIPs(ctx, fqdn, p.resolver)
 				if err != nil {
 					slog.Debug("dns-permutation: resolve failed", "fqdn", fqdn, "error", err)
 					return
@@ -150,16 +143,6 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 
 // generateCandidates produces all permutation candidates for a set of subdomains
 // sharing the same base domain. Implements four altdns-style strategies.
-// resolveIPs prefers an injected resolver so lookups route through the embedder's
-// resolver. An injected resolver reports failure as "no addresses", so there is no
-// error to distinguish.
-func (p *DNSPermutationPlugin) resolveIPs(ctx context.Context, fqdn string) ([]string, error) {
-	if p.lookup != nil {
-		return p.lookup.Resolve(fqdn), nil
-	}
-	return resolveIPs(ctx, fqdn, p.resolver)
-}
-
 func (p *DNSPermutationPlugin) generateCandidates(seeds []string, base string) []string {
 	var candidates []string
 
@@ -338,3 +321,5 @@ func splitDomains(csv string) []string {
 	}
 	return result
 }
+
+

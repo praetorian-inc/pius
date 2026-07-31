@@ -25,13 +25,11 @@ type ReverseRIRPlugin struct {
 	client *client.Client
 }
 
-func (p *ReverseRIRPlugin) Name() string { return "reverse-rir" }
-func (p *ReverseRIRPlugin) Description() string {
-	return "Reverse RIR lookup: discovers org handles from company name via ARIN/RIPE/APNIC/AFRINIC/LACNIC"
-}
-func (p *ReverseRIRPlugin) Category() string { return "cidr" }
-func (p *ReverseRIRPlugin) Phase() int       { return 1 }
-func (p *ReverseRIRPlugin) Mode() string     { return plugins.ModePassive }
+func (p *ReverseRIRPlugin) Name() string        { return "reverse-rir" }
+func (p *ReverseRIRPlugin) Description() string { return "Reverse RIR lookup: discovers org handles from company name via ARIN/RIPE/APNIC/AFRINIC/LACNIC" }
+func (p *ReverseRIRPlugin) Category() string    { return "cidr" }
+func (p *ReverseRIRPlugin) Phase() int          { return 1 }
+func (p *ReverseRIRPlugin) Mode() string        { return plugins.ModePassive }
 
 func (p *ReverseRIRPlugin) Accepts(input plugins.Input) bool {
 	return input.OrgName != ""

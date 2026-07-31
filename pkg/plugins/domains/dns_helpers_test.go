@@ -19,16 +19,16 @@ func TestExtractParent(t *testing.T) {
 	}{
 		{"admin.dev.example.com", "dev.example.com"},
 		{"dev.example.com", "example.com"},
-		{"example.com", ""}, // parent "com" is a public suffix
-		{"com", ""},         // single label
-		{"", ""},            // empty
+		{"example.com", ""},                        // parent "com" is a public suffix
+		{"com", ""},                                // single label
+		{"", ""},                                   // empty
 		{"a.b.c.d.example.com", "b.c.d.example.com"},
-		{"sub.co.uk", ""},                      // parent "co.uk" is a public suffix
-		{"co.uk", ""},                          // public suffix itself
-		{"sub.example.co.uk", "example.co.uk"}, // parent is a registrable domain, valid
-		{"example.co.uk", ""},                  // parent "co.uk" is a public suffix
-		{"test.com.au", ""},                    // parent "com.au" is a public suffix
-		{"sub.test.com.au", "test.com.au"},     // parent is registrable, valid
+		{"sub.co.uk", ""},                          // parent "co.uk" is a public suffix
+		{"co.uk", ""},                              // public suffix itself
+		{"sub.example.co.uk", "example.co.uk"},     // parent is a registrable domain, valid
+		{"example.co.uk", ""},                      // parent "co.uk" is a public suffix
+		{"test.com.au", ""},                        // parent "com.au" is a public suffix
+		{"sub.test.com.au", "test.com.au"},         // parent is registrable, valid
 	}
 
 	for _, tt := range tests {
