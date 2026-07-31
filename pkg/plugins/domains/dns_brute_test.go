@@ -3,6 +3,7 @@ package domains
 import (
 	"context"
 	"net"
+	"sync"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -10,6 +11,21 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// fakeResolver records every host it is asked to resolve, so a test can prove the
+// plugin routed through the injected seam rather than the hardcoded resolver.
+type fakeResolver struct {
+	fn    func(host string) []string
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeResolver) Resolve(host string) []string {
+	f.mu.Lock()
+	f.calls = append(f.calls, host)
+	f.mu.Unlock()
+	return f.fn(host)
+}
 
 func TestDNSBrutePlugin_Interface(t *testing.T) {
 	p := &DNSBrutePlugin{}
@@ -104,6 +120,48 @@ func TestDNSBrutePlugin_Run_WildcardSkip(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, findings, "wildcard domain should produce no findings")
+}
+
+// When a resolver is injected, wildcard detection must route through it too — not
+// the hardcoded resolver. p.resolver is set to an unroutable address: pre-fix,
+// wildcard detection queried it, missed the injected wildcard, and brute-forced
+// (3 findings); post-fix it sees the wildcard via the injected resolver and skips.
+func TestDNSBrutePlugin_Run_InjectedResolver_WildcardRoutedThroughLookup(t *testing.T) {
+	fake := &fakeResolver{fn: func(string) []string { return []string{"1.2.3.4"} }}
+	p := &DNSBrutePlugin{
+		resolver: "203.0.113.255:9", // reserved/unroutable — must never be queried
+		wordlist: []string{"www", "mail", "api"},
+		lookup:   fake,
+	}
+
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "wildcard.example.com"})
+	require.NoError(t, err)
+	assert.Empty(t, findings, "wildcard seen via the injected resolver must skip brute-force")
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	assert.NotEmpty(t, fake.calls, "wildcard detection must query the injected resolver")
+}
+
+// The injected resolver carries candidate resolution end to end: random wildcard
+// probes miss, so brute-force proceeds and the known hosts resolve.
+func TestDNSBrutePlugin_Run_InjectedResolver_Resolves(t *testing.T) {
+	known := map[string]bool{"www.example.com": true, "mail.example.com": true, "api.example.com": true}
+	fake := &fakeResolver{fn: func(host string) []string {
+		if known[host] {
+			return []string{"93.184.216.34"}
+		}
+		return nil
+	}}
+	p := &DNSBrutePlugin{
+		resolver: "203.0.113.255:9",
+		wordlist: []string{"www", "mail", "api"},
+		lookup:   fake,
+	}
+
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+	require.NoError(t, err)
+	assert.Len(t, findings, 3, "injected resolver should resolve www, mail, api")
 }
 
 func TestDNSBrutePlugin_Run(t *testing.T) {

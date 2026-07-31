@@ -75,7 +75,7 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 	domain := normalizeDomain(input.Domain)
 
 	// Detect wildcard DNS — if the domain resolves everything, skip brute-force.
-	wildcardIPs := detectWildcard(ctx, domain, p.resolver)
+	wildcardIPs := p.wildcardIPs(ctx, domain)
 	if len(wildcardIPs) > 0 {
 		slog.Info("dns-brute: wildcard detected, skipping", "domain", domain)
 		return nil, nil
@@ -131,6 +131,24 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 	wg.Wait()
 
 	return findings, nil
+}
+
+func (p *DNSBrutePlugin) wildcardIPs(ctx context.Context, base string) map[string]bool {
+	if p.lookup == nil {
+		return detectWildcard(ctx, base, p.resolver)
+	}
+
+	wildcards := make(map[string]bool)
+	for i := 0; i < wildcardProbeCount; i++ {
+		for _, ip := range p.lookup.Resolve(randomHex(16) + "." + base) {
+			wildcards[ip] = true
+		}
+	}
+	if len(wildcards) == 0 {
+		return nil
+	}
+	slog.Info("dns-brute: wildcard detected", "base", base, "ips_count", len(wildcards))
+	return wildcards
 }
 
 // resolve checks if fqdn has A or AAAA records.
