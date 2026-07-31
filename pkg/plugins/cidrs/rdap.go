@@ -39,6 +39,54 @@ func newRDAPPlugin(cfg rdapConfig) *rdapPlugin {
 	return &rdapPlugin{cfg: cfg, doer: client.New()}
 }
 
+// RDAPConfigs are the RIR RDAP registries this package can query, keyed by
+// registry name. Exposed so embedders can enumerate what NewRDAPPlugin accepts.
+var RDAPConfigs = map[string]rdapConfig{
+	"arin": {
+		name:        "arin",
+		description: "ARIN RDAP: resolves org handles to CIDR blocks",
+		baseURL:     "https://rdap.arin.net/registry/entity",
+		metaKey:     "arin_handles",
+		registry:    "arin",
+		mode:        plugins.ModePassive,
+	},
+	"ripe": {
+		name:        "ripe",
+		description: "RIPE RDAP: resolves org handles to CIDR blocks",
+		baseURL:     "https://rdap.db.ripe.net/entity",
+		metaKey:     "ripe_handles",
+		registry:    "ripe",
+		mode:        plugins.ModePassive,
+	},
+	"lacnic": {
+		name:        "lacnic",
+		description: "LACNIC RDAP: resolves org handles to CIDR blocks (Latin America & Caribbean)",
+		baseURL:     "https://rdap.lacnic.net/rdap/entity",
+		metaKey:     "lacnic_handles",
+		registry:    "lacnic",
+		mode:        plugins.ModePassive,
+	},
+}
+
+// MetaKey is the Input.Meta key a registry's plugin reads its handles from.
+func MetaKey(registry string) (string, bool) {
+	cfg, ok := RDAPConfigs[registry]
+	if !ok {
+		return "", false
+	}
+	return cfg.metaKey, true
+}
+
+// NewRDAPPlugin builds the RDAP plugin for one RIR around a caller-supplied
+// client, so embedders can route its egress through their own transport.
+func NewRDAPPlugin(registry string, doer httpDoer) (plugins.Plugin, error) {
+	cfg, ok := RDAPConfigs[registry]
+	if !ok {
+		return nil, fmt.Errorf("unknown RDAP registry %q", registry)
+	}
+	return &rdapPlugin{cfg: cfg, doer: doer}, nil
+}
+
 func (p *rdapPlugin) Name() string        { return p.cfg.name }
 func (p *rdapPlugin) Description() string { return p.cfg.description }
 func (p *rdapPlugin) Category() string    { return "cidr" }

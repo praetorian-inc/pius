@@ -44,11 +44,11 @@ func TestSplitHandles_OnlyCommas(t *testing.T) {
 
 func TestIsLikelyRIRHandle_AcceptsRealHandles(t *testing.T) {
 	handles := []string{
-		"ACME-1",        // ARIN org
-		"ORG-GOOG1-RIPE", // RIPE org
-		"GOOGL-161",     // ARIN handle
+		"ACME-1",          // ARIN org
+		"ORG-GOOG1-RIPE",  // RIPE org
+		"GOOGL-161",       // ARIN handle
 		"MX-USCV4-LACNIC", // LACNIC
-		"ORG-AP123-AP",  // APNIC
+		"ORG-AP123-AP",    // APNIC
 	}
 	for _, h := range handles {
 		assert.True(t, isLikelyRIRHandle(h), "expected %q to be accepted", h)
@@ -57,13 +57,13 @@ func TestIsLikelyRIRHandle_AcceptsRealHandles(t *testing.T) {
 
 func TestIsLikelyRIRHandle_RejectsNonRIRPrefixes(t *testing.T) {
 	handles := []string{
-		"SEC-123",     // SEC filing ID
-		"EIN-456",     // Employer ID
-		"CIK-789",     // Central Index Key
-		"NYSE-ACME",   // Stock exchange
-		"IRS-001",     // Tax authority
-		"CUSIP-1234",  // Securities ID
-		"FORM-10K",    // SEC form type
+		"SEC-123",    // SEC filing ID
+		"EIN-456",    // Employer ID
+		"CIK-789",    // Central Index Key
+		"NYSE-ACME",  // Stock exchange
+		"IRS-001",    // Tax authority
+		"CUSIP-1234", // Securities ID
+		"FORM-10K",   // SEC form type
 	}
 	for _, h := range handles {
 		assert.False(t, isLikelyRIRHandle(h), "expected %q to be rejected", h)
