@@ -26,6 +26,12 @@ type WaybackPlugin struct {
 	commoncrawlURL string // override for testing
 }
 
+// NewWaybackPlugin builds the plugin around a caller-supplied client, so its
+// egress runs through the embedder's transport. It needs no credential.
+func NewWaybackPlugin(c *client.Client) *WaybackPlugin {
+	return &WaybackPlugin{client: c}
+}
+
 func (p *WaybackPlugin) waybackBase() string {
 	if p.waybackURL != "" {
 		return p.waybackURL
@@ -40,11 +46,13 @@ func (p *WaybackPlugin) commoncrawlBase() string {
 	return "https://index.commoncrawl.org"
 }
 
-func (p *WaybackPlugin) Name() string        { return "wayback" }
-func (p *WaybackPlugin) Description() string { return "Wayback Machine / Common Crawl: discovers historical subdomains from archived URLs" }
-func (p *WaybackPlugin) Category() string    { return "domain" }
-func (p *WaybackPlugin) Phase() int          { return 0 }
-func (p *WaybackPlugin) Mode() string        { return plugins.ModePassive }
+func (p *WaybackPlugin) Name() string { return "wayback" }
+func (p *WaybackPlugin) Description() string {
+	return "Wayback Machine / Common Crawl: discovers historical subdomains from archived URLs"
+}
+func (p *WaybackPlugin) Category() string { return "domain" }
+func (p *WaybackPlugin) Phase() int       { return 0 }
+func (p *WaybackPlugin) Mode() string     { return plugins.ModePassive }
 
 // Accepts returns true only when a domain is provided. Wayback CDX queries require a domain.
 func (p *WaybackPlugin) Accepts(input plugins.Input) bool {

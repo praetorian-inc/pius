@@ -89,10 +89,10 @@ func TestIsJunkLabel(t *testing.T) {
 		{name: "random alphanumeric", label: "x7k9m2p4q8r1s5t3u6v0w", want: true},
 
 		// Edge cases
-		{name: "short high-entropy", label: "xyz", want: false},     // too short for entropy check
-		{name: "9 chars mixed", label: "a1b2c3d4e", want: false},   // under minEntropyLength
+		{name: "short high-entropy", label: "xyz", want: false},                                                // too short for entropy check
+		{name: "9 chars mixed", label: "a1b2c3d4e", want: false},                                               // under minEntropyLength
 		{name: "exactly 40 chars high entropy", label: "abcdefghijklmnopqrstuvwxyz01234567890123", want: true}, // high entropy + long
-		{name: "long but repetitive", label: "aaa-bbb-aaa-bbb-aaa-bbb-aaa", want: false}, // repetitive = low entropy
+		{name: "long but repetitive", label: "aaa-bbb-aaa-bbb-aaa-bbb-aaa", want: false},                       // repetitive = low entropy
 	}
 
 	for _, tt := range tests {

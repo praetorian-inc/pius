@@ -19,6 +19,22 @@ func init() {
 type URLScanPlugin struct {
 	client  *client.Client
 	baseURL string // override for testing
+	apiKey  string // set by NewURLScanPlugin; falls back to URLSCAN_API_KEY
+}
+
+// NewURLScanPlugin builds the plugin around a caller-supplied client and API key.
+// The key is optional — urlscan serves unauthenticated requests at a lower rate
+// limit — so an empty key is not an error here.
+func NewURLScanPlugin(c *client.Client, apiKey string) *URLScanPlugin {
+	return &URLScanPlugin{client: c, apiKey: apiKey}
+}
+
+// key prefers an injected key so embedders never depend on process environment.
+func (p *URLScanPlugin) key() string {
+	if p.apiKey != "" {
+		return p.apiKey
+	}
+	return os.Getenv("URLSCAN_API_KEY")
 }
 
 func (p *URLScanPlugin) urlscanBase() string {
@@ -28,11 +44,13 @@ func (p *URLScanPlugin) urlscanBase() string {
 	return "https://urlscan.io"
 }
 
-func (p *URLScanPlugin) Name() string        { return "urlscan" }
-func (p *URLScanPlugin) Description() string { return "URLScan.io: discovers subdomains via public scan history" }
-func (p *URLScanPlugin) Category() string    { return "domain" }
-func (p *URLScanPlugin) Phase() int          { return 0 }
-func (p *URLScanPlugin) Mode() string        { return plugins.ModePassive }
+func (p *URLScanPlugin) Name() string { return "urlscan" }
+func (p *URLScanPlugin) Description() string {
+	return "URLScan.io: discovers subdomains via public scan history"
+}
+func (p *URLScanPlugin) Category() string { return "domain" }
+func (p *URLScanPlugin) Phase() int       { return 0 }
+func (p *URLScanPlugin) Mode() string     { return plugins.ModePassive }
 
 // Accepts returns true when an input domain is provided.
 func (p *URLScanPlugin) Accepts(input plugins.Input) bool {
@@ -76,7 +94,7 @@ func (p *URLScanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 	headers := map[string]string{
 		"Accept": "application/json",
 	}
-	if apiKey := os.Getenv("URLSCAN_API_KEY"); apiKey != "" {
+	if apiKey := p.key(); apiKey != "" {
 		headers["API-Key"] = apiKey
 	}
 

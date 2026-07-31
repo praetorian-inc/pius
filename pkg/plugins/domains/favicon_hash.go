@@ -34,6 +34,34 @@ type FaviconHashPlugin struct {
 	faviconURL string // override for testing; empty means https://{domain}/favicon.ico
 	shodanURL  string // override for testing; empty means real Shodan API
 	fofaURL    string // override for testing; empty means real FOFA API
+	apiKey     string // set by NewFaviconHashPlugin; falls back to SHODAN_API_KEY
+	fofaKey    string // set by NewFaviconHashPlugin; falls back to FOFA_API_KEY
+}
+
+// NewFaviconHashPlugin builds the plugin around a caller-supplied client and
+// keys. shodanKey is required; fofaKey is optional and only adds a second
+// lookup source.
+//
+// Note this plugin fetches the target's own /favicon.ico, so unlike the other
+// domain plugins it does send traffic to the target.
+func NewFaviconHashPlugin(c *client.Client, shodanKey, fofaKey string) *FaviconHashPlugin {
+	return &FaviconHashPlugin{client: c, apiKey: shodanKey, fofaKey: fofaKey}
+}
+
+// key and fofa prefer injected values so embedders never depend on process
+// environment.
+func (p *FaviconHashPlugin) key() string {
+	if p.apiKey != "" {
+		return p.apiKey
+	}
+	return os.Getenv("SHODAN_API_KEY")
+}
+
+func (p *FaviconHashPlugin) fofa() string {
+	if p.fofaKey != "" {
+		return p.fofaKey
+	}
+	return os.Getenv("FOFA_API_KEY")
 }
 
 func (p *FaviconHashPlugin) Name() string { return "favicon-hash" }
@@ -45,7 +73,7 @@ func (p *FaviconHashPlugin) Phase() int       { return 0 }
 func (p *FaviconHashPlugin) Mode() string     { return plugins.ModeActive }
 
 func (p *FaviconHashPlugin) Accepts(input plugins.Input) bool {
-	return isDomainName(input.Domain) && os.Getenv("SHODAN_API_KEY") != ""
+	return isDomainName(input.Domain) && p.key() != ""
 }
 
 func (p *FaviconHashPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
@@ -72,7 +100,7 @@ func (p *FaviconHashPlugin) Run(ctx context.Context, input plugins.Input) ([]plu
 		findings = append(findings, shodanFindings...)
 	}
 
-	if os.Getenv("FOFA_API_KEY") != "" {
+	if p.fofa() != "" {
 		fofaFindings, err := p.queryFOFA(ctx, hash, input)
 		if err != nil {
 			slog.Warn("favicon-hash: FOFA query failed", "error", err)
@@ -122,7 +150,7 @@ func base64RFC2045(data []byte) string {
 
 // queryShodan queries Shodan for hosts matching the favicon hash.
 func (p *FaviconHashPlugin) queryShodan(ctx context.Context, hash int32, input plugins.Input) ([]plugins.Finding, error) {
-	apiKey := os.Getenv("SHODAN_API_KEY")
+	apiKey := p.key()
 	base := "https://api.shodan.io"
 	if p.shodanURL != "" {
 		base = p.shodanURL
@@ -194,7 +222,7 @@ func parseShodanResponse(body []byte, hash int32, input plugins.Input) ([]plugin
 
 // queryFOFA queries FOFA for hosts matching the favicon hash.
 func (p *FaviconHashPlugin) queryFOFA(ctx context.Context, hash int32, input plugins.Input) ([]plugins.Finding, error) {
-	apiKey := os.Getenv("FOFA_API_KEY")
+	apiKey := p.fofa()
 	base := "https://fofa.info"
 	if p.fofaURL != "" {
 		base = p.fofaURL

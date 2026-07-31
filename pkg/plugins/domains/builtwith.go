@@ -19,6 +19,22 @@ func init() {
 type BuiltWithPlugin struct {
 	client  *client.Client
 	baseURL string
+	apiKey  string // set by NewBuiltWithPlugin; falls back to BUILTWITH_API_KEY
+}
+
+// NewBuiltWithPlugin builds the plugin around a caller-supplied client and API
+// key, so embedders can route its egress through their own transport and resolve
+// the key from their own secret store instead of the environment.
+func NewBuiltWithPlugin(c *client.Client, apiKey string) *BuiltWithPlugin {
+	return &BuiltWithPlugin{client: c, apiKey: apiKey}
+}
+
+// key prefers an injected key so embedders never depend on process environment.
+func (p *BuiltWithPlugin) key() string {
+	if p.apiKey != "" {
+		return p.apiKey
+	}
+	return os.Getenv("BUILTWITH_API_KEY")
 }
 
 func (p *BuiltWithPlugin) Name() string { return "builtwith" }
@@ -30,7 +46,7 @@ func (p *BuiltWithPlugin) Phase() int       { return 3 }
 func (p *BuiltWithPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *BuiltWithPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("BUILTWITH_API_KEY") != "" && input.Meta["analytics_ids"] != ""
+	return p.key() != "" && input.Meta["analytics_ids"] != ""
 }
 
 type builtWithEntry struct {
@@ -48,7 +64,7 @@ func (p *BuiltWithPlugin) apiBase() string {
 }
 
 func (p *BuiltWithPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	apiKey := os.Getenv("BUILTWITH_API_KEY")
+	apiKey := p.key()
 	ids := strings.Split(input.Meta["analytics_ids"], ",")
 
 	domains := make(map[string]struct{})
