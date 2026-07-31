@@ -23,6 +23,14 @@ func init() {
 	})
 }
 
+// NewGoogleDorksPlugin builds the plugin with production rendering enabled. There
+// is no client seam: the plugin drives a headless browser (chromedp) for the
+// carousel render path and falls back to package-level http.DefaultClient
+// otherwise, so egress here does not route through a caller-supplied transport.
+func NewGoogleDorksPlugin() *GoogleDorksPlugin {
+	return &GoogleDorksPlugin{renderEnabled: true}
+}
+
 // GoogleDorksPlugin discovers subsidiaries via Google Knowledge Graph carousel.
 //
 // Strategy:
