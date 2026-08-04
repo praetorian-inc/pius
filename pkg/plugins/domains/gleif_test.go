@@ -163,21 +163,14 @@ case r.URL.Path == "/lei-records/LEI001":
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	// Now emits FindingDomain + FindingPreseed for each subsidiary = 4 total
-	require.Len(t, findings, 4)
-
-	domainFindings := filterByType(findings, plugins.FindingDomain)
-	preseedFindings := filterByType(findings, plugins.FindingPreseed)
-	require.Len(t, domainFindings, 2)
-	require.Len(t, preseedFindings, 2)
-
-	for _, f := range domainFindings {
-		assert.Equal(t, plugins.FindingDomain, f.Type)
+	require.Len(t, findings, 2)
+	for _, f := range findings {
+		assert.Equal(t, plugins.FindingPreseed, f.Type)
 		assert.Equal(t, "gleif", f.Source)
-		assert.Equal(t, "subsidiary", f.Data["relationshipType"])
+		assert.Equal(t, "subsidiary", f.Data["corporate_relationship"])
 		assert.Equal(t, 0.50, f.Data["confidence"])
 	}
-	names := []string{domainFindings[0].Value, domainFindings[1].Value}
+	names := []string{findings[0].Value, findings[1].Value}
 	assert.Contains(t, names, "Acme Subsidiary A")
 	assert.Contains(t, names, "Acme Subsidiary B")
 }
@@ -212,14 +205,11 @@ case r.URL.Path == "/lei-records/LEI001":
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	// Now emits FindingDomain + FindingPreseed for parent = 2 total
-	require.Len(t, findings, 2)
-
-	domainFindings := filterByType(findings, plugins.FindingDomain)
-	require.Len(t, domainFindings, 1)
-	assert.Equal(t, "Acme Holdings", domainFindings[0].Value)
-	assert.Equal(t, "direct-parent", domainFindings[0].Data["relationshipType"])
-	assert.Equal(t, "LEI_PARENT", domainFindings[0].Data["lei"])
+	require.Len(t, findings, 1)
+	assert.Equal(t, plugins.FindingPreseed, findings[0].Type)
+	assert.Equal(t, "Acme Holdings", findings[0].Value)
+	assert.Equal(t, "direct-parent", findings[0].Data["corporate_relationship"])
+	assert.Equal(t, "LEI_PARENT", findings[0].Data["lei"])
 }
 
 func TestGLEIFPlugin_Run_WithUltimateParent(t *testing.T) {
@@ -254,14 +244,11 @@ case r.URL.Path == "/lei-records/LEI001":
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	// 2 domain + 2 preseed = 4 total
-	require.Len(t, findings, 4)
+	require.Len(t, findings, 2)
 
 	relTypes := map[string]string{}
 	for _, f := range findings {
-		if f.Type == plugins.FindingDomain {
-			relTypes[f.Data["relationshipType"].(string)] = f.Value
-		}
+		relTypes[f.Data["corporate_relationship"].(string)] = f.Value
 	}
 	assert.Equal(t, "Acme Holdings", relTypes["direct-parent"])
 	assert.Equal(t, "Global Conglomerate Inc", relTypes["ultimate-parent"])
@@ -303,12 +290,10 @@ case r.URL.Path == "/lei-records/LEI001":
 	p := newGLEIFPlugin(srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
-	// 6 domain + 6 preseed = 12 total
-	assert.Len(t, findings, 12)
+	assert.Len(t, findings, 6)
 	for _, f := range findings {
-		if f.Type == plugins.FindingDomain {
-			assert.Equal(t, "subsidiary", f.Data["relationshipType"])
-		}
+		assert.Equal(t, plugins.FindingPreseed, f.Type)
+		assert.Equal(t, "subsidiary", f.Data["corporate_relationship"])
 	}
 }
 
@@ -336,19 +321,12 @@ func TestGLEIFPlugin_Run_Deduplication(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	domainCount := 0
 	preseedCount := 0
 	for _, f := range findings {
-		if f.Value == "Acme Corp Duplicate" {
-			switch f.Type {
-			case plugins.FindingDomain:
-				domainCount++
-			case plugins.FindingPreseed:
-				preseedCount++
-			}
+		if f.Value == "Acme Corp Duplicate" && f.Type == plugins.FindingPreseed {
+			preseedCount++
 		}
 	}
-	assert.Equal(t, 1, domainCount, "duplicate domain names should be deduplicated")
 	assert.Equal(t, 1, preseedCount, "duplicate preseeds should be deduplicated")
 }
 
@@ -416,13 +394,9 @@ case r.URL.Path == "/lei-records/LEI001":
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	domainFindings := filterByType(findings, plugins.FindingDomain)
-	preseedFindings := filterByType(findings, plugins.FindingPreseed)
+	require.Len(t, findings, 1, "expected one preseed finding for direct parent")
 
-	require.Len(t, domainFindings, 1, "expected one domain finding for direct parent")
-	require.Len(t, preseedFindings, 1, "expected one preseed finding for direct parent")
-
-	pf := preseedFindings[0]
+	pf := findings[0]
 	assert.Equal(t, "Acme Holdings", pf.Value)
 	assert.Equal(t, "gleif", pf.Source)
 	assert.Equal(t, "whois+company", pf.Data["preseed_type"])
@@ -555,47 +529,6 @@ case r.URL.Path == "/lei-records/LEI001":
 	assert.Equal(t, "LEI010", preseed.Data["lei"])
 }
 
-func TestGLEIFPlugin_Run_DomainAndPreseed_BothEmittedForSameName(t *testing.T) {
-	// Verify that both FindingDomain and FindingPreseed are emitted for the same
-	// parent/subsidiary — they are different types and should not block each other.
-	primary := makeLEI("LEI001", "Acme Corp", "US", false)
-	child := makeLEI("LEI010", "Acme Subsidiary A", "US", false)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-case r.URL.Path == "/lei-records/LEI001":
-			_, _ = w.Write(gleifRecordResp(primary))
-		case strings.Contains(r.URL.Path, "/direct-children"):
-			_, _ = w.Write(gleifChildrenResp(1, 1, child))
-		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
-			_, _ = w.Write(gleifFuzzyResp("LEI001"))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	p := newGLEIFPlugin(srv.URL)
-	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
-	require.NoError(t, err)
-
-	hasDomain := false
-	hasPreseed := false
-	for _, f := range findings {
-		if f.Value == "Acme Subsidiary A" {
-			switch f.Type {
-			case plugins.FindingDomain:
-				hasDomain = true
-			case plugins.FindingPreseed:
-				hasPreseed = true
-			}
-		}
-	}
-	assert.True(t, hasDomain, "expected FindingDomain for subsidiary")
-	assert.True(t, hasPreseed, "expected FindingPreseed for subsidiary")
-}
-
 // ── Sibling discovery tests ──────────────────────────────────────────────────
 
 func TestGLEIFPlugin_Run_SiblingDiscovery(t *testing.T) {
@@ -634,27 +567,17 @@ case r.URL.Path == "/lei-records/LEI001":
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Nielsen US LLC"})
 	require.NoError(t, err)
 
-	// Should find: parent (domain+preseed) + 2 siblings (domain+preseed each) = 6.
-	// Primary itself is excluded from siblings.
-	preseedValues := map[string]bool{}
-	domainRelTypes := map[string]string{}
+	// Parent + 2 siblings = 3 preseeds. Primary excluded from siblings.
+	preseedRelTypes := map[string]string{}
 	for _, f := range findings {
-		if f.Type == plugins.FindingPreseed {
-			preseedValues[f.Value] = true
-		}
-		if f.Type == plugins.FindingDomain {
-			domainRelTypes[f.Value] = f.Data["relationshipType"].(string)
-		}
+		require.Equal(t, plugins.FindingPreseed, f.Type)
+		preseedRelTypes[f.Value] = f.Data["corporate_relationship"].(string)
 	}
 
-	assert.Contains(t, preseedValues, "Nielsen Holdings")
-	assert.Contains(t, preseedValues, "Nielsen Finance BV")
-	assert.Contains(t, preseedValues, "Nielsen Holdings Inc")
-	assert.NotContains(t, preseedValues, "Nielsen US LLC", "primary should not appear as a sibling")
-
-	assert.Equal(t, "direct-parent", domainRelTypes["Nielsen Holdings"])
-	assert.Equal(t, "sibling", domainRelTypes["Nielsen Finance BV"])
-	assert.Equal(t, "sibling", domainRelTypes["Nielsen Holdings Inc"])
+	assert.Equal(t, "direct-parent", preseedRelTypes["Nielsen Holdings"])
+	assert.Equal(t, "sibling", preseedRelTypes["Nielsen Finance BV"])
+	assert.Equal(t, "sibling", preseedRelTypes["Nielsen Holdings Inc"])
+	assert.NotContains(t, preseedRelTypes, "Nielsen US LLC", "primary should not appear as a sibling")
 }
 
 func TestGLEIFPlugin_Run_SiblingDiscovery_UltimateParent(t *testing.T) {

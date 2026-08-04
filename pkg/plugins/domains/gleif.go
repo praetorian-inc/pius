@@ -130,14 +130,13 @@ func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, pri
 	return parentLEIs
 }
 
-// emitRelated fetches a single LEI record and emits domain + preseed findings.
+// emitRelated fetches a single LEI record and emits a preseed finding.
 func (p *GLEIFPlugin) emitRelated(ctx context.Context, lei, relation, primaryName string, fs *plugins.FindingSet) {
 	record, err := p.getRecord(ctx, lei)
 	if err != nil {
 		log.Printf("[gleif] %s record failed for %s: %v", relation, lei, err)
 		return
 	}
-	fs.Add(recordToFinding(*record, relation, confGLEIF))
 	fs.Add(recordToPreseed(*record, relation, primaryName, confGLEIF))
 }
 
@@ -156,7 +155,6 @@ func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, prima
 		if child.ID == excludeLEI || child.Attributes.Entity.LegalName.Name == "" {
 			continue
 		}
-		fs.Add(recordToFinding(child, relation, confGLEIF))
 		fs.Add(recordToPreseed(child, relation, primaryName, confGLEIF))
 	}
 	return nil
@@ -269,23 +267,6 @@ func (p *GLEIFPlugin) getChildren(ctx context.Context, lei string) ([]leiRecord,
 func hasParent(record *leiRecord) bool {
 	_, ok := record.Relationships.DirectParent.Links["relationship-record"]
 	return ok
-}
-
-// recordToFinding converts a GLEIF LEI record to a Pius Finding.
-func recordToFinding(record leiRecord, relationshipType string, confidence float64) plugins.Finding {
-	f := plugins.Finding{
-		Type:   plugins.FindingDomain,
-		Value:  record.Attributes.Entity.LegalName.Name,
-		Source: "gleif",
-		Data: map[string]any{
-			"lei":              record.ID,
-			"legalName":        record.Attributes.Entity.LegalName.Name,
-			"jurisdiction":     record.Attributes.Entity.Jurisdiction,
-			"relationshipType": relationshipType,
-		},
-	}
-	plugins.SetConfidence(&f, confidence)
-	return f
 }
 
 // recordToPreseed converts a GLEIF LEI record to a FindingPreseed.
