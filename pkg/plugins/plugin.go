@@ -115,3 +115,28 @@ type Plugin interface {
 	Classifier
 	Runner
 }
+
+// FindingSet collects findings, deduplicating by (Type, Value) so that
+// e.g. FindingDomain and FindingPreseed with the same Value are both kept.
+type FindingSet struct {
+	seen     map[string]bool
+	Findings []Finding
+}
+
+// NewFindingSet returns a ready-to-use FindingSet.
+func NewFindingSet() *FindingSet {
+	return &FindingSet{seen: make(map[string]bool)}
+}
+
+// Add appends f unless its Value is empty or a finding with the same
+// (Type, Value) has already been added.
+func (fs *FindingSet) Add(f Finding) {
+	if f.Value == "" {
+		return
+	}
+	key := string(f.Type) + "|" + f.Value
+	if !fs.seen[key] {
+		fs.seen[key] = true
+		fs.Findings = append(fs.Findings, f)
+	}
+}

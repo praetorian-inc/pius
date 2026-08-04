@@ -74,103 +74,89 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 		return nil, nil
 	}
 
-	// seen deduplicates by (Type, Value) pair so that FindingDomain and
-	// FindingPreseed with the same Value are both emitted.
-	seen := make(map[string]bool)
-	var findings []plugins.Finding
+	primaryName := primary.Attributes.Entity.LegalName.Name
+	fs := plugins.NewFindingSet()
 
-	addFinding := func(f plugins.Finding) {
-		if f.Value == "" {
-			return
-		}
-		key := string(f.Type) + "|" + f.Value
-		if !seen[key] {
-			seen[key] = true
-			findings = append(findings, f)
+	parentLEIs := p.enrichParents(ctx, primary, primaryName, fs)
+
+	if err := p.enrichChildren(ctx, primary.ID, "", primaryName, "subsidiary", fs); err != nil {
+		return fs.Findings, err
+	}
+	for _, parentLEI := range parentLEIs {
+		if err := p.enrichChildren(ctx, parentLEI, primary.ID, primaryName, "sibling", fs); err != nil {
+			return fs.Findings, err
 		}
 	}
 
-	// Fetch full record to inspect parent relationship links.
+	return fs.Findings, nil
+}
+
+// enrichParents fetches direct and ultimate parent entities, emits findings for
+// each, and returns their LEIs for sibling discovery. Best-effort: errors log
+// and continue.
+func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, primaryName string, fs *plugins.FindingSet) []string {
 	fullRecord, err := p.getRecord(ctx, primary.ID)
 	if err != nil {
 		log.Printf("[gleif] get record failed for LEI %s: %v", primary.ID, err)
 		fullRecord = primary
 	}
-
-	// parentLEIs collects parent LEIs whose children (siblings of primary)
-	// we fetch after the direct-children pass.
-	var parentLEIs []string
-
-	primaryName := primary.Attributes.Entity.LegalName.Name
-
-	if hasParent(fullRecord) {
-		directParentLEI, err := p.getDirectParent(ctx, primary.ID)
-		if err != nil {
-			log.Printf("[gleif] direct parent failed for %s: %v", primary.ID, err)
-		} else if directParentLEI != "" {
-			parentLEIs = append(parentLEIs, directParentLEI)
-			if parentRecord, err := p.getRecord(ctx, directParentLEI); err != nil {
-				log.Printf("[gleif] parent record failed for %s: %v", directParentLEI, err)
-			} else {
-				addFinding(recordToFinding(*parentRecord, "direct-parent", plugins.ConfidenceHigh))
-				addFinding(recordToPreseed(*parentRecord, "direct-parent", primaryName, plugins.ConfidenceHigh))
-			}
-
-			// Ultimate parent — only emit if different from direct parent.
-			ultimateParentLEI, err := p.getUltimateParent(ctx, primary.ID)
-			if err != nil {
-				log.Printf("[gleif] ultimate parent failed for %s: %v", primary.ID, err)
-			} else if ultimateParentLEI != "" && ultimateParentLEI != directParentLEI {
-				parentLEIs = append(parentLEIs, ultimateParentLEI)
-				if ultimateRecord, err := p.getRecord(ctx, ultimateParentLEI); err != nil {
-					log.Printf("[gleif] ultimate parent record failed for %s: %v", ultimateParentLEI, err)
-				} else {
-					addFinding(recordToFinding(*ultimateRecord, "ultimate-parent", plugins.ConfidenceHigh))
-					addFinding(recordToPreseed(*ultimateRecord, "ultimate-parent", primaryName, plugins.ConfidenceHigh))
-				}
-			}
-		}
+	if !hasParent(fullRecord) {
+		return nil
 	}
 
-	// Direct subsidiaries of the primary entity (paginated).
-	children, err := p.getChildren(ctx, primary.ID)
+	directLEI, err := p.getDirectParent(ctx, primary.ID)
+	if err != nil {
+		log.Printf("[gleif] direct parent failed for %s: %v", primary.ID, err)
+		return nil
+	}
+	if directLEI == "" {
+		return nil
+	}
+
+	parentLEIs := []string{directLEI}
+	p.emitRelated(ctx, directLEI, "direct-parent", primaryName, fs)
+
+	ultimateLEI, err := p.getUltimateParent(ctx, primary.ID)
+	if err != nil {
+		log.Printf("[gleif] ultimate parent failed for %s: %v", primary.ID, err)
+	} else if ultimateLEI != "" && ultimateLEI != directLEI {
+		parentLEIs = append(parentLEIs, ultimateLEI)
+		p.emitRelated(ctx, ultimateLEI, "ultimate-parent", primaryName, fs)
+	}
+
+	return parentLEIs
+}
+
+// emitRelated fetches a single LEI record and emits domain + preseed findings.
+func (p *GLEIFPlugin) emitRelated(ctx context.Context, lei, relation, primaryName string, fs *plugins.FindingSet) {
+	record, err := p.getRecord(ctx, lei)
+	if err != nil {
+		log.Printf("[gleif] %s record failed for %s: %v", relation, lei, err)
+		return
+	}
+	fs.Add(recordToFinding(*record, relation, plugins.ConfidenceHigh))
+	fs.Add(recordToPreseed(*record, relation, primaryName, plugins.ConfidenceHigh))
+}
+
+// enrichChildren fetches children of lei, emits findings for each (skipping
+// excludeLEI), and returns a context error if the context is cancelled.
+func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, primaryName, relation string, fs *plugins.FindingSet) error {
+	children, err := p.getChildren(ctx, lei)
 	if err != nil && ctx.Err() != nil {
-		return findings, ctx.Err()
+		return ctx.Err()
 	}
 	if err != nil {
-		log.Printf("[gleif] children failed for %s: %v", primary.ID, err)
+		log.Printf("[gleif] %s fetch from %s failed: %v", relation, lei, err)
+		return nil
 	}
 	for _, child := range children {
-		if child.Attributes.Entity.LegalName.Name != "" {
-			addFinding(recordToFinding(child, "subsidiary", plugins.ConfidenceHigh))
-			addFinding(recordToPreseed(child, "subsidiary", primaryName, plugins.ConfidenceHigh))
-		}
-	}
-
-	// Siblings: children of each parent entity that are not the primary itself.
-	// This is the key amplifier — a subsidiary's siblings are other companies
-	// under the same corporate umbrella that the primary's own children miss.
-	for _, parentLEI := range parentLEIs {
-		siblings, err := p.getChildren(ctx, parentLEI)
-		if err != nil && ctx.Err() != nil {
-			return findings, ctx.Err()
-		}
-		if err != nil {
-			log.Printf("[gleif] siblings from parent %s failed: %v", parentLEI, err)
+		if child.ID == excludeLEI || child.Attributes.Entity.LegalName.Name == "" {
 			continue
 		}
-		for _, sib := range siblings {
-			if sib.ID == primary.ID {
-				continue
-			}
-			if sib.Attributes.Entity.LegalName.Name != "" {
-				addFinding(recordToFinding(sib, "sibling", plugins.ConfidenceHigh))
-				addFinding(recordToPreseed(sib, "sibling", primaryName, plugins.ConfidenceHigh))
-			}
-		}
+		fs.Add(recordToFinding(child, relation, plugins.ConfidenceHigh))
+		fs.Add(recordToPreseed(child, relation, primaryName, plugins.ConfidenceHigh))
 	}
-
-	return findings, nil
+	return nil
 }
 
 // resolveEntity resolves a company name to a GLEIF entity via fuzzycompletions.
