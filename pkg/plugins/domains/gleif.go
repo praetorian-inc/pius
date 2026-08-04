@@ -19,14 +19,14 @@ func NewGLEIFPlugin(c *client.Client) *GLEIFPlugin {
 	return &GLEIFPlugin{client: c}
 }
 
-// GLEIFPlugin discovers corporate parents and subsidiaries via the GLEIF LEI registry.
+// GLEIFPlugin discovers corporate parents, subsidiaries, and siblings via the
+// GLEIF LEI registry.
 //
 // Strategy:
-//  1. Search GLEIF for entities matching the OrgName
-//  2. For the primary match, check if it has a registered direct parent
-//  3. If so, fetch the direct parent and ultimate parent (if different)
-//  4. Fetch all direct subsidiaries (paginated)
-//  5. Emit additional name-match candidates at low confidence
+//  1. Resolve OrgName to an LEI via fuzzycompletions (fallback: name search + Jaro-Winkler)
+//  2. Fetch direct and ultimate parent entities
+//  3. Fetch all direct subsidiaries (paginated)
+//  4. Fetch siblings — children of each parent that aren't the primary entity
 //
 // All enrichment steps are best-effort: HTTP errors log a warning and continue.
 // Phase 0 (independent): requires only OrgName.
@@ -58,12 +58,270 @@ func (p *GLEIFPlugin) gleifBase() string {
 	return "https://api.gleif.org/api/v1"
 }
 
-// ── API response types ─────────────────────────────────────────────────────────
+// ── Run ───────────────────────────────────────────────────────────────────────
 
-type leiSearchResponse struct {
-	Data []leiRecord `json:"data"`
-	Meta leiMeta     `json:"meta"`
+func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
+	if input.OrgName == "" {
+		return nil, nil
+	}
+
+	primary, err := p.resolveEntity(ctx, input.OrgName)
+	if err != nil {
+		log.Printf("[gleif] resolve failed for %q: %v", input.OrgName, err)
+		return nil, nil
+	}
+	if primary == nil {
+		return nil, nil
+	}
+
+	// seen deduplicates by (Type, Value) pair so that FindingDomain and
+	// FindingPreseed with the same Value are both emitted.
+	seen := make(map[string]bool)
+	var findings []plugins.Finding
+
+	addFinding := func(f plugins.Finding) {
+		if f.Value == "" {
+			return
+		}
+		key := string(f.Type) + "|" + f.Value
+		if !seen[key] {
+			seen[key] = true
+			findings = append(findings, f)
+		}
+	}
+
+	// Fetch full record to inspect parent relationship links.
+	fullRecord, err := p.getRecord(ctx, primary.ID)
+	if err != nil {
+		log.Printf("[gleif] get record failed for LEI %s: %v", primary.ID, err)
+		fullRecord = primary
+	}
+
+	// parentLEIs collects parent LEIs whose children (siblings of primary)
+	// we fetch after the direct-children pass.
+	var parentLEIs []string
+
+	primaryName := primary.Attributes.Entity.LegalName.Name
+
+	if hasParent(fullRecord) {
+		directParentLEI, err := p.getDirectParent(ctx, primary.ID)
+		if err != nil {
+			log.Printf("[gleif] direct parent failed for %s: %v", primary.ID, err)
+		} else if directParentLEI != "" {
+			parentLEIs = append(parentLEIs, directParentLEI)
+			if parentRecord, err := p.getRecord(ctx, directParentLEI); err != nil {
+				log.Printf("[gleif] parent record failed for %s: %v", directParentLEI, err)
+			} else {
+				addFinding(recordToFinding(*parentRecord, "direct-parent", plugins.ConfidenceHigh))
+				addFinding(recordToPreseed(*parentRecord, "direct-parent", primaryName, plugins.ConfidenceHigh))
+			}
+
+			// Ultimate parent — only emit if different from direct parent.
+			ultimateParentLEI, err := p.getUltimateParent(ctx, primary.ID)
+			if err != nil {
+				log.Printf("[gleif] ultimate parent failed for %s: %v", primary.ID, err)
+			} else if ultimateParentLEI != "" && ultimateParentLEI != directParentLEI {
+				parentLEIs = append(parentLEIs, ultimateParentLEI)
+				if ultimateRecord, err := p.getRecord(ctx, ultimateParentLEI); err != nil {
+					log.Printf("[gleif] ultimate parent record failed for %s: %v", ultimateParentLEI, err)
+				} else {
+					addFinding(recordToFinding(*ultimateRecord, "ultimate-parent", plugins.ConfidenceHigh))
+					addFinding(recordToPreseed(*ultimateRecord, "ultimate-parent", primaryName, plugins.ConfidenceHigh))
+				}
+			}
+		}
+	}
+
+	// Direct subsidiaries of the primary entity (paginated).
+	children, err := p.getChildren(ctx, primary.ID)
+	if err != nil && ctx.Err() != nil {
+		return findings, ctx.Err()
+	}
+	if err != nil {
+		log.Printf("[gleif] children failed for %s: %v", primary.ID, err)
+	}
+	for _, child := range children {
+		if child.Attributes.Entity.LegalName.Name != "" {
+			addFinding(recordToFinding(child, "subsidiary", plugins.ConfidenceHigh))
+			addFinding(recordToPreseed(child, "subsidiary", primaryName, plugins.ConfidenceHigh))
+		}
+	}
+
+	// Siblings: children of each parent entity that are not the primary itself.
+	// This is the key amplifier — a subsidiary's siblings are other companies
+	// under the same corporate umbrella that the primary's own children miss.
+	for _, parentLEI := range parentLEIs {
+		siblings, err := p.getChildren(ctx, parentLEI)
+		if err != nil && ctx.Err() != nil {
+			return findings, ctx.Err()
+		}
+		if err != nil {
+			log.Printf("[gleif] siblings from parent %s failed: %v", parentLEI, err)
+			continue
+		}
+		for _, sib := range siblings {
+			if sib.ID == primary.ID {
+				continue
+			}
+			if sib.Attributes.Entity.LegalName.Name != "" {
+				addFinding(recordToFinding(sib, "sibling", plugins.ConfidenceHigh))
+				addFinding(recordToPreseed(sib, "sibling", primaryName, plugins.ConfidenceHigh))
+			}
+		}
+	}
+
+	return findings, nil
 }
+
+// resolveEntity resolves a company name to a GLEIF entity via fuzzycompletions.
+// Returns nil when GLEIF has no match.
+func (p *GLEIFPlugin) resolveEntity(ctx context.Context, name string) (*leiRecord, error) {
+	lei, err := p.fuzzyResolve(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if lei == "" {
+		return nil, nil
+	}
+	return p.getRecord(ctx, lei)
+}
+
+// ── API methods ───────────────────────────────────────────────────────────────
+
+// fuzzyResolve uses GLEIF's fuzzycompletions endpoint to resolve a company name
+// to an LEI. Returns the best match's LEI, or "" if no match.
+func (p *GLEIFPlugin) fuzzyResolve(ctx context.Context, name string) (string, error) {
+	u := fmt.Sprintf("%s/fuzzycompletions?field=entity.legalName&q=%s",
+		p.gleifBase(), url.QueryEscape(name))
+	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
+	if err != nil {
+		return "", fmt.Errorf("gleif: fuzzy resolve: %w", err)
+	}
+	var resp fuzzyCompletionResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("gleif: fuzzy resolve parse: %w", err)
+	}
+	if len(resp.Data) == 0 {
+		return "", nil
+	}
+	return resp.Data[0].Relationships.LEIRecords.Data.ID, nil
+}
+
+func (p *GLEIFPlugin) getRecord(ctx context.Context, lei string) (*leiRecord, error) {
+	u := fmt.Sprintf("%s/lei-records/%s", p.gleifBase(), url.PathEscape(lei))
+	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
+	if err != nil {
+		return nil, fmt.Errorf("gleif: get record %s: %w", lei, err)
+	}
+	var resp struct {
+		Data leiRecord `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("gleif: get record parse: %w", err)
+	}
+	return &resp.Data, nil
+}
+
+func (p *GLEIFPlugin) getDirectParent(ctx context.Context, lei string) (string, error) {
+	u := fmt.Sprintf("%s/lei-records/%s/direct-parent-relationship", p.gleifBase(), url.PathEscape(lei))
+	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
+	if err != nil {
+		return "", fmt.Errorf("gleif: direct parent of %s: %w", lei, err)
+	}
+	var resp leiRelationshipResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("gleif: direct parent parse: %w", err)
+	}
+	return resp.Data.Attributes.Relationship.EndNode.ID, nil
+}
+
+func (p *GLEIFPlugin) getUltimateParent(ctx context.Context, lei string) (string, error) {
+	u := fmt.Sprintf("%s/lei-records/%s/ultimate-parent-relationship", p.gleifBase(), url.PathEscape(lei))
+	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
+	if err != nil {
+		return "", fmt.Errorf("gleif: ultimate parent of %s: %w", lei, err)
+	}
+	var resp leiRelationshipResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("gleif: ultimate parent parse: %w", err)
+	}
+	return resp.Data.Attributes.Relationship.EndNode.ID, nil
+}
+
+func (p *GLEIFPlugin) getChildren(ctx context.Context, lei string) ([]leiRecord, error) {
+	var all []leiRecord
+	for page := 1; ; page++ {
+		u := fmt.Sprintf("%s/lei-records/%s/direct-children?page[size]=200&page[number]=%d",
+			p.gleifBase(), url.PathEscape(lei), page)
+		body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
+		if err != nil {
+			return all, fmt.Errorf("gleif: children page %d of %s: %w", page, lei, err)
+		}
+		var resp leiChildrenResponse
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return all, fmt.Errorf("gleif: children parse: %w", err)
+		}
+		all = append(all, resp.Data...)
+		if resp.Meta.Pagination.CurrentPage >= resp.Meta.Pagination.LastPage {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return all, ctx.Err()
+		default:
+		}
+	}
+	return all, nil
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// hasParent reports whether the record has a registered direct parent LEI.
+func hasParent(record *leiRecord) bool {
+	_, ok := record.Relationships.DirectParent.Links["relationship-record"]
+	return ok
+}
+
+// recordToFinding converts a GLEIF LEI record to a Pius Finding.
+func recordToFinding(record leiRecord, relationshipType string, confidence float64) plugins.Finding {
+	f := plugins.Finding{
+		Type:   plugins.FindingDomain,
+		Value:  record.Attributes.Entity.LegalName.Name,
+		Source: "gleif",
+		Data: map[string]any{
+			"lei":              record.ID,
+			"legalName":        record.Attributes.Entity.LegalName.Name,
+			"jurisdiction":     record.Attributes.Entity.Jurisdiction,
+			"relationshipType": relationshipType,
+		},
+	}
+	plugins.SetConfidence(&f, confidence)
+	return f
+}
+
+// recordToPreseed converts a GLEIF LEI record to a FindingPreseed.
+// relationshipType is the corporate relationship (subsidiary, sibling,
+// direct-parent, ultimate-parent). corporateParent is the legal name of the
+// entity this record was discovered through (empty for parent findings).
+func recordToPreseed(record leiRecord, relationshipType, corporateParent string, confidence float64) plugins.Finding {
+	f := plugins.Finding{
+		Type:   plugins.FindingPreseed,
+		Value:  record.Attributes.Entity.LegalName.Name,
+		Source: "gleif",
+		Data: map[string]any{
+			"preseed_type":           "whois+company",
+			"preseed_title":          record.Attributes.Entity.LegalName.Name,
+			"lei":                    record.ID,
+			"jurisdiction":           record.Attributes.Entity.Jurisdiction,
+			"corporate_relationship": relationshipType,
+			"corporate_parent":       corporateParent,
+		},
+	}
+	plugins.SetConfidence(&f, confidence)
+	return f
+}
+
+// ── API response types ─────────────────────────────────────────────────────────
 
 type leiRecord struct {
 	ID            string           `json:"id"`
@@ -133,223 +391,14 @@ type leiChildrenResponse struct {
 	Meta leiMeta     `json:"meta"`
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-// hasParent reports whether the record has a registered direct parent LEI.
-func hasParent(record *leiRecord) bool {
-	_, ok := record.Relationships.DirectParent.Links["relationship-record"]
-	return ok
-}
-
-// recordToFinding converts a GLEIF LEI record to a Pius Finding.
-func recordToFinding(record leiRecord, relationshipType string, confidence float64) plugins.Finding {
-	f := plugins.Finding{
-		Type:   plugins.FindingDomain,
-		Value:  record.Attributes.Entity.LegalName.Name,
-		Source: "gleif",
-		Data: map[string]any{
-			"lei":              record.ID,
-			"legalName":        record.Attributes.Entity.LegalName.Name,
-			"jurisdiction":     record.Attributes.Entity.Jurisdiction,
-			"relationshipType": relationshipType,
-		},
-	}
-	plugins.SetConfidence(&f, confidence)
-	return f
-}
-
-// recordToPreseed converts a GLEIF LEI record to a FindingPreseed.
-// Used for parent and subsidiary records so the CIDR discovery pipeline
-// can work when WHOIS returns nothing (GDPR redaction).
-func recordToPreseed(record leiRecord, confidence float64) plugins.Finding {
-	f := plugins.Finding{
-		Type:   plugins.FindingPreseed,
-		Value:  record.Attributes.Entity.LegalName.Name,
-		Source: "gleif",
-		Data: map[string]any{
-			"preseed_type":  "whois+company",
-			"preseed_title": record.Attributes.Entity.LegalName.Name,
-			"lei":           record.ID,
-			"jurisdiction":  record.Attributes.Entity.Jurisdiction,
-		},
-	}
-	plugins.SetConfidence(&f, confidence)
-	return f
-}
-
-// ── Run ───────────────────────────────────────────────────────────────────────
-
-func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	if input.OrgName == "" {
-		return nil, nil
-	}
-
-	candidates, err := p.searchByName(ctx, input.OrgName)
-	if err != nil {
-		log.Printf("[gleif] search failed for %q: %v", input.OrgName, err)
-		return nil, nil
-	}
-	if len(candidates) == 0 {
-		return nil, nil
-	}
-
-	// seen deduplicates by (Type, Value) pair so that FindingDomain and
-	// FindingPreseed with the same Value are both emitted.
-	seen := make(map[string]bool)
-	var findings []plugins.Finding
-
-	addFinding := func(f plugins.Finding) {
-		if f.Value == "" {
-			return
-		}
-		key := string(f.Type) + "|" + f.Value
-		if !seen[key] {
-			seen[key] = true
-			findings = append(findings, f)
-		}
-	}
-
-	primary := candidates[0]
-
-	// Fetch full record to inspect parent relationship links.
-	fullRecord, err := p.getRecord(ctx, primary.ID)
-	if err != nil {
-		log.Printf("[gleif] get record failed for LEI %s: %v", primary.ID, err)
-		fullRecord = &primary
-	}
-
-	if hasParent(fullRecord) {
-		directParentLEI, err := p.getDirectParent(ctx, primary.ID)
-		if err != nil {
-			log.Printf("[gleif] direct parent failed for %s: %v", primary.ID, err)
-		} else if directParentLEI != "" {
-			if parentRecord, err := p.getRecord(ctx, directParentLEI); err != nil {
-				log.Printf("[gleif] parent record failed for %s: %v", directParentLEI, err)
-			} else {
-				addFinding(recordToFinding(*parentRecord, "direct-parent", plugins.ConfidenceHigh))
-				addFinding(recordToPreseed(*parentRecord, plugins.ConfidenceHigh))
-			}
-
-			// Ultimate parent — only emit if different from direct parent.
-			ultimateParentLEI, err := p.getUltimateParent(ctx, primary.ID)
-			if err != nil {
-				log.Printf("[gleif] ultimate parent failed for %s: %v", primary.ID, err)
-			} else if ultimateParentLEI != "" && ultimateParentLEI != directParentLEI {
-				if ultimateRecord, err := p.getRecord(ctx, ultimateParentLEI); err != nil {
-					log.Printf("[gleif] ultimate parent record failed for %s: %v", ultimateParentLEI, err)
-				} else {
-					addFinding(recordToFinding(*ultimateRecord, "ultimate-parent", plugins.ConfidenceHigh))
-					addFinding(recordToPreseed(*ultimateRecord, plugins.ConfidenceHigh))
-				}
-			}
-		}
-	}
-
-	// Subsidiaries (paginated).
-	children, err := p.getChildren(ctx, primary.ID)
-	if err != nil && ctx.Err() != nil {
-		return findings, ctx.Err()
-	}
-	if err != nil {
-		log.Printf("[gleif] children failed for %s: %v", primary.ID, err)
-	}
-	for _, child := range children {
-		if child.Attributes.Entity.LegalName.Name != "" {
-			addFinding(recordToFinding(child, "subsidiary", plugins.ConfidenceHigh))
-			addFinding(recordToPreseed(child, plugins.ConfidenceHigh))
-		}
-	}
-
-	// Additional name-match candidates at low confidence.
-	// Do NOT emit preseeds for these — ConfidenceLow would generate noise.
-	for _, c := range candidates[1:] {
-		if c.Attributes.Entity.LegalName.Name != "" {
-			addFinding(recordToFinding(c, "name-match", plugins.ConfidenceLow))
-		}
-	}
-
-	return findings, nil
-}
-
-// ── API methods ───────────────────────────────────────────────────────────────
-
-func (p *GLEIFPlugin) searchByName(ctx context.Context, name string) ([]leiRecord, error) {
-	u := fmt.Sprintf("%s/lei-records?filter[entity.legalName]=%s&filter[entity.status]=ACTIVE&page[size]=10",
-		p.gleifBase(), url.QueryEscape(name))
-	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
-	if err != nil {
-		return nil, fmt.Errorf("gleif: search: %w", err)
-	}
-	var resp leiSearchResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("gleif: search parse: %w", err)
-	}
-	return resp.Data, nil
-}
-
-func (p *GLEIFPlugin) getRecord(ctx context.Context, lei string) (*leiRecord, error) {
-	u := fmt.Sprintf("%s/lei-records/%s", p.gleifBase(), url.PathEscape(lei))
-	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
-	if err != nil {
-		return nil, fmt.Errorf("gleif: get record %s: %w", lei, err)
-	}
-	var resp struct {
-		Data leiRecord `json:"data"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("gleif: get record parse: %w", err)
-	}
-	return &resp.Data, nil
-}
-
-func (p *GLEIFPlugin) getDirectParent(ctx context.Context, lei string) (string, error) {
-	u := fmt.Sprintf("%s/lei-records/%s/direct-parent-relationship", p.gleifBase(), url.PathEscape(lei))
-	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
-	if err != nil {
-		return "", fmt.Errorf("gleif: direct parent of %s: %w", lei, err)
-	}
-	var resp leiRelationshipResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("gleif: direct parent parse: %w", err)
-	}
-	return resp.Data.Attributes.Relationship.EndNode.ID, nil
-}
-
-func (p *GLEIFPlugin) getUltimateParent(ctx context.Context, lei string) (string, error) {
-	u := fmt.Sprintf("%s/lei-records/%s/ultimate-parent-relationship", p.gleifBase(), url.PathEscape(lei))
-	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
-	if err != nil {
-		return "", fmt.Errorf("gleif: ultimate parent of %s: %w", lei, err)
-	}
-	var resp leiRelationshipResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("gleif: ultimate parent parse: %w", err)
-	}
-	return resp.Data.Attributes.Relationship.EndNode.ID, nil
-}
-
-func (p *GLEIFPlugin) getChildren(ctx context.Context, lei string) ([]leiRecord, error) {
-	var all []leiRecord
-	for page := 1; ; page++ {
-		u := fmt.Sprintf("%s/lei-records/%s/direct-children?page[size]=200&page[number]=%d",
-			p.gleifBase(), url.PathEscape(lei), page)
-		body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
-		if err != nil {
-			return all, fmt.Errorf("gleif: children page %d of %s: %w", page, lei, err)
-		}
-		var resp leiChildrenResponse
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return all, fmt.Errorf("gleif: children parse: %w", err)
-		}
-		all = append(all, resp.Data...)
-		if resp.Meta.Pagination.CurrentPage >= resp.Meta.Pagination.LastPage {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return all, ctx.Err()
-		default:
-		}
-	}
-	return all, nil
+type fuzzyCompletionResponse struct {
+	Data []struct {
+		Relationships struct {
+			LEIRecords struct {
+				Data struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			} `json:"lei-records"`
+		} `json:"relationships"`
+	} `json:"data"`
 }
