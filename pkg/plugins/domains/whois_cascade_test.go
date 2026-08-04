@@ -100,7 +100,7 @@ func preseedValues(findings []plugins.Finding) []string {
 func TestWhoisCascade_StopsAtRDAP(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
 	stubWhoisRawFn(t, func(_ context.Context, _, _ string) (string, error) {
-		t.Error("TCP/43 must not be queried once RDAP satisfied the predicate")
+		assert.Fail(t, "TCP/43 must not be queried once RDAP satisfied the predicate")
 		return "", errors.New("unexpected call")
 	})
 
@@ -345,7 +345,7 @@ func TestWhoisHop_BailsOnContextCancellation(t *testing.T) {
 func TestWhoisPlugin_RecordFindingCarriesRawText(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
 	stubWhoisRawFn(t, func(_ context.Context, _, _ string) (string, error) {
-		t.Error("TCP/43 must not be queried")
+		assert.Fail(t, "TCP/43 must not be queried")
 		return "", errors.New("unexpected call")
 	})
 
@@ -441,7 +441,7 @@ func TestWhoisCascade_FindingDataSurvivesJSONRoundTrip(t *testing.T) {
 func TestNewWhoisPlugin_UsesInjectedRDAPLookup(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
 	stubWhoisRawFn(t, func(_ context.Context, _, _ string) (string, error) {
-		t.Error("TCP/43 must not run when the injected RDAP lookup answers")
+		assert.Fail(t, "TCP/43 must not run when the injected RDAP lookup answers")
 		return "", errors.New("unexpected call")
 	})
 
@@ -462,7 +462,7 @@ func TestNewWhoisPlugin_UsesInjectedWhoisRaw(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
 	stubWhoisHopBackoff(t, time.Millisecond)
 	stubWhoisRawFn(t, func(_ context.Context, _, _ string) (string, error) {
-		t.Error("the package-default transport must not be consulted when a transport is injected")
+		assert.Fail(t, "the package-default transport must not be consulted when a transport is injected")
 		return "", errors.New("unexpected call")
 	})
 
