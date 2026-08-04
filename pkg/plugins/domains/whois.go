@@ -204,12 +204,17 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 		if hist, herr := whoxy.history(ctx, domain); herr != nil {
 			slog.Warn("whois: history fetch failed", "domain", domain, "error", herr)
 		} else if len(hist) > 0 {
+			status := "covered"
+			if string(hist) == "[]" {
+				status = "empty"
+			}
 			findings = append(findings, plugins.Finding{
 				Type:   plugins.FindingWhoisHistory,
 				Value:  domain,
 				Source: p.Name(),
 				Data: map[string]any{
 					"method":  whoisMethodWhoxy,
+					"status":  status,
 					"history": string(hist),
 				},
 			})

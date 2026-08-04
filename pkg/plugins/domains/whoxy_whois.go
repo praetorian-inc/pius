@@ -68,7 +68,7 @@ func (c *whoxyWhoisClient) history(ctx context.Context, domain string) (json.Raw
 		return nil, fmt.Errorf("whoxy history: %s", whoxyStatusReason(resp.StatusReason))
 	}
 	if resp.TotalRecordsFound == 0 {
-		return nil, nil
+		return json.RawMessage("[]"), nil
 	}
 	return resp.Records, nil
 }

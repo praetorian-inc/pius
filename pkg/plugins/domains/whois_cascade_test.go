@@ -203,6 +203,25 @@ func TestWhoisCascade_WhoxySkippedWithoutAPIKey(t *testing.T) {
 	assert.Zero(t, atomic.LoadInt32(hits), "a key-less run must not spend Whoxy credits")
 }
 
+func TestWhoisCascade_HistoryEmptyEmitsMarker(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "test-key")
+	stubWhoisReferralChain(t, notFoundWhoisRecord, nil)
+	stubWhoisHopBackoff(t, time.Millisecond)
+	whoxy, _ := whoxyTestServer(t,
+		fmt.Sprintf(`{"status":1,"raw_whois":%q}`, fullWhoisRecord),
+		`{"status":1,"total_records_found":0}`,
+	)
+	p := &WhoisPlugin{rdap: failingRDAP(), whoxy: whoxy}
+
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+	require.NoError(t, err)
+	history := findingsOfType(findings, plugins.FindingWhoisHistory)
+	require.Len(t, history, 1)
+	assert.Equal(t, "empty", history[0].Data["status"])
+	assert.Equal(t, "[]", history[0].Data["history"])
+}
+
 func TestWhoisCascade_HistoryFailureDoesNotFailRun(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "secret-key")
 	stubWhoisReferralChain(t, "", errors.New("dial tcp: connection refused"))
