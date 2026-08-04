@@ -431,6 +431,13 @@ func stubWhoisRawFn(t *testing.T, fn func(ctx context.Context, domain, server st
 	t.Cleanup(func() { whoisRawFn = prev })
 }
 
+func stubWhoisHopBackoff(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := whoisHopBackoff
+	whoisHopBackoff = d
+	t.Cleanup(func() { whoisHopBackoff = prev })
+}
+
 // TestWhoisQuery_SeedOnlyChainReturnsError pins Fix A's core invariant: when only
 // the bootstrap seed (whois.iana.org) answers and it carries NO referral, the
 // chain never advances past the seed, so whoisQuery returns the seed-guard error
@@ -466,6 +473,7 @@ func TestWhoisQuery_PostReferralSalvageReturnsPostReferralRecord(t *testing.T) {
 		seedRecord      = "refer: whois.tld.example\ndomain: EXAMPLE\n"
 		tldRecord       = "Domain Name: EXAMPLE.COM\nRegistrant Organization: Acme Corp\nRegistrar WHOIS Server: whois.registrar.example\n"
 	)
+	stubWhoisHopBackoff(t, time.Millisecond) // the failing registrar hop now retries
 	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
 		switch server {
 		case defaultServer:
@@ -546,6 +554,7 @@ func TestWhoisQuery_CtxCancelAfterReferralSalvages(t *testing.T) {
 // must re-check the context and return the ctx error with NO findings rather than
 // parsing the salvaged record (ENG-5123 review, Codex).
 func TestWhoisPlugin_Run_CancelledContextDoesNotEmit(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "")
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var calls int
@@ -584,7 +593,7 @@ func TestWhoisPlugin_Run_CancelledContextDoesNotEmit(t *testing.T) {
 		}
 	})
 
-	findings, err := (&WhoisPlugin{}).Run(ctx, plugins.Input{Domain: "example.com"})
+	findings, err := (&WhoisPlugin{rdap: failingRDAP()}).Run(ctx, plugins.Input{Domain: "example.com"})
 
 	// assert (not require) so that when Fix A's guard is removed a single run
 	// exhibits every caught assertion at once: without the guard Run parses the
@@ -608,6 +617,7 @@ func TestWhoisPlugin_Run_CancelledContextDoesNotEmit(t *testing.T) {
 // via stubWhoisRawFn) and the parse seam (whoisParseFn) are stubbed, so no
 // socket, DNS, or real WHOIS/RDAP call happens.
 func TestWhoisPlugin_Run_RecoversParserPanic(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "")
 	// Drive whoisQuery to a successful, network-free result. The bootstrap seed
 	// (defaultServer) must refer once past itself, because whoisQuery never
 	// salvages the seed record alone (seed-guard invariant); the referred-to
@@ -633,7 +643,7 @@ func TestWhoisPlugin_Run_RecoversParserPanic(t *testing.T) {
 	// If Run re-panicked (i.e. the guard were removed) the panic would unwind
 	// past this call and crash the test binary — so merely REACHING the
 	// assertions below is itself proof that the deferred recover fired.
-	findings, err := (&WhoisPlugin{}).Run(context.Background(), plugins.Input{Domain: "example.com"})
+	findings, err := (&WhoisPlugin{rdap: failingRDAP()}).Run(context.Background(), plugins.Input{Domain: "example.com"})
 
 	assert.Error(t, err, "a recovered parser panic must surface as an error")
 	assert.Contains(t, err.Error(), "recovered panic", "error must name the recovered panic")

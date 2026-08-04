@@ -17,6 +17,17 @@ const (
 	defaultServer = "whois.iana.org"
 	queryTimeout  = 10 * time.Second
 
+	// maxDomainReferralHops caps the referral chain. Eight matches the bound the
+	// consumer's own referral walker used before this became the only TCP/43 path
+	// in production; a few registries chain seed -> registry -> registrar -> a
+	// reseller's server, and five hops truncated those.
+	maxDomainReferralHops = 8
+
+	// whoisHopAttempts bounds the per-hop retry. Registry and registrar WHOIS
+	// servers throttle and drop connections routinely, and without a retry a
+	// single dropped hop truncates the whole chain.
+	whoisHopAttempts = 3
+
 	// maxWhoisResponseBytes caps a single WHOIS response. A raw WHOIS record is a
 	// few KB; 1 MiB is generous headroom for verbose registries while bounding the
 	// worst case. The reverse-whois verifier drives this read for up to
@@ -208,19 +219,20 @@ func ssrfSafeControl(_, address string, _ syscall.RawConn) error {
 // Every hop is bounded by ctx: the referral loop bails as soon as ctx is
 // cancelled or its deadline passes, and whoisRaw honors ctx on the socket read.
 // This keeps the fallback path inside the overall verification budget instead of
-// letting 5 referrals x queryTimeout stack past it (ENG-5123 review).
+// letting maxDomainReferralHops referrals x queryTimeout stack past it
+// (ENG-5123 review).
 func whoisQuery(ctx context.Context, domain string) (string, error) {
 	server := defaultServer
 	var lastRaw string
 
-	for i := 0; i < 5; i++ { // max 5 referrals to prevent loops
+	for i := 0; i < maxDomainReferralHops; i++ {
 		if err := ctx.Err(); err != nil {
 			if lastRaw != "" {
 				return lastRaw, nil // return last post-referral result
 			}
 			return "", err
 		}
-		raw, err := whoisRawFn(ctx, domain, server)
+		raw, err := whoisHop(ctx, domain, server)
 		if err != nil {
 			if lastRaw != "" {
 				return lastRaw, nil // return last post-referral result
@@ -245,6 +257,48 @@ func whoisQuery(ctx context.Context, domain string) (string, error) {
 		return "", fmt.Errorf("whois query for %s: no record beyond bootstrap seed %s", domain, defaultServer)
 	}
 	return lastRaw, nil
+}
+
+// whoisHopBackoff is the base delay between hop attempts, a var so tests can
+// shrink it — the same seam idiom as reverseWhoisTotalBudget.
+var whoisHopBackoff = 250 * time.Millisecond
+
+// whoisHop queries one WHOIS server, retrying a failed attempt with exponential
+// backoff. The retry stays inside the caller's deadline: ctx bounds the attempt
+// and the backoff sleep alike, and an ended ctx returns its error immediately
+// rather than funding another attempt. That matters because whoisQuery's caller
+// may be inside the pass-wide reverse-whois budget, and a retry that outlived it
+// would spend recall it cannot use.
+func whoisHop(ctx context.Context, domain, server string) (string, error) {
+	var err error
+	for attempt := range whoisHopAttempts {
+		if attempt > 0 {
+			if serr := sleepBounded(ctx, whoisHopBackoff<<(attempt-1)); serr != nil {
+				return "", serr
+			}
+		}
+		var raw string
+		raw, err = whoisRawFn(ctx, domain, server)
+		if err == nil {
+			return raw, nil
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return "", cerr
+		}
+	}
+	return "", err
+}
+
+// sleepBounded waits d, returning the context error if ctx ends first.
+func sleepBounded(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // whoisDialAddr normalizes a (possibly untrusted) referral server string into a

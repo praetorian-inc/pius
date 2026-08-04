@@ -6,26 +6,44 @@ import (
 	"log/slog"
 	"net"
 	"net/mail"
+	"os"
 	"strings"
 
 	whoisparser "github.com/likexian/whois-parser"
 	"golang.org/x/net/publicsuffix"
 
+	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
+)
+
+// Source names carried in Data["method"] of every emitted record finding.
+const (
+	whoisMethodRDAP  = "rdap"
+	whoisMethodTCP43 = "whois43"
+	whoisMethodWhoxy = "whoxy"
 )
 
 func init() {
 	plugins.Register("whois", func() plugins.Plugin { return &WhoisPlugin{} })
 }
 
-// WhoisPlugin performs domain WHOIS lookups to extract registration information
-// (registrant organization, contact names, and emails) and emits them as preseed
-// findings for downstream discovery.
-type WhoisPlugin struct{}
+// WhoisPlugin gathers a domain's WHOIS registration data by cascading over
+// RDAP, TCP/43, and Whoxy, emitting one record finding per source that answered
+// plus preseeds (registrant organization, contact names, emails) from the
+// accepted record.
+//
+// It GATHERS; the consumer ADJUDICATES. The consumer owns the authoritative
+// acceptance predicate (per-ccTLD registry-artifact tables that must not be
+// duplicated across repos), so every answering source is emitted in the order
+// tried rather than only the one this plugin stopped on.
+type WhoisPlugin struct {
+	rdap  rdapRecordSource  // overridable for tests; defaults to rdapWhoisResolver
+	whoxy *whoxyWhoisClient // overridable for tests; nil takes a default client
+}
 
 func (p *WhoisPlugin) Name() string { return "whois" }
 func (p *WhoisPlugin) Description() string {
-	return "Domain WHOIS: extracts registrant organization, contacts, and emails from WHOIS records"
+	return "Domain WHOIS: cascades RDAP, WHOIS/43, and Whoxy to gather registration records, contacts, and emails"
 }
 func (p *WhoisPlugin) Category() string { return "domain" }
 func (p *WhoisPlugin) Phase() int       { return 0 }
@@ -33,6 +51,19 @@ func (p *WhoisPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *WhoisPlugin) Accepts(input plugins.Input) bool {
 	return input.Domain != ""
+}
+
+// whoisRecord is one source's answer: the raw record text as that source
+// rendered it, alongside the parse this plugin adjudicates on.
+type whoisRecord struct {
+	method string
+	raw    string
+	info   whoisparser.WhoisInfo
+}
+
+type whoisSource struct {
+	method string
+	fetch  func(ctx context.Context, domain string) (whoisRecord, error)
 }
 
 func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []plugins.Finding, err error) {
@@ -58,27 +89,182 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 		}
 	}()
 
-	raw, err := whoisQuery(ctx, domain)
-	if err != nil {
-		return nil, fmt.Errorf("whois: lookup failed for %q: %w", domain, err)
+	whoxy := p.whoxyClient()
+
+	var (
+		accepted       *whoisRecord
+		last           *whoisRecord
+		lastErr        error
+		notFoundMethod string
+	)
+	for _, src := range p.sources(whoxy) {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
+		rec, ferr := src.fetch(ctx, domain)
+		// The TCP/43 leg is shared with the reverse-whois verifier, where a caller
+		// cancellation deliberately salvages the last post-referral record
+		// (recall-safe). WhoisPlugin has no such recall contract: a cancelled run
+		// must abort, not emit from a salvaged partial record. Re-check the context
+		// before emitting (ENG-5123 review, Codex).
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
+		if ferr != nil {
+			if notFoundMethod == "" && isDomainNotFound(ferr) {
+				notFoundMethod = src.method
+			}
+			lastErr = ferr
+			slog.Warn("whois: source did not answer, falling through",
+				"domain", domain, "method", src.method, "error", ferr)
+			continue
+		}
+
+		findings = append(findings, recordFinding(domain, rec, p.Name()))
+		last = &rec
+		if hasNamedContact(rec.info) {
+			accepted = &rec
+			break
+		}
 	}
 
-	// whoisQuery is shared with the reverse-whois verifier, where a caller
-	// cancellation deliberately salvages the last post-referral record
-	// (recall-safe). WhoisPlugin has no such recall contract: a cancelled run
-	// must abort, not emit preseeds from a salvaged partial record. Re-check the
-	// context before parsing/emitting (ENG-5123 review, Codex).
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	parsed, perr := whoisParseFn(raw)
-	if perr != nil {
-		slog.Warn("whois: parse failed, skipping preseed extraction", "domain", domain, "error", perr)
+	switch {
+	case last != nil:
+		// Preseeds come from the record that satisfied the predicate; with none
+		// satisfied, the last one that parsed is still the richest available.
+		src := accepted
+		if src == nil {
+			src = last
+		}
+		findings = append(findings, extractPreseeds(src.info, p.Name())...)
+	case notFoundMethod != "":
+		// An unregistered domain is a result, not a failure: the consumer caches
+		// the negative rather than re-querying every pass.
+		findings = append(findings, plugins.Finding{
+			Type:   plugins.FindingWhoisRecord,
+			Value:  domain,
+			Source: p.Name(),
+			Data: map[string]any{
+				"method":       notFoundMethod,
+				"unregistered": true,
+			},
+		})
+	case lastErr != nil:
+		return nil, fmt.Errorf("whois: all sources failed for %q: %w", domain, lastErr)
+	default:
 		return nil, nil
 	}
 
-	return extractPreseeds(parsed, p.Name()), nil
+	if whoxy != nil {
+		if hist, herr := whoxy.history(ctx, domain); herr != nil {
+			slog.Warn("whois: history fetch failed", "domain", domain, "error", herr)
+		} else if len(hist) > 0 {
+			findings = append(findings, plugins.Finding{
+				Type:   plugins.FindingWhoisHistory,
+				Value:  domain,
+				Source: p.Name(),
+				Data: map[string]any{
+					"method":  whoisMethodWhoxy,
+					"history": hist,
+				},
+			})
+		}
+	}
+
+	return findings, nil
+}
+
+// sources returns the cascade in call order: the two free sources first, the
+// paid one last, so a Whoxy credit is only ever spent on a domain the free legs
+// could not answer for (MAR-10241).
+func (p *WhoisPlugin) sources(whoxy *whoxyWhoisClient) []whoisSource {
+	// Resolve into a local rather than mutating p.rdap: writing shared plugin
+	// state inside Run() would be a data race if an instance were ever reused or
+	// run concurrently (Gemini review, ENG-5123).
+	rdapSource := p.rdap
+	if rdapSource == nil {
+		rdapSource = &rdapWhoisResolver{}
+	}
+
+	sources := []whoisSource{
+		{method: whoisMethodRDAP, fetch: rdapSource.rdapRecord},
+		{method: whoisMethodTCP43, fetch: whois43Record},
+	}
+	if whoxy != nil {
+		sources = append(sources, whoisSource{method: whoisMethodWhoxy, fetch: whoxy.record})
+	}
+	return sources
+}
+
+// whoxyClient gates the paid stage on the API key. Without it the cascade must
+// behave exactly as the free plugin always has: a plain CLI or SDK run must not
+// silently start spending Whoxy credits.
+func (p *WhoisPlugin) whoxyClient() *whoxyWhoisClient {
+	if os.Getenv("WHOXY_API_KEY") == "" {
+		return nil
+	}
+	if p.whoxy != nil {
+		return p.whoxy
+	}
+	return &whoxyWhoisClient{client: client.New()}
+}
+
+func whois43Record(ctx context.Context, domain string) (whoisRecord, error) {
+	raw, err := whoisQuery(ctx, domain)
+	if err != nil {
+		return whoisRecord{}, fmt.Errorf("whois43: lookup failed for %q: %w", domain, err)
+	}
+	return textWhoisRecord(whoisMethodTCP43, raw)
+}
+
+// textWhoisRecord parses a raw WHOIS record from a text-returning source. The
+// parse error is wrapped rather than replaced so the cascade's not-found probe
+// can still see whoisparser.ErrNotFoundDomain through it. whoisParseFn is called
+// directly, not through parseWhoisRecordSafely, so a parser panic reaches the
+// recover in Run.
+func textWhoisRecord(method, raw string) (whoisRecord, error) {
+	info, err := whoisParseFn(raw)
+	if err != nil {
+		return whoisRecord{}, fmt.Errorf("%s: parse record: %w", method, err)
+	}
+	return whoisRecord{method: method, raw: raw, info: info}, nil
+}
+
+func recordFinding(domain string, rec whoisRecord, source string) plugins.Finding {
+	return plugins.Finding{
+		Type:   plugins.FindingWhoisRecord,
+		Value:  domain,
+		Source: source,
+		Data: map[string]any{
+			"method": rec.method,
+			"raw":    rec.raw,
+		},
+	}
+}
+
+// hasNamedContact is the cascade's stop condition. It is deliberately STRICTER
+// than the consumer's acceptance predicate, which also accepts an
+// organization-only record: an organization alone is what a registry artifact
+// looks like on the ccTLDs the consumer keeps tables for, and those tables must
+// not be duplicated here. Being strictly stricter means anything this stops on
+// the consumer also accepts; the cost is one extra fallback call on an org-only
+// record, which is intended.
+func hasNamedContact(info whoisparser.WhoisInfo) bool {
+	for _, c := range whoisContacts(info) {
+		if c == nil {
+			continue
+		}
+		if c.Email != "" || c.Name != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func whoisContacts(info whoisparser.WhoisInfo) []*whoisparser.Contact {
+	return []*whoisparser.Contact{
+		info.Registrant, info.Administrative, info.Billing, info.Technical,
+	}
 }
 
 // whoisParseFn is a seam over whoisparser.Parse so the panic-recover in
@@ -230,10 +416,7 @@ func extractPreseeds(info whoisparser.WhoisInfo, source string) []plugins.Findin
 	seen := make(map[param]bool)
 	var findings []plugins.Finding
 
-	contacts := []*whoisparser.Contact{
-		info.Registrant, info.Administrative, info.Billing, info.Technical,
-	}
-	for _, c := range contacts {
+	for _, c := range whoisContacts(info) {
 		if c == nil {
 			continue
 		}
