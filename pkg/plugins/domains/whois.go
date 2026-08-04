@@ -2,6 +2,7 @@ package domains
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -48,10 +49,9 @@ func WithWhoisRaw(raw func(context.Context, string, string) (string, error)) Who
 // plus preseeds (registrant organization, contact names, emails) from the
 // accepted record.
 //
-// It GATHERS; the consumer ADJUDICATES. The consumer owns the authoritative
-// acceptance predicate (per-ccTLD registry-artifact tables that must not be
-// duplicated across repos), so every answering source is emitted in the order
-// tried rather than only the one this plugin stopped on.
+// It gathers and enriches; the consumer owns persistence and lifecycle.
+// Every answering source is emitted in the order tried so the consumer can
+// preserve its existing record-selection behavior during consolidation.
 type WhoisPlugin struct {
 	rdap     rdapRecordSource  // overridable for tests; defaults to rdapWhoisResolver
 	whoxy    *whoxyWhoisClient // overridable for tests; nil takes a default client
@@ -137,9 +137,15 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 			continue
 		}
 
-		findings = append(findings, recordFinding(domain, rec, p.Name()))
+		accept := hasNamedContact(rec.info)
+		enrichWhoisRecord(&rec, domain)
+		finding, merr := recordFinding(domain, rec, p.Name())
+		if merr != nil {
+			return nil, merr
+		}
+		findings = append(findings, finding)
 		last = &rec
-		if hasNamedContact(rec.info) {
+		if accept {
 			accepted = &rec
 			break
 		}
@@ -153,7 +159,7 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 		if src == nil {
 			src = last
 		}
-		findings = append(findings, extractPreseeds(src.info, p.Name())...)
+		findings = append(findings, extractRichPreseeds(src.info, domain, p.Name())...)
 	case notFoundMethod != "":
 		// An unregistered domain is a result, not a failure: the consumer caches
 		// the negative rather than re-querying every pass.
@@ -251,7 +257,11 @@ func textWhoisRecord(method, raw string) (whoisRecord, error) {
 	return whoisRecord{method: method, raw: raw, info: info}, nil
 }
 
-func recordFinding(domain string, rec whoisRecord, source string) plugins.Finding {
+func recordFinding(domain string, rec whoisRecord, source string) (plugins.Finding, error) {
+	info, err := json.Marshal(rec.info)
+	if err != nil {
+		return plugins.Finding{}, fmt.Errorf("whois: marshal parsed record for %q: %w", domain, err)
+	}
 	return plugins.Finding{
 		Type:   plugins.FindingWhoisRecord,
 		Value:  domain,
@@ -259,17 +269,13 @@ func recordFinding(domain string, rec whoisRecord, source string) plugins.Findin
 		Data: map[string]any{
 			"method": rec.method,
 			"raw":    rec.raw,
+			"info":   string(info),
 		},
-	}
+	}, nil
 }
 
-// hasNamedContact is the cascade's stop condition. It is deliberately STRICTER
-// than the consumer's acceptance predicate, which also accepts an
-// organization-only record: an organization alone is what a registry artifact
-// looks like on the ccTLDs the consumer keeps tables for, and those tables must
-// not be duplicated here. Being strictly stricter means anything this stops on
-// the consumer also accepts; the cost is one extra fallback call on an org-only
-// record, which is intended.
+// hasNamedContact is deliberately stricter than the persistence acceptance
+// predicate, so an organization-only response falls through to the next source.
 func hasNamedContact(info whoisparser.WhoisInfo) bool {
 	for _, c := range whoisContacts(info) {
 		if c == nil {
