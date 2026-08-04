@@ -18,21 +18,39 @@ func init() {
 
 type PassiveDNSPlugin struct {
 	client *client.Client
+	apiKey string // set by NewPassiveDNSPlugin; falls back to SECURITYTRAILS_API_KEY
 }
 
-func (p *PassiveDNSPlugin) Name() string        { return "passive-dns" }
-func (p *PassiveDNSPlugin) Description() string { return "SecurityTrails Passive DNS: discovers historical DNS data (requires SECURITYTRAILS_API_KEY)" }
-func (p *PassiveDNSPlugin) Category() string    { return "domain" }
-func (p *PassiveDNSPlugin) Phase() int          { return 0 }
-func (p *PassiveDNSPlugin) Mode() string        { return plugins.ModePassive }
+// NewPassiveDNSPlugin builds the plugin around a caller-supplied client and API
+// key, so embedders can route its egress through their own transport and resolve
+// the key from their own secret store instead of the environment.
+func NewPassiveDNSPlugin(c *client.Client, apiKey string) *PassiveDNSPlugin {
+	return &PassiveDNSPlugin{client: c, apiKey: apiKey}
+}
+
+// key prefers an injected key so embedders never depend on process environment.
+func (p *PassiveDNSPlugin) key() string {
+	if p.apiKey != "" {
+		return p.apiKey
+	}
+	return os.Getenv("SECURITYTRAILS_API_KEY")
+}
+
+func (p *PassiveDNSPlugin) Name() string { return "passive-dns" }
+func (p *PassiveDNSPlugin) Description() string {
+	return "SecurityTrails Passive DNS: discovers historical DNS data (requires SECURITYTRAILS_API_KEY)"
+}
+func (p *PassiveDNSPlugin) Category() string { return "domain" }
+func (p *PassiveDNSPlugin) Phase() int       { return 0 }
+func (p *PassiveDNSPlugin) Mode() string     { return plugins.ModePassive }
 
 // Only runs if SECURITYTRAILS_API_KEY is set and we have a domain to search
 func (p *PassiveDNSPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("SECURITYTRAILS_API_KEY") != "" && isDomainName(input.Domain)
+	return p.key() != "" && isDomainName(input.Domain)
 }
 
 func (p *PassiveDNSPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	apiKey := os.Getenv("SECURITYTRAILS_API_KEY")
+	apiKey := p.key()
 
 	// SecurityTrails domain subdomains API
 	reqURL := fmt.Sprintf(

@@ -336,7 +336,7 @@ func TestWhoisHop_RetriesTransientFailure(t *testing.T) {
 		return fullWhoisRecord, nil
 	})
 
-	raw, err := whoisHop(context.Background(), "example.com", "whois.registry.test")
+	raw, err := whoisHopWithRaw(context.Background(), "example.com", "whois.registry.test", whoisRawFn)
 
 	require.NoError(t, err)
 	assert.Equal(t, fullWhoisRecord, raw)
@@ -354,7 +354,7 @@ func TestWhoisHop_BailsOnContextCancellation(t *testing.T) {
 		return "", errors.New("dial tcp: connection refused")
 	})
 
-	_, err := whoisHop(ctx, "example.com", "whois.registry.test")
+	_, err := whoisHopWithRaw(ctx, "example.com", "whois.registry.test", whoisRawFn)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
@@ -436,6 +436,8 @@ func TestWhoisCascade_FindingDataSurvivesJSONRoundTrip(t *testing.T) {
 			"the round-trip check is vacuous without a preseed finding")
 		require.Len(t, findingsOfType(findings, plugins.FindingWhoisHistory), 1,
 			"the round-trip check is vacuous without a history finding")
+		require.NotContains(t, findingsOfType(findings, plugins.FindingWhoisRecord)[0].Data, "incomplete",
+			"a complete referral chain must not stamp the key at all")
 
 		assertDataSurvivesJSONRoundTrip(t, findings)
 	})
@@ -452,6 +454,37 @@ func TestWhoisCascade_FindingDataSurvivesJSONRoundTrip(t *testing.T) {
 		require.Len(t, findings, 1)
 		require.Equal(t, true, findings[0].Data["unregistered"],
 			"the round-trip check is vacuous without the unregistered verdict")
+
+		assertDataSurvivesJSONRoundTrip(t, findings)
+	})
+
+	t.Run("incomplete referral chain", func(t *testing.T) {
+		t.Setenv("WHOXY_API_KEY", "")
+		stubWhoisHopBackoff(t, time.Millisecond)
+
+		const registryRecord = "Domain Name: EXAMPLE.COM\n" +
+			"Registrant Organization: Acme Corp\n" +
+			"Registrar WHOIS Server: whois.registrar.test\n"
+		stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+			switch server {
+			case defaultServer:
+				return "refer: whois.registry.test\n", nil
+			case "whois.registry.test":
+				return registryRecord, nil
+			default:
+				return "", errors.New("read tcp 203.0.113.7:43: connection reset by peer")
+			}
+		})
+
+		findings, err := (&WhoisPlugin{rdap: failingRDAP()}).
+			Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+		require.NoError(t, err)
+		record := findingsOfType(findings, plugins.FindingWhoisRecord)
+		require.Len(t, record, 1)
+		require.Equal(t, string(whoisIncompleteReferral), record[0].Data["incomplete"],
+			"the round-trip check is vacuous without an incomplete record, and the value must be "+
+				"stamped as a plain string — a whoisIncompleteness would not survive the cache")
 
 		assertDataSurvivesJSONRoundTrip(t, findings)
 	})

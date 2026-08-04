@@ -31,6 +31,34 @@ type CensysOrgPlugin struct {
 	client   *client.Client
 	baseURL  string          // override for testing; empty means use real Censys API
 	apiCache *cache.APICache // injected in tests; nil = lazy init on first Run
+	apiToken string          // set by NewCensysOrgPlugin; falls back to CENSYS_API_TOKEN
+	orgID    string          // set by NewCensysOrgPlugin; falls back to CENSYS_ORG_ID
+	noCache  bool            // set by NewCensysOrgPlugin; skips the on-disk cache entirely
+}
+
+// NewCensysOrgPlugin builds the plugin around a caller-supplied client and
+// credentials, so embedders can route its egress through their own transport and
+// resolve both values from their own secret store instead of the environment.
+// The on-disk cache is disabled: embedders run in ephemeral containers where it
+// never warms, and a stale entry would silently bypass the caller's transport.
+func NewCensysOrgPlugin(c *client.Client, apiToken, orgID string) *CensysOrgPlugin {
+	return &CensysOrgPlugin{client: c, apiToken: apiToken, orgID: orgID, noCache: true}
+}
+
+// token and org prefer injected values so embedders never depend on process
+// environment.
+func (p *CensysOrgPlugin) token() string {
+	if p.apiToken != "" {
+		return p.apiToken
+	}
+	return os.Getenv("CENSYS_API_TOKEN")
+}
+
+func (p *CensysOrgPlugin) org() string {
+	if p.orgID != "" {
+		return p.orgID
+	}
+	return os.Getenv("CENSYS_ORG_ID")
 }
 
 const censysDefaultBaseURL = "https://api.platform.censys.io"
@@ -94,9 +122,9 @@ var infraOrgDenyList = map[string]bool{
 	"pantheon systems, inc.":         true,
 
 	// Hosting control panels — auto-provision certs with panel vendor org
-	"cpanel, inc.":               true,
-	"cpanel, l.l.c.":             true,
-	"plesk":                      true,
+	"cpanel, inc.":                 true,
+	"cpanel, l.l.c.":               true,
+	"plesk":                        true,
 	"parallels international gmbh": true,
 
 	// CAs that appear as Subject O on shared/managed certs
@@ -124,6 +152,9 @@ func (p *CensysOrgPlugin) censysBaseURL() string {
 
 // getCache returns the APICache, initializing it lazily on first use.
 func (p *CensysOrgPlugin) getCache() *cache.APICache {
+	if p.noCache {
+		return nil
+	}
 	if p.apiCache != nil {
 		return p.apiCache
 	}
@@ -145,7 +176,7 @@ func (p *CensysOrgPlugin) Phase() int       { return 0 }
 func (p *CensysOrgPlugin) Mode() string     { return plugins.ModeActive }
 
 func (p *CensysOrgPlugin) Accepts(input plugins.Input) bool {
-	return input.OrgName != "" && os.Getenv("CENSYS_API_TOKEN") != ""
+	return input.OrgName != "" && p.token() != ""
 }
 
 // ── Censys Platform API v3 request/response types ─────────────────────────────
@@ -233,7 +264,7 @@ type censysReverseDNS struct {
 }
 
 func (p *CensysOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	token := os.Getenv("CENSYS_API_TOKEN")
+	token := p.token()
 	cacheKey := strings.ToLower("censys-org|" + input.OrgName + "|" + input.Domain)
 
 	// Check cache first
@@ -249,7 +280,7 @@ func (p *CensysOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	searchURL := p.censysBaseURL() + "/v3/global/search/query"
 
 	// Censys Platform API requires organization_id for programmatic access.
-	if orgID := os.Getenv("CENSYS_ORG_ID"); orgID != "" {
+	if orgID := p.org(); orgID != "" {
 		searchURL += "?organization_id=" + orgID
 	}
 

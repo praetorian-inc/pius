@@ -412,7 +412,10 @@ func TestExtractOfficialDomain_GoogleRedirect(t *testing.T) {
 }
 
 func TestIsExcludedDomain(t *testing.T) {
-	tests := []struct{ domain string; want bool }{
+	tests := []struct {
+		domain string
+		want   bool
+	}{
 		// Google domains
 		{"google.com", true},
 		{"www.google.co.uk", true},
@@ -460,4 +463,3 @@ func TestBuildQuery_MultiSegmentDomain(t *testing.T) {
 	q := p.buildQuery(plugins.Input{Domain: "sub.qualcomm.com"})
 	assert.Equal(t, "subsidiaries:qualcomm", q)
 }
-

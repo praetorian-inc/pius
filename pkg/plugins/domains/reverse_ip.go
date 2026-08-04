@@ -29,12 +29,38 @@ func init() {
 // For small CIDRs (/24 and smaller), iterates all IPs.
 // For larger CIDRs, samples representative IPs to avoid excessive queries.
 type ReverseIPPlugin struct {
-	client        *client.Client
-	baseURL       string // HackerTarget override for testing
-	viewDNSURL    string // ViewDNS override for testing
-	resolver      string // DNS resolver override for testing
-	maxResults    int    // max hostnames to return (default 500)
-	maxIPs        int    // max IPs to query per CIDR (default 256)
+	client     *client.Client
+	baseURL    string // HackerTarget override for testing
+	viewDNSURL string // ViewDNS override for testing
+	resolver   string // DNS resolver override for testing
+	maxResults int    // max hostnames to return (default 500)
+	maxIPs     int    // max IPs to query per CIDR (default 256)
+
+	ptr    PTRResolver // set by NewReverseIPPlugin; replaces the direct DNS client
+	apiKey string      // set by NewReverseIPPlugin; falls back to VIEWDNS_API_KEY
+}
+
+// PTRResolver resolves an IP to its PTR hostnames. Embedders supply their own so
+// reverse lookups route through their resolver — and their mocking layer —
+// instead of this package's hardcoded public resolver.
+type PTRResolver interface {
+	ReverseLookup(ip string) []string
+}
+
+// NewReverseIPPlugin builds the plugin around caller-supplied dependencies, so
+// every source it uses is interceptable: client covers the HackerTarget and
+// ViewDNS HTTP legs, ptr covers the PTR leg. A nil ptr keeps the default DNS
+// client, which is only appropriate when the caller does not need interception.
+func NewReverseIPPlugin(c *client.Client, ptr PTRResolver, apiKey string) *ReverseIPPlugin {
+	return &ReverseIPPlugin{client: c, ptr: ptr, apiKey: apiKey}
+}
+
+// key prefers an injected key so embedders never depend on process environment.
+func (p *ReverseIPPlugin) key() string {
+	if p.apiKey != "" {
+		return p.apiKey
+	}
+	return os.Getenv("VIEWDNS_API_KEY")
 }
 
 // Confidence thresholds for domain matching
@@ -111,7 +137,7 @@ func (p *ReverseIPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	}
 
 	// Check for ViewDNS API key
-	viewDNSKey := os.Getenv("VIEWDNS_API_KEY")
+	viewDNSKey := p.key()
 
 	seen := make(map[string]bool)
 	var findings []plugins.Finding
@@ -273,6 +299,10 @@ func expandCIDR(cidrStr string, maxIPs int) []string {
 
 // ptrLookup performs reverse DNS lookup for an IP
 func (p *ReverseIPPlugin) ptrLookup(ctx context.Context, ip string) []string {
+	if p.ptr != nil {
+		return p.ptr.ReverseLookup(ip)
+	}
+
 	arpa, err := dns.ReverseAddr(ip)
 	if err != nil {
 		return nil

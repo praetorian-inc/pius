@@ -38,13 +38,31 @@ func init() {
 type DNSBrutePlugin struct {
 	resolver string   // DNS resolver address (host:port)
 	wordlist []string // subdomain prefixes to try
+	lookup   Resolver // set by NewDNSBrutePlugin; replaces direct DNS queries
 }
 
-func (p *DNSBrutePlugin) Name() string        { return "dns-brute" }
-func (p *DNSBrutePlugin) Description() string { return "Active subdomain brute-force via DNS resolution" }
-func (p *DNSBrutePlugin) Category() string    { return "domain" }
-func (p *DNSBrutePlugin) Phase() int          { return 0 }
-func (p *DNSBrutePlugin) Mode() string        { return plugins.ModeActive }
+// Resolver resolves a hostname to its addresses. Embedders supply their own so
+// forward lookups route through their resolver — and their mocking layer —
+// instead of this package's hardcoded public resolver. The signature matches
+// what embedders already expose for A-record lookups.
+type Resolver interface {
+	Resolve(host string) []string
+}
+
+// NewDNSBrutePlugin builds the plugin around a caller-supplied resolver. A nil
+// lookup keeps the default DNS client, which is only appropriate when the caller
+// does not need interception.
+func NewDNSBrutePlugin(lookup Resolver) *DNSBrutePlugin {
+	return &DNSBrutePlugin{resolver: dnsDefaultResolver, wordlist: parseWordlist(defaultWordlist), lookup: lookup}
+}
+
+func (p *DNSBrutePlugin) Name() string { return "dns-brute" }
+func (p *DNSBrutePlugin) Description() string {
+	return "Active subdomain brute-force via DNS resolution"
+}
+func (p *DNSBrutePlugin) Category() string { return "domain" }
+func (p *DNSBrutePlugin) Phase() int       { return 0 }
+func (p *DNSBrutePlugin) Mode() string     { return plugins.ModeActive }
 
 // Accepts requires a Domain input -- brute-forcing needs a base domain.
 func (p *DNSBrutePlugin) Accepts(input plugins.Input) bool {
@@ -57,7 +75,7 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 	domain := normalizeDomain(input.Domain)
 
 	// Detect wildcard DNS — if the domain resolves everything, skip brute-force.
-	wildcardIPs := detectWildcard(ctx, domain, p.resolver)
+	wildcardIPs := p.wildcardIPs(ctx, domain)
 	if len(wildcardIPs) > 0 {
 		slog.Info("dns-brute: wildcard detected, skipping", "domain", domain)
 		return nil, nil
@@ -115,11 +133,35 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 	return findings, nil
 }
 
+func (p *DNSBrutePlugin) wildcardIPs(ctx context.Context, base string) map[string]bool {
+	if p.lookup == nil {
+		return detectWildcard(ctx, base, p.resolver)
+	}
+
+	wildcards := make(map[string]bool)
+	for i := 0; i < wildcardProbeCount; i++ {
+		for _, ip := range p.lookup.Resolve(randomHex(16) + "." + base) {
+			wildcards[ip] = true
+		}
+	}
+	if len(wildcards) == 0 {
+		return nil
+	}
+	slog.Info("dns-brute: wildcard detected", "base", base, "ips_count", len(wildcards))
+	return wildcards
+}
+
 // resolve checks if fqdn has A or AAAA records.
 // Returns (exists bool, err error).
 // If err != nil, query failed (network/timeout); caller should log/skip.
 // If err == nil && exists == false, domain legitimately does not exist.
 func (p *DNSBrutePlugin) resolve(ctx context.Context, fqdn string) (bool, error) {
+	// An injected resolver answers both families in one call and reports failure
+	// as "no addresses", so there is no error to distinguish here.
+	if p.lookup != nil {
+		return len(p.lookup.Resolve(fqdn)) > 0, nil
+	}
+
 	// Try A record
 	r, err := queryDNS(ctx, fqdn, dns.TypeA, p.resolver)
 	if err != nil {

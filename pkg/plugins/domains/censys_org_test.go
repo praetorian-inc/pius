@@ -662,7 +662,6 @@ func TestCensysOrgPlugin_Run_GracefulOnNilResult(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
-
 // ── Deny list tests ────────────────────────────────────────────────────────────
 
 // TestCensysOrgPlugin_ExtractPreseeds_DenyListBlocksCDN verifies that an org
@@ -750,7 +749,6 @@ func TestCensysOrgPlugin_ExtractPreseeds_ThresholdAtFiveEmitsPreseed(t *testing.
 	require.Len(t, preseeds, 1, "org on exactly 5 hosts must emit preseed")
 	assert.Equal(t, "Threshold Corp", preseeds[0].Value)
 }
-
 
 // TestCensysOrgPlugin_ExtractPreseeds_CasingVariantsMerged verifies that casing
 // variants of the same org name (e.g. "Acme Corp" and "ACME CORP") are merged

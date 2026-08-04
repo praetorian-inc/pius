@@ -23,11 +23,11 @@ func init() {
 // GitHubOrgPlugin discovers GitHub organizations matching an org name.
 //
 // Strategy:
-//   1. Search GitHub for orgs matching the name (top 5 results)
-//   2. Fetch full org details for each candidate
-//   3. Score each candidate (domain cross-reference + name similarity + activity)
-//   4. Emit high-confidence matches (≥0.65) as FindingDomain for blog URL
-//   5. Emit borderline matches (0.35–0.64) with needs_review:true for future agent review
+//  1. Search GitHub for orgs matching the name (top 5 results)
+//  2. Fetch full org details for each candidate
+//  3. Score each candidate (domain cross-reference + name similarity + activity)
+//  4. Emit high-confidence matches (≥0.65) as FindingDomain for blog URL
+//  5. Emit borderline matches (0.35–0.64) with needs_review:true for future agent review
 //
 // Scoring:
 //   - 0.60: blog URL contains input domain (strongest signal)
@@ -41,6 +41,25 @@ type GitHubOrgPlugin struct {
 	client   *client.Client
 	baseURL  string // override for testing
 	apiCache *piuscache.APICache
+	apiKey   string // set by NewGitHubOrgPlugin; falls back to GITHUB_TOKEN
+	noCache  bool   // set by NewGitHubOrgPlugin; skips the on-disk cache entirely
+}
+
+// NewGitHubOrgPlugin builds the plugin around a caller-supplied client and token.
+// The token is optional — it only raises the rate limit from 60 to 5000 req/hr —
+// so an empty token is not an error. The on-disk cache is disabled: embedders run
+// in ephemeral containers where it never warms, and a stale entry would silently
+// bypass the caller's transport.
+func NewGitHubOrgPlugin(c *client.Client, token string) *GitHubOrgPlugin {
+	return &GitHubOrgPlugin{client: c, apiKey: token, noCache: true}
+}
+
+// key prefers an injected token so embedders never depend on process environment.
+func (p *GitHubOrgPlugin) key() string {
+	if p.apiKey != "" {
+		return p.apiKey
+	}
+	return os.Getenv("GITHUB_TOKEN")
 }
 
 const (
@@ -69,6 +88,9 @@ func (p *GitHubOrgPlugin) githubBase() string {
 }
 
 func (p *GitHubOrgPlugin) getCache() *piuscache.APICache {
+	if p.noCache {
+		return nil
+	}
 	if p.apiCache != nil {
 		return p.apiCache
 	}
@@ -85,7 +107,7 @@ func (p *GitHubOrgPlugin) getCache() *piuscache.APICache {
 
 type githubSearchResult struct {
 	Items []struct {
-		Login string `json:"login"`
+		Login string  `json:"login"`
 		Score float64 `json:"score"`
 	} `json:"items"`
 }
@@ -241,7 +263,7 @@ func (p *GitHubOrgPlugin) authHeaders() map[string]string {
 		"Accept":               "application/vnd.github+json",
 		"X-GitHub-Api-Version": "2022-11-28",
 	}
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+	if token := p.key(); token != "" {
 		h["Authorization"] = "Bearer " + token
 	}
 	return h

@@ -29,9 +29,28 @@ func init() {
 // Requires APOLLO_API_KEY environment variable.
 // Results are cached in ~/.pius/cache/ with a 24-hour TTL to conserve API credits.
 type ApolloPlugin struct {
-	client  *client.Client
-	baseURL string       // override for testing; empty means use real Apollo API
+	client   *client.Client
+	baseURL  string          // override for testing; empty means use real Apollo API
 	apiCache *cache.APICache // injected in tests; nil = lazy init on first Run
+	apiKey   string          // set by NewApolloPlugin; falls back to APOLLO_API_KEY when empty
+	noCache  bool            // set by NewApolloPlugin; skips the on-disk cache entirely
+}
+
+// NewApolloPlugin builds the plugin around a caller-supplied client and API key,
+// so embedders can route its egress through their own transport and resolve the
+// key from their own secret store instead of the environment. The on-disk cache
+// is disabled: embedders run in ephemeral containers where it never warms, and a
+// stale entry would silently bypass the caller's transport.
+func NewApolloPlugin(c *client.Client, apiKey string) *ApolloPlugin {
+	return &ApolloPlugin{client: c, apiKey: apiKey, noCache: true}
+}
+
+// key prefers an injected key so embedders never depend on process environment.
+func (p *ApolloPlugin) key() string {
+	if p.apiKey != "" {
+		return p.apiKey
+	}
+	return os.Getenv("APOLLO_API_KEY")
 }
 
 func (p *ApolloPlugin) apolloBaseURL() string {
@@ -44,6 +63,9 @@ func (p *ApolloPlugin) apolloBaseURL() string {
 // getCache returns the APICache, initializing it lazily on first use.
 // Returns nil if the cache directory cannot be created (non-fatal).
 func (p *ApolloPlugin) getCache() *cache.APICache {
+	if p.noCache {
+		return nil
+	}
 	if p.apiCache != nil {
 		return p.apiCache
 	}
@@ -65,7 +87,7 @@ func (p *ApolloPlugin) Phase() int       { return 0 }
 func (p *ApolloPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *ApolloPlugin) Accepts(input plugins.Input) bool {
-	return input.OrgName != "" && os.Getenv("APOLLO_API_KEY") != ""
+	return input.OrgName != "" && p.key() != ""
 }
 
 // apolloResponse mirrors the subset of Apollo.io /organizations/enrich we use.
@@ -81,7 +103,7 @@ type apolloOrg struct {
 }
 
 func (p *ApolloPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	apiKey := os.Getenv("APOLLO_API_KEY")
+	apiKey := p.key()
 	cacheKey := strings.ToLower(input.OrgName + "|" + input.Domain)
 
 	// Check cache first — Apollo charges per request

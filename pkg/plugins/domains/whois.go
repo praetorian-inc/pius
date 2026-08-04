@@ -95,9 +95,10 @@ func (p *WhoisPlugin) Accepts(input plugins.Input) bool {
 // whoisRecord is one source's answer: the raw record text as that source
 // rendered it, alongside the parse this plugin adjudicates on.
 type whoisRecord struct {
-	method string
-	raw    string
-	info   whoisparser.WhoisInfo
+	method     string
+	raw        string
+	info       whoisparser.WhoisInfo
+	incomplete whoisIncompleteness
 }
 
 type whoisSource struct {
@@ -157,6 +158,52 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 			slog.Warn("whois: source did not answer, falling through",
 				"domain", domain, "method", src.method, "error", ferr)
 			continue
+		}
+
+		// An incomplete chain reaches this point in one of two regimes, and the
+		// re-check above is what separates them — do not read it as unreachable for
+		// incomplete records. The separation is exact because whoisQuery classifies on
+		// ctx.Err() and nothing else, so the re-check above is literally the same
+		// monotone test read a second time:
+		//
+		//   - ctx-CAUSED partiality (whoisIncompleteDeadline, i.e. ctx.Err() was
+		//     already non-nil inside whoisQuery): the re-check fires and we already
+		//     returned. Correct — a cancelled run must abort, not emit preseeds from a
+		//     salvaged partial record.
+		//   - a GENUINE transport failure on a referral hop after the registry
+		//     answered: ctx stays clean, so control falls through to here and emitting
+		//     is correct — the salvaged record is a real registry response, just less
+		//     specific, and preseeds are additive discovery where a MISSING seed is the
+		//     failure mode. Reaching this regime does NOT turn on the hop error's
+		//     identity, which is unusable for the purpose: a clean-ctx stall carries
+		//     either os.ErrDeadlineExceeded or context.DeadlineExceeded,
+		//     nondeterministically, because the dialer's own Timeout is armed both as an
+		//     fd poll deadline and as a context.AfterFunc (a scheduling race; the ratio
+		//     is not a stable property and must not be relied on — see the four-regime
+		//     table in whoisclient.go's salvage arm). Either way ctx.Err() is nil, so
+		//     whoisQuery classifies it whoisIncompleteReferral, which is the right
+		//     answer: it is an unresponsive server, not an exhausted budget.
+		//
+		// So this warn-and-emit path serves the second regime (plus a hop budget
+		// exhausted with a referral pending), and whoisIncompleteDeadline is genuinely
+		// unreachable here. Report the partiality so a thin preseed set is
+		// attributable, but never gate emission on it (ENG-5405).
+		//
+		// Log-injection safety here rests on slog, NOT on any property of `domain`.
+		// rootDomain is a SHAPE normalizer, not a sanitizer: it lowercases, trims outer
+		// whitespace and one trailing dot, and keeps the last two labels — it bounds no
+		// length and rejects no control characters, and capmodel.Domain reaches it
+		// unvalidated. What makes this site safe is that both values are in ATTRIBUTE
+		// VALUE position, and slog's handlers quote and escape value-position strings
+		// (verified against the text, JSON, and default handlers: an embedded
+		// "\nlevel=ERROR ..." comes out as an escaped \n inside a quoted string, so it
+		// cannot forge a log line). Only MESSAGE-position text could, and the message
+		// is a compile-time constant. The raw record and the unbounded referral server
+		// string are still deliberately never logged — that is a PII/volume decision,
+		// independent of injection.
+		if rec.incomplete != whoisComplete {
+			slog.Warn("whois: referral chain incomplete; preseeds may be partial",
+				"domain", domain, "reason", rec.incomplete)
 		}
 
 		accept := hasNamedContact(rec.info)
@@ -267,11 +314,16 @@ func (p *WhoisPlugin) whois43Record(ctx context.Context, domain string) (whoisRe
 	if p.whoisRaw != nil {
 		rawFn = p.whoisRaw
 	}
-	raw, err := whoisQueryWithRaw(ctx, domain, rawFn)
+	raw, incomplete, err := whoisQueryWithRaw(ctx, domain, rawFn)
 	if err != nil {
 		return whoisRecord{}, fmt.Errorf("whois43: lookup failed for %q: %w", domain, err)
 	}
-	return textWhoisRecord(whoisMethodTCP43, raw)
+	rec, terr := textWhoisRecord(whoisMethodTCP43, raw)
+	if terr != nil {
+		return whoisRecord{}, terr
+	}
+	rec.incomplete = incomplete
+	return rec, nil
 }
 
 // textWhoisRecord parses a raw WHOIS record from a text-returning source. The
@@ -292,15 +344,19 @@ func recordFinding(domain string, rec whoisRecord, source string) (plugins.Findi
 	if err != nil {
 		return plugins.Finding{}, fmt.Errorf("whois: marshal parsed record for %q: %w", domain, err)
 	}
+	data := map[string]any{
+		"method": rec.method,
+		"raw":    rec.raw,
+		"info":   string(info),
+	}
+	if rec.incomplete != whoisComplete {
+		data["incomplete"] = string(rec.incomplete)
+	}
 	return plugins.Finding{
 		Type:   plugins.FindingWhoisRecord,
 		Value:  domain,
 		Source: source,
-		Data: map[string]any{
-			"method": rec.method,
-			"raw":    rec.raw,
-			"info":   string(info),
-		},
+		Data:   data,
 	}, nil
 }
 

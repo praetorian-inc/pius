@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -453,11 +454,12 @@ func TestWhoisQuery_SeedOnlyChainReturnsError(t *testing.T) {
 		return "domain: COM\norganisation: VeriSign Global Registry Services\n", nil
 	})
 
-	got, err := whoisQuery(context.Background(), "example.com")
+	got, incomplete, err := whoisQuery(context.Background(), "example.com")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no record beyond bootstrap seed")
 	assert.Empty(t, got, "no salvageable record should be returned for a seed-only chain")
+	assert.Equal(t, whoisComplete, incomplete, "an error path reports no partial record")
 }
 
 // TestWhoisQuery_PostReferralSalvageReturnsPostReferralRecord pins the
@@ -488,11 +490,17 @@ func TestWhoisQuery_PostReferralSalvageReturnsPostReferralRecord(t *testing.T) {
 		}
 	})
 
-	got, err := whoisQuery(context.Background(), "example.com")
+	got, incomplete, err := whoisQuery(context.Background(), "example.com")
 
 	require.NoError(t, err, "a failed registrar hop must not discard the salvaged TLD record")
 	assert.Equal(t, tldRecord, got, "must return the post-referral TLD record")
 	assert.NotEqual(t, seedRecord, got, "must NOT salvage the bootstrap seed record")
+	// ENG-5405: the salvage still returns the payload with a nil error (recall is
+	// unchanged and this line pins it), but the caller now also learns WHY the
+	// record is partial, so a truncated chain is no longer indistinguishable from
+	// a chain that completed and found no registrant.
+	assert.Equal(t, whoisIncompleteReferral, incomplete,
+		"a failed registrar hop must report itself as an incomplete referral chain")
 }
 
 // TestWhoisQuery_CtxCancelAfterSeedReturnsError pins the ctx-error path when
@@ -508,11 +516,12 @@ func TestWhoisQuery_CtxCancelAfterSeedReturnsError(t *testing.T) {
 		return "refer: whois.tld.example\n", nil
 	})
 
-	got, err := whoisQuery(ctx, "example.com")
+	got, incomplete, err := whoisQuery(ctx, "example.com")
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Empty(t, got, "nothing salvageable → no record on the cancelled path")
+	assert.Equal(t, whoisComplete, incomplete, "an error path reports no partial record")
 }
 
 // TestWhoisQuery_CtxCancelAfterReferralSalvages pins the other ctx-error branch:
@@ -538,10 +547,515 @@ func TestWhoisQuery_CtxCancelAfterReferralSalvages(t *testing.T) {
 		}
 	})
 
-	got, err := whoisQuery(ctx, "example.com")
+	got, incomplete, err := whoisQuery(ctx, "example.com")
 
 	require.NoError(t, err, "a cancellation after a referral advanced must salvage the post-referral record")
 	assert.Equal(t, tldRecord, got, "must return the salvaged post-referral TLD record")
+	// ENG-5405: recall is unchanged (the require.NoError above pins it), but the
+	// caller now also learns WHY the record is partial — a deadline or
+	// cancellation observed mid-chain — instead of a bit-identical "chain
+	// completed, no registrant".
+	assert.Equal(t, whoisIncompleteDeadline, incomplete,
+		"a cancellation observed mid-chain must report itself as a deadline-expired record")
+}
+
+// dialerTimeoutError is a hermetic mirror of net's unexported errTimeout — the
+// value net.mapErr substitutes for context.DeadlineExceeded. It is named for the
+// production cause it models: a stall bounded by net.Dialer's own Timeout, which
+// is the only way whoisRaw can reach this shape. (mapErr is the immediate
+// producer, and dial.go:276's partialDeadline is a second route into the same
+// value, but neither is reachable here except through Dialer.Timeout.)
+//
+// The real value cannot be referenced from outside package net, so this mirrors
+// its two load-bearing properties exactly, per go1.26.2 src/net/net.go:624-633
+// and the mapErr switch at :458-467 that installs it:
+//
+//	var errTimeout error = &timeoutError{}
+//	func (e *timeoutError) Error() string     { return "i/o timeout" }
+//	func (e *timeoutError) Is(err error) bool { return err == context.DeadlineExceeded }
+//
+// The reachability point, which is what makes it a legitimate fixture rather
+// than a hypothetical: mapErr reads the ctx that the DIALER owns, not the ctx
+// the caller passed in. net.Dialer.dialCtx (dial.go:560-573) wraps the caller's
+// ctx in context.WithDeadline whenever Dialer.Timeout is the earlier bound —
+// always so for whoisRaw, which dials with net.Dialer{Timeout: queryTimeout}
+// under WhoisPlugin.Run's hour-long pipeline ctx. When that internal
+// sub-context expires, fd_unix.go's connect path calls mapErr(ctx.Err()) on the
+// SUB-context and returns this shape while the caller's ctx.Err() is still nil.
+//
+// So this error genuinely does claim a context deadline expired when no context
+// the caller owns has expired at all — measured, not assumed. See
+// TestWhoisQuery_MidHopFailureClassifiesOnCtxErrNotTheHopError's row 3 for the
+// probe numbers and for why the shape is only ONE BRANCH of a race, the other
+// branch being row 5's.
+type dialerTimeoutError struct{}
+
+func (dialerTimeoutError) Error() string        { return "i/o timeout" }
+func (dialerTimeoutError) Timeout() bool        { return true }
+func (dialerTimeoutError) Is(target error) bool { return target == context.DeadlineExceeded }
+
+// TestWhoisQuery_MidHopFailureClassifiesOnCtxErrNotTheHopError pins the exact
+// discriminator the post-referral salvage arm uses:
+//
+//	a salvageable hop failure is whoisIncompleteDeadline IF AND ONLY IF
+//	ctx.Err() != nil at that moment; otherwise whoisIncompleteReferral.
+//
+// The hop error's own contents never decide it. That is what this table is for:
+// it holds the failing hop fixed and varies the ctx state and the hop error
+// INDEPENDENTLY, so a row can only pass if the classification reads ctx and
+// nothing else. Rows 1 and 6 carry the identical hop error and differ only in ctx;
+// rows 3-5 carry ctx-flavoured errors and differ from row 1 only in ctx. Either
+// half alone is satisfiable by a constant, so the pair is the test.
+//
+// Reachability of the deadline arm is NOT this test's job —
+// TestWhoisQuery_CtxCancelAfterReferralSalvages already proves that, via the
+// loop-top ctx.Err() check between hops. This test drives the ctx state from
+// INSIDE the whoisRawFn stub on the hop that then fails, so the failure and the
+// ctx state are genuinely simultaneous (the mid-hop shape production actually
+// sees: a budget that fires during a hop arrives here looking like a hop error).
+//
+// An earlier revision classified on
+//
+//	ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+//
+// Removing the two errors.Is disjuncts was a BEHAVIOUR FIX, not a tidy-up, and
+// rows 3 and 5 are what pin it. The disjuncts were not merely redundant with
+// ctx.Err(): whoisRaw dials with net.Dialer{Timeout: queryTimeout}, and a dialer
+// timeout is applied as an INTERNAL sub-context deadline (net dial.go:560-573), so
+// its expiry reaches net.mapErr and returns an error that unwraps to
+// context.DeadlineExceeded while the ctx this classifier reads is entirely clean.
+// The old predicate therefore labelled an unresponsive referral server
+// deadline_expired — see row 3.
+//
+// Rows 3 and 5 are two halves of that ONE dial, split by a scheduling race rather
+// than by anything semantic; the probe numbers are on row 3. Row 4 is a different
+// kind of row — a dead-code guard for a shape production cannot produce — and
+// says so in place.
+//
+// Because that split is a RACE, no test here may dial anything. A live clean-ctx
+// connect stall returns row 3's identity or row 5's depending on which armed timer
+// wins, so a test asserting either identity against a real dial would be flaky at
+// whatever ratio the local machine happens to produce — and four independent
+// probes measured ratios from 16% to 100% (row 3). Synthesizing both shapes through
+// the whoisRawFn seam instead makes each branch its OWN deterministic row, which
+// is strictly better coverage than a live dial could give: a dial exercises one
+// branch per run and cannot tell you which, whereas the table exercises both on
+// every run. This is also why the fixtures are hand-built error values rather than
+// errors captured from a real connection.
+//
+// The split has to hold because the two reasons drive OPPOSITE operator remedies:
+// a genuinely failed referral hop means pius is being throttled (pace it), an
+// expired ctx means it is out of budget (resize it) — and pacing an
+// already-exhausted budget is actively harmful.
+func TestWhoisQuery_MidHopFailureClassifiesOnCtxErrNotTheHopError(t *testing.T) {
+	const (
+		tldServer       = "whois.tld.example"
+		registrarServer = "whois.registrar.example"
+		seedRecord      = "refer: whois.tld.example\ndomain: EXAMPLE\n"
+		tldRecord       = "Domain Name: EXAMPLE.COM\n" +
+			"Registrant Organization: Acme Corp\n" +
+			"Registrar WHOIS Server: whois.registrar.example\n"
+	)
+
+	// The one hop error shared by the first and last rows, so the ONLY difference
+	// between "deadline" and "referral" in that pair is the ctx state.
+	plainTransportErr := errors.New("read tcp 203.0.113.7:43: connection reset by peer")
+
+	tests := []struct {
+		name string
+		// newCtx builds the ctx whoisQuery runs under. EVERY row builds a
+		// cancellable/expiring one, so no row gets its verdict for free from the
+		// ctx's type — only from whether it actually fired.
+		newCtx func() (context.Context, context.CancelFunc)
+		// atFailingHop runs inside the whoisRawFn stub on the registrar hop,
+		// immediately before it returns hopErr, so the ctx state and the hop
+		// failure are simultaneous rather than sequenced between hops. nil leaves
+		// ctx clean.
+		atFailingHop func(ctx context.Context, cancel context.CancelFunc)
+		hopErr       error
+		// wrapsSentinel, when non-nil, must be errors.Is-matched by hopErr. Without
+		// this precondition a fixture that stopped wrapping its sentinel would keep
+		// passing while testing nothing.
+		wrapsSentinel error
+		wantCtxErr    bool // the discriminator: ctx.Err() != nil when the hop failed
+		want          whoisIncompleteness
+		why           string
+	}{
+		{
+			name:          "ctx cancelled inside the failing hop is a deadline",
+			newCtx:        func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
+			atFailingHop:  func(_ context.Context, cancel context.CancelFunc) { cancel() },
+			hopErr:        plainTransportErr,
+			wrapsSentinel: nil,
+			wantCtxErr:    true,
+			want:          whoisIncompleteDeadline,
+			why: "ctx.Err() != nil at the failing hop is the deadline arm — and it wins even though " +
+				"the hop error is an ORDINARY transport failure carrying no ctx sentinel at all, " +
+				"which is why the classifier cannot be reading the error",
+		},
+		{
+			name: "ctx deadline expiring inside the failing hop is a deadline",
+			newCtx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 100*time.Millisecond)
+			},
+			// Block until the REAL deadline fires, so the deadline arm is proven
+			// reachable by an expiry and not only by an explicit cancel.
+			atFailingHop:  func(ctx context.Context, _ context.CancelFunc) { <-ctx.Done() },
+			hopErr:        fmt.Errorf("read whois response from %s: %w", registrarServer, context.DeadlineExceeded),
+			wrapsSentinel: context.DeadlineExceeded,
+			wantCtxErr:    true,
+			want:          whoisIncompleteDeadline,
+			why: "a genuinely expired ctx deadline — this is the pass-wide budget or the per-lookup " +
+				"timeout landing mid-hop, the case the operator resizes a budget for",
+		},
+		{
+			name:   "hop error wrapping context.DeadlineExceeded with a CLEAN ctx is a referral failure",
+			newCtx: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
+			// ONE of the two shapes net.Dialer's own Timeout produces — see
+			// dialerTimeoutError. whoisRaw always dials with
+			// net.Dialer{Timeout: queryTimeout}, and that timeout is the earlier bound
+			// whenever the caller's ctx is longer-lived (always so under
+			// WhoisPlugin.Run's hour-long pipeline ctx), so an unresponsive referral
+			// server in production lands on this path every time.
+			//
+			// WHICH shape it lands on is a coin flip, and the coin is in net, not here.
+			// Dialer.Timeout becomes an internal sub-context deadline, and the netpoll
+			// write deadline is armed for the SAME instant (fd_unix.go:79-82). When
+			// WaitWrite wakes, fd_unix.go:118-126 does:
+			//
+			//	if err := fd.pfd.WaitWrite(); err != nil {
+			//		select {
+			//		case <-ctxDone: return nil, mapErr(ctx.Err()) // -> THIS row's shape
+			//		default:
+			//		}
+			//		return nil, err                              // -> row 5's shape
+			//	}
+			//
+			// Whether the sub-context's timer has fired by then is pure scheduling.
+			// FOUR independent probes, all on go1.26.2, all dialing a TEST-NET-1
+			// blackhole (192.0.2.1:43) with the caller ctx at context.Background():
+			//
+			//	probe                                     n      this shape   ctx.Err() non-nil
+			//	200 concurrent dials, 1-150ms, 3 procs    4800   40-60%       0
+			//	40 sequential dials, 60ms/250ms/1s        ~300   30-42%       0
+			//	sequential probe cited in whoisclient.go  ~300   16-30%       0
+			//	sequential probe, 60ms/250ms/1s (4th)      305   97-100%      0
+			//
+			// The ratios do NOT agree — they span 16% to 100% — and that disagreement is
+			// itself the strongest evidence available that this is a race and not a rule:
+			// a deterministic mechanism cannot produce 16% on one run and 99% on another.
+			// Do NOT treat any of these percentages as a spec, and do not try to
+			// reconcile them. Stated at the granularity the data supports: taken
+			// TOGETHER the probes observed BOTH identities, and the caller's ctx.Err()
+			// was nil in 100% of samples in every probe. Note the aggregate wording is
+			// load-bearing — the 4th probe reached 100% at one of its three timeouts,
+			// which necessarily empties the other bucket in that sub-sample, so a
+			// per-probe "neither bucket is ever empty" would be falsified by the table
+			// directly above. A sub-sample landing entirely one way is FURTHER proof no
+			// rate can be relied on. So this row and row 5 are the same connect stall on
+			// the same server at the same timeout.
+			hopErr: &net.OpError{
+				Op:   "dial",
+				Net:  "tcp",
+				Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 43},
+				Err:  dialerTimeoutError{},
+			},
+			wrapsSentinel: context.DeadlineExceeded,
+			wantCtxErr:    false,
+			want:          whoisIncompleteReferral,
+			why: "PRODUCTION-REACHABLE REGRESSION ROW — this FAILS on the pre-fix three-disjunct " +
+				"predicate and passes now, and the input is a shape a large but machine-dependent " +
+				"fraction of all real dialer timeouts produce (16-100% across four probes). An " +
+				"unresponsive referral server is pius being throttled and must " +
+				"be bucketed as such: labelling it a deadline expiry sends the operator to resize a " +
+				"budget on a path that has none. Worse, since row 5 is the same stall's other half, " +
+				"the pre-fix predicate gave ONE hung server two different labels on alternating " +
+				"runs. If someone later 'hardens' the classifier by unwrapping the hop error for " +
+				"context.DeadlineExceeded, this row is what catches it",
+		},
+		{
+			name:          "hop error wrapping context.Canceled with a CLEAN ctx is a referral failure",
+			newCtx:        func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
+			hopErr:        fmt.Errorf("dial %s: %w", registrarServer, context.Canceled),
+			wrapsSentinel: context.Canceled,
+			wantCtxErr:    false,
+			want:          whoisIncompleteReferral,
+			// HONESTY NOTE, and it is a DIFFERENT verdict from rows 3 and 5 — do not
+			// assume the race that makes those two reachable also reaches this one. It
+			// does not: that race picks between mapErr(ctx.Err()) and the bare poll
+			// error, and the ctx it reads is a WithDeadline, so mapErr's DEADLINE half
+			// is the only half it can select. Reaching the CANCEL half needs a
+			// sub-context that was actually cancelled while the caller's ctx stayed
+			// clean, and on this code path there is no such thing:
+			//
+			//   - Every cancel in net/dial.go is deferred, so it fires only after the
+			//     error value has already been chosen: dialCtx's cancel1/cancel2
+			//     (dial.go:585-591), DialContext's own (dial.go:527-528), dialParallel's
+			//     primaryCancel/fallbackCancel (dial.go:689-701), and dialSerial's
+			//     partialDeadline cancel (dial.go:750-752).
+			//   - dialParallel additionally DISCARDS a losing racer's error via the
+			//     <-returned branch, and returns primary.error when both fail.
+			//   - The one non-deferred cancel in the whole file (dial.go:574-579) is
+			//     gated on the legacy Dialer.Cancel channel. whoisRaw sets no Cancel —
+			//     grep: the field appears nowhere in this package.
+			//   - A caller-side cancel does reach mapErr's cancel half, but then
+			//     ctx.Err() is non-nil by construction, which is row 1's regime, not
+			//     this row's.
+			//
+			// Measurement agrees with the source audit: the 4800-dial probe cited on
+			// row 3 produced ZERO cancel-shaped results.
+			//
+			// The row is kept anyway, and it is kept as a DEAD-CODE GUARD rather than as
+			// a reproduction of a real failure: it pins that classification consults
+			// ctx.Err() and never the error's identity, which is what stops the second
+			// removed disjunct from being re-added on the argument that it is harmless.
+			// Do not cite this row as evidence that production emits this shape.
+			why: "DEAD-CODE GUARD (not a real-world repro — see the note above): an error that " +
+				"merely SAYS 'canceled' while no context the caller owns was cancelled is not a " +
+				"ctx cause. ctx.Err() is the authority, and it is clean here",
+		},
+		{
+			name:   "hop error wrapping os.ErrDeadlineExceeded (the read-stall shape) is a referral failure",
+			newCtx: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
+			// The WIDEST production-reachable row (row 3 is reachable too — this is not
+			// the only one): os.ErrDeadlineExceeded (&poll.DeadlineExceededError{}) is
+			// the identity BOTH real stall regimes can carry, where row 3's identity
+			// only ever comes from the connect race. Measured on go1.26.2, same probe
+			// runs cited on row 3:
+			//
+			//	regime                                  Is(ctx.DeadlineExceeded) Is(os.ErrDeadlineExceeded) ctx.Err()
+			//	A connect stall, Dialer.Timeout binds      false (race; see row 3)    true                     nil
+			//	D read stall, conn.SetDeadline binds       false (always)             true                     nil
+			//
+			// A is row 3's coin landing the other way up (fd_unix.go:118-126 returning
+			// the bare poll error instead of mapErr'ing the sub-context). D is
+			// whoisRaw's conn.SetDeadline(boundedDeadline(ctx)) expiring mid-read. Both
+			// print the SAME "i/o timeout" string as row 3 while NOT being errors.Is
+			// context.DeadlineExceeded — go1.26.2 src/net/net.go:616-623 documents that
+			// divergence as a standing TODO.
+			hopErr: &net.OpError{
+				Op:   "read",
+				Net:  "tcp",
+				Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 43},
+				Err:  os.ErrDeadlineExceeded,
+			},
+			wrapsSentinel: os.ErrDeadlineExceeded,
+			wantCtxErr:    false,
+			want:          whoisIncompleteReferral,
+			why: "THE HAZARD GUARD. This identity is carried by every real stall an unresponsive " +
+				"referral server can cause — a connect stall bounded by the dialer's own Timeout " +
+				"(regime A) and a read stall bounded by conn.SetDeadline (regime D) — with the ctx " +
+				"clean in both. So the prohibition it enforces is the live one: adding " +
+				"os.ErrDeadlineExceeded, or a net.Error.Timeout() probe, to the salvage-arm " +
+				"predicate would label an unresponsive referral server deadline_expired and send an " +
+				"operator to resize a budget on the WhoisPlugin.Run path, which HAS none. Note this " +
+				"row and row 3 are not simply connect-vs-read: regime A is the SAME connect stall as " +
+				"row 3, split from it by a race, which is why the pre-fix predicate labelled one hung " +
+				"server two different ways across runs",
+		},
+		{
+			name:          "a plain transport failure with a clean ctx stays a referral failure",
+			newCtx:        func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
+			hopErr:        plainTransportErr,
+			wrapsSentinel: nil,
+			wantCtxErr:    false,
+			want:          whoisIncompleteReferral,
+			why: "the control direction, and row 1's twin: identical hop error, clean ctx, opposite " +
+				"verdict — so neither verdict can be coming from a constant",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			// Precondition on the fixture itself, so no row can go vacuous.
+			if tc.wrapsSentinel != nil {
+				require.ErrorIs(t, tc.hopErr, tc.wrapsSentinel,
+					"fixture precondition: this row exists to prove the sentinel does NOT decide the bucket, "+
+						"so the hop error must actually carry it")
+			} else {
+				require.NotErrorIs(t, tc.hopErr, context.DeadlineExceeded,
+					"fixture precondition: this row's hop error must carry NO ctx deadline sentinel")
+				require.NotErrorIs(t, tc.hopErr, context.Canceled,
+					"fixture precondition: this row's hop error must carry NO ctx cancel sentinel")
+			}
+
+			ctx, cancel := tc.newCtx()
+			defer cancel()
+			stubWhoisHopBackoff(t, time.Millisecond)
+
+			var registrarHops int
+			stubWhoisRawFn(t, func(hopCtx context.Context, _, server string) (string, error) {
+				switch server {
+				case defaultServer:
+					return seedRecord, nil // registry/bootstrap seed answers, refers onward
+				case tldServer:
+					return tldRecord, nil // post-referral record — this is what gets salvaged
+				case registrarServer:
+					registrarHops++
+					if tc.atFailingHop != nil {
+						// Drive the ctx into its final state HERE, inside the hop that is
+						// about to fail, so ctx.Err() and the hop error land together.
+						tc.atFailingHop(hopCtx, cancel)
+					}
+					return "", tc.hopErr // the referral hop fails
+				default:
+					t.Fatalf("unexpected whois server %q", server)
+					return "", nil
+				}
+			})
+
+			got, incomplete, err := whoisQuery(ctx, "example.com")
+
+			// The discriminator itself, asserted per row (ctx.Err() is monotone, so
+			// reading it after the call reads the same value the classifier saw).
+			if tc.wantCtxErr {
+				require.Error(t, ctx.Err(),
+					"this row's premise is an expired/cancelled ctx at the failing hop")
+			} else {
+				require.NoError(t, ctx.Err(),
+					"this row's premise is a CLEAN ctx, so only the hop error could have driven the verdict")
+			}
+
+			// Recall is UNCHANGED by the classification — de-rank, never drop.
+			require.NoError(t, err, "the salvage arm must still return the payload with a nil error")
+			assert.Equal(t, tldRecord, got, "the salvaged post-referral record is still returned")
+			assert.NotEqual(t, seedRecord, got, "the bootstrap seed record must never be salvaged")
+
+			// The point of the whole table: WHY the record is partial.
+			assert.Equal(t, tc.want, incomplete, tc.why)
+
+			// The referral loop treats a failed hop as a `return`, not a `continue`: it is
+			// never revisited as a further referral, which would escape the maxWhoisReferrals
+			// bound and the loop-top deadline bail. Inside the hop, whoisHopWithRaw spends its
+			// transient-failure retry budget only while the ctx is clean — a dirty ctx must
+			// not fund a second attempt. Either count also proves the classification ran on
+			// the registrar hop and not on some earlier loop-top check.
+			wantHops := whoisHopAttempts
+			if tc.wantCtxErr {
+				wantHops = 1
+			}
+			assert.Equal(t, wantHops, registrarHops,
+				"the failed hop is attempted exactly its retry budget and is never revisited by the referral loop")
+		})
+	}
+}
+
+// TestWhoisQuery_ReferralHopFailureOnRegistrantLessRecordIsDistinguishable is
+// the AC2 unit-level case for ENG-5405. It differs from
+// TestWhoisQuery_PostReferralSalvageReturnsPostReferralRecord in the payload:
+// there the salvaged TLD record HAS a registrant org, so the outcome was never
+// ambiguous. Here it has none, which is exactly the state that used to be
+// indistinguishable from "this domain has no registrant on record".
+func TestWhoisQuery_ReferralHopFailureOnRegistrantLessRecordIsDistinguishable(t *testing.T) {
+	const (
+		seedRecord = "refer: whois.tld.example\ndomain: EXAMPLE\n"
+		// No Registrant Organization and no Registrant Name — but a referral
+		// onward, so the chain is NOT finished.
+		tldRecordNoRegistrant = "Domain Name: EXAMPLE.COM\n" +
+			"Registrar: Example Registrar, Inc.\n" +
+			"Registrar WHOIS Server: whois.registrar.example\n"
+	)
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		switch server {
+		case defaultServer:
+			return seedRecord, nil
+		case "whois.tld.example":
+			return tldRecordNoRegistrant, nil
+		case "whois.registrar.example":
+			return "", errors.New("connection refused") // the referral hop FAILS
+		default:
+			t.Fatalf("unexpected whois server %q", server)
+			return "", nil
+		}
+	})
+
+	got, incomplete, err := whoisQuery(context.Background(), "example.com")
+
+	require.NoError(t, err, "the salvage must not discard the recall-safe payload")
+	assert.Equal(t, tldRecordNoRegistrant, got, "the salvaged post-referral record is returned")
+	assert.Equal(t, whoisIncompleteReferral, incomplete, "and it is reported as partial")
+}
+
+// TestWhoisQuery_RegistrantLessCompleteChainStaysComplete is the AC3
+// unit-level case for ENG-5405 and the mirror of the AC2 case above: the chain
+// runs to its natural end (the post-referral TLD record carries NO onward
+// referral, so the loop breaks) and that record genuinely has no registrant
+// organization on record. This must stay the ORDINARY not-found outcome. Without
+// this case the fix could satisfy AC2 by calling everything incomplete, which
+// collapses the distinction in the other direction.
+func TestWhoisQuery_RegistrantLessCompleteChainStaysComplete(t *testing.T) {
+	const (
+		seedRecord = "refer: whois.tld.example\ndomain: EXAMPLE\n"
+		// No Registrant Organization, no Registrant Name, and NO onward referral:
+		// the chain ends here on its own.
+		tldRecordNoRegistrant = "Domain Name: EXAMPLE.COM\n" +
+			"Registrar: Example Registrar, Inc.\n"
+	)
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		switch server {
+		case defaultServer:
+			return seedRecord, nil
+		case "whois.tld.example":
+			return tldRecordNoRegistrant, nil
+		default:
+			t.Fatalf("unexpected whois server %q", server)
+			return "", nil
+		}
+	})
+
+	got, incomplete, err := whoisQuery(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, tldRecordNoRegistrant, got, "the chain's endpoint record is returned")
+	assert.Equal(t, whoisComplete, incomplete,
+		"a chain that ran to its natural end is complete, even with no registrant")
+}
+
+// TestWhoisQuery_HopBudgetExhaustionWithPendingReferralIsIncomplete covers the
+// third indistinguishable arm ENG-5405 closes: every hop yields a FURTHER
+// referral, so the loop exits on its own maxWhoisReferrals bound with a referral
+// still unfollowed. lastRaw is then a mid-chain record, not the chain's
+// endpoint — previously returned as (record, nil) with no way to tell it apart
+// from a chain that completed and found no registrant.
+func TestWhoisQuery_HopBudgetExhaustionWithPendingReferralIsIncomplete(t *testing.T) {
+	// The seed plus seven hops is exactly maxWhoisReferrals queries, and hop 7
+	// still refers onward, so whois.hop8.example is left unfollowed.
+	const hop7Record = "Domain Name: EXAMPLE.COM\nrefer: whois.hop8.example\n"
+
+	var calls int
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		calls++
+		switch server {
+		case defaultServer:
+			return "refer: whois.hop1.example\n", nil
+		case "whois.hop1.example":
+			return "Domain Name: EXAMPLE.COM\nrefer: whois.hop2.example\n", nil
+		case "whois.hop2.example":
+			return "Domain Name: EXAMPLE.COM\nrefer: whois.hop3.example\n", nil
+		case "whois.hop3.example":
+			return "Domain Name: EXAMPLE.COM\nrefer: whois.hop4.example\n", nil
+		case "whois.hop4.example":
+			return "Domain Name: EXAMPLE.COM\nrefer: whois.hop5.example\n", nil
+		case "whois.hop5.example":
+			return "Domain Name: EXAMPLE.COM\nrefer: whois.hop6.example\n", nil
+		case "whois.hop6.example":
+			return "Domain Name: EXAMPLE.COM\nrefer: whois.hop7.example\n", nil
+		case "whois.hop7.example":
+			return hop7Record, nil
+		default:
+			t.Fatalf("unexpected whois server %q: the hop budget must stop the chain at hop 7", server)
+			return "", nil
+		}
+	})
+
+	got, incomplete, err := whoisQuery(context.Background(), "example.com")
+
+	require.NoError(t, err, "hop-budget exhaustion stays recall-safe: the mid-chain record is still returned")
+	assert.Equal(t, hop7Record, got, "the last record the budget allowed is salvaged")
+	assert.Equal(t, whoisIncompleteHops, incomplete,
+		"a budget-exhausted chain with a pending referral must report itself as partial")
+	assert.Equal(t, maxWhoisReferrals, calls, "the chain must stop after exactly maxWhoisReferrals hops")
 }
 
 // TestWhoisPlugin_Run_CancelledContextDoesNotEmit pins Fix A: whoisQuery is shared
@@ -649,4 +1163,196 @@ func TestWhoisPlugin_Run_RecoversParserPanic(t *testing.T) {
 	assert.Contains(t, err.Error(), "recovered panic", "error must name the recovered panic")
 	assert.Contains(t, err.Error(), "example.com", "error must name the domain whose record panicked")
 	assert.Empty(t, findings, "no preseeds may be emitted when parsing panicked")
+}
+
+// whoisRegistrantRecord is a post-referral record that whoisparser.Parse accepts
+// (the "Domain Name:" line satisfies its validity check) and that yields
+// preseeds, so a test driving WhoisPlugin.Run past the warn site at whois.go:114
+// can assert on BOTH the emitted preseeds and the emitted log record.
+const whoisRegistrantRecord = "Domain Name: EXAMPLE.COM\n" +
+	"Registrant Organization: Acme Corp\n" +
+	"Registrant Name: John Doe\n" +
+	"Registrant Email: admin@acme.com\n"
+
+// whoisIncompleteWarnMsg is the compile-time-constant message at whois.go:115.
+// It is message-position text, which is why the log-injection safety argument in
+// whois.go:102-113 can rest entirely on slog escaping the ATTRIBUTE values —
+// asserted by TestWhoisPlugin_Run_IncompleteWarnEscapesNewlineInDomainAttr.
+const whoisIncompleteWarnMsg = "whois: referral chain incomplete; preseeds may be partial"
+
+// TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds pins ENG-5405's
+// "observable, not gating" contract at WhoisPlugin.Run's warn site: a truncated
+// referral chain must be REPORTED (so a thin preseed set is attributable) while
+// recall stays exactly as it was (so the report can never suppress a preseed).
+// Both halves are asserted together, because a fix that warns but drops the
+// findings would satisfy either one alone.
+//
+// The caller ctx stays CLEAN throughout. That is what separates this regime from
+// TestWhoisPlugin_Run_CancelledContextDoesNotEmit above: the re-check at
+// whois.go:69 returns first on a cancelled run, which is why the two ctx-caused
+// arms (whoisclient.go:258 and :332, both whoisIncompleteDeadline) are
+// unreachable here and are deliberately NOT table rows below. The table covers
+// exactly the two salvage arms a clean ctx can reach, and asserts the reason each
+// one actually produces — so the attribute is pinned to whoisQuery's real
+// classification rather than to any single hardcoded string.
+func TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds(t *testing.T) {
+	tests := []struct {
+		name       string
+		wantReason whoisIncompleteness
+		raw        func(server string) (string, error)
+	}{
+		{
+			// Salvage arm whoisclient.go:334. The seed refers to a TLD server that
+			// answers with a real registrant record referring onward; the registrar
+			// hop's transport then fails with ctx still clean, so whoisQuery salvages
+			// the TLD record and classifies it on ctx.Err()==nil -> referral_failed.
+			name:       "referral hop transport failure",
+			wantReason: whoisIncompleteReferral,
+			raw: func(server string) (string, error) {
+				switch server {
+				case defaultServer:
+					return "refer: whois.tld.test\n", nil // advance past the bootstrap seed
+				case "whois.tld.test":
+					return whoisRegistrantRecord + "Registrar WHOIS Server: whois.registrar.test\n", nil
+				default:
+					return "", errors.New("synthetic referral transport failure")
+				}
+			},
+		},
+		{
+			// Salvage arm whoisclient.go:360. Every hop answers, but each one refers
+			// onward to a fresh server, so the loop exits on maxWhoisReferrals with
+			// pendingRefer still set: lastRaw is a mid-chain record, not the chain's
+			// endpoint -> referral_budget.
+			name:       "hop budget exhausted with a referral pending",
+			wantReason: whoisIncompleteHops,
+			raw: func(server string) (string, error) {
+				if server == defaultServer {
+					return "refer: hop1.test\n", nil
+				}
+				// "next-"+server is always distinct from server, so the chain never
+				// terminates via the refer==server equality break.
+				return whoisRegistrantRecord + "Registrar WHOIS Server: next-" + server + "\n", nil
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		// No t.Parallel anywhere in this test: captureSlog swaps the GLOBAL slog
+		// default handler, so concurrent cases would cross-talk.
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("WHOXY_API_KEY", "")
+			logs := captureSlog(t)
+			stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+				return tt.raw(server)
+			})
+
+			findings, err := (&WhoisPlugin{rdap: failingRDAP()}).Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+			// (1) Recall is UNCHANGED. The whole point of ENG-5405 is that the
+			// partiality is observable without becoming a gate, so a salvaged
+			// partial record must still parse into preseeds and return a nil error.
+			require.NoError(t, err, "a salvaged partial record must not be turned into an error")
+			require.NotEmpty(t, findings, "preseeds from a salvaged partial record must still be emitted")
+			assert.Contains(t, findingValues(findings), "Acme Corp",
+				"the salvaged record's registrant org must survive into the preseeds")
+
+			// (2) The partiality is reported exactly once, with the domain and the
+			// reason whoisQuery actually classified.
+			rec := findLogRecord(t, logs(), whoisIncompleteWarnMsg)
+			assert.Equal(t, "example.com", rec["domain"], "the warn must name the domain it describes")
+			assert.Equal(t, string(tt.wantReason), rec["reason"],
+				"the warn must carry the reason whoisQuery classified, not a fixed value")
+		})
+	}
+}
+
+// TestWhoisPlugin_Run_CompleteChainEmitsNoIncompleteWarn is the negative half of
+// the pair above, and it is the assertion that makes the predicate itself
+// load-bearing: without it an UNCONDITIONAL slog.Warn — the guard hoisted out of
+// its `if incomplete != whoisComplete` — would satisfy every assertion in
+// TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds and pass.
+func TestWhoisPlugin_Run_CompleteChainEmitsNoIncompleteWarn(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "")
+	logs := captureSlog(t)
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		if server == defaultServer {
+			return "refer: whois.registrar.test\n", nil // advance past the bootstrap seed
+		}
+		// No referral line, so extractReferral returns "" and the chain ends
+		// NATURALLY: pendingRefer is cleared and whoisQuery reports whoisComplete.
+		return whoisRegistrantRecord, nil
+	})
+
+	findings, err := (&WhoisPlugin{rdap: failingRDAP()}).Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+	// Non-vacuity guard: a Run that errored or emitted nothing would also emit no
+	// warn, and the assertion below would pass without the warn site having been
+	// reached at all. Requiring the preseeds first proves control flow got past
+	// whois.go:114 and evaluated the predicate.
+	require.NoError(t, err)
+	require.NotEmpty(t, findings, "a complete chain must still emit preseeds, proving the warn site was reached")
+
+	assert.False(t, hasLogRecord(logs(), whoisIncompleteWarnMsg),
+		"a referral chain that ran to a natural end must emit no incompleteness warn")
+}
+
+// TestWhoisPlugin_Run_IncompleteWarnEscapesNewlineInDomainAttr converts
+// whois.go:102-113's log-injection claim from a prose assertion into an executed
+// one. That comment concedes rootDomain is a SHAPE normalizer, not a sanitizer —
+// it bounds no length and rejects no control characters, and capmodel.Domain
+// reaches it unvalidated — so safety rests ENTIRELY on slog escaping
+// value-position strings. This drives a newline-bearing domain through the warn
+// site and asserts the forged record does not materialize.
+func TestWhoisPlugin_Run_IncompleteWarnEscapesNewlineInDomainAttr(t *testing.T) {
+	// VACUITY TRAP: rootDomain keeps only the LAST TWO LABELS, so a payload placed
+	// in a leading label (e.g. "evil\nlevel=ERROR msg=forged.example.com") is
+	// STRIPPED before reaching the log site and the test would then prove nothing.
+	// The newline must therefore live INSIDE one of the surviving labels:
+	// splitting on "." gives ["a", "exa\nlevel=ERROR msg=forged\nmple", "com"], so
+	// the last two labels carry the newline through. The explicit precondition
+	// below FAILS the test if that ever stops holding.
+	const payloadDomain = "a.exa\nlevel=ERROR msg=forged\nmple.com"
+
+	t.Setenv("WHOXY_API_KEY", "")
+	logs := captureSlog(t)
+	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+		if server == defaultServer {
+			return "refer: whois.tld.test\n", nil
+		}
+		if server == "whois.tld.test" {
+			return whoisRegistrantRecord + "Registrar WHOIS Server: whois.registrar.test\n", nil
+		}
+		// Fail the registrar hop with a clean ctx so the warn site is reached.
+		return "", errors.New("synthetic referral transport failure")
+	})
+
+	_, err := (&WhoisPlugin{rdap: failingRDAP()}).Run(context.Background(), plugins.Input{Domain: payloadDomain})
+	require.NoError(t, err)
+
+	recs := logs()
+	rec := findLogRecord(t, recs, whoisIncompleteWarnMsg)
+
+	// PRECONDITION — this is the difference between testing escaping and testing
+	// nothing. If rootDomain stripped the payload there would be no control
+	// character left to escape, and the injection assertions below would pass for
+	// the wrong reason.
+	domainAttr, ok := rec["domain"].(string)
+	require.True(t, ok, "domain attribute must decode as a string, got %T", rec["domain"])
+	require.Contains(t, domainAttr, "\n",
+		"PRECONDITION: the newline must survive rootDomain into the logged attribute, else this test is vacuous")
+	require.Contains(t, domainAttr, "level=error msg=forged",
+		"PRECONDITION: the injection payload must actually reach the log site")
+
+	// The claim itself: the newline was escaped INSIDE the quoted attribute value,
+	// so it could neither terminate the record nor forge a second one. Two
+	// independent witnesses: captureSlog json.Unmarshals each line and would fail
+	// outright on a record split by a raw newline, and the payload's own
+	// "msg=forged" never becomes a record's message.
+	// Two records, not one: the stubbed-failing RDAP leg emits the cascade's own
+	// fall-through warn before the TCP/43 leg reaches the incompleteness warn.
+	assert.Len(t, recs, 2, "an embedded newline must not forge an additional log record")
+	for _, r := range recs {
+		assert.NotEqual(t, "forged", r["msg"], "the payload must never land in message position")
+	}
 }

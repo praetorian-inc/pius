@@ -107,7 +107,6 @@ func mockWaybackServerWithPrefixes(defaultURLs []string, prefixURLs map[string][
 	}))
 }
 
-
 // mockCommonCrawlServer returns an httptest server that serves Common Crawl NDJSON responses.
 func mockCommonCrawlServer(urls []string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -140,8 +139,8 @@ func TestWaybackPlugin_ParsesWaybackDomains(t *testing.T) {
 	defer ccSrv.Close()
 
 	p := &WaybackPlugin{
-		client:       client.New(),
-		waybackURL:   wbSrv.URL,
+		client:         client.New(),
+		waybackURL:     wbSrv.URL,
 		commoncrawlURL: ccSrv.URL,
 	}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
@@ -169,8 +168,8 @@ func TestWaybackPlugin_ParsesCommonCrawlDomains(t *testing.T) {
 	defer ccSrv.Close()
 
 	p := &WaybackPlugin{
-		client:       client.New(),
-		waybackURL:   wbSrv.URL,
+		client:         client.New(),
+		waybackURL:     wbSrv.URL,
 		commoncrawlURL: ccSrv.URL,
 	}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
@@ -195,8 +194,8 @@ func TestWaybackPlugin_DeduplicatesAcrossSources(t *testing.T) {
 	defer ccSrv.Close()
 
 	p := &WaybackPlugin{
-		client:       client.New(),
-		waybackURL:   wbSrv.URL,
+		client:         client.New(),
+		waybackURL:     wbSrv.URL,
 		commoncrawlURL: ccSrv.URL,
 	}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
@@ -214,9 +213,9 @@ func TestWaybackPlugin_DeduplicatesAcrossSources(t *testing.T) {
 func TestWaybackPlugin_FiltersToSubdomainsOnly(t *testing.T) {
 	wbSrv := mockWaybackServer([]string{
 		"http://api.example.com/path",
-		"http://evil.com/example.com",       // not a subdomain
-		"http://notexample.com/something",   // not a subdomain
-		"http://example.com/root",           // apex domain — should be included
+		"http://evil.com/example.com",     // not a subdomain
+		"http://notexample.com/something", // not a subdomain
+		"http://example.com/root",         // apex domain — should be included
 	})
 	defer wbSrv.Close()
 
@@ -224,8 +223,8 @@ func TestWaybackPlugin_FiltersToSubdomainsOnly(t *testing.T) {
 	defer ccSrv.Close()
 
 	p := &WaybackPlugin{
-		client:       client.New(),
-		waybackURL:   wbSrv.URL,
+		client:         client.New(),
+		waybackURL:     wbSrv.URL,
 		commoncrawlURL: ccSrv.URL,
 	}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
@@ -249,8 +248,8 @@ func TestWaybackPlugin_NormalizesDomains(t *testing.T) {
 	defer ccSrv.Close()
 
 	p := &WaybackPlugin{
-		client:       client.New(),
-		waybackURL:   wbSrv.URL,
+		client:         client.New(),
+		waybackURL:     wbSrv.URL,
 		commoncrawlURL: ccSrv.URL,
 	}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
@@ -276,8 +275,8 @@ func TestWaybackPlugin_GracefulOnWaybackError(t *testing.T) {
 	defer ccSrv.Close()
 
 	p := &WaybackPlugin{
-		client:       client.New(),
-		waybackURL:   wbSrv.URL,
+		client:         client.New(),
+		waybackURL:     wbSrv.URL,
 		commoncrawlURL: ccSrv.URL,
 	}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
@@ -295,8 +294,8 @@ func TestWaybackPlugin_GracefulOnBothErrors(t *testing.T) {
 	ccSrv.Close()
 
 	p := &WaybackPlugin{
-		client:       client.New(),
-		waybackURL:   wbSrv.URL,
+		client:         client.New(),
+		waybackURL:     wbSrv.URL,
 		commoncrawlURL: ccSrv.URL,
 	}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
@@ -318,8 +317,8 @@ func TestWaybackPlugin_HandlesInvalidURLsGracefully(t *testing.T) {
 	defer ccSrv.Close()
 
 	p := &WaybackPlugin{
-		client:       client.New(),
-		waybackURL:   wbSrv.URL,
+		client:         client.New(),
+		waybackURL:     wbSrv.URL,
 		commoncrawlURL: ccSrv.URL,
 	}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
