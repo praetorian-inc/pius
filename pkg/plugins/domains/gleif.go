@@ -26,7 +26,7 @@ func NewGLEIFPlugin(c *client.Client) *GLEIFPlugin {
 // GLEIF LEI registry.
 //
 // Strategy:
-//  1. Resolve OrgName to an LEI via fuzzycompletions (fallback: name search + Jaro-Winkler)
+//  1. Resolve OrgName to an LEI via fuzzycompletions
 //  2. Fetch direct and ultimate parent entities
 //  3. Fetch all direct subsidiaries (paginated)
 //  4. Fetch siblings — children of each parent that aren't the primary entity
@@ -160,38 +160,74 @@ func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, prima
 	return nil
 }
 
-// resolveEntity resolves a company name to a GLEIF entity via fuzzycompletions.
-// Returns nil when GLEIF has no match.
+// resolveEntity resolves a company name to a GLEIF entity with corporate
+// hierarchy. Fuzzycompletions may return a leaf entity first (e.g. a regional
+// subsidiary with no children), so we try candidates until we find one that
+// has a parent or children — those are the ones worth traversing.
 func (p *GLEIFPlugin) resolveEntity(ctx context.Context, name string) (*leiRecord, error) {
-	lei, err := p.fuzzyResolve(ctx, name)
+	leis, err := p.fuzzyResolve(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	if lei == "" {
-		return nil, nil
+
+	for _, lei := range leis {
+		record, err := p.getRecord(ctx, lei)
+		if err != nil {
+			log.Printf("[gleif] candidate %s failed: %v", lei, err)
+			continue
+		}
+		if hasParent(record) || p.hasChildren(ctx, lei) {
+			return record, nil
+		}
 	}
-	return p.getRecord(ctx, lei)
+
+	// No candidate had hierarchy; return the first if any.
+	if len(leis) > 0 {
+		return p.getRecord(ctx, leis[0])
+	}
+	return nil, nil
 }
 
 // ── API methods ───────────────────────────────────────────────────────────────
 
+// hasChildren reports whether the entity has any direct children in GLEIF.
+func (p *GLEIFPlugin) hasChildren(ctx context.Context, lei string) bool {
+	u := fmt.Sprintf("%s/lei-records/%s/direct-children?page[size]=1",
+		p.gleifBase(), url.PathEscape(lei))
+	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
+	if err != nil {
+		return false
+	}
+	var resp leiChildrenResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false
+	}
+	return resp.Meta.Pagination.Total > 0
+}
+
 // fuzzyResolve uses GLEIF's fuzzycompletions endpoint to resolve a company name
-// to an LEI. Returns the best match's LEI, or "" if no match.
-func (p *GLEIFPlugin) fuzzyResolve(ctx context.Context, name string) (string, error) {
+// to candidate LEIs, ordered by match quality.
+func (p *GLEIFPlugin) fuzzyResolve(ctx context.Context, name string) ([]string, error) {
 	u := fmt.Sprintf("%s/fuzzycompletions?field=entity.legalName&q=%s",
 		p.gleifBase(), url.QueryEscape(name))
 	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
 	if err != nil {
-		return "", fmt.Errorf("gleif: fuzzy resolve: %w", err)
+		return nil, fmt.Errorf("gleif: fuzzy resolve: %w", err)
 	}
 	var resp fuzzyCompletionResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("gleif: fuzzy resolve parse: %w", err)
+		return nil, fmt.Errorf("gleif: fuzzy resolve parse: %w", err)
 	}
-	if len(resp.Data) == 0 {
-		return "", nil
+	seen := make(map[string]bool, len(resp.Data))
+	var leis []string
+	for _, d := range resp.Data {
+		lei := d.Relationships.LEIRecords.Data.ID
+		if lei != "" && !seen[lei] {
+			seen[lei] = true
+			leis = append(leis, lei)
+		}
 	}
-	return resp.Data[0].Relationships.LEIRecords.Data.ID, nil
+	return leis, nil
 }
 
 func (p *GLEIFPlugin) getRecord(ctx context.Context, lei string) (*leiRecord, error) {
