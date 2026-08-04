@@ -24,7 +24,23 @@ const (
 )
 
 func init() {
-	plugins.Register("whois", func() plugins.Plugin { return &WhoisPlugin{} })
+	plugins.Register("whois", func() plugins.Plugin { return NewWhoisPlugin() })
+}
+
+type WhoisOption func(*WhoisPlugin)
+
+func NewWhoisPlugin(opts ...WhoisOption) *WhoisPlugin {
+	plugin := &WhoisPlugin{}
+	for _, opt := range opts {
+		opt(plugin)
+	}
+	return plugin
+}
+
+func WithWhoisRaw(raw func(context.Context, string, string) (string, error)) WhoisOption {
+	return func(plugin *WhoisPlugin) {
+		plugin.whoisRaw = raw
+	}
 }
 
 // WhoisPlugin gathers a domain's WHOIS registration data by cascading over
@@ -37,8 +53,9 @@ func init() {
 // duplicated across repos), so every answering source is emitted in the order
 // tried rather than only the one this plugin stopped on.
 type WhoisPlugin struct {
-	rdap  rdapRecordSource  // overridable for tests; defaults to rdapWhoisResolver
-	whoxy *whoxyWhoisClient // overridable for tests; nil takes a default client
+	rdap     rdapRecordSource  // overridable for tests; defaults to rdapWhoisResolver
+	whoxy    *whoxyWhoisClient // overridable for tests; nil takes a default client
+	whoisRaw func(context.Context, string, string) (string, error)
 }
 
 func (p *WhoisPlugin) Name() string { return "whois" }
@@ -165,7 +182,7 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 				Source: p.Name(),
 				Data: map[string]any{
 					"method":  whoisMethodWhoxy,
-					"history": hist,
+					"history": string(hist),
 				},
 			})
 		}
@@ -188,7 +205,7 @@ func (p *WhoisPlugin) sources(whoxy *whoxyWhoisClient) []whoisSource {
 
 	sources := []whoisSource{
 		{method: whoisMethodRDAP, fetch: rdapSource.rdapRecord},
-		{method: whoisMethodTCP43, fetch: whois43Record},
+		{method: whoisMethodTCP43, fetch: p.whois43Record},
 	}
 	if whoxy != nil {
 		sources = append(sources, whoisSource{method: whoisMethodWhoxy, fetch: whoxy.record})
@@ -209,8 +226,12 @@ func (p *WhoisPlugin) whoxyClient() *whoxyWhoisClient {
 	return &whoxyWhoisClient{client: client.New()}
 }
 
-func whois43Record(ctx context.Context, domain string) (whoisRecord, error) {
-	raw, err := whoisQuery(ctx, domain)
+func (p *WhoisPlugin) whois43Record(ctx context.Context, domain string) (whoisRecord, error) {
+	rawFn := whoisRawFn
+	if p.whoisRaw != nil {
+		rawFn = p.whoisRaw
+	}
+	raw, err := whoisQueryWithRaw(ctx, domain, rawFn)
 	if err != nil {
 		return whoisRecord{}, fmt.Errorf("whois43: lookup failed for %q: %w", domain, err)
 	}

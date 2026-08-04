@@ -31,6 +31,10 @@ const (
 		"Registrant Organization: Acme Corp\n"
 
 	notFoundWhoisRecord = "No match for \"EXAMPLE.COM\".\n"
+
+	injectedWhoisRecord = "Domain Name: EXAMPLE.COM\n" +
+		"Registrant Organization: Sentinel Injected Corp\n" +
+		"Registrant Email: sentinel@injected.test\n"
 )
 
 type stubRDAPSource struct {
@@ -180,9 +184,9 @@ func TestWhoisCascade_FallsThroughToWhoxyAndEmitsHistory(t *testing.T) {
 	}
 	require.Len(t, history, 1)
 	assert.Equal(t, whoisMethodWhoxy, history[0].Data["method"])
-	raw, ok := history[0].Data["history"].(json.RawMessage)
-	require.True(t, ok, "history must be carried verbatim as raw JSON")
-	assert.JSONEq(t, `[{"domain_name":"example.com"}]`, string(raw))
+	raw, ok := history[0].Data["history"].(string)
+	require.True(t, ok, "history must be carried verbatim as a JSON string")
+	assert.JSONEq(t, `[{"domain_name":"example.com"}]`, raw)
 }
 
 func TestWhoisCascade_WhoxySkippedWithoutAPIKey(t *testing.T) {
@@ -354,4 +358,115 @@ func TestWhoisPlugin_RecordFindingCarriesRawText(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, strings.Contains(raw, "Acme Corp"))
 	assert.Equal(t, "example.com", findings[0].Value)
+}
+
+func findingsOfType(findings []plugins.Finding, typ plugins.FindingType) []plugins.Finding {
+	var out []plugins.Finding
+	for _, f := range findings {
+		if f.Type == typ {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func assertDataSurvivesJSONRoundTrip(t *testing.T, findings []plugins.Finding) {
+	t.Helper()
+
+	blob, err := json.Marshal(findings)
+	require.NoError(t, err, "the consumer memoizes the finding slice as JSON")
+
+	var got []plugins.Finding
+	require.NoError(t, json.Unmarshal(blob, &got), "the consumer reads the memo back as []plugins.Finding")
+	require.Len(t, got, len(findings))
+
+	for i, before := range findings {
+		after := got[i]
+		assert.Equal(t, before.Type, after.Type)
+		assert.Len(t, after.Data, len(before.Data),
+			"finding %d (%s): no Data key may be lost across the cache", i, before.Type)
+		for key, want := range before.Data {
+			require.Contains(t, after.Data, key,
+				"finding %d (%s): Data[%q] was lost across the cache", i, before.Type, key)
+			assert.IsType(t, want, after.Data[key],
+				"finding %d (%s): Data[%q] changed Go type across the cache", i, before.Type, key)
+			assert.Equal(t, want, after.Data[key],
+				"finding %d (%s): Data[%q] changed value across the cache", i, before.Type, key)
+		}
+	}
+}
+
+func TestWhoisCascade_FindingDataSurvivesJSONRoundTrip(t *testing.T) {
+	t.Run("record, preseed and history findings", func(t *testing.T) {
+		t.Setenv("WHOXY_API_KEY", "secret-key")
+		stubWhoisReferralChain(t, fullWhoisRecord, nil)
+		stubWhoisHopBackoff(t, time.Millisecond)
+
+		whoxy, _ := whoxyTestServer(t,
+			fmt.Sprintf(`{"status":1,"raw_whois":%q}`, fullWhoisRecord),
+			`{"status":1,"total_records_found":2,"whois_records":[{"domain_name":"example.com"}]}`,
+		)
+
+		findings, err := (&WhoisPlugin{rdap: &stubRDAPSource{raw: orgOnlyWhoisRecord}, whoxy: whoxy}).
+			Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+		require.NoError(t, err)
+		require.NotEmpty(t, findingsOfType(findings, plugins.FindingWhoisRecord),
+			"the round-trip check is vacuous without a record finding")
+		require.NotEmpty(t, findingsOfType(findings, plugins.FindingPreseed),
+			"the round-trip check is vacuous without a preseed finding")
+		require.Len(t, findingsOfType(findings, plugins.FindingWhoisHistory), 1,
+			"the round-trip check is vacuous without a history finding")
+
+		assertDataSurvivesJSONRoundTrip(t, findings)
+	})
+
+	t.Run("unregistered verdict", func(t *testing.T) {
+		t.Setenv("WHOXY_API_KEY", "")
+		stubWhoisReferralChain(t, notFoundWhoisRecord, nil)
+		stubWhoisHopBackoff(t, time.Millisecond)
+
+		findings, err := (&WhoisPlugin{rdap: failingRDAP()}).
+			Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+		require.NoError(t, err)
+		require.Len(t, findings, 1)
+		require.Equal(t, true, findings[0].Data["unregistered"],
+			"the round-trip check is vacuous without the unregistered verdict")
+
+		assertDataSurvivesJSONRoundTrip(t, findings)
+	})
+}
+
+func TestNewWhoisPlugin_UsesInjectedWhoisRaw(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "")
+	stubWhoisHopBackoff(t, time.Millisecond)
+	stubWhoisRawFn(t, func(_ context.Context, _, _ string) (string, error) {
+		t.Error("the package-default transport must not be consulted when a transport is injected")
+		return "", errors.New("unexpected call")
+	})
+
+	var servers []string
+	p := NewWhoisPlugin(WithWhoisRaw(func(_ context.Context, _, server string) (string, error) {
+		servers = append(servers, server)
+		if server == defaultServer {
+			return "refer: whois.registry.test\n", nil
+		}
+		return injectedWhoisRecord, nil
+	}))
+	p.rdap = failingRDAP() // force the cascade past RDAP onto TCP/43
+
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{defaultServer, "whois.registry.test"}, servers,
+		"the injected transport must serve the referral hop too, not only the bootstrap seed")
+	assert.Equal(t, []string{whoisMethodTCP43}, recordMethods(t, findings))
+
+	records := findingsOfType(findings, plugins.FindingWhoisRecord)
+	require.Len(t, records, 1)
+	raw, ok := records[0].Data["raw"].(string)
+	require.True(t, ok)
+	assert.Contains(t, raw, "Sentinel Injected Corp", "the injected transport is what answered")
+	assert.Contains(t, preseedValues(findings), "sentinel@injected.test")
 }

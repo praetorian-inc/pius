@@ -222,6 +222,10 @@ func ssrfSafeControl(_, address string, _ syscall.RawConn) error {
 // letting maxDomainReferralHops referrals x queryTimeout stack past it
 // (ENG-5123 review).
 func whoisQuery(ctx context.Context, domain string) (string, error) {
+	return whoisQueryWithRaw(ctx, domain, whoisRawFn)
+}
+
+func whoisQueryWithRaw(ctx context.Context, domain string, rawFn func(context.Context, string, string) (string, error)) (string, error) {
 	server := defaultServer
 	var lastRaw string
 
@@ -232,7 +236,7 @@ func whoisQuery(ctx context.Context, domain string) (string, error) {
 			}
 			return "", err
 		}
-		raw, err := whoisHop(ctx, domain, server)
+		raw, err := whoisHopWithRaw(ctx, domain, server, rawFn)
 		if err != nil {
 			if lastRaw != "" {
 				return lastRaw, nil // return last post-referral result
@@ -270,6 +274,10 @@ var whoisHopBackoff = 250 * time.Millisecond
 // may be inside the pass-wide reverse-whois budget, and a retry that outlived it
 // would spend recall it cannot use.
 func whoisHop(ctx context.Context, domain, server string) (string, error) {
+	return whoisHopWithRaw(ctx, domain, server, whoisRawFn)
+}
+
+func whoisHopWithRaw(ctx context.Context, domain, server string, rawFn func(context.Context, string, string) (string, error)) (string, error) {
 	var err error
 	for attempt := range whoisHopAttempts {
 		if attempt > 0 {
@@ -278,7 +286,7 @@ func whoisHop(ctx context.Context, domain, server string) (string, error) {
 			}
 		}
 		var raw string
-		raw, err = whoisRawFn(ctx, domain, server)
+		raw, err = rawFn(ctx, domain, server)
 		if err == nil {
 			return raw, nil
 		}
