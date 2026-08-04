@@ -438,6 +438,26 @@ func TestWhoisCascade_FindingDataSurvivesJSONRoundTrip(t *testing.T) {
 	})
 }
 
+func TestNewWhoisPlugin_UsesInjectedRDAPLookup(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "")
+	stubWhoisRawFn(t, func(_ context.Context, _, _ string) (string, error) {
+		t.Error("TCP/43 must not run when the injected RDAP lookup answers")
+		return "", errors.New("unexpected call")
+	})
+
+	var domains []string
+	p := NewWhoisPlugin(WithRDAPLookup(func(_ context.Context, domain string) (string, error) {
+		domains = append(domains, domain)
+		return fullWhoisRecord, nil
+	}))
+
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"example.com"}, domains)
+	assert.Equal(t, []string{whoisMethodRDAP}, recordMethods(t, findings))
+}
+
 func TestNewWhoisPlugin_UsesInjectedWhoisRaw(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
 	stubWhoisHopBackoff(t, time.Millisecond)

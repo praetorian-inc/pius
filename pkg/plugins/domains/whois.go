@@ -44,6 +44,22 @@ func WithWhoisRaw(raw func(context.Context, string, string) (string, error)) Who
 	}
 }
 
+func WithRDAPLookup(lookup func(context.Context, string) (string, error)) WhoisOption {
+	return func(plugin *WhoisPlugin) {
+		plugin.rdap = rdapLookup(lookup)
+	}
+}
+
+type rdapLookup func(context.Context, string) (string, error)
+
+func (lookup rdapLookup) rdapRecord(ctx context.Context, domain string) (whoisRecord, error) {
+	raw, err := lookup(ctx, domain)
+	if err != nil {
+		return whoisRecord{}, err
+	}
+	return textWhoisRecord(whoisMethodRDAP, raw)
+}
+
 // WhoisPlugin gathers a domain's WHOIS registration data by cascading over
 // RDAP, TCP/43, and Whoxy, emitting one record finding per source that answered
 // plus preseeds (registrant organization, contact names, emails) from the
