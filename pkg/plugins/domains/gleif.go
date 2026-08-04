@@ -151,27 +151,28 @@ func hasParent(record *leiRecord) bool {
 	return ok
 }
 
-// gleifEvidence returns the score and justification for a GLEIF record reached
-// through relationshipType. A record's confidence comes from exactly one
-// source — how the LEI registry relates it to the queried entity — so there is
-// one entry, not a decomposition: a registered hierarchy edge is authoritative,
-// while a secondary legal-name hit is only a name collision until something
+// addGLEIFConfidence attaches the evidence for a GLEIF record reached through
+// relationshipType. A record's confidence comes from exactly one source — how
+// the LEI registry relates it to the queried entity — so there is one entry,
+// not a decomposition: a registered hierarchy edge is authoritative, while a
+// secondary legal-name hit is only a name collision until something
 // corroborates it.
-func gleifEvidence(record leiRecord, relationshipType string) (float64, string) {
+func addGLEIFConfidence(f *plugins.Finding, record leiRecord, relationshipType string) {
 	name := record.Attributes.Entity.LegalName.Name
+
 	switch relationshipType {
 	case relationshipDirectParent:
-		return plugins.ConfidenceHigh,
-			fmt.Sprintf("GLEIF records %q (LEI %s) as the registered direct parent of the queried entity", name, record.ID)
+		plugins.AddConfidence(f, plugins.ConfidenceHigh,
+			fmt.Sprintf("GLEIF records %q (LEI %s) as the registered direct parent of the queried entity", name, record.ID))
 	case relationshipUltimateParent:
-		return plugins.ConfidenceHigh,
-			fmt.Sprintf("GLEIF records %q (LEI %s) as the registered ultimate parent of the queried entity", name, record.ID)
+		plugins.AddConfidence(f, plugins.ConfidenceHigh,
+			fmt.Sprintf("GLEIF records %q (LEI %s) as the registered ultimate parent of the queried entity", name, record.ID))
 	case relationshipSubsidiary:
-		return plugins.ConfidenceHigh,
-			fmt.Sprintf("GLEIF records %q (LEI %s) as a registered direct subsidiary of the queried entity", name, record.ID)
+		plugins.AddConfidence(f, plugins.ConfidenceHigh,
+			fmt.Sprintf("GLEIF records %q (LEI %s) as a registered direct subsidiary of the queried entity", name, record.ID))
 	default:
-		return plugins.ConfidenceLow,
-			fmt.Sprintf("%q (LEI %s) is a secondary GLEIF legal-name search match, not a registered corporate relationship", name, record.ID)
+		plugins.AddConfidence(f, plugins.ConfidenceLow,
+			fmt.Sprintf("%q (LEI %s) is a secondary GLEIF legal-name search match, not a registered corporate relationship", name, record.ID))
 	}
 }
 
@@ -188,8 +189,7 @@ func recordToFinding(record leiRecord, relationshipType string) plugins.Finding 
 			"relationshipType": relationshipType,
 		},
 	}
-	score, justification := gleifEvidence(record, relationshipType)
-	plugins.AddConfidence(&f, score, justification)
+	addGLEIFConfidence(&f, record, relationshipType)
 	return f
 }
 
@@ -208,8 +208,7 @@ func recordToPreseed(record leiRecord, relationshipType string) plugins.Finding 
 			"jurisdiction":  record.Attributes.Entity.Jurisdiction,
 		},
 	}
-	score, justification := gleifEvidence(record, relationshipType)
-	plugins.AddConfidence(&f, score, justification)
+	addGLEIFConfidence(&f, record, relationshipType)
 	return f
 }
 

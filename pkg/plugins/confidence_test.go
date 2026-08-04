@@ -102,9 +102,26 @@ func TestTotalConfidence_CapsAtOne(t *testing.T) {
 	assert.InDelta(t, 1.0, TotalConfidence(f), 0.001, "1.25 of evidence caps at 1.0")
 }
 
-func TestNeedsReview_FalseForEmptyEvidence(t *testing.T) {
-	assert.False(t, NeedsReview(Finding{}),
-		"an unscored finding has made no review judgement, despite totalling 0.0")
+func TestNeedsReview_TrueForEmptyEvidence(t *testing.T) {
+	assert.True(t, NeedsReview(Finding{}),
+		"nothing has vouched for an unscored finding, and it totals 0.0")
+}
+
+// TestNeedsReview_DoesNotSeparateUnscoredFromExplicitZero is the caveat that
+// comes with reading straight off the total: both cases need review, so
+// NeedsReview can no longer tell them apart. Anything that must — the SDK
+// emitter and the Guard adapter, where only an unscored finding may fall back
+// to a downstream default — tests len(Confidences) instead.
+func TestNeedsReview_DoesNotSeparateUnscoredFromExplicitZero(t *testing.T) {
+	unscored := Finding{}
+
+	var explicitZero Finding
+	AddConfidence(&explicitZero, 0.0, "explicitly scored zero")
+
+	assert.Equal(t, NeedsReview(unscored), NeedsReview(explicitZero),
+		"the predicate alone cannot separate them")
+	assert.Empty(t, unscored.Confidences)
+	assert.Len(t, explicitZero.Confidences, 1, "the entry count is what still separates them")
 }
 
 func TestNeedsReview_TrueForExplicitZero(t *testing.T) {

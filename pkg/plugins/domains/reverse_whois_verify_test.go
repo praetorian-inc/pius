@@ -321,7 +321,7 @@ func TestDecideConfidence_RedactedRegistrantScoresUnverified(t *testing.T) {
 	for _, org := range []string{"DATA REDACTED", "REDACTED FOR GDPR", "GDPR Masked"} {
 		t.Run(org, func(t *testing.T) {
 			got := decideConfidence(queryOrg, newRegistrantResult(org), nil)
-			assert.Equal(t, confidenceDecision{confReverseWhoisUnverified, justifyReverseWhoisUnverified}, got,
+			assert.Equal(t, confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisUnverified}, got,
 				"a redaction placeholder is unverifiable, not a clear mismatch")
 		})
 	}

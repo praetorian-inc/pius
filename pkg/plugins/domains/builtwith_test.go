@@ -238,10 +238,12 @@ func TestBuiltWith_IsRegistered(t *testing.T) {
 	assert.True(t, ok)
 }
 
-// TestBuiltWith_Run_UniqueAnalyticsIDsCreateSeparateEntries is the point of
-// retaining identifiers per domain: two independent trackers linking the same
-// domain to the target are two pieces of evidence, and they aggregate.
-func TestBuiltWith_Run_UniqueAnalyticsIDsCreateSeparateEntries(t *testing.T) {
+// TestBuiltWith_Run_ListsEveryMatchingIdentifier is the point of retaining
+// identifiers per domain: the justification names each one that reached the
+// domain. It stays ONE entry — a second tracker on the same marketing stack is
+// not independent corroboration of ownership, and scoring it separately would
+// sum to 1.20 and cap at full certainty.
+func TestBuiltWith_Run_ListsEveryMatchingIdentifier(t *testing.T) {
 	t.Setenv("BUILTWITH_API_KEY", "test-key")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -262,21 +264,17 @@ func TestBuiltWith_Run_UniqueAnalyticsIDsCreateSeparateEntries(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, findings, 1, "one domain, however many identifiers reached it")
 
-	require.Len(t, findings[0].Confidences, 2, "one entry per distinct analytics identifier")
-	justifications := []string{
-		findings[0].Confidences[0].Justification,
-		findings[0].Confidences[1].Justification,
-	}
-	assert.Contains(t, justifications[0], "UA-111")
-	assert.Contains(t, justifications[1], "UA-222")
-	assert.InDelta(t, 1.0, plugins.TotalConfidence(findings[0]), 0.001, "2 x 0.60 caps at 1.0")
-	assert.False(t, plugins.NeedsReview(findings[0]),
-		"two independent trackers clear the review bar that one alone did not")
+	require.Len(t, findings[0].Confidences, 1, "however many identifiers matched, one entry")
+	assert.Equal(t, `Domain shares analytics identifiers "UA-111", "UA-222" with the target`,
+		findings[0].Confidences[0].Justification)
+	assert.InDelta(t, confBuiltWithSharedAnalytics, plugins.TotalConfidence(findings[0]), 0.001,
+		"a second tracker does not raise the score")
+	assert.True(t, plugins.NeedsReview(findings[0]))
 }
 
-// TestBuiltWith_Run_RepeatedPairScoresOnce keeps a domain returned twice under
-// the same identifier from double-counting itself.
-func TestBuiltWith_Run_RepeatedPairScoresOnce(t *testing.T) {
+// TestBuiltWith_Run_RepeatedPairListedOnce keeps a domain returned twice under
+// the same identifier from naming that identifier twice.
+func TestBuiltWith_Run_RepeatedPairListedOnce(t *testing.T) {
 	t.Setenv("BUILTWITH_API_KEY", "test-key")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -295,6 +293,8 @@ func TestBuiltWith_Run_RepeatedPairScoresOnce(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
-	assert.Len(t, findings[0].Confidences, 1, "a repeated domain/identifier pair is one signal")
+	require.Len(t, findings[0].Confidences, 1)
+	assert.Equal(t, `Domain shares analytics identifier "UA-111" with the target`,
+		findings[0].Confidences[0].Justification, "singular noun, and the identifier appears once")
 	assert.InDelta(t, confBuiltWithSharedAnalytics, plugins.TotalConfidence(findings[0]), 0.001)
 }

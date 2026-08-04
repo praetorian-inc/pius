@@ -74,7 +74,9 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 		preseedCapability = fmt.Sprintf("pius_%s", f.Source)
 	}
 
-	confidences, confidence, needsReview := confidenceFields(f)
+	confidences := buildConfidences(f)
+	totalConfidence := plugins.TotalConfidence(f)
+	needsReview := plugins.NeedsReview(f)
 
 	switch f.Type {
 	case plugins.FindingDomain:
@@ -86,7 +88,7 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			Name:        f.Value,
 			Capability:  assetCapability,
 			Confidences: confidences,
-			Confidence:  confidence,
+			Confidence:  totalConfidence,
 			NeedsReview: needsReview,
 		})
 	case plugins.FindingCIDR:
@@ -95,7 +97,7 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			Name:        f.Value,
 			Capability:  assetCapability,
 			Confidences: confidences,
-			Confidence:  confidence,
+			Confidence:  totalConfidence,
 			NeedsReview: needsReview,
 		})
 	case plugins.FindingPreseed:
@@ -110,7 +112,7 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			Title:       title,
 			Capability:  preseedCapability,
 			Confidences: confidences,
-			Confidence:  confidence,
+			Confidence:  totalConfidence,
 			NeedsReview: needsReview,
 		})
 	default:
@@ -119,7 +121,7 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 	}
 }
 
-// confidenceFields projects a finding's evidence onto the three capmodel
+// buildConfidences projects a finding's evidence onto the three capmodel
 // confidence fields: the evidence list, the materialized aggregate, and the
 // derived review flag.
 //
@@ -129,11 +131,7 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 // blocking Guard's fallback for records and producers that predate structured
 // confidence. An explicit zero-score entry DOES materialize as 0.0, because
 // there the producer really did make that judgement.
-func confidenceFields(finding plugins.Finding) ([]capmodel.Confidence, *float64, *bool) {
-	if len(finding.Confidences) == 0 {
-		return nil, nil, nil
-	}
-
+func buildConfidences(finding plugins.Finding) []capmodel.Confidence {
 	confidences := make([]capmodel.Confidence, len(finding.Confidences))
 	for i, confidence := range finding.Confidences {
 		confidences[i] = capmodel.Confidence{
@@ -142,9 +140,7 @@ func confidenceFields(finding plugins.Finding) ([]capmodel.Confidence, *float64,
 		}
 	}
 
-	total := plugins.TotalConfidence(finding)
-	needsReview := plugins.NeedsReview(finding)
-	return confidences, &total, &needsReview
+	return confidences
 }
 
 // piusCredentialMapping maps capability parameter names to the environment

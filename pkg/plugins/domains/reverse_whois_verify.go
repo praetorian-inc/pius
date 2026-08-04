@@ -342,7 +342,7 @@ const (
 // clear mismatch is de-ranked to the bottom of the band, and every return scores
 // < ConfidenceHigh.
 func decideConfidence(queryOrg string, res registrantResult, lookupErr error) confidenceDecision {
-	unverified := confidenceDecision{confReverseWhoisUnverified, justifyReverseWhoisUnverified}
+	unverified := confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisUnverified}
 
 	if lookupErr != nil || res.Masked || res.Org == "" {
 		return unverified
@@ -357,12 +357,12 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 	sim := tokenSimilarity(nq, nc)
 	switch {
 	case sim >= simCorroborate:
-		return confidenceDecision{confReverseWhoisCorroborated, justifyReverseWhoisCorroborated}
+		return confidenceDecision{Score: confReverseWhoisCorroborated, Justification: justifyReverseWhoisCorroborated}
 	case sim < simMismatch:
 		// Present, unmasked, clear mismatch → de-rank to the bottom of the
 		// needs_review band (walmart.com-from-a-Leica-query). A textual registrant
 		// mismatch is not proof of non-ownership, so this is never dropped.
-		return confidenceDecision{confReverseWhoisMismatch, justifyReverseWhoisMismatch}
+		return confidenceDecision{Score: confReverseWhoisMismatch, Justification: justifyReverseWhoisMismatch}
 	default:
 		// Ambiguous partial overlap [simMismatch, simCorroborate).
 		return unverified
@@ -444,7 +444,7 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 	// their index with the decided band.
 	decisions := make([]confidenceDecision, len(cands))
 	for i := range decisions {
-		decisions[i] = confidenceDecision{confReverseWhoisUnverified, justifyReverseWhoisUnverified}
+		decisions[i] = confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisUnverified}
 	}
 
 	// Per-candidate observability, sized len(cands) — NOT resolveCount — so it
