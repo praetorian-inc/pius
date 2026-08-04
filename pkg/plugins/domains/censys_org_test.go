@@ -800,3 +800,80 @@ func TestCensysOrgPlugin_AppearsInList(t *testing.T) {
 	}
 	assert.True(t, found)
 }
+
+// TestCensysOrgPlugin_ExtractPreseeds_FiveHostsReproduceHighConfidence pins the
+// emission threshold to the score it used to be a flat stand-in for: at exactly
+// censysMinHosts distinct hosts the per-host entries still sum to
+// plugins.ConfidenceHigh.
+func TestCensysOrgPlugin_ExtractPreseeds_FiveHostsReproduceHighConfidence(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	var hits []censysSearchHit
+	for i := 0; i < 5; i++ {
+		hits = append(hits, makeHitFull(hitOpts{
+			ip:           fmt.Sprintf("10.0.0.%d", i),
+			certOrgNames: []string{"Contoso Ltd"},
+		}))
+	}
+
+	preseeds := censysPreseeds(p.extractFindings("Acme Corp", hits))
+	require.Len(t, preseeds, 1)
+
+	assert.Len(t, preseeds[0].Confidences, 5, "one entry per distinct host observation")
+	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]), 0.001)
+	assert.False(t, plugins.NeedsReview(preseeds[0]))
+	for _, c := range preseeds[0].Confidences {
+		assert.Contains(t, c.Justification, "Contoso Ltd")
+		assert.NotEmpty(t, c.Justification)
+	}
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_MoreHostsApproachCap shows the payoff of
+// decomposing: breadth of observation now raises confidence instead of being
+// flattened into one fixed score.
+func TestCensysOrgPlugin_ExtractPreseeds_MoreHostsApproachCap(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	var hits []censysSearchHit
+	for i := 0; i < 12; i++ {
+		hits = append(hits, makeHitFull(hitOpts{
+			ip:           fmt.Sprintf("10.0.1.%d", i),
+			certOrgNames: []string{"Contoso Ltd"},
+		}))
+	}
+
+	preseeds := censysPreseeds(p.extractFindings("Acme Corp", hits))
+	require.Len(t, preseeds, 1)
+
+	assert.Len(t, preseeds[0].Confidences, 12)
+	assert.InDelta(t, 1.0, plugins.TotalConfidence(preseeds[0]), 0.001, "12 x 0.13 caps at 1.0")
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_RepeatedHostScoresOnce guards against a
+// host observed on several ports or certificates inflating its own evidence.
+func TestCensysOrgPlugin_ExtractPreseeds_RepeatedHostScoresOnce(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	var hits []censysSearchHit
+	for i := 0; i < 5; i++ {
+		hits = append(hits, makeHitFull(hitOpts{
+			ip:           fmt.Sprintf("10.0.2.%d", i),
+			certOrgNames: []string{"Contoso Ltd"},
+		}))
+	}
+	// The first host shows up a second time — same IP, same Subject Organization.
+	hits = append(hits, makeHitFull(hitOpts{ip: "10.0.2.0", certOrgNames: []string{"Contoso Ltd"}}))
+
+	preseeds := censysPreseeds(p.extractFindings("Acme Corp", hits))
+	require.Len(t, preseeds, 1)
+
+	assert.Len(t, preseeds[0].Confidences, 5, "a repeated host must not be credited twice")
+	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]), 0.001)
+}
+
+func censysPreseeds(findings []plugins.Finding) []plugins.Finding {
+	var preseeds []plugins.Finding
+	for _, f := range findings {
+		if f.Type == plugins.FindingPreseed {
+			preseeds = append(preseeds, f)
+		}
+	}
+	return preseeds
+}

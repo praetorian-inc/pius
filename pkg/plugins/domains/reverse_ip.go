@@ -3,6 +3,7 @@ package domains
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -63,11 +64,29 @@ func (p *ReverseIPPlugin) key() string {
 	return os.Getenv("VIEWDNS_API_KEY")
 }
 
-// Confidence thresholds for domain matching
+// Independent evidence contributions for a reverse-IP hostname. They are
+// additive, so the branch totals of the original decision tree fall out of the
+// combinations: CDN + unrelated hostname = 0.25, CDN + known-domain = 0.55,
+// non-CDN + unmatched = 0.55, non-CDN + org-name = 0.70, non-CDN +
+// known-domain = 0.85.
 const (
-	confidenceHigh   = 0.85 // Hostname matches org domain
-	confidenceMedium = 0.55 // Hostname on non-CDN IP, no domain match
-	confidenceLow    = 0.25 // Hostname on CDN IP (likely false positive)
+	// confReverseIPAssociated is the base signal: the hostname was observed
+	// against an IP inside a netblock attributed to the target.
+	confReverseIPAssociated = 0.25
+	// confReverseIPNonCDN credits the IP not belonging to a known CDN — shared
+	// CDN address space is where reverse-IP false positives come from.
+	confReverseIPNonCDN = 0.30
+	// confReverseIPKnownDomain credits the hostname sitting under the known
+	// target domain.
+	confReverseIPKnownDomain = 0.30
+	// confReverseIPOrgName credits the weaker signal of the hostname carrying
+	// the normalized organization name. It is only added when the stronger
+	// known-domain evidence did not already fire.
+	confReverseIPOrgName = 0.15
+
+	// confReverseIPDiscardFloor is the aggregate below which a hostname is
+	// dropped rather than emitted.
+	confReverseIPDiscardFloor = 0.30
 )
 
 func (p *ReverseIPPlugin) Name() string { return "reverse-ip" }
@@ -164,25 +183,11 @@ func (p *ReverseIPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 			}
 			seen[host] = true
 
-			confidence := calculateConfidence(host, input.Domain, input.OrgName, isCDN)
-			// Skip very low confidence results from CDN IPs
-			if confidence < 0.30 {
+			// Skips very low confidence results, e.g. unrelated hostnames on CDN IPs.
+			f, ok := scoredReverseIPFinding(p.Name(), host, ip, "ptr", input, isCDN)
+			if !ok {
 				continue
 			}
-
-			f := plugins.Finding{
-				Type:   plugins.FindingDomain,
-				Value:  host,
-				Source: p.Name(),
-				Data: map[string]any{
-					"org":         input.OrgName,
-					"ip":          ip,
-					"method":      "ptr",
-					"base_domain": input.Domain,
-					"is_cdn":      isCDN,
-				},
-			}
-			plugins.SetConfidence(&f, confidence)
 			findings = append(findings, f)
 		}
 
@@ -196,24 +201,10 @@ func (p *ReverseIPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 				}
 				seen[host] = true
 
-				confidence := calculateConfidence(host, input.Domain, input.OrgName, isCDN)
-				if confidence < 0.30 {
+				f, ok := scoredReverseIPFinding(p.Name(), host, ip, "hackertarget", input, isCDN)
+				if !ok {
 					continue
 				}
-
-				f := plugins.Finding{
-					Type:   plugins.FindingDomain,
-					Value:  host,
-					Source: p.Name(),
-					Data: map[string]any{
-						"org":         input.OrgName,
-						"ip":          ip,
-						"method":      "hackertarget",
-						"base_domain": input.Domain,
-						"is_cdn":      isCDN,
-					},
-				}
-				plugins.SetConfidence(&f, confidence)
 				findings = append(findings, f)
 			}
 		}
@@ -228,24 +219,10 @@ func (p *ReverseIPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 				}
 				seen[host] = true
 
-				confidence := calculateConfidence(host, input.Domain, input.OrgName, isCDN)
-				if confidence < 0.30 {
+				f, ok := scoredReverseIPFinding(p.Name(), host, ip, "viewdns", input, isCDN)
+				if !ok {
 					continue
 				}
-
-				f := plugins.Finding{
-					Type:   plugins.FindingDomain,
-					Value:  host,
-					Source: p.Name(),
-					Data: map[string]any{
-						"org":         input.OrgName,
-						"ip":          ip,
-						"method":      "viewdns",
-						"base_domain": input.Domain,
-						"is_cdn":      isCDN,
-					},
-				}
-				plugins.SetConfidence(&f, confidence)
 				findings = append(findings, f)
 			}
 		}
@@ -394,32 +371,52 @@ func (p *ReverseIPPlugin) viewDNSLookup(ctx context.Context, ip string, apiKey s
 	return hosts
 }
 
-// calculateConfidence determines confidence score based on domain matching and CDN status
-func calculateConfidence(hostname, baseDomain, orgName string, isCDN bool) float64 {
+// scoredReverseIPFinding builds a hostname finding, attaches its evidence, and
+// reports whether the aggregate clears the discard floor. The three lookup
+// methods (PTR, HackerTarget, ViewDNS) differ only in provenance, so they share
+// one scoring path.
+func scoredReverseIPFinding(source, host, ip, method string, input plugins.Input, isCDN bool) (plugins.Finding, bool) {
+	f := plugins.Finding{
+		Type:   plugins.FindingDomain,
+		Value:  host,
+		Source: source,
+		Data: map[string]any{
+			"org":         input.OrgName,
+			"ip":          ip,
+			"method":      method,
+			"base_domain": input.Domain,
+			"is_cdn":      isCDN,
+		},
+	}
+	scoreReverseIP(&f, host, input.Domain, input.OrgName, ip, isCDN)
+	return f, plugins.TotalConfidence(f) >= confReverseIPDiscardFloor
+}
+
+// scoreReverseIP appends one evidence entry per independent signal supporting a
+// reverse-IP hostname. The known-domain and org-name entries are mutually
+// exclusive: a hostname under the known domain is the same "belongs to the
+// target" claim in a stronger form, so crediting both would double-count it.
+func scoreReverseIP(f *plugins.Finding, hostname, baseDomain, orgName, ip string, isCDN bool) {
 	hostname = strings.ToLower(hostname)
 	baseDomain = strings.ToLower(baseDomain)
 	orgName = strings.ToLower(orgName)
 
-	// If on CDN IP, significantly lower confidence
-	if isCDN {
-		// Check if hostname matches base domain (might be legitimate)
-		if baseDomain != "" && (strings.HasSuffix(hostname, "."+baseDomain) || hostname == baseDomain) {
-			return confidenceMedium // 0.55 - needs review
-		}
-		return confidenceLow // 0.25 - likely false positive
+	plugins.AddConfidence(f, confReverseIPAssociated,
+		fmt.Sprintf("Hostname %q was associated with the discovered IP %s", hostname, ip))
+
+	if !isCDN {
+		plugins.AddConfidence(f, confReverseIPNonCDN,
+			fmt.Sprintf("IP %s is not associated with a known CDN, so the hostname is unlikely to be shared infrastructure", ip))
 	}
 
-	// Non-CDN IP
-	if baseDomain != "" && (strings.HasSuffix(hostname, "."+baseDomain) || hostname == baseDomain) {
-		return confidenceHigh // 0.85 - high confidence match
+	switch {
+	case baseDomain != "" && (hostname == baseDomain || strings.HasSuffix(hostname, "."+baseDomain)):
+		plugins.AddConfidence(f, confReverseIPKnownDomain,
+			fmt.Sprintf("Hostname %q matches the known target domain %q", hostname, baseDomain))
+	case orgName != "" && strings.Contains(hostname, strings.ReplaceAll(orgName, " ", "")):
+		plugins.AddConfidence(f, confReverseIPOrgName,
+			fmt.Sprintf("Hostname %q contains the normalized organization name %q", hostname, strings.ReplaceAll(orgName, " ", "")))
 	}
-
-	// Check if hostname contains org name
-	if orgName != "" && strings.Contains(hostname, strings.ReplaceAll(orgName, " ", "")) {
-		return 0.70 // Likely related
-	}
-
-	return confidenceMedium // 0.55 - needs review
 }
 
 // Known CDN/cloud provider IP ranges (simplified - common prefixes)

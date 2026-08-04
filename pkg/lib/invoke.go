@@ -74,7 +74,7 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 		preseedCapability = fmt.Sprintf("pius_%s", f.Source)
 	}
 
-	confidence, needsReview := extractConfidence(f)
+	confidences, confidence, needsReview := confidenceFields(f)
 
 	switch f.Type {
 	case plugins.FindingDomain:
@@ -85,15 +85,17 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			DNS:         f.Value,
 			Name:        f.Value,
 			Capability:  assetCapability,
+			Confidences: confidences,
 			Confidence:  confidence,
 			NeedsReview: needsReview,
 		})
 	case plugins.FindingCIDR:
 		return output.Emit(capmodel.Asset{
-			DNS:        f.Value,
-			Name:       f.Value,
-			Capability: assetCapability,
- 			Confidence:  confidence,
+			DNS:         f.Value,
+			Name:        f.Value,
+			Capability:  assetCapability,
+			Confidences: confidences,
+			Confidence:  confidence,
 			NeedsReview: needsReview,
 		})
 	case plugins.FindingPreseed:
@@ -107,6 +109,7 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			Value:       f.Value,
 			Title:       title,
 			Capability:  preseedCapability,
+			Confidences: confidences,
 			Confidence:  confidence,
 			NeedsReview: needsReview,
 		})
@@ -116,15 +119,32 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 	}
 }
 
-// extractConfidence returns pointers to the confidence and needs_review values
-// from a Finding's Data map, or nils if the finding was not scored.
-func extractConfidence(f plugins.Finding) (*float64, *bool) {
-	c, ok := f.Data["confidence"].(float64)
-	if !ok {
-		return nil, nil
+// confidenceFields projects a finding's evidence onto the three capmodel
+// confidence fields: the evidence list, the materialized aggregate, and the
+// derived review flag.
+//
+// A finding with no evidence emits all three as nil rather than a materialized
+// 0.0. That is the load-bearing distinction: TotalConfidence of empty evidence
+// is 0.0, but emitting that would assert "we scored this and got nothing",
+// blocking Guard's fallback for records and producers that predate structured
+// confidence. An explicit zero-score entry DOES materialize as 0.0, because
+// there the producer really did make that judgement.
+func confidenceFields(finding plugins.Finding) ([]capmodel.Confidence, *float64, *bool) {
+	if len(finding.Confidences) == 0 {
+		return nil, nil, nil
 	}
-	nr, _ := f.Data["needs_review"].(bool)
-	return &c, &nr
+
+	confidences := make([]capmodel.Confidence, len(finding.Confidences))
+	for i, confidence := range finding.Confidences {
+		confidences[i] = capmodel.Confidence{
+			Score:         confidence.Score,
+			Justification: confidence.Justification,
+		}
+	}
+
+	total := plugins.TotalConfidence(finding)
+	needsReview := plugins.NeedsReview(finding)
+	return confidences, &total, &needsReview
 }
 
 // piusCredentialMapping maps capability parameter names to the environment

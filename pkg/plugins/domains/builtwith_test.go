@@ -123,9 +123,11 @@ func TestBuiltWith_Run_ConfidenceScore(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
-	conf, ok := findings[0].Data["confidence"].(float64)
-	require.True(t, ok, "confidence must be set")
-	assert.InDelta(t, 0.6, conf, 0.001)
+	require.Len(t, findings[0].Confidences, 1, "one analytics ID, one evidence entry")
+	assert.InDelta(t, confBuiltWithSharedAnalytics, findings[0].Confidences[0].Score, 0.001)
+	assert.Contains(t, findings[0].Confidences[0].Justification, "UA-12345",
+		"the justification names the identifier that linked the domain")
+	assert.InDelta(t, 0.6, plugins.TotalConfidence(findings[0]), 0.001)
 }
 
 func TestBuiltWith_Run_MultipleAnalyticsIDs(t *testing.T) {
@@ -234,4 +236,65 @@ func TestBuiltWith_Run_ContinuesOnError(t *testing.T) {
 func TestBuiltWith_IsRegistered(t *testing.T) {
 	_, ok := plugins.Get("builtwith")
 	assert.True(t, ok)
+}
+
+// TestBuiltWith_Run_UniqueAnalyticsIDsCreateSeparateEntries is the point of
+// retaining identifiers per domain: two independent trackers linking the same
+// domain to the target are two pieces of evidence, and they aggregate.
+func TestBuiltWith_Run_UniqueAnalyticsIDsCreateSeparateEntries(t *testing.T) {
+	t.Setenv("BUILTWITH_API_KEY", "test-key")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Both lookups return the SAME domain, reached via different identifiers.
+		_, _ = w.Write(mockBuiltWithResponse(map[string][]string{
+			"id": {"shared.com"},
+		}))
+	}))
+	defer srv.Close()
+
+	p := &BuiltWithPlugin{client: client.New(), baseURL: srv.URL}
+	findings, err := p.Run(context.Background(), plugins.Input{
+		OrgName: "Acme Corp",
+		Meta:    map[string]string{"analytics_ids": "UA-111, UA-222"},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "one domain, however many identifiers reached it")
+
+	require.Len(t, findings[0].Confidences, 2, "one entry per distinct analytics identifier")
+	justifications := []string{
+		findings[0].Confidences[0].Justification,
+		findings[0].Confidences[1].Justification,
+	}
+	assert.Contains(t, justifications[0], "UA-111")
+	assert.Contains(t, justifications[1], "UA-222")
+	assert.InDelta(t, 1.0, plugins.TotalConfidence(findings[0]), 0.001, "2 x 0.60 caps at 1.0")
+	assert.False(t, plugins.NeedsReview(findings[0]),
+		"two independent trackers clear the review bar that one alone did not")
+}
+
+// TestBuiltWith_Run_RepeatedPairScoresOnce keeps a domain returned twice under
+// the same identifier from double-counting itself.
+func TestBuiltWith_Run_RepeatedPairScoresOnce(t *testing.T) {
+	t.Setenv("BUILTWITH_API_KEY", "test-key")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(mockBuiltWithResponse(map[string][]string{
+			"id": {"repeat.com", "repeat.com"},
+		}))
+	}))
+	defer srv.Close()
+
+	p := &BuiltWithPlugin{client: client.New(), baseURL: srv.URL}
+	findings, err := p.Run(context.Background(), plugins.Input{
+		OrgName: "Acme Corp",
+		Meta:    map[string]string{"analytics_ids": "UA-111"},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Len(t, findings[0].Confidences, 1, "a repeated domain/identifier pair is one signal")
+	assert.InDelta(t, confBuiltWithSharedAnalytics, plugins.TotalConfidence(findings[0]), 0.001)
 }

@@ -138,8 +138,19 @@ func TestGitHubOrgPlugin_Score_HighConfidenceWithDomain(t *testing.T) {
 		Blog:        "https://www.praetorian.com",
 		PublicRepos: 86,
 	}
-	score := p.score(org, plugins.Input{OrgName: "Praetorian Security", Domain: "praetorian.com"})
-	assert.GreaterOrEqual(t, score, githubEmitThreshold, "domain match should push above emit threshold")
+	var f plugins.Finding
+	p.score(&f, org, plugins.Input{OrgName: "Praetorian Security", Domain: "praetorian.com"})
+
+	assert.GreaterOrEqual(t, plugins.TotalConfidence(f), githubEmitThreshold,
+		"domain match should push above emit threshold")
+	// All four signals fire for this org: blog domain, name similarity, login
+	// token, and repo activity.
+	require.Len(t, f.Confidences, 4)
+	assert.InDelta(t, 0.60, f.Confidences[0].Score, 0.001)
+	assert.Contains(t, f.Confidences[0].Justification, "praetorian.com")
+	for _, c := range f.Confidences {
+		assert.NotEmpty(t, c.Justification, "every entry needs a justification")
+	}
 }
 
 func TestGitHubOrgPlugin_Score_BelowThresholdWithoutDomain(t *testing.T) {
@@ -151,8 +162,15 @@ func TestGitHubOrgPlugin_Score_BelowThresholdWithoutDomain(t *testing.T) {
 		PublicRepos: 2,
 	}
 	// No domain hint — relies on name similarity only
-	score := p.score(org, plugins.Input{OrgName: "Praetorian Security"})
-	assert.Less(t, score, githubEmitThreshold, "landscaping org without domain should be below emit threshold")
+	var f plugins.Finding
+	p.score(&f, org, plugins.Input{OrgName: "Praetorian Security"})
+
+	assert.Less(t, plugins.TotalConfidence(f), githubEmitThreshold,
+		"landscaping org without domain should be below emit threshold")
+	// No domain hint, so the blog-domain entry must be absent entirely.
+	for _, c := range f.Confidences {
+		assert.NotContains(t, c.Justification, "blog URL")
+	}
 }
 
 func TestGitHubOrgPlugin_Score_NoDomainInputReliesOnName(t *testing.T) {
@@ -164,9 +182,12 @@ func TestGitHubOrgPlugin_Score_NoDomainInputReliesOnName(t *testing.T) {
 		PublicRepos: 86,
 	}
 	// No domain provided — domain signal is 0
-	score := p.score(org, plugins.Input{OrgName: "Praetorian"})
+	var f plugins.Finding
+	p.score(&f, org, plugins.Input{OrgName: "Praetorian"})
+
 	// Should still be above review threshold via name + handle + activity
-	assert.GreaterOrEqual(t, score, githubReviewThreshold)
+	assert.GreaterOrEqual(t, plugins.TotalConfidence(f), githubReviewThreshold)
+	require.Len(t, f.Confidences, 3, "name, login token and activity — but not the blog domain")
 }
 
 // ── Run with mock server ──────────────────────────────────────────────────────
@@ -199,8 +220,8 @@ func TestGitHubOrgPlugin_Run_EmitsHighConfidenceMatch(t *testing.T) {
 	// High confidence should not need review
 	for _, f := range findings {
 		if f.Value == "github.com/praetorian-inc" {
-			assert.False(t, f.Data["needs_review"].(bool), "high-confidence match should not need review")
-			assert.GreaterOrEqual(t, f.Data["confidence"].(float64), githubEmitThreshold)
+			assert.False(t, plugins.NeedsReview(f), "high-confidence match should not need review")
+			assert.GreaterOrEqual(t, plugins.TotalConfidence(f), githubEmitThreshold)
 		}
 	}
 }
@@ -281,11 +302,12 @@ func TestGitHubOrgPlugin_Run_MarksReviewForBorderline(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	// May or may not emit depending on exact score, but if it does emit, needs_review should be set
+	// May or may not emit depending on exact score, but if it does emit it must
+	// carry evidence and be flagged for review.
 	for _, f := range findings {
-		conf := f.Data["confidence"].(float64)
-		if conf < githubEmitThreshold {
-			assert.True(t, f.Data["needs_review"].(bool), "borderline match must have needs_review:true")
+		require.NotEmpty(t, f.Confidences, "an emitted github-org finding is always scored")
+		if plugins.TotalConfidence(f) < githubEmitThreshold {
+			assert.True(t, plugins.NeedsReview(f), "borderline match must need review")
 		}
 	}
 }

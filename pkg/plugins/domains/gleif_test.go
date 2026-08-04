@@ -159,7 +159,9 @@ func TestGLEIFPlugin_Run_TopLevelWithSubsidiaries(t *testing.T) {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "gleif", f.Source)
 		assert.Equal(t, "subsidiary", f.Data["relationshipType"])
-		assert.Equal(t, plugins.ConfidenceHigh, f.Data["confidence"])
+		assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(f), 0.001)
+		require.Len(t, f.Confidences, 1)
+		assert.Contains(t, f.Confidences[0].Justification, "registered direct subsidiary")
 	}
 	names := []string{domainFindings[0].Value, domainFindings[1].Value}
 	assert.Contains(t, names, "Acme Subsidiary A")
@@ -325,7 +327,9 @@ func TestGLEIFPlugin_Run_MultipleNameMatches(t *testing.T) {
 	for _, f := range findings {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "name-match", f.Data["relationshipType"])
-		assert.Equal(t, plugins.ConfidenceLow, f.Data["confidence"])
+		assert.InDelta(t, plugins.ConfidenceLow, plugins.TotalConfidence(f), 0.001)
+		require.Len(t, f.Confidences, 1)
+		assert.Contains(t, f.Confidences[0].Justification, "secondary GLEIF legal-name search match")
 	}
 }
 
@@ -451,7 +455,9 @@ func TestGLEIFPlugin_Run_DirectParent_EmitsPreseed(t *testing.T) {
 	assert.Equal(t, "whois+company", pf.Data["preseed_type"])
 	assert.Equal(t, "Acme Holdings", pf.Data["preseed_title"])
 	assert.Equal(t, "LEI_PARENT", pf.Data["lei"])
-	assert.Equal(t, plugins.ConfidenceHigh, pf.Data["confidence"])
+	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(pf), 0.001)
+	require.Len(t, pf.Confidences, 1)
+	assert.Contains(t, pf.Confidences[0].Justification, "registered direct parent")
 }
 
 func TestGLEIFPlugin_Run_UltimateParent_EmitsPreseed(t *testing.T) {
@@ -498,7 +504,9 @@ func TestGLEIFPlugin_Run_UltimateParent_EmitsPreseed(t *testing.T) {
 
 	for _, pf := range preseedValues {
 		assert.Equal(t, "whois+company", pf.Data["preseed_type"])
-		assert.Equal(t, plugins.ConfidenceHigh, pf.Data["confidence"])
+		assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(pf), 0.001)
+		require.Len(t, pf.Confidences, 1)
+		assert.Contains(t, pf.Confidences[0].Justification, "parent")
 	}
 }
 
@@ -538,7 +546,9 @@ func TestGLEIFPlugin_Run_Subsidiaries_EmitPreseeds(t *testing.T) {
 
 	for _, pf := range preseedValues {
 		assert.Equal(t, "whois+company", pf.Data["preseed_type"])
-		assert.Equal(t, plugins.ConfidenceHigh, pf.Data["confidence"])
+		assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(pf), 0.001)
+		require.Len(t, pf.Confidences, 1)
+		assert.Contains(t, pf.Confidences[0].Justification, "registered direct subsidiary")
 		assert.Equal(t, pf.Value, pf.Data["preseed_title"])
 	}
 }

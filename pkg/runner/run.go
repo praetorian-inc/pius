@@ -473,9 +473,9 @@ func printFindings(findings []plugins.Finding, format string) error {
 			// Surface review flag and confidence for borderline findings
 			if plugins.NeedsReview(f) {
 				if colorEnabled() {
-					line += fmt.Sprintf(" ⚠ needs-review [confidence:%.2f]", plugins.Confidence(f))
+					line += fmt.Sprintf(" ⚠ needs-review [confidence:%.2f]", plugins.TotalConfidence(f))
 				} else {
-					line += fmt.Sprintf(" [needs-review confidence:%.2f]", plugins.Confidence(f))
+					line += fmt.Sprintf(" [needs-review confidence:%.2f]", plugins.TotalConfidence(f))
 				}
 			}
 			fmt.Println(line)

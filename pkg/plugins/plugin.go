@@ -55,6 +55,18 @@ type Input struct {
 	Meta map[string]string
 }
 
+// Confidence is a single piece of scored, explained evidence supporting a
+// finding. Entries are additive: a finding's total confidence is the sum of its
+// entry scores, capped at 1.0 (see TotalConfidence).
+type Confidence struct {
+	// Score is this evidence's contribution to the total confidence.
+	Score float64 `json:"score"`
+
+	// Justification explains, in human-readable terms, why this evidence
+	// supports the finding.
+	Justification string `json:"justification"`
+}
+
 // Finding represents a single discovered asset or intermediate result.
 type Finding struct {
 	// Type classifies what was found.
@@ -66,7 +78,14 @@ type Finding struct {
 	// Source is the name of the plugin that produced this finding.
 	Source string
 
-	// Data contains source-specific metadata.
+	// Confidences is the scored, justified evidence supporting this finding.
+	// An empty slice means the finding was never scored, which is distinct from
+	// a finding carrying an explicit zero-score entry. Append through
+	// AddConfidence; read the aggregate through TotalConfidence.
+	Confidences []Confidence
+
+	// Data contains source-specific metadata. It must never carry confidence
+	// state — that lives in Confidences.
 	Data map[string]any
 }
 

@@ -46,8 +46,18 @@ type GoogleDorksPlugin struct {
 	renderEnabled bool   // false for testing, true for production
 }
 
-// googleDorksConfidence is between ConfidenceLow and ConfidenceHigh — flags as needs_review.
-const googleDorksConfidence = 0.55
+// The two evidence entries sum to googleDorksConfidence, which sits between
+// ConfidenceLow and ConfidenceHigh — so every finding here needs review.
+const (
+	// confGoogleDorksSubsidiary credits the Knowledge Graph naming the company
+	// as a subsidiary of the target.
+	confGoogleDorksSubsidiary = 0.30
+	// confGoogleDorksDomain credits the follow-up search resolving that
+	// subsidiary name to the emitted domain.
+	confGoogleDorksDomain = 0.25
+
+	googleDorksConfidence = confGoogleDorksSubsidiary + confGoogleDorksDomain
+)
 
 // maxSubsidiaries caps the number of carousel subsidiaries we resolve per run.
 const maxSubsidiaries = 30
@@ -72,6 +82,11 @@ func (p *GoogleDorksPlugin) googleBase() string {
 }
 
 // makeFinding constructs a FindingDomain finding for a discovered subsidiary domain.
+//
+// The two evidence entries are independent: the Knowledge Graph naming a
+// subsidiary is one observation, and a follow-up search resolving that
+// subsidiary to a domain is another. Either can be right while the other is
+// wrong, so they are scored and justified separately.
 func (p *GoogleDorksPlugin) makeFinding(subsidiaryName, domainValue, inputDomain string) plugins.Finding {
 	f := plugins.Finding{
 		Type:   plugins.FindingDomain,
@@ -82,7 +97,10 @@ func (p *GoogleDorksPlugin) makeFinding(subsidiaryName, domainValue, inputDomain
 			"domain":     inputDomain,
 		},
 	}
-	plugins.SetConfidence(&f, googleDorksConfidence)
+	plugins.AddConfidence(&f, confGoogleDorksSubsidiary,
+		fmt.Sprintf("Google Knowledge Graph identifies %q as a subsidiary of the target", subsidiaryName))
+	plugins.AddConfidence(&f, confGoogleDorksDomain,
+		fmt.Sprintf("A search for subsidiary %q resolves to the domain %q", subsidiaryName, domainValue))
 	return f
 }
 

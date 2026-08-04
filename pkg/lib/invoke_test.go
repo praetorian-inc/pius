@@ -432,77 +432,106 @@ func TestInvoke_BridgesCredentialsDuringExecution(t *testing.T) {
 	assert.Empty(t, os.Getenv("SHODAN_API_KEY"))
 }
 
-// --- Confidence score tests ---
+// --- Confidence transport tests ---
 
-func TestExtractConfidence_Scored(t *testing.T) {
-	f := plugins.Finding{
-		Data: map[string]any{
-			"confidence":   0.72,
-			"needs_review": true,
-		},
-	}
-	c, nr := extractConfidence(f)
-	require.NotNil(t, c)
-	require.NotNil(t, nr)
-	assert.Equal(t, 0.72, *c)
-	assert.Equal(t, true, *nr)
+func TestConfidenceFields_Scored(t *testing.T) {
+	var f plugins.Finding
+	plugins.AddConfidence(&f, 0.60, "blog URL matches the known domain")
+	plugins.AddConfidence(&f, 0.02, "organization name partially matches")
+
+	confidences, total, needsReview := confidenceFields(f)
+
+	require.Len(t, confidences, 2)
+	assert.Equal(t, capmodel.Confidence{Score: 0.60, Justification: "blog URL matches the known domain"}, confidences[0])
+	assert.Equal(t, capmodel.Confidence{Score: 0.02, Justification: "organization name partially matches"}, confidences[1])
+
+	require.NotNil(t, total)
+	require.NotNil(t, needsReview)
+	assert.InDelta(t, 0.62, *total, 0.001)
+	assert.True(t, *needsReview, "0.62 falls short of ConfidenceHigh")
 }
 
-func TestExtractConfidence_HighConfidence(t *testing.T) {
-	f := plugins.Finding{
-		Data: map[string]any{
-			"confidence":   0.90,
-			"needs_review": false,
-		},
-	}
-	c, nr := extractConfidence(f)
-	require.NotNil(t, c)
-	require.NotNil(t, nr)
-	assert.Equal(t, 0.90, *c)
-	assert.Equal(t, false, *nr)
+func TestConfidenceFields_HighConfidence(t *testing.T) {
+	var f plugins.Finding
+	plugins.AddConfidence(&f, 0.90, "registered direct parent")
+
+	_, total, needsReview := confidenceFields(f)
+
+	require.NotNil(t, total)
+	require.NotNil(t, needsReview)
+	assert.InDelta(t, 0.90, *total, 0.001)
+	assert.False(t, *needsReview)
 }
 
-func TestExtractConfidence_Unscored(t *testing.T) {
+func TestConfidenceFields_CapsAggregate(t *testing.T) {
+	var f plugins.Finding
+	plugins.AddConfidence(&f, 0.60, "first")
+	plugins.AddConfidence(&f, 0.60, "second")
+
+	confidences, total, _ := confidenceFields(f)
+
+	assert.Len(t, confidences, 2, "both entries survive uncapped")
+	require.NotNil(t, total)
+	assert.InDelta(t, 1.0, *total, 0.001, "only the aggregate is capped")
+}
+
+// TestConfidenceFields_Unscored is the fallback contract: no evidence means no
+// claim, so Guard sees nil and may apply its own historical default.
+func TestConfidenceFields_Unscored(t *testing.T) {
 	f := plugins.Finding{Data: map[string]any{"org": "Acme"}}
-	c, nr := extractConfidence(f)
-	assert.Nil(t, c)
-	assert.Nil(t, nr)
+
+	confidences, total, needsReview := confidenceFields(f)
+
+	assert.Nil(t, confidences)
+	assert.Nil(t, total)
+	assert.Nil(t, needsReview)
 }
 
-func TestExtractConfidence_NilData(t *testing.T) {
-	f := plugins.Finding{}
-	c, nr := extractConfidence(f)
-	assert.Nil(t, c)
-	assert.Nil(t, nr)
+// TestConfidenceFields_ExplicitZero is the other half of that contract: a
+// producer that scored the finding and got zero DID make a claim, so the 0.0 is
+// materialized and blocks the fallback.
+func TestConfidenceFields_ExplicitZero(t *testing.T) {
+	var f plugins.Finding
+	plugins.AddConfidence(&f, 0.0, "nothing substantiated this candidate")
+
+	confidences, total, needsReview := confidenceFields(f)
+
+	require.Len(t, confidences, 1)
+	require.NotNil(t, total)
+	require.NotNil(t, needsReview)
+	assert.InDelta(t, 0.0, *total, 0.001)
+	assert.True(t, *needsReview)
+}
+
+func TestConfidenceFields_NilFinding(t *testing.T) {
+	confidences, total, needsReview := confidenceFields(plugins.Finding{})
+	assert.Nil(t, confidences)
+	assert.Nil(t, total)
+	assert.Nil(t, needsReview)
 }
 
 func TestInvoke_DomainWithConfidence(t *testing.T) {
 	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
-		return []plugins.Finding{
-			{
-				Type: plugins.FindingDomain, Value: "acme.com", Source: "github-org",
-				Data: map[string]any{"confidence": 0.55, "needs_review": true},
-			},
-		}, nil
+		f := plugins.Finding{Type: plugins.FindingDomain, Value: "acme.com", Source: "github-org"}
+		plugins.AddConfidence(&f, 0.30, "GitHub organization blog URL matches the known domain")
+		plugins.AddConfidence(&f, 0.25, "GitHub organization name matches the target organization")
+		return []plugins.Finding{f}, nil
 	})
 	defer restore()
 
-	d := &Discovery{}
-	var emitted []any
-	emitter := capability.EmitterFunc(func(models ...any) error {
-		emitted = append(emitted, models...)
-		return nil
-	})
-
-	err := d.Invoke(capability.ExecutionContext{}, capmodel.Preseed{Value: "Acme Corp"}, emitter)
-	require.NoError(t, err)
+	emitted := invokeAndCollect(t)
 	require.Len(t, emitted, 1)
 
 	asset := emitted[0].(capmodel.Asset)
+	require.Len(t, asset.Confidences, 2, "every entry survives transport")
+	assert.Equal(t, "GitHub organization blog URL matches the known domain", asset.Confidences[0].Justification)
+	assert.Equal(t, "GitHub organization name matches the target organization", asset.Confidences[1].Justification)
+	assert.InDelta(t, 0.30, asset.Confidences[0].Score, 0.001)
+
 	require.NotNil(t, asset.Confidence)
 	require.NotNil(t, asset.NeedsReview)
-	assert.Equal(t, 0.55, *asset.Confidence)
-	assert.Equal(t, true, *asset.NeedsReview)
+	assert.InDelta(t, 0.55, *asset.Confidence, 0.001)
+	assert.True(t, *asset.NeedsReview)
 }
 
 func TestInvoke_DomainWithoutConfidence(t *testing.T) {
@@ -513,81 +542,97 @@ func TestInvoke_DomainWithoutConfidence(t *testing.T) {
 	})
 	defer restore()
 
-	d := &Discovery{}
-	var emitted []any
-	emitter := capability.EmitterFunc(func(models ...any) error {
-		emitted = append(emitted, models...)
-		return nil
-	})
-
-	err := d.Invoke(capability.ExecutionContext{}, capmodel.Preseed{Value: "Acme Corp"}, emitter)
-	require.NoError(t, err)
+	emitted := invokeAndCollect(t)
 	require.Len(t, emitted, 1)
 
 	asset := emitted[0].(capmodel.Asset)
+	assert.Nil(t, asset.Confidences)
 	assert.Nil(t, asset.Confidence)
 	assert.Nil(t, asset.NeedsReview)
 }
 
-func TestInvoke_CIDRWithConfidence(t *testing.T) {
+// TestInvoke_DomainWithExplicitZeroConfidence proves the explicit-zero case
+// survives the whole emitter, not just confidenceFields.
+func TestInvoke_DomainWithExplicitZeroConfidence(t *testing.T) {
 	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
-		return []plugins.Finding{
-			{
-				Type: plugins.FindingCIDR, Value: "203.0.113.0/24", Source: "arin",
-				Data: map[string]any{"org": "Acme Corp", "confidence": 0.40, "needs_review": true},
-			},
-		}, nil
+		f := plugins.Finding{Type: plugins.FindingDomain, Value: "acme.com", Source: "github-org"}
+		plugins.AddConfidence(&f, 0.0, "no signal supported this candidate")
+		return []plugins.Finding{f}, nil
 	})
 	defer restore()
 
-	d := &Discovery{}
-	var emitted []any
-	emitter := capability.EmitterFunc(func(models ...any) error {
-		emitted = append(emitted, models...)
-		return nil
-	})
-
-	err := d.Invoke(capability.ExecutionContext{}, capmodel.Preseed{Value: "Acme Corp"}, emitter)
-	require.NoError(t, err)
+	emitted := invokeAndCollect(t)
 	require.Len(t, emitted, 1)
 
 	asset := emitted[0].(capmodel.Asset)
+	require.Len(t, asset.Confidences, 1)
+	require.NotNil(t, asset.Confidence)
+	assert.InDelta(t, 0.0, *asset.Confidence, 0.001, "an explicit zero is materialized, not dropped")
+	require.NotNil(t, asset.NeedsReview)
+	assert.True(t, *asset.NeedsReview)
+}
+
+func TestInvoke_CIDRWithConfidence(t *testing.T) {
+	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
+		f := plugins.Finding{
+			Type: plugins.FindingCIDR, Value: "203.0.113.0/24", Source: "arin",
+			Data: map[string]any{"org": "Acme Corp"},
+		}
+		plugins.AddConfidence(&f, 0.25, "netblock is registered to the queried organization")
+		plugins.AddConfidence(&f, 0.15, "registrant country matches the target")
+		return []plugins.Finding{f}, nil
+	})
+	defer restore()
+
+	emitted := invokeAndCollect(t)
+	require.Len(t, emitted, 1)
+
+	asset := emitted[0].(capmodel.Asset)
+	require.Len(t, asset.Confidences, 2)
+	assert.Equal(t, "netblock is registered to the queried organization", asset.Confidences[0].Justification)
 	require.NotNil(t, asset.Confidence)
 	require.NotNil(t, asset.NeedsReview)
-	assert.Equal(t, 0.40, *asset.Confidence)
-	assert.Equal(t, true, *asset.NeedsReview)
+	assert.InDelta(t, 0.40, *asset.Confidence, 0.001)
+	assert.True(t, *asset.NeedsReview)
 }
 
 func TestInvoke_PreseedWithConfidence(t *testing.T) {
 	restore := withMockRunner(func(ctx context.Context, cfg runner.Config) ([]plugins.Finding, error) {
-		return []plugins.Finding{
-			{
-				Type: plugins.FindingPreseed, Value: "sub.acme.com", Source: "gleif",
-				Data: map[string]any{
-					"preseed_type": "whois", "preseed_title": "subsidiary",
-					"confidence": 0.65, "needs_review": false,
-				},
-			},
-		}, nil
+		f := plugins.Finding{
+			Type: plugins.FindingPreseed, Value: "sub.acme.com", Source: "gleif",
+			Data: map[string]any{"preseed_type": "whois", "preseed_title": "subsidiary"},
+		}
+		plugins.AddConfidence(&f, 0.65, "GLEIF records this entity as a registered direct subsidiary")
+		return []plugins.Finding{f}, nil
 	})
 	defer restore()
 
-	d := &Discovery{}
+	emitted := invokeAndCollect(t)
+	require.Len(t, emitted, 1)
+
+	preseed := emitted[0].(capmodel.Preseed)
+	require.Len(t, preseed.Confidences, 1)
+	assert.Equal(t, "GLEIF records this entity as a registered direct subsidiary", preseed.Confidences[0].Justification)
+	require.NotNil(t, preseed.Confidence)
+	require.NotNil(t, preseed.NeedsReview)
+	assert.InDelta(t, 0.65, *preseed.Confidence, 0.001)
+	assert.False(t, *preseed.NeedsReview)
+}
+
+// invokeAndCollect runs Discovery.Invoke against the currently-installed mock
+// runner and returns everything it emitted.
+func invokeAndCollect(t *testing.T) []any {
+	t.Helper()
+
 	var emitted []any
 	emitter := capability.EmitterFunc(func(models ...any) error {
 		emitted = append(emitted, models...)
 		return nil
 	})
 
-	err := d.Invoke(capability.ExecutionContext{}, capmodel.Preseed{Value: "Acme Corp"}, emitter)
+	err := (&Discovery{}).Invoke(capability.ExecutionContext{}, capmodel.Preseed{Value: "Acme Corp"}, emitter)
 	require.NoError(t, err)
-	require.Len(t, emitted, 1)
-
-	preseed := emitted[0].(capmodel.Preseed)
-	require.NotNil(t, preseed.Confidence)
-	require.NotNil(t, preseed.NeedsReview)
-	assert.Equal(t, 0.65, *preseed.Confidence)
-	assert.Equal(t, false, *preseed.NeedsReview)
+	return emitted
 }
 
 // --- Task 6: whois+email preseed routing tests ---

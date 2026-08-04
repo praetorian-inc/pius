@@ -5,12 +5,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/cache"
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
+)
+
+// Censys certificate-organization evidence. A Subject Organization is only
+// emitted once it has been seen on censysMinHosts distinct hosts, and each such
+// host contributes confCensysPerHost — so the emission threshold reproduces the
+// previous flat plugins.ConfidenceHigh and broader sightings score higher.
+const (
+	censysMinHosts    = 5
+	confCensysPerHost = 0.13
 )
 
 func init() {
@@ -416,7 +427,7 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 	// Emit preseed for any org name that appears across 5+ distinct hosts.
 	// orgKey is the lowercase-normalized key; orgDisplay[orgKey] is the original casing.
 	for orgKey, hosts := range orgHosts {
-		if len(hosts) < 5 {
+		if len(hosts) < censysMinHosts {
 			continue
 		}
 		displayName := orgDisplay[orgKey]
@@ -432,7 +443,17 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 				"host_count":    len(hosts),
 			},
 		}
-		plugins.SetConfidence(&f, plugins.ConfidenceHigh)
+		// Each distinct host observing this Subject Organization is an
+		// independent sighting, so each contributes its own entry: the
+		// censysMinHosts threshold reproduces the previous flat 0.65, and a
+		// certificate org seen across more hosts climbs toward the 1.0 cap.
+		// Hosts are keyed in a set, so a host cannot be credited twice. Host
+		// identifiers are the only detail in the justification — no certificate
+		// contents.
+		for _, host := range slices.Sorted(maps.Keys(hosts)) {
+			plugins.AddConfidence(&f, confCensysPerHost,
+				fmt.Sprintf("Certificate Subject Organization %q was observed on host %s", displayName, host))
+		}
 		findings = append(findings, f)
 	}
 

@@ -319,16 +319,29 @@ func TestWikidataPlugin_Run_ConfidenceScoring(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, f := range findings {
-		conf, ok := f.Data["confidence"].(float64)
-		require.True(t, ok, "confidence should be set")
+		require.NotEmpty(t, f.Confidences, "confidence evidence should be set")
+		for _, c := range f.Confidences {
+			assert.NotEmpty(t, c.Justification, "every entry needs a justification")
+		}
+		conf := plugins.TotalConfidence(f)
 
 		switch f.Type {
 		case plugins.FindingDomain:
-			// Domain findings from website should have high confidence
-			assert.Equal(t, plugins.ConfidenceHigh, conf, "domain findings should have high confidence")
+			// A domain finding rests on two independent claims: the relationship
+			// and the website that names this domain.
+			assert.InDelta(t, plugins.ConfidenceHigh, conf, 0.001, "domain findings should have high confidence")
+			assert.False(t, plugins.NeedsReview(f),
+				"a corroborated Wikidata domain reaches the clean bar exactly; float rounding must not push it under")
+			require.Len(t, f.Confidences, 2)
+			assert.InDelta(t, confWikidataRelationship, f.Confidences[0].Score, 0.001)
+			assert.InDelta(t, confWikidataWebsite, f.Confidences[1].Score, 0.001)
+			assert.Contains(t, f.Confidences[1].Justification, "official website")
 		case plugins.FindingPreseed:
-			// Subsidiary name findings should have medium confidence
-			assert.Equal(t, 0.55, conf, "subsidiary name findings should have medium confidence")
+			// A name preseed rests on the relationship alone.
+			assert.InDelta(t, 0.55, conf, 0.001, "subsidiary name findings should have medium confidence")
+			assert.True(t, plugins.NeedsReview(f))
+			require.Len(t, f.Confidences, 1)
+			assert.Contains(t, f.Confidences[0].Justification, "subsidiary or owned entity")
 		}
 	}
 }

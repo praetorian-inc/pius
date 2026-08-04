@@ -124,8 +124,9 @@ func TestReverseWhois_Run_UnverifiedMatchNeedsReview(t *testing.T) {
 	require.Len(t, findings, 2, "clear-mismatch candidate must be de-ranked, never dropped")
 	byDomain := map[string]plugins.Finding{}
 	for _, f := range findings {
-		conf, ok := f.Data["confidence"].(float64)
-		require.True(t, ok, "confidence must be set for %q", f.Value)
+		require.Len(t, f.Confidences, 1, "one verification outcome, one entry, for %q", f.Value)
+		assert.NotEmpty(t, f.Confidences[0].Justification, "%q must explain its score", f.Value)
+		conf := plugins.TotalConfidence(f)
 		assert.GreaterOrEqual(t, conf, plugins.ConfidenceLow,
 			"confidence for %q must be at or above the noise floor", f.Value)
 		assert.Less(t, conf, plugins.ConfidenceHigh,
@@ -136,9 +137,9 @@ func TestReverseWhois_Run_UnverifiedMatchNeedsReview(t *testing.T) {
 	}
 	require.Contains(t, byDomain, "acme.com")
 	require.Contains(t, byDomain, "walmart.com")
-	assert.InDelta(t, 0.50, byDomain["acme.com"].Data["confidence"].(float64), 0.001,
+	assert.InDelta(t, 0.50, plugins.TotalConfidence(byDomain["acme.com"]), 0.001,
 		"unresolvable match must be scored at the 0.50 mid-band value")
-	assert.InDelta(t, confReverseWhoisMismatch, byDomain["walmart.com"].Data["confidence"].(float64), 0.001,
+	assert.InDelta(t, confReverseWhoisMismatch, plugins.TotalConfidence(byDomain["walmart.com"]), 0.001,
 		"clear mismatch must be de-ranked to the bottom of the band")
 }
 
@@ -159,9 +160,9 @@ func TestReverseWhois_Run_CorroboratedRanksHigherStillNeedsReview(t *testing.T) 
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
 	f := findings[0]
-	assert.InDelta(t, 0.60, plugins.Confidence(f), 0.001,
+	assert.InDelta(t, 0.60, plugins.TotalConfidence(f), 0.001,
 		"corroborated match must rank at the 0.60 top-of-band value")
-	assert.Less(t, plugins.Confidence(f), plugins.ConfidenceHigh,
+	assert.Less(t, plugins.TotalConfidence(f), plugins.ConfidenceHigh,
 		"corroborated match must still be below ConfidenceHigh (never auto-clean)")
 	assert.True(t, plugins.NeedsReview(f), "corroborated match must still be needs_review")
 }

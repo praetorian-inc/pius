@@ -133,6 +133,16 @@ type leiChildrenResponse struct {
 	Meta leiMeta     `json:"meta"`
 }
 
+// GLEIF relationship kinds. The first three are registered corporate-hierarchy
+// edges from the LEI registry; relationshipNameMatch is a secondary legal-name
+// search hit carrying no registered relationship at all.
+const (
+	relationshipDirectParent   = "direct-parent"
+	relationshipUltimateParent = "ultimate-parent"
+	relationshipSubsidiary     = "subsidiary"
+	relationshipNameMatch      = "name-match"
+)
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // hasParent reports whether the record has a registered direct parent LEI.
@@ -141,8 +151,32 @@ func hasParent(record *leiRecord) bool {
 	return ok
 }
 
+// gleifEvidence returns the score and justification for a GLEIF record reached
+// through relationshipType. A record's confidence comes from exactly one
+// source — how the LEI registry relates it to the queried entity — so there is
+// one entry, not a decomposition: a registered hierarchy edge is authoritative,
+// while a secondary legal-name hit is only a name collision until something
+// corroborates it.
+func gleifEvidence(record leiRecord, relationshipType string) (float64, string) {
+	name := record.Attributes.Entity.LegalName.Name
+	switch relationshipType {
+	case relationshipDirectParent:
+		return plugins.ConfidenceHigh,
+			fmt.Sprintf("GLEIF records %q (LEI %s) as the registered direct parent of the queried entity", name, record.ID)
+	case relationshipUltimateParent:
+		return plugins.ConfidenceHigh,
+			fmt.Sprintf("GLEIF records %q (LEI %s) as the registered ultimate parent of the queried entity", name, record.ID)
+	case relationshipSubsidiary:
+		return plugins.ConfidenceHigh,
+			fmt.Sprintf("GLEIF records %q (LEI %s) as a registered direct subsidiary of the queried entity", name, record.ID)
+	default:
+		return plugins.ConfidenceLow,
+			fmt.Sprintf("%q (LEI %s) is a secondary GLEIF legal-name search match, not a registered corporate relationship", name, record.ID)
+	}
+}
+
 // recordToFinding converts a GLEIF LEI record to a Pius Finding.
-func recordToFinding(record leiRecord, relationshipType string, confidence float64) plugins.Finding {
+func recordToFinding(record leiRecord, relationshipType string) plugins.Finding {
 	f := plugins.Finding{
 		Type:   plugins.FindingDomain,
 		Value:  record.Attributes.Entity.LegalName.Name,
@@ -154,14 +188,15 @@ func recordToFinding(record leiRecord, relationshipType string, confidence float
 			"relationshipType": relationshipType,
 		},
 	}
-	plugins.SetConfidence(&f, confidence)
+	score, justification := gleifEvidence(record, relationshipType)
+	plugins.AddConfidence(&f, score, justification)
 	return f
 }
 
 // recordToPreseed converts a GLEIF LEI record to a FindingPreseed.
 // Used for parent and subsidiary records so the CIDR discovery pipeline
 // can work when WHOIS returns nothing (GDPR redaction).
-func recordToPreseed(record leiRecord, confidence float64) plugins.Finding {
+func recordToPreseed(record leiRecord, relationshipType string) plugins.Finding {
 	f := plugins.Finding{
 		Type:   plugins.FindingPreseed,
 		Value:  record.Attributes.Entity.LegalName.Name,
@@ -173,7 +208,8 @@ func recordToPreseed(record leiRecord, confidence float64) plugins.Finding {
 			"jurisdiction":  record.Attributes.Entity.Jurisdiction,
 		},
 	}
-	plugins.SetConfidence(&f, confidence)
+	score, justification := gleifEvidence(record, relationshipType)
+	plugins.AddConfidence(&f, score, justification)
 	return f
 }
 
@@ -226,8 +262,8 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 			if parentRecord, err := p.getRecord(ctx, directParentLEI); err != nil {
 				log.Printf("[gleif] parent record failed for %s: %v", directParentLEI, err)
 			} else {
-				addFinding(recordToFinding(*parentRecord, "direct-parent", plugins.ConfidenceHigh))
-				addFinding(recordToPreseed(*parentRecord, plugins.ConfidenceHigh))
+				addFinding(recordToFinding(*parentRecord, relationshipDirectParent))
+				addFinding(recordToPreseed(*parentRecord, relationshipDirectParent))
 			}
 
 			// Ultimate parent — only emit if different from direct parent.
@@ -238,8 +274,8 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 				if ultimateRecord, err := p.getRecord(ctx, ultimateParentLEI); err != nil {
 					log.Printf("[gleif] ultimate parent record failed for %s: %v", ultimateParentLEI, err)
 				} else {
-					addFinding(recordToFinding(*ultimateRecord, "ultimate-parent", plugins.ConfidenceHigh))
-					addFinding(recordToPreseed(*ultimateRecord, plugins.ConfidenceHigh))
+					addFinding(recordToFinding(*ultimateRecord, relationshipUltimateParent))
+					addFinding(recordToPreseed(*ultimateRecord, relationshipUltimateParent))
 				}
 			}
 		}
@@ -255,8 +291,8 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	}
 	for _, child := range children {
 		if child.Attributes.Entity.LegalName.Name != "" {
-			addFinding(recordToFinding(child, "subsidiary", plugins.ConfidenceHigh))
-			addFinding(recordToPreseed(child, plugins.ConfidenceHigh))
+			addFinding(recordToFinding(child, relationshipSubsidiary))
+			addFinding(recordToPreseed(child, relationshipSubsidiary))
 		}
 	}
 
@@ -264,7 +300,7 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	// Do NOT emit preseeds for these — ConfidenceLow would generate noise.
 	for _, c := range candidates[1:] {
 		if c.Attributes.Entity.LegalName.Name != "" {
-			addFinding(recordToFinding(c, "name-match", plugins.ConfidenceLow))
+			addFinding(recordToFinding(c, relationshipNameMatch))
 		}
 	}
 

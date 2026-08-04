@@ -27,9 +27,9 @@ func init() {
 //  2. Fetch full org details for each candidate
 //  3. Score each candidate (domain cross-reference + name similarity + activity)
 //  4. Emit high-confidence matches (≥0.65) as FindingDomain for blog URL
-//  5. Emit borderline matches (0.35–0.64) with needs_review:true for future agent review
+//  5. Emit borderline matches (0.35–0.64), which NeedsReview flags for future agent review
 //
-// Scoring:
+// Scoring — each signal is a separate, separately justified evidence entry:
 //   - 0.60: blog URL contains input domain (strongest signal)
 //   - 0.25: name token similarity with input OrgName
 //   - 0.10: org login contains first word of OrgName
@@ -64,7 +64,7 @@ func (p *GitHubOrgPlugin) key() string {
 
 const (
 	githubEmitThreshold   = 0.65 // emit FindingDomain
-	githubReviewThreshold = 0.35 // emit with needs_review:true
+	githubReviewThreshold = 0.35 // emit, flagged by plugins.NeedsReview
 	githubMaxCandidates   = 5    // max orgs to fetch full details for
 )
 
@@ -164,12 +164,16 @@ func (p *GitHubOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 			continue
 		}
 
-		confidence := p.score(org, input)
-		if confidence < plugins.ConfidenceLow {
-			continue // below noise floor — discard
+		// Score each candidate finding independently: score() appends to the
+		// finding's own (nil) evidence slice, so the two findings built from one
+		// org never share a backing array.
+		for _, f := range p.buildFindings(org, input) {
+			p.score(&f, org, input)
+			if plugins.TotalConfidence(f) < plugins.ConfidenceLow {
+				continue // below noise floor — discard
+			}
+			findings = append(findings, f)
 		}
-
-		findings = append(findings, p.buildFindings(org, confidence, input)...)
 	}
 
 	if c != nil {
@@ -191,36 +195,44 @@ func (p *GitHubOrgPlugin) fetchOrg(ctx context.Context, login string, headers ma
 	return &org, nil
 }
 
-// score computes a confidence score [0.0, 1.0] for an org matching the input.
-func (p *GitHubOrgPlugin) score(org *githubOrg, input plugins.Input) float64 {
-	score := 0.0
-
+// score appends one evidence entry per independently observed signal that this
+// org matches the input. Each signal is scored and justified separately so a
+// reviewer sees which of the four actually fired, not just their sum.
+func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input plugins.Input) {
 	// Domain cross-reference: blog URL contains the known domain (strongest signal)
 	if input.Domain != "" && domainContains(org.Blog, input.Domain) {
-		score += 0.60
+		plugins.AddConfidence(finding, 0.60,
+			fmt.Sprintf("GitHub organization blog URL matches the known domain %q", input.Domain))
 	}
 
 	// Name similarity: token overlap between org display name and OrgName
-	score += 0.25 * tokenSimilarity(org.Name, input.OrgName)
+	if similarity := tokenSimilarity(org.Name, input.OrgName); similarity > 0 {
+		plugins.AddConfidence(finding, 0.25*similarity,
+			fmt.Sprintf("GitHub organization name %q matches the target organization %q with %.0f%% token similarity",
+				org.Name, input.OrgName, similarity*100))
+	}
 
 	// Handle contains first word of OrgName (e.g. "praetorian" in "praetorian-inc")
-	if len(input.OrgName) > 0 {
-		firstWord := strings.ToLower(strings.Fields(input.OrgName)[0])
+	if fields := strings.Fields(input.OrgName); len(fields) > 0 {
+		firstWord := strings.ToLower(fields[0])
 		if strings.Contains(strings.ToLower(org.Login), firstWord) {
-			score += 0.10
+			plugins.AddConfidence(finding, 0.10,
+				fmt.Sprintf("GitHub organization login %q contains target organization token %q",
+					org.Login, firstWord))
 		}
 	}
 
 	// Activity signal: active org (not a squatter or placeholder)
 	if org.PublicRepos > 5 {
-		score += 0.05
+		plugins.AddConfidence(finding, 0.05,
+			fmt.Sprintf("GitHub organization has %d public repositories, indicating an active organization",
+				org.PublicRepos))
 	}
-
-	return score
 }
 
-// buildFindings emits findings for a scored org.
-func (p *GitHubOrgPlugin) buildFindings(org *githubOrg, confidence float64, input plugins.Input) []plugins.Finding {
+// buildFindings emits the unscored candidate findings for an org. Callers run
+// score on each one before deciding whether to keep it.
+func (p *GitHubOrgPlugin) buildFindings(org *githubOrg, input plugins.Input) []plugins.Finding {
 	commonData := map[string]any{
 		"org":          input.OrgName,
 		"github_login": org.Login,
@@ -238,20 +250,18 @@ func (p *GitHubOrgPlugin) buildFindings(org *githubOrg, confidence float64, inpu
 			data[k] = v
 		}
 		data["field"] = "blog"
-		f := plugins.Finding{Type: plugins.FindingDomain, Value: blogDomain, Source: "github-org", Data: data}
-		plugins.SetConfidence(&f, confidence)
-		findings = append(findings, f)
+		findings = append(findings, plugins.Finding{
+			Type: plugins.FindingDomain, Value: blogDomain, Source: "github-org", Data: data,
+		})
 	}
 
 	// Always emit the GitHub org as a domain finding (github.com/{login})
-	orgFinding := plugins.Finding{
+	findings = append(findings, plugins.Finding{
 		Type:   plugins.FindingDomain,
 		Value:  fmt.Sprintf("github.com/%s", org.Login),
 		Source: "github-org",
 		Data:   commonData,
-	}
-	plugins.SetConfidence(&orgFinding, confidence)
-	findings = append(findings, orgFinding)
+	})
 
 	return findings
 }

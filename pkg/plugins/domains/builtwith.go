@@ -4,13 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
+
+// confBuiltWithSharedAnalytics is the evidence contributed by one analytics
+// identifier shared between a discovered domain and the target.
+const confBuiltWithSharedAnalytics = 0.60
 
 func init() {
 	plugins.Register("builtwith", func() plugins.Plugin { return &BuiltWithPlugin{client: client.New()} })
@@ -51,7 +57,11 @@ func (p *BuiltWithPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	apiKey := os.Getenv("BUILTWITH_API_KEY")
 	ids := strings.Split(input.Meta["analytics_ids"], ",")
 
-	domains := make(map[string]struct{})
+	// Keyed by domain, then by the analytics identifier that linked it to the
+	// target. Retaining the identifiers is what lets each one become its own
+	// evidence entry — collapsing to a bare domain set would throw away exactly
+	// the justification a reviewer needs.
+	domainIDs := make(map[string]map[string]struct{})
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		if id == "" {
@@ -69,15 +79,19 @@ func (p *BuiltWithPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 			continue
 		}
 		for _, d := range matches {
-			domains[strings.ToLower(strings.TrimSpace(d))] = struct{}{}
+			domain := strings.ToLower(strings.TrimSpace(d))
+			if domain == "" {
+				continue
+			}
+			if domainIDs[domain] == nil {
+				domainIDs[domain] = make(map[string]struct{})
+			}
+			domainIDs[domain][id] = struct{}{}
 		}
 	}
 
-	findings := make([]plugins.Finding, 0, len(domains))
-	for domain := range domains {
-		if domain == "" {
-			continue
-		}
+	findings := make([]plugins.Finding, 0, len(domainIDs))
+	for domain, analyticsIDs := range domainIDs {
 		f := plugins.Finding{
 			Type:   plugins.FindingDomain,
 			Value:  domain,
@@ -86,7 +100,14 @@ func (p *BuiltWithPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 				"org": input.OrgName,
 			},
 		}
-		plugins.SetConfidence(&f, 0.6)
+		// Each distinct identifier is an independent link between the domain and
+		// the target, so each gets its own entry and several of them aggregate
+		// toward the cap. The nested set deduplicates repeated domain/identifier
+		// pairs across lookups.
+		for _, id := range slices.Sorted(maps.Keys(analyticsIDs)) {
+			plugins.AddConfidence(&f, confBuiltWithSharedAnalytics,
+				fmt.Sprintf("Domain shares analytics identifier %q with the target", id))
+		}
 		findings = append(findings, f)
 	}
 	return findings, nil

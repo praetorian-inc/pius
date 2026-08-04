@@ -138,13 +138,13 @@ func TestWhoxyReverseWhois_Run_ConfidenceScore(t *testing.T) {
 	for _, f := range findings {
 		byDomain[f.Value] = f
 	}
-	assert.InDelta(t, confReverseWhoisCorroborated, plugins.Confidence(byDomain["acme.com"]), 0.001,
+	assert.InDelta(t, confReverseWhoisCorroborated, plugins.TotalConfidence(byDomain["acme.com"]), 0.001,
 		"corroborated match must rank at the 0.60 top-of-band value")
-	assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(byDomain["acme-corp.com"]), 0.001,
+	assert.InDelta(t, confReverseWhoisUnverified, plugins.TotalConfidence(byDomain["acme-corp.com"]), 0.001,
 		"unresolvable match must sit at the 0.50 mid-band value")
 
 	for _, f := range findings {
-		conf := plugins.Confidence(f)
+		conf := plugins.TotalConfidence(f)
 		assert.GreaterOrEqual(t, conf, plugins.ConfidenceLow,
 			"confidence for %q must be at or above the noise floor", f.Value)
 		assert.Less(t, conf, plugins.ConfidenceHigh,
@@ -184,13 +184,13 @@ func TestWhoxyReverseWhois_Run_DeRanksClearMismatch(t *testing.T) {
 	byDomain := map[string]plugins.Finding{}
 	for _, f := range findings {
 		byDomain[f.Value] = f
-		assert.Less(t, plugins.Confidence(f), plugins.ConfidenceHigh)
+		assert.Less(t, plugins.TotalConfidence(f), plugins.ConfidenceHigh)
 		assert.True(t, plugins.NeedsReview(f))
 	}
 	require.Contains(t, byDomain, "acme.com")
 	require.Contains(t, byDomain, "walmart.com")
-	assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(byDomain["acme.com"]), 0.001)
-	assert.InDelta(t, confReverseWhoisMismatch, plugins.Confidence(byDomain["walmart.com"]), 0.001,
+	assert.InDelta(t, confReverseWhoisUnverified, plugins.TotalConfidence(byDomain["acme.com"]), 0.001)
+	assert.InDelta(t, confReverseWhoisMismatch, plugins.TotalConfidence(byDomain["walmart.com"]), 0.001,
 		"clear mismatch is de-ranked to the bottom of the band")
 }
 
