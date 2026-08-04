@@ -11,6 +11,9 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
+// GLEIF is a corroborating signal, not authoritative
+const confGLEIF = 0.50
+
 func init() {
 	plugins.Register("gleif", func() plugins.Plugin { return NewGLEIFPlugin(client.New()) })
 }
@@ -134,8 +137,8 @@ func (p *GLEIFPlugin) emitRelated(ctx context.Context, lei, relation, primaryNam
 		log.Printf("[gleif] %s record failed for %s: %v", relation, lei, err)
 		return
 	}
-	fs.Add(recordToFinding(*record, relation, plugins.ConfidenceHigh))
-	fs.Add(recordToPreseed(*record, relation, primaryName, plugins.ConfidenceHigh))
+	fs.Add(recordToFinding(*record, relation, confGLEIF))
+	fs.Add(recordToPreseed(*record, relation, primaryName, confGLEIF))
 }
 
 // enrichChildren fetches children of lei, emits findings for each (skipping
@@ -153,8 +156,8 @@ func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, prima
 		if child.ID == excludeLEI || child.Attributes.Entity.LegalName.Name == "" {
 			continue
 		}
-		fs.Add(recordToFinding(child, relation, plugins.ConfidenceHigh))
-		fs.Add(recordToPreseed(child, relation, primaryName, plugins.ConfidenceHigh))
+		fs.Add(recordToFinding(child, relation, confGLEIF))
+		fs.Add(recordToPreseed(child, relation, primaryName, confGLEIF))
 	}
 	return nil
 }

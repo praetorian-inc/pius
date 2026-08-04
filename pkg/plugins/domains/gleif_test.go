@@ -175,7 +175,7 @@ case r.URL.Path == "/lei-records/LEI001":
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "gleif", f.Source)
 		assert.Equal(t, "subsidiary", f.Data["relationshipType"])
-		assert.Equal(t, plugins.ConfidenceHigh, f.Data["confidence"])
+		assert.Equal(t, 0.50, f.Data["confidence"])
 	}
 	names := []string{domainFindings[0].Value, domainFindings[1].Value}
 	assert.Contains(t, names, "Acme Subsidiary A")
@@ -428,7 +428,7 @@ case r.URL.Path == "/lei-records/LEI001":
 	assert.Equal(t, "whois+company", pf.Data["preseed_type"])
 	assert.Equal(t, "Acme Holdings", pf.Data["preseed_title"])
 	assert.Equal(t, "LEI_PARENT", pf.Data["lei"])
-	assert.Equal(t, plugins.ConfidenceHigh, pf.Data["confidence"])
+	assert.Equal(t, 0.50, pf.Data["confidence"])
 }
 
 func TestGLEIFPlugin_Run_UltimateParent_EmitsPreseed(t *testing.T) {
@@ -475,7 +475,7 @@ case r.URL.Path == "/lei-records/LEI001":
 
 	for _, pf := range preseedValues {
 		assert.Equal(t, "whois+company", pf.Data["preseed_type"])
-		assert.Equal(t, plugins.ConfidenceHigh, pf.Data["confidence"])
+		assert.Equal(t, 0.50, pf.Data["confidence"])
 	}
 }
 
@@ -515,7 +515,7 @@ case r.URL.Path == "/lei-records/LEI001":
 
 	for _, pf := range preseedValues {
 		assert.Equal(t, "whois+company", pf.Data["preseed_type"])
-		assert.Equal(t, plugins.ConfidenceHigh, pf.Data["confidence"])
+		assert.Equal(t, 0.50, pf.Data["confidence"])
 		assert.Equal(t, pf.Value, pf.Data["preseed_title"])
 	}
 }
