@@ -44,6 +44,12 @@ func WithWhoisRaw(raw func(context.Context, string, string) (string, error)) Who
 	}
 }
 
+func WithWhoxyClient(httpClient *client.Client, apiKey string) WhoisOption {
+	return func(plugin *WhoisPlugin) {
+		plugin.whoxy = &whoxyWhoisClient{client: httpClient, apiKey: apiKey}
+	}
+}
+
 func WithRDAPLookup(lookup func(context.Context, string) (string, error)) WhoisOption {
 	return func(plugin *WhoisPlugin) {
 		plugin.rdap = rdapLookup(lookup)
@@ -239,6 +245,9 @@ func (p *WhoisPlugin) sources(whoxy *whoxyWhoisClient) []whoisSource {
 // behave exactly as the free plugin always has: a plain CLI or SDK run must not
 // silently start spending Whoxy credits.
 func (p *WhoisPlugin) whoxyClient() *whoxyWhoisClient {
+	if p.whoxy != nil && p.whoxy.apiKey != "" {
+		return p.whoxy
+	}
 	if os.Getenv("WHOXY_API_KEY") == "" {
 		return nil
 	}

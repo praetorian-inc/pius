@@ -438,6 +438,25 @@ func TestWhoisCascade_FindingDataSurvivesJSONRoundTrip(t *testing.T) {
 	})
 }
 
+func TestNewWhoisPlugin_UsesInjectedWhoxyClientWithoutEnvironment(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "")
+	stubWhoisReferralChain(t, notFoundWhoisRecord, nil)
+	stubWhoisHopBackoff(t, time.Millisecond)
+	whoxy, _ := whoxyTestServer(t,
+		fmt.Sprintf(`{"status":1,"raw_whois":%q}`, fullWhoisRecord),
+		`{"status":1,"total_records_found":0}`,
+	)
+
+	p := NewWhoisPlugin(WithWhoxyClient(whoxy.client, "injected-key"))
+	p.whoxy.baseURL = whoxy.baseURL
+	p.rdap = failingRDAP()
+
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+
+	require.NoError(t, err)
+	assert.Contains(t, recordMethods(t, findings), whoisMethodWhoxy)
+}
+
 func TestNewWhoisPlugin_UsesInjectedRDAPLookup(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
 	stubWhoisRawFn(t, func(_ context.Context, _, _ string) (string, error) {

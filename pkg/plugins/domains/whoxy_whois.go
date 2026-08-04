@@ -17,6 +17,7 @@ import (
 // a second registered plugin would query Whoxy again independently.
 type whoxyWhoisClient struct {
 	client  *client.Client
+	apiKey  string
 	baseURL string // overridable for tests
 }
 
@@ -72,11 +73,18 @@ func (c *whoxyWhoisClient) history(ctx context.Context, domain string) (json.Raw
 	return resp.Records, nil
 }
 
+func (c *whoxyWhoisClient) key() string {
+	if c.apiKey != "" {
+		return c.apiKey
+	}
+	return os.Getenv("WHOXY_API_KEY")
+}
+
 func (c *whoxyWhoisClient) fetch(ctx context.Context, endpoint, domain string, out any) error {
 	reqURL := fmt.Sprintf(
 		"%s/?key=%s&%s=%s",
 		c.apiBase(),
-		url.QueryEscape(os.Getenv("WHOXY_API_KEY")),
+		url.QueryEscape(c.key()),
 		endpoint,
 		url.QueryEscape(domain),
 	)
