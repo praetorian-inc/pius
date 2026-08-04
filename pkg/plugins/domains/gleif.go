@@ -98,12 +98,7 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 // each, and returns their LEIs for sibling discovery. Best-effort: errors log
 // and continue.
 func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, primaryName string, fs *plugins.FindingSet) []string {
-	fullRecord, err := p.getRecord(ctx, primary.ID)
-	if err != nil {
-		log.Printf("[gleif] get record failed for LEI %s: %v", primary.ID, err)
-		fullRecord = primary
-	}
-	if !hasParent(fullRecord) {
+	if !hasParent(primary) {
 		return nil
 	}
 
@@ -147,10 +142,7 @@ func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, prima
 	if err != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if err != nil {
-		log.Printf("[gleif] %s fetch from %s failed: %v", relation, lei, err)
-		return nil
-	}
+	// Process whatever pages succeeded even if a later page failed.
 	for _, child := range children {
 		if child.ID == excludeLEI || child.Attributes.Entity.LegalName.Name == "" {
 			continue
@@ -308,7 +300,7 @@ func hasParent(record *leiRecord) bool {
 // recordToPreseed converts a GLEIF LEI record to a FindingPreseed.
 // relationshipType is the corporate relationship (subsidiary, sibling,
 // direct-parent, ultimate-parent). corporateParent is the legal name of the
-// entity this record was discovered through (empty for parent findings).
+// entity this record was discovered through.
 func recordToPreseed(record leiRecord, relationshipType, corporateParent string, confidence float64) plugins.Finding {
 	f := plugins.Finding{
 		Type:   plugins.FindingPreseed,
