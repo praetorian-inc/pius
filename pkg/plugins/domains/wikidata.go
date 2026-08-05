@@ -13,6 +13,8 @@ import (
 
 	"github.com/praetorian-inc/pius/pkg/cache"
 	"github.com/praetorian-inc/pius/pkg/plugins"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 const (
@@ -232,11 +234,16 @@ func (p *WikidataPlugin) websiteFinding(orgName string, r sparqlBinding, status 
 // findCompanyEntity searches for a Wikidata entity matching the organization name.
 // Returns the entity ID (e.g., "Q312") or empty string if not found.
 func (p *WikidataPlugin) findCompanyEntity(ctx context.Context, orgName string) (string, error) {
-	companyID, err := p.findCompanyEntityByLabel(ctx, orgName, false)
-	if err != nil || companyID != "" {
-		return companyID, err
+	variants := companyNameVariants(orgName)
+	for _, includeAliases := range []bool{false, true} {
+		for _, variant := range variants {
+			companyID, err := p.findCompanyEntityByLabel(ctx, variant, includeAliases)
+			if err != nil || companyID != "" {
+				return companyID, err
+			}
+		}
 	}
-	return p.findCompanyEntityByLabel(ctx, orgName, true)
+	return "", nil
 }
 
 func wikidataConfidence(status string) float64 {
@@ -275,6 +282,22 @@ func (p *WikidataPlugin) findCompanyEntityByLabel(ctx context.Context, orgName s
 		return "", nil
 	}
 	return extractEntityID(resp.Results.Bindings[0].Entity.Value), nil
+}
+
+func companyNameVariants(orgName string) []string {
+	variants := []string{orgName}
+	normalized := titleCaseUppercase(orgName)
+	if normalized != "" && normalized != orgName {
+		variants = append(variants, normalized)
+	}
+	return variants
+}
+
+func titleCaseUppercase(s string) string {
+	if s != strings.ToUpper(s) || s == strings.ToLower(s) {
+		return s
+	}
+	return cases.Title(language.English).String(strings.ToLower(s))
 }
 
 func companyEntityQuery(orgName string, includeAliases bool) string {

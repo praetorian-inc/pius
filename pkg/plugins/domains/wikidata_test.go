@@ -188,6 +188,42 @@ func TestWikidataPlugin_Run_NoEntityFound(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
+func TestWikidataPlugin_Run_NormalizedEntityFallback(t *testing.T) {
+	queries := []string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/sparql-results+json")
+		query := r.URL.Query().Get("query")
+		queries = append(queries, query)
+
+		if strings.Contains(query, `rdfs:label "Fox Corporation"@en`) {
+			_, _ = w.Write(wikidataCompanyResponse("Q60238941"))
+			return
+		}
+		if strings.Contains(query, "rdfs:label") && strings.Contains(query, "wdt:P31") {
+			_, _ = w.Write(wikidataEmptyResponse())
+			return
+		}
+		if strings.Contains(query, "P749") {
+			_, _ = w.Write(wikidataSubsidiaryResponse(
+				struct{ id, label, website, relation string }{"Q166419", "Fox Broadcasting Company", "https://fox.com", "subsidiary (P749)"},
+			))
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	p := newWikidataPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "FOX CORPORATION"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "fox.com", findings[0].Value)
+	require.GreaterOrEqual(t, len(queries), 2)
+	assert.Contains(t, queries[0], `rdfs:label "FOX CORPORATION"@en`)
+	assert.Contains(t, queries[1], `rdfs:label "Fox Corporation"@en`)
+}
+
 func TestWikidataPlugin_Run_AliasEntityFallback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/sparql-results+json")
@@ -540,6 +576,24 @@ func TestExtractDomainFromURL(t *testing.T) {
 		t.Run(tt.url, func(t *testing.T) {
 			got := extractDomainFromURL(tt.url)
 			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestCompanyNameVariants(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		{"FOX CORPORATION", []string{"FOX CORPORATION", "Fox Corporation"}},
+		{"CUSHMAN & WAKEFIELD", []string{"CUSHMAN & WAKEFIELD", "Cushman & Wakefield"}},
+		{"Accenture", []string{"Accenture"}},
+		{"12345", []string{"12345"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.expected, companyNameVariants(tt.input))
 		})
 	}
 }
