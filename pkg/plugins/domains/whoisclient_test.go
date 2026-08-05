@@ -1069,6 +1069,7 @@ func TestWhoisQuery_HopBudgetExhaustionWithPendingReferralIsIncomplete(t *testin
 // parsing the salvaged record (ENG-5123 review, Codex).
 func TestWhoisPlugin_Run_CancelledContextDoesNotEmit(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var calls int
@@ -1132,6 +1133,7 @@ func TestWhoisPlugin_Run_CancelledContextDoesNotEmit(t *testing.T) {
 // socket, DNS, or real WHOIS/RDAP call happens.
 func TestWhoisPlugin_Run_RecoversParserPanic(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	// Drive whoisQuery to a successful, network-free result. The bootstrap seed
 	// (defaultServer) must refer once past itself, because whoisQuery never
 	// salvages the seed record alone (seed-guard invariant); the referred-to
@@ -1242,6 +1244,7 @@ func TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds(t *testing.T)
 		// default handler, so concurrent cases would cross-talk.
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("WHOXY_API_KEY", "")
+			t.Setenv("WHOISFREAKS_API_KEY", "")
 			logs := captureSlog(t)
 			stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
 				return tt.raw(server)
@@ -1274,6 +1277,7 @@ func TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds(t *testing.T)
 // TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds and pass.
 func TestWhoisPlugin_Run_CompleteChainEmitsNoIncompleteWarn(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	logs := captureSlog(t)
 	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
 		if server == defaultServer {
@@ -1315,6 +1319,7 @@ func TestWhoisPlugin_Run_IncompleteWarnEscapesNewlineInDomainAttr(t *testing.T) 
 	const payloadDomain = "a.exa\nlevel=ERROR msg=forged\nmple.com"
 
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	logs := captureSlog(t)
 	stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
 		if server == defaultServer {

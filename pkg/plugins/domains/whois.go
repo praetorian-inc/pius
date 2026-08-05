@@ -19,9 +19,10 @@ import (
 
 // Source names carried in Data["method"] of every emitted record finding.
 const (
-	whoisMethodRDAP  = "rdap"
-	whoisMethodTCP43 = "whois43"
-	whoisMethodWhoxy = "whoxy"
+	whoisMethodRDAP        = "rdap"
+	whoisMethodTCP43       = "whois43"
+	whoisMethodWhoxy       = "whoxy"
+	whoisMethodWhoisFreaks = "whoisfreaks"
 )
 
 func init() {
@@ -50,6 +51,12 @@ func WithWhoxyClient(httpClient *client.Client, apiKey string) WhoisOption {
 	}
 }
 
+func WithWhoisFreaksClient(httpClient *client.Client, apiKey string) WhoisOption {
+	return func(plugin *WhoisPlugin) {
+		plugin.whoisfreaks = &whoisFreaksClient{client: httpClient, apiKey: apiKey}
+	}
+}
+
 func WithRDAPLookup(lookup func(context.Context, string) (string, error)) WhoisOption {
 	return func(plugin *WhoisPlugin) {
 		plugin.rdap = rdapLookup(lookup)
@@ -75,9 +82,10 @@ func (lookup rdapLookup) rdapRecord(ctx context.Context, domain string) (whoisRe
 // Every answering source is emitted in the order tried so the consumer can
 // preserve its existing record-selection behavior during consolidation.
 type WhoisPlugin struct {
-	rdap     rdapRecordSource  // overridable for tests; defaults to rdapWhoisResolver
-	whoxy    *whoxyWhoisClient // overridable for tests; nil takes a default client
-	whoisRaw func(context.Context, string, string) (string, error)
+	rdap        rdapRecordSource   // overridable for tests; defaults to rdapWhoisResolver
+	whoxy       *whoxyWhoisClient  // overridable for tests; nil takes a default client
+	whoisfreaks *whoisFreaksClient // overridable for tests; nil takes a default client
+	whoisRaw    func(context.Context, string, string) (string, error)
 }
 
 func (p *WhoisPlugin) Name() string { return "whois" }
@@ -247,28 +255,88 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 		return nil, nil
 	}
 
+	return append(findings, p.historyFindings(ctx, domain, whoxy)...), nil
+}
+
+// historyProvider is one history leg in the fallback order.
+type historyProvider struct {
+	method string
+	fetch  func(ctx context.Context, domain string) (json.RawMessage, error)
+}
+
+// historyFindings cascades the history legs: Whoxy first, WhoisFreaks only when
+// Whoxy is absent, errored, or held no records, so a covered domain never spends
+// a second provider's credit (MAR-10248). With no provider configured it emits
+// nothing, keeping a key-less CLI or SDK run exactly as it was.
+func (p *WhoisPlugin) historyFindings(ctx context.Context, domain string, whoxy *whoxyWhoisClient) []plugins.Finding {
+	var providers []historyProvider
 	if whoxy != nil {
-		if hist, herr := whoxy.history(ctx, domain); herr != nil {
-			slog.Warn("whois: history fetch failed", "domain", domain, "error", herr)
-		} else if len(hist) > 0 {
-			status := "covered"
-			if string(hist) == "[]" {
-				status = "empty"
-			}
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingWhoisHistory,
-				Value:  domain,
-				Source: p.Name(),
-				Data: map[string]any{
-					"method":  whoisMethodWhoxy,
-					"status":  status,
-					"history": string(hist),
-				},
-			})
-		}
+		providers = append(providers, historyProvider{method: whoisMethodWhoxy, fetch: whoxy.history})
+	}
+	if freaks := p.whoisFreaksClient(); freaks != nil {
+		providers = append(providers, historyProvider{method: whoisMethodWhoisFreaks, fetch: freaks.history})
+	}
+	if len(providers) == 0 {
+		return nil
 	}
 
-	return findings, nil
+	outcomes := map[string]string{
+		whoisMethodWhoxy:       "unavailable",
+		whoisMethodWhoisFreaks: "unavailable",
+	}
+	var (
+		method  string
+		status  = "empty"
+		payload = "[]"
+	)
+	for _, provider := range providers {
+		method = provider.method
+		hist, herr := provider.fetch(ctx, domain)
+		if herr != nil {
+			outcomes[provider.method] = "error"
+			slog.Warn("whois: history fetch failed",
+				"domain", domain, "method", provider.method, "error", herr)
+			continue
+		}
+		if isEmptyHistory(hist) {
+			outcomes[provider.method] = "empty"
+			continue
+		}
+		status, payload = "covered", string(hist)
+		break
+	}
+
+	if status == "empty" {
+		// Cancellation has to be read off ctx: both fetches replace the transport
+		// error to keep the API key out of it, so context.Canceled never survives.
+		if ctx.Err() != nil {
+			return nil
+		}
+		slog.Info("whois: no history records from any provider", "domain", domain,
+			"whoxy", outcomes[whoisMethodWhoxy], "whoisfreaks", outcomes[whoisMethodWhoisFreaks])
+	}
+
+	return []plugins.Finding{{
+		Type:   plugins.FindingWhoisHistory,
+		Value:  domain,
+		Source: p.Name(),
+		Data: map[string]any{
+			"method":  method,
+			"status":  status,
+			"history": payload,
+		},
+	}}
+}
+
+// isEmptyHistory reports whether a provider answered with no historical records.
+// The payload is provider JSON carried verbatim, so every no-record rendering
+// has to be recognized rather than just the one this package synthesizes.
+func isEmptyHistory(payload json.RawMessage) bool {
+	switch strings.TrimSpace(string(payload)) {
+	case "", "[]", "null":
+		return true
+	}
+	return false
 }
 
 // sources returns the cascade in call order: the two free sources first, the
@@ -307,6 +375,19 @@ func (p *WhoisPlugin) whoxyClient() *whoxyWhoisClient {
 		return p.whoxy
 	}
 	return &whoxyWhoisClient{client: client.New()}
+}
+
+func (p *WhoisPlugin) whoisFreaksClient() *whoisFreaksClient {
+	if p.whoisfreaks != nil && p.whoisfreaks.apiKey != "" {
+		return p.whoisfreaks
+	}
+	if os.Getenv("WHOISFREAKS_API_KEY") == "" {
+		return nil
+	}
+	if p.whoisfreaks != nil {
+		return p.whoisfreaks
+	}
+	return &whoisFreaksClient{client: client.New()}
 }
 
 func (p *WhoisPlugin) whois43Record(ctx context.Context, domain string) (whoisRecord, error) {

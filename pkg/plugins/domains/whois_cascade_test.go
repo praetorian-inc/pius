@@ -99,6 +99,7 @@ func preseedValues(findings []plugins.Finding) []string {
 
 func TestWhoisCascade_StopsAtRDAP(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	stubWhoisRawFn(t, func(_ context.Context, _, _ string) (string, error) {
 		assert.Fail(t, "TCP/43 must not be queried once RDAP satisfied the predicate")
 		return "", errors.New("unexpected call")
@@ -114,6 +115,7 @@ func TestWhoisCascade_StopsAtRDAP(t *testing.T) {
 
 func TestWhoisCascade_FallsThroughToTCP43(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	stubWhoisReferralChain(t, fullWhoisRecord, nil)
 
 	rdapStub := failingRDAP()
@@ -130,6 +132,7 @@ func TestWhoisCascade_FallsThroughToTCP43(t *testing.T) {
 // must not stop the cascade — every answering source is still emitted, in order.
 func TestWhoisCascade_OrgOnlyRecordDoesNotShortCircuit(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	stubWhoisReferralChain(t, fullWhoisRecord, nil)
 
 	findings, err := (&WhoisPlugin{rdap: &stubRDAPSource{raw: orgOnlyWhoisRecord}}).
@@ -161,6 +164,7 @@ func whoxyTestServer(t *testing.T, live, history string) (*whoxyWhoisClient, *in
 
 func TestWhoisCascade_FallsThroughToWhoxyAndEmitsHistory(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "secret-key")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	stubWhoisReferralChain(t, "", errors.New("dial tcp: connection refused"))
 	stubWhoisHopBackoff(t, time.Millisecond)
 
@@ -191,6 +195,7 @@ func TestWhoisCascade_FallsThroughToWhoxyAndEmitsHistory(t *testing.T) {
 
 func TestWhoisCascade_WhoxySkippedWithoutAPIKey(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	stubWhoisReferralChain(t, orgOnlyWhoisRecord, nil)
 
 	whoxy, hits := whoxyTestServer(t, `{"status":1,"raw_whois":"x"}`, `{"status":1}`)
@@ -205,6 +210,7 @@ func TestWhoisCascade_WhoxySkippedWithoutAPIKey(t *testing.T) {
 
 func TestWhoisCascade_HistoryEmptyEmitsMarker(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "test-key")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	stubWhoisReferralChain(t, notFoundWhoisRecord, nil)
 	stubWhoisHopBackoff(t, time.Millisecond)
 	whoxy, _ := whoxyTestServer(t,
@@ -224,6 +230,7 @@ func TestWhoisCascade_HistoryEmptyEmitsMarker(t *testing.T) {
 
 func TestWhoisCascade_HistoryFailureDoesNotFailRun(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "secret-key")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	stubWhoisReferralChain(t, "", errors.New("dial tcp: connection refused"))
 	stubWhoisHopBackoff(t, time.Millisecond)
 
@@ -237,9 +244,11 @@ func TestWhoisCascade_HistoryFailureDoesNotFailRun(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{whoisMethodWhoxy}, recordMethods(t, findings))
-	for _, f := range findings {
-		assert.NotEqual(t, plugins.FindingWhoisHistory, f.Type)
-	}
+	history := findingsOfType(findings, plugins.FindingWhoisHistory)
+	require.Len(t, history, 1)
+	assert.Equal(t, "empty", history[0].Data["status"])
+	assert.Equal(t, whoisMethodWhoxy, history[0].Data["method"])
+	assert.Equal(t, "[]", history[0].Data["history"])
 }
 
 func TestWhoisCascade_UnregisteredVerdict(t *testing.T) {
@@ -267,6 +276,7 @@ func TestWhoisCascade_UnregisteredVerdict(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("WHOXY_API_KEY", "")
+			t.Setenv("WHOISFREAKS_API_KEY", "")
 			stubWhoisReferralChain(t, tt.tcp43Raw, tt.tcp43Err)
 			stubWhoisHopBackoff(t, time.Millisecond)
 
@@ -285,6 +295,7 @@ func TestWhoisCascade_UnregisteredVerdict(t *testing.T) {
 
 func TestWhoisCascade_AllSourcesFailReturnsError(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	stubWhoisReferralChain(t, "", errors.New("dial tcp: connection refused"))
 	stubWhoisHopBackoff(t, time.Millisecond)
 
@@ -301,6 +312,7 @@ func TestWhoisCascade_AllSourcesFailReturnsError(t *testing.T) {
 func TestWhoxyWhois_ErrorNeverLeaksAPIKey(t *testing.T) {
 	const apiKey = "s3cr3t-whoxy-key"
 	t.Setenv("WHOXY_API_KEY", apiKey)
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 
 	stubWhoisReferralChain(t, "", errors.New("dial tcp: connection refused"))
 	stubWhoisHopBackoff(t, time.Millisecond)
@@ -363,6 +375,7 @@ func TestWhoisHop_BailsOnContextCancellation(t *testing.T) {
 
 func TestWhoisPlugin_RecordFindingCarriesRawText(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	stubWhoisRawFn(t, func(_ context.Context, _, _ string) (string, error) {
 		assert.Fail(t, "TCP/43 must not be queried")
 		return "", errors.New("unexpected call")
@@ -418,6 +431,7 @@ func assertDataSurvivesJSONRoundTrip(t *testing.T, findings []plugins.Finding) {
 func TestWhoisCascade_FindingDataSurvivesJSONRoundTrip(t *testing.T) {
 	t.Run("record, preseed and history findings", func(t *testing.T) {
 		t.Setenv("WHOXY_API_KEY", "secret-key")
+		t.Setenv("WHOISFREAKS_API_KEY", "")
 		stubWhoisReferralChain(t, fullWhoisRecord, nil)
 		stubWhoisHopBackoff(t, time.Millisecond)
 
@@ -444,6 +458,7 @@ func TestWhoisCascade_FindingDataSurvivesJSONRoundTrip(t *testing.T) {
 
 	t.Run("unregistered verdict", func(t *testing.T) {
 		t.Setenv("WHOXY_API_KEY", "")
+		t.Setenv("WHOISFREAKS_API_KEY", "")
 		stubWhoisReferralChain(t, notFoundWhoisRecord, nil)
 		stubWhoisHopBackoff(t, time.Millisecond)
 
@@ -460,6 +475,7 @@ func TestWhoisCascade_FindingDataSurvivesJSONRoundTrip(t *testing.T) {
 
 	t.Run("incomplete referral chain", func(t *testing.T) {
 		t.Setenv("WHOXY_API_KEY", "")
+		t.Setenv("WHOISFREAKS_API_KEY", "")
 		stubWhoisHopBackoff(t, time.Millisecond)
 
 		const registryRecord = "Domain Name: EXAMPLE.COM\n" +
@@ -492,6 +508,7 @@ func TestWhoisCascade_FindingDataSurvivesJSONRoundTrip(t *testing.T) {
 
 func TestNewWhoisPlugin_UsesInjectedWhoxyClientWithoutEnvironment(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	stubWhoisReferralChain(t, notFoundWhoisRecord, nil)
 	stubWhoisHopBackoff(t, time.Millisecond)
 	whoxy, _ := whoxyTestServer(t,
@@ -511,6 +528,7 @@ func TestNewWhoisPlugin_UsesInjectedWhoxyClientWithoutEnvironment(t *testing.T) 
 
 func TestNewWhoisPlugin_UsesInjectedRDAPLookup(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	stubWhoisRawFn(t, func(_ context.Context, _, _ string) (string, error) {
 		assert.Fail(t, "TCP/43 must not run when the injected RDAP lookup answers")
 		return "", errors.New("unexpected call")
@@ -531,6 +549,7 @@ func TestNewWhoisPlugin_UsesInjectedRDAPLookup(t *testing.T) {
 
 func TestNewWhoisPlugin_UsesInjectedWhoisRaw(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
 	stubWhoisHopBackoff(t, time.Millisecond)
 	stubWhoisRawFn(t, func(_ context.Context, _, _ string) (string, error) {
 		assert.Fail(t, "the package-default transport must not be consulted when a transport is injected")
@@ -560,4 +579,177 @@ func TestNewWhoisPlugin_UsesInjectedWhoisRaw(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, raw, "Sentinel Injected Corp", "the injected transport is what answered")
 	assert.Contains(t, preseedValues(findings), "sentinel@injected.test")
+}
+
+const whoisFreaksCascadeHistory = `{"status":true,"total_records":1,"total_pages":1,` +
+	`"whois_domains_historical":[{"domain_name":"example.com","query_time":"2011-05-01"}]}`
+
+// whoisFreaksHistoryServer answers the v2.0 history endpoint and counts hits, so a
+// test can prove the fallback leg was reached — or that it never was.
+func whoisFreaksHistoryServer(t *testing.T, body string) (*whoisFreaksClient, *int32) {
+	t.Helper()
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return &whoisFreaksClient{client: client.New(), apiKey: "whoisfreaks-cascade-key", baseURL: srv.URL}, &hits
+}
+
+func historyPayload(t *testing.T, finding plugins.Finding) string {
+	t.Helper()
+	payload, ok := finding.Data["history"].(string)
+	require.True(t, ok, "history must be carried as a string")
+	return payload
+}
+
+// Whoxy already covers the large majority of domains; paying a second provider on
+// a domain it answered is pure credit burn.
+func TestWhoisHistory_WhoxyCoveredNeverSpendsWhoisFreaks(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "whoxy-key")
+	t.Setenv("WHOISFREAKS_API_KEY", "whoisfreaks-key")
+
+	whoxy, _ := whoxyTestServer(t, `{"status":1}`,
+		`{"status":1,"total_records_found":1,"whois_records":[{"domain_name":"example.com"}]}`)
+	freaks, freaksHits := whoisFreaksHistoryServer(t, whoisFreaksCascadeHistory)
+
+	findings := (&WhoisPlugin{whoisfreaks: freaks}).historyFindings(context.Background(), "example.com", whoxy)
+
+	require.Len(t, findings, 1)
+	assert.Equal(t, plugins.FindingWhoisHistory, findings[0].Type)
+	assert.Equal(t, "example.com", findings[0].Value)
+	assert.Equal(t, "covered", findings[0].Data["status"])
+	assert.Equal(t, whoisMethodWhoxy, findings[0].Data["method"])
+	assert.JSONEq(t, `[{"domain_name":"example.com"}]`, historyPayload(t, findings[0]))
+	assert.Zero(t, atomic.LoadInt32(freaksHits),
+		"a domain Whoxy already covered must not spend a second provider's credit")
+}
+
+func TestWhoisHistory_WhoxyShortfallFallsThroughToWhoisFreaks(t *testing.T) {
+	tests := []struct {
+		name         string
+		whoxyHistory string
+	}{
+		{"whoxy holds no records", `{"status":1,"total_records_found":0}`},
+		{"whoxy rejects the request", `{"status":0,"status_reason":"Account balance exhausted"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("WHOXY_API_KEY", "whoxy-key")
+			t.Setenv("WHOISFREAKS_API_KEY", "whoisfreaks-key")
+
+			whoxy, whoxyHits := whoxyTestServer(t, `{"status":1}`, tt.whoxyHistory)
+			freaks, freaksHits := whoisFreaksHistoryServer(t, whoisFreaksCascadeHistory)
+
+			findings := (&WhoisPlugin{whoisfreaks: freaks}).historyFindings(context.Background(), "example.com", whoxy)
+
+			require.Len(t, findings, 1)
+			assert.Equal(t, "covered", findings[0].Data["status"])
+			assert.Equal(t, whoisMethodWhoisFreaks, findings[0].Data["method"])
+			assert.Contains(t, historyPayload(t, findings[0]), `"query_time":"2011-05-01"`,
+				"the covering provider's records are the ones persisted")
+			assert.Greater(t, atomic.LoadInt32(whoxyHits), int32(0), "whoxy is still consulted first")
+			assert.Equal(t, int32(1), atomic.LoadInt32(freaksHits))
+		})
+	}
+}
+
+func TestWhoisHistory_WhoisFreaksAloneCoversWithoutWhoxy(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "whoisfreaks-key")
+
+	freaks, freaksHits := whoisFreaksHistoryServer(t, whoisFreaksCascadeHistory)
+
+	findings := (&WhoisPlugin{whoisfreaks: freaks}).historyFindings(context.Background(), "example.com", nil)
+
+	require.Len(t, findings, 1)
+	assert.Equal(t, "covered", findings[0].Data["status"])
+	assert.Equal(t, whoisMethodWhoisFreaks, findings[0].Data["method"])
+	assert.Equal(t, int32(1), atomic.LoadInt32(freaksHits))
+}
+
+func TestWhoisHistory_WhoisFreaksSkippedWithoutAPIKey(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "whoxy-key")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
+
+	whoxy, _ := whoxyTestServer(t, `{"status":1}`, `{"status":1,"total_records_found":0}`)
+	freaks, freaksHits := whoisFreaksHistoryServer(t, whoisFreaksCascadeHistory)
+	freaks.apiKey = ""
+
+	findings := (&WhoisPlugin{whoisfreaks: freaks}).historyFindings(context.Background(), "example.com", whoxy)
+
+	require.Len(t, findings, 1)
+	assert.Equal(t, "empty", findings[0].Data["status"])
+	assert.Equal(t, whoisMethodWhoxy, findings[0].Data["method"])
+	assert.Zero(t, atomic.LoadInt32(freaksHits), "an unconfigured provider is not in the cascade at all")
+}
+
+func TestWhoisHistory_BothProvidersEmptyEmitsOneMarker(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "whoxy-key")
+	t.Setenv("WHOISFREAKS_API_KEY", "whoisfreaks-key")
+
+	whoxy, _ := whoxyTestServer(t, `{"status":1}`, `{"status":1,"total_records_found":0}`)
+	freaks, freaksHits := whoisFreaksHistoryServer(t, `{"status":true,"total_records":0,"total_pages":1}`)
+
+	findings := (&WhoisPlugin{whoisfreaks: freaks}).historyFindings(context.Background(), "example.com", whoxy)
+
+	require.Len(t, findings, 1, "an exhausted cascade emits one marker, not one per provider")
+	assert.Equal(t, "empty", findings[0].Data["status"])
+	assert.Equal(t, "[]", findings[0].Data["history"])
+	assert.Equal(t, whoisMethodWhoisFreaks, findings[0].Data["method"],
+		"method names the last provider consulted")
+	assert.Equal(t, int32(1), atomic.LoadInt32(freaksHits), "every provider is exhausted before giving up")
+}
+
+// Without a key for either provider the cascade has nothing to consult, and a
+// marker here would write an empty-history record for every domain the key-less
+// CLI touches.
+func TestWhoisHistory_NoProviderConfiguredEmitsNothing(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "")
+	t.Setenv("WHOISFREAKS_API_KEY", "")
+
+	findings := (&WhoisPlugin{}).historyFindings(context.Background(), "example.com", nil)
+
+	assert.Nil(t, findings)
+}
+
+func exhaustedHistoryCascade(t *testing.T) (*WhoisPlugin, *whoxyWhoisClient) {
+	t.Helper()
+	t.Setenv("WHOXY_API_KEY", "whoxy-key")
+	t.Setenv("WHOISFREAKS_API_KEY", "whoisfreaks-key")
+
+	whoxy, _ := whoxyTestServer(t, `{"status":1}`, `{"status":1,"total_records_found":0}`)
+	freaks, _ := whoisFreaksHistoryServer(t, `{"status":true,"total_records":0,"total_pages":1}`)
+	return &WhoisPlugin{whoisfreaks: freaks}, whoxy
+}
+
+// The two runs differ only in whether the caller's context is live: a cancelled
+// scan reaches the same "empty" verdict as a genuinely history-less domain,
+// because both providers fail alike and the transport error is replaced rather
+// than wrapped. Downstream the marker is a positive claim persisted as
+// whois-history/<domain>, so the two must not be recorded the same way.
+func TestWhoisHistory_CancelledRunEmitsNoEmptyMarker(t *testing.T) {
+	t.Run("cancelled run withholds the empty marker", func(t *testing.T) {
+		plugin, whoxy := exhaustedHistoryCascade(t)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		findings := plugin.historyFindings(ctx, "example.com", whoxy)
+
+		assert.Empty(t, findings,
+			`a cancelled scan never established "no history", so the marker it would persist is a false negative`)
+	})
+
+	t.Run("live run still records the empty marker", func(t *testing.T) {
+		plugin, whoxy := exhaustedHistoryCascade(t)
+
+		findings := plugin.historyFindings(context.Background(), "example.com", whoxy)
+
+		require.Len(t, findings, 1,
+			"a run that completed and found nothing is real data, not a partial result to suppress")
+		assert.Equal(t, "empty", findings[0].Data["status"])
+	})
 }
