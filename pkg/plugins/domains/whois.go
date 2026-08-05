@@ -306,11 +306,17 @@ func (p *WhoisPlugin) historyFindings(ctx context.Context, domain string, whoxy 
 		break
 	}
 
-	if status == "empty" {
+	if status != "covered" {
 		// Cancellation has to be read off ctx: both fetches replace the transport
 		// error to keep the API key out of it, so context.Canceled never survives.
 		if ctx.Err() != nil {
 			return nil
+		}
+		for _, outcome := range outcomes {
+			if outcome == "error" {
+				status = "error"
+				break
+			}
 		}
 		slog.Info("whois: no history records from any provider", "domain", domain,
 			"whoxy", outcomes[whoisMethodWhoxy], "whoisfreaks", outcomes[whoisMethodWhoisFreaks])

@@ -246,7 +246,8 @@ func TestWhoisCascade_HistoryFailureDoesNotFailRun(t *testing.T) {
 	assert.Equal(t, []string{whoisMethodWhoxy}, recordMethods(t, findings))
 	history := findingsOfType(findings, plugins.FindingWhoisHistory)
 	require.Len(t, history, 1)
-	assert.Equal(t, "empty", history[0].Data["status"])
+	assert.Equal(t, "error", history[0].Data["status"],
+		"a provider that failed must not be reported the same as one that answered with no records")
 	assert.Equal(t, whoisMethodWhoxy, history[0].Data["method"])
 	assert.Equal(t, "[]", history[0].Data["history"])
 }
@@ -701,6 +702,49 @@ func TestWhoisHistory_BothProvidersEmptyEmitsOneMarker(t *testing.T) {
 	assert.Equal(t, whoisMethodWhoisFreaks, findings[0].Data["method"],
 		"method names the last provider consulted")
 	assert.Equal(t, int32(1), atomic.LoadInt32(freaksHits), "every provider is exhausted before giving up")
+}
+
+// Any consulted provider erroring must win over an empty result: an empty
+// verdict is a positive claim ("this domain has no WHOIS history"), and a
+// provider that failed never established that.
+func TestWhoisHistory_ErrorOutcomeWinsOverEmpty(t *testing.T) {
+	tests := []struct {
+		name         string
+		whoxyHistory string
+		freaksBody   string
+	}{
+		{
+			name:         "both providers error",
+			whoxyHistory: `{"status":0,"status_reason":"Account balance exhausted"}`,
+			freaksBody:   `{"status":false}`,
+		},
+		{
+			name:         "whoxy holds no records, whoisfreaks errors",
+			whoxyHistory: `{"status":1,"total_records_found":0}`,
+			freaksBody:   `{"status":false}`,
+		},
+		{
+			name:         "whoxy errors, whoisfreaks holds no records",
+			whoxyHistory: `{"status":0,"status_reason":"Account balance exhausted"}`,
+			freaksBody:   `{"status":true,"total_records":0,"total_pages":1}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("WHOXY_API_KEY", "whoxy-key")
+			t.Setenv("WHOISFREAKS_API_KEY", "whoisfreaks-key")
+
+			whoxy, _ := whoxyTestServer(t, `{"status":1}`, tt.whoxyHistory)
+			freaks, _ := whoisFreaksHistoryServer(t, tt.freaksBody)
+
+			findings := (&WhoisPlugin{whoisfreaks: freaks}).historyFindings(context.Background(), "example.com", whoxy)
+
+			require.Len(t, findings, 1)
+			assert.Equal(t, "error", findings[0].Data["status"])
+			assert.Equal(t, "[]", findings[0].Data["history"])
+		})
+	}
 }
 
 // Without a key for either provider the cascade has nothing to consult, and a
