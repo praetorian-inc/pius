@@ -21,6 +21,11 @@ const (
 	confWikidataEnded      = 0.00
 )
 
+type wikidataConfidenceScenario struct {
+	score         float64
+	justification func(subsidiary, website, relation string) string
+}
+
 type wikidataRelationshipStatus string
 
 const (
@@ -28,6 +33,27 @@ const (
 	wikidataRelationshipEnded      wikidataRelationshipStatus = "ended_or_deprecated"
 	wikidataRelationshipUnverified wikidataRelationshipStatus = "unverified"
 )
+
+var wikidataConfidenceScenarios = map[wikidataRelationshipStatus]wikidataConfidenceScenario{
+	wikidataRelationshipCurrent: {
+		score: confWikidataCurrent,
+		justification: func(subsidiary, website, relation string) string {
+			return fmt.Sprintf("Wikidata currently identifies %q as related to the target (%s) and lists %q as its official website", subsidiary, relation, website)
+		},
+	},
+	wikidataRelationshipEnded: {
+		score: confWikidataEnded,
+		justification: func(subsidiary, _, relation string) string {
+			return fmt.Sprintf("Wikidata says %q was related to the target (%s), but the relationship is ended or deprecated", subsidiary, relation)
+		},
+	},
+	wikidataRelationshipUnverified: {
+		score: confWikidataUnverified,
+		justification: func(subsidiary, website, relation string) string {
+			return fmt.Sprintf("Wikidata identifies %q as related to the target (%s) and lists %q as its official website, but relationship qualifiers were not verified", subsidiary, relation, website)
+		},
+	},
+}
 
 func init() {
 	plugins.Register("wikidata", func() plugins.Plugin {
@@ -216,26 +242,18 @@ func (p *WikidataPlugin) findCompanyEntity(ctx context.Context, orgName string) 
 }
 
 func wikidataConfidence(status wikidataRelationshipStatus) float64 {
-	switch status {
-	case wikidataRelationshipEnded:
-		return confWikidataEnded
-	case wikidataRelationshipCurrent:
-		return confWikidataCurrent
-	default:
-		return confWikidataUnverified
-	}
+	return wikidataScenario(status).score
 }
 
 func wikidataConfidenceJustification(r sparqlBinding, status wikidataRelationshipStatus) string {
-	subsidiary, website, relation := r.EntityLabel.Value, r.Website.Value, r.Relation.Value
-	switch status {
-	case wikidataRelationshipEnded:
-		return fmt.Sprintf("Wikidata says %q was related to the target (%s), but the relationship is ended or deprecated", subsidiary, relation)
-	case wikidataRelationshipCurrent:
-		return fmt.Sprintf("Wikidata currently identifies %q as related to the target (%s) and lists %q as its official website", subsidiary, relation, website)
-	default:
-		return fmt.Sprintf("Wikidata identifies %q as related to the target (%s) and lists %q as its official website, but relationship qualifiers were not verified", subsidiary, relation, website)
+	return wikidataScenario(status).justification(r.EntityLabel.Value, r.Website.Value, r.Relation.Value)
+}
+
+func wikidataScenario(status wikidataRelationshipStatus) wikidataConfidenceScenario {
+	if scenario, ok := wikidataConfidenceScenarios[status]; ok {
+		return scenario
 	}
+	return wikidataConfidenceScenarios[wikidataRelationshipUnverified]
 }
 
 func relationshipStatusString(status wikidataRelationshipStatus) string {
