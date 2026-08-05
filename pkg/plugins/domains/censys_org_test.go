@@ -623,8 +623,10 @@ func TestCensysOrgPlugin_Run_EmptyResponseNoFindings(t *testing.T) {
 func TestCensysOrgPlugin_Run_GracefulOnNetworkError(t *testing.T) {
 	t.Setenv("CENSYS_API_TOKEN", "test-token")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadRequest)
+	}))
+	defer srv.Close()
 
 	p := newTestCensysPlugin(t, srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})

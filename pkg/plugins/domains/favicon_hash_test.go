@@ -402,8 +402,10 @@ func TestFaviconHashPlugin_Run_GracefulOnFaviconFetchError(t *testing.T) {
 	t.Setenv("SHODAN_API_KEY", "test-key")
 	t.Setenv("FOFA_API_KEY", "")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close() // close immediately to trigger error
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadRequest)
+	}))
+	defer srv.Close()
 
 	p := newFaviconTestPlugin(srv, nil, nil)
 	p.faviconURL = srv.URL

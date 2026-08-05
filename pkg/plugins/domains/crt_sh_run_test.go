@@ -137,8 +137,10 @@ func TestCRTShPlugin_PrefersDomainOverOrgName(t *testing.T) {
 }
 
 func TestCRTShPlugin_GracefulOnNetworkError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadRequest)
+	}))
+	defer srv.Close()
 
 	p := &CRTShPlugin{client: client.New(), baseURL: srv.URL}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})

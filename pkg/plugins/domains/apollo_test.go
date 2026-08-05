@@ -338,8 +338,10 @@ func TestApolloPlugin_Run_EmptyResponseNoFindings(t *testing.T) {
 func TestApolloPlugin_Run_GracefulOnNetworkError(t *testing.T) {
 	t.Setenv("APOLLO_API_KEY", "test-key")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadRequest)
+	}))
+	defer srv.Close()
 
 	p := newTestPlugin(t, srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})

@@ -265,9 +265,10 @@ func TestWaybackPlugin_NormalizesDomains(t *testing.T) {
 }
 
 func TestWaybackPlugin_GracefulOnWaybackError(t *testing.T) {
-	// Closed server = network error
-	wbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	wbSrv.Close()
+	wbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadRequest)
+	}))
+	defer wbSrv.Close()
 
 	ccSrv := mockCommonCrawlServer([]string{
 		"http://cdn.example.com/file",
@@ -288,10 +289,14 @@ func TestWaybackPlugin_GracefulOnWaybackError(t *testing.T) {
 }
 
 func TestWaybackPlugin_GracefulOnBothErrors(t *testing.T) {
-	wbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	wbSrv.Close()
-	ccSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	ccSrv.Close()
+	wbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadRequest)
+	}))
+	defer wbSrv.Close()
+	ccSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadRequest)
+	}))
+	defer ccSrv.Close()
 
 	p := &WaybackPlugin{
 		client:         client.New(),

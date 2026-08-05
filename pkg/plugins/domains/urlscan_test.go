@@ -217,8 +217,10 @@ func TestURLScanPlugin_Normalization(t *testing.T) {
 // TestURLScanPlugin_ErrorHandling verifies graceful behavior when the API is
 // unavailable.
 func TestURLScanPlugin_ErrorHandling(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close() // immediately close so requests fail
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadRequest)
+	}))
+	defer srv.Close()
 
 	p := &URLScanPlugin{client: client.New(), baseURL: srv.URL}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "praetorian.com"})
