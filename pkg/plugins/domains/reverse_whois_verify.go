@@ -68,12 +68,18 @@ const (
 	// containment metric divided by the shorter set and read it as a spurious 1.0.
 	simCorroborate = 0.60
 	// simMismatch is the token-similarity (Jaccard) threshold below which a present,
-	// unmasked registrant org is treated as a clear mismatch and de-ranked to the
+	// unmasked registrant org MAY be treated as a clear mismatch and de-ranked to the
 	// bottom of the needs_review band (the walmart.com-from-a-Leica-query false
-	// positive, which shares zero tokens → Jaccard 0). A candidate that shares the
-	// query's brand token but adds several distinguishing ones (a plausible
-	// subsidiary) sits between the two thresholds and stays unverified — de-ranked
-	// only when overlap is genuinely sparse, and NEVER dropped.
+	// positive, which shares zero tokens → Jaccard 0). Sparse overlap alone is not
+	// sufficient: the de-rank arm additionally requires that neither side's token set
+	// is contained in the other (tokenSetContained). Containment is
+	// under-specification, not disagreement, and Jaccard cannot tell them apart — a
+	// one-token query org inside a longer registrant ("Walmart" vs {walmart, global,
+	// enterprises, holdings} = 1/4 = 0.25) is a plausible subsidiary, yet the bare
+	// threshold sank it BELOW candidates whose WHOIS never resolved at all. So: a
+	// sparse-overlap NON-contained name de-ranks to confReverseWhoisMismatch; a
+	// contained (subset) name never de-ranks and stays unverified at
+	// confReverseWhoisUnverified. Either way it is de-ranked, NEVER dropped (ENG-5172).
 	simMismatch = 0.30
 
 	// maxReverseWhoisCandidates caps how many candidates we verify per run.
@@ -356,6 +362,50 @@ const (
 	justifyReverseWhoisMismatch     = "The candidate domain's registrant organization differs from the queried organization; retained for review because a textual mismatch is not proof of non-ownership"
 )
 
+// tokenSetContained reports whether either side's DISTINCT token set is a subset
+// of the other's. It exists to separate the two things a low Jaccard score
+// conflates: DISAGREEMENT and UNDER-SPECIFICATION.
+//
+// A clear mismatch means the two org names genuinely contradict each other —
+// each contributes at least one token the other lacks. Containment is not that.
+// When one token set is a subset of the other, one name is simply a
+// LESS-SPECIFIC spelling of the same name ("Walmart" vs "Walmart Global
+// Enterprises Holdings"), which is unverifiable, not contradictory. Jaccard
+// alone cannot see the difference: it divides by the union, so a fully contained
+// single-token query org drops below simMismatch as soon as the registrant adds
+// three descriptor tokens, de-ranking a plausible subsidiary below candidates
+// whose WHOIS could not be resolved at all (ENG-5172).
+//
+// Comparing only the smaller set against the larger is exhaustive: a strictly
+// larger set can never be a subset of a smaller one, and equal-sized sets are
+// subsets only when they are equal, which either direction detects. An empty
+// side returns false — the empty set is vacuously a subset of anything, and
+// reading that as "one name specializes the other" would be meaningless (that
+// case is already short-circuited as unverifiable in decideConfidence anyway).
+func tokenSetContained(aT, bT []string) bool {
+	if len(aT) == 0 || len(bT) == 0 {
+		return false
+	}
+	inA := make(map[string]bool, len(aT))
+	for _, t := range aT {
+		inA[t] = true
+	}
+	inB := make(map[string]bool, len(bT))
+	for _, t := range bT {
+		inB[t] = true
+	}
+	smaller, larger := inA, inB
+	if len(inB) < len(inA) {
+		smaller, larger = inB, inA
+	}
+	for t := range smaller {
+		if !larger[t] {
+			return false
+		}
+	}
+	return true
+}
+
 // decideConfidence maps a candidate's resolved registrant against the query org
 // to a needs-review decision. A lookup error means "unverifiable", NOT
 // "mismatch": it is scored mid-band. Nothing here ever drops a candidate — a
@@ -378,13 +428,19 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 	switch {
 	case sim >= simCorroborate:
 		return confidenceDecision{Score: confReverseWhoisCorroborated, Justification: justifyReverseWhoisCorroborated}
-	case sim < simMismatch:
-		// Present, unmasked, clear mismatch → de-rank to the bottom of the
-		// needs_review band (walmart.com-from-a-Leica-query). A textual registrant
-		// mismatch is not proof of non-ownership, so this is never dropped.
+	case sim < simMismatch && !tokenSetContained(qTokens, cTokens):
+		// Present, unmasked, and the two names genuinely DISAGREE — each side
+		// contributes tokens the other lacks — so de-rank to the bottom of the
+		// needs_review band (walmart.com-from-a-Leica-query). The containment guard
+		// is what makes this arm mean disagreement rather than merely sparse
+		// overlap: a subset name is a less-specific spelling, not a contradiction,
+		// and falls through to unverified below (ENG-5172). A textual registrant
+		// mismatch is still not proof of non-ownership, so this is never dropped.
 		return confidenceDecision{Score: confReverseWhoisMismatch, Justification: justifyReverseWhoisMismatch}
 	default:
-		// Ambiguous partial overlap [simMismatch, simCorroborate).
+		// Ambiguous partial overlap [simMismatch, simCorroborate), OR a sparse
+		// overlap that is pure containment — one name specializing the other is
+		// unverifiable, not a mismatch (ENG-5172).
 		return unverified
 	}
 }

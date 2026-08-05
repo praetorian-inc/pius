@@ -192,6 +192,95 @@ func TestNormalizeOrg(t *testing.T) {
 	}
 }
 
+// TestTokenSetContained pins the predicate that separates UNDER-SPECIFICATION
+// from DISAGREEMENT for decideConfidence's de-rank arm (ENG-5172). Jaccard
+// scores both shapes low, so this is the only thing standing between "one org
+// name is a less-specific spelling of the other" and "these two names
+// contradict each other". It is deliberately tested on raw token slices rather
+// than through decideConfidence: the direction-symmetry and duplicate-collapse
+// behaviors below are unreachable from a scoring assertion alone.
+func TestTokenSetContained(t *testing.T) {
+	tests := []struct {
+		name string
+		a    []string
+		b    []string
+		want bool
+	}{
+		{
+			// The ENG-5172 shape itself: the query org's single token is a subset of
+			// the registrant's descriptor-laden set.
+			name: "smaller set contained in larger (first argument)",
+			a:    []string{"walmart"},
+			b:    []string{"walmart", "global", "enterprises"},
+			want: true,
+		},
+		{
+			// Symmetric — the predicate compares the smaller distinct set against the
+			// larger, so argument order must not change the answer.
+			name: "smaller set contained in larger (second argument)",
+			a:    []string{"walmart", "global", "enterprises"},
+			b:    []string{"walmart"},
+			want: true,
+		},
+		{
+			// Equal sets are subsets of each other. Such a pair already corroborates
+			// on Jaccard 1.0 and never reaches the de-rank arm, but the predicate must
+			// still be total rather than accidentally excluding its own boundary.
+			name: "equal sets are contained",
+			a:    []string{"leica", "biosystems"},
+			b:    []string{"biosystems", "leica"},
+			want: true,
+		},
+		{
+			// The walmart.com-from-a-Leica-query false positive: zero shared tokens is
+			// genuine disagreement, so the de-rank arm must stay open.
+			name: "disjoint sets are not contained",
+			a:    []string{"leica", "biosystems"},
+			b:    []string{"walmart"},
+			want: false,
+		},
+		{
+			// The distinction the whole predicate exists to draw: each side
+			// contributes a token the other lacks, so neither name is merely a
+			// less-specific spelling — this is disagreement, not under-specification.
+			name: "partial overlap with private tokens on both sides is not contained",
+			a:    []string{"alpha", "bravo", "charlie"},
+			b:    []string{"alpha", "bravo", "delta"},
+			want: false,
+		},
+		{
+			// The empty set is vacuously a subset of anything; reading that as "one
+			// name specializes the other" would be meaningless, so it reports false in
+			// both argument positions.
+			name: "empty first side is not contained",
+			a:    nil,
+			b:    []string{"walmart"},
+			want: false,
+		},
+		{
+			name: "empty second side is not contained",
+			a:    []string{"walmart"},
+			b:    nil,
+			want: false,
+		},
+		{
+			// Containment is over DISTINCT tokens: a repeated token must not inflate
+			// the apparent set size and flip which side is treated as the smaller one.
+			// By raw slice length {a,a,a} looks larger than {a,b}, and comparing the
+			// wrong direction would answer false.
+			name: "duplicate tokens collapse before comparison",
+			a:    []string{"acme", "acme", "acme"},
+			b:    []string{"acme", "widgets"},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tokenSetContained(tt.a, tt.b))
+		})
+	}
+}
+
 func TestDecideConfidence(t *testing.T) {
 	lookupErr := errors.New("boom")
 	tests := []struct {
@@ -243,6 +332,33 @@ func TestDecideConfidence(t *testing.T) {
 			name:      "single-token query with extra registrant descriptor stays unverified (ENG-5172)",
 			queryOrg:  "Okta",
 			res:       org("Okta Security Inc."),
+			wantScore: confReverseWhoisUnverified,
+		},
+		{
+			// ENG-5172 OVER-CORRECTION regression (Codex P2, PR #122). Switching the
+			// metric to Jaccard fixed the spurious corroboration above but pushed the
+			// same containment shape off the OTHER end of the band: {walmart} vs
+			// {walmart, global, enterprises, holdings} is 1/4 = 0.25, BELOW
+			// simMismatch, so the bare threshold read a fully contained query org as
+			// a clear MISMATCH and de-ranked it to 0.40 — below a candidate whose
+			// WHOIS never resolved at all. The query's token set is a SUBSET of the
+			// registrant's, which is UNDER-SPECIFICATION (a plausible subsidiary or
+			// holding registration), not disagreement, so tokenSetContained gates the
+			// de-rank arm and this must stay UNVERIFIED.
+			name:      "sparse-overlap containment must not de-rank, query side (ENG-5172)",
+			queryOrg:  "Walmart",
+			res:       org("Walmart Global Enterprises Holdings LLC"),
+			wantScore: confReverseWhoisUnverified,
+		},
+		{
+			// The same containment, the other direction: the REGISTRANT is the
+			// less-specific name. tokenSetContained is symmetric (it compares the
+			// smaller distinct set against the larger), so a longer query org against
+			// a bare registrant — Jaccard 1/4 = 0.25 again — is equally
+			// under-specified and equally must not de-rank (ENG-5172).
+			name:      "sparse-overlap containment must not de-rank, registrant side (ENG-5172)",
+			queryOrg:  "Walmart Global Enterprises Holdings",
+			res:       org("Walmart Inc."),
 			wantScore: confReverseWhoisUnverified,
 		},
 		{
