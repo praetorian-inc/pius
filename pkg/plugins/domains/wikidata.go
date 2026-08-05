@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -12,6 +13,20 @@ import (
 
 	"github.com/praetorian-inc/pius/pkg/cache"
 	"github.com/praetorian-inc/pius/pkg/plugins"
+)
+
+const (
+	confWikidataCurrent    = 0.50
+	confWikidataUnverified = 0.30
+	confWikidataEnded      = 0.00
+)
+
+type wikidataRelationshipStatus string
+
+const (
+	wikidataRelationshipCurrent    wikidataRelationshipStatus = "current"
+	wikidataRelationshipEnded      wikidataRelationshipStatus = "ended_or_deprecated"
+	wikidataRelationshipUnverified wikidataRelationshipStatus = "unverified"
 )
 
 func init() {
@@ -23,11 +38,10 @@ func init() {
 	})
 }
 
-// WikidataPlugin discovers subsidiary entities and corporate acquisitions via
-// Wikidata's SPARQL endpoint. It queries for:
+// WikidataPlugin discovers subsidiary websites via Wikidata's SPARQL endpoint.
+// It queries for:
 //   - P749 (parent organization): finds entities with target as parent
 //   - P355 (subsidiary): finds entities listed as subsidiaries of target
-//   - P127 (owned by): finds entities owned by target
 //   - P856 (official website): extracts domains directly when available
 //
 // Phase 0 (independent): requires only OrgName.
@@ -49,24 +63,9 @@ type httpDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// Wikidata evidence contributions. A domain finding carries the relationship
-// and website entries together (0.65, matching the previous flat score); a
-// company-name preseed carries only confWikidataRelationshipOnly, since nothing
-// corroborates the relationship there.
-//
-// This pair lands exactly ON ConfidenceHigh, and their float64 sum is
-// 0.6499999999999999 — see plugins.confidenceEpsilon, which is what keeps a
-// corroborated Wikidata domain reading as clean rather than being pushed into
-// the review queue by rounding.
-const (
-	confWikidataRelationship     = 0.30
-	confWikidataWebsite          = 0.35
-	confWikidataRelationshipOnly = 0.55
-)
-
 func (p *WikidataPlugin) Name() string { return "wikidata" }
 func (p *WikidataPlugin) Description() string {
-	return "Wikidata SPARQL: discovers subsidiaries and acquisitions via structured corporate data (free, no API key)"
+	return "Wikidata SPARQL: discovers subsidiary websites via structured corporate data (free, no API key)"
 }
 func (p *WikidataPlugin) Category() string { return "domain" }
 func (p *WikidataPlugin) Phase() int       { return 0 }
@@ -113,6 +112,8 @@ type sparqlBinding struct {
 	EntityLabel sparqlValue `json:"entityLabel"`
 	Website     sparqlValue `json:"website"`
 	Relation    sparqlValue `json:"relation"`
+	Rank        sparqlValue `json:"rank"`
+	EndTime     sparqlValue `json:"endTime"`
 }
 
 type sparqlValue struct {
@@ -125,18 +126,13 @@ func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 		return nil, nil
 	}
 
-	// Check cache first — reduce load on Wikidata public endpoint
 	cacheKey := strings.ToLower(input.OrgName)
 	c := p.getCache()
-	if c != nil {
-		var cached []plugins.Finding
-		if c.Get(cacheKey, &cached) {
-			slog.Debug("wikidata: cache hit", "org", input.OrgName)
-			return cached, nil
-		}
+	if cached, ok := cachedWikidataFindings(c, cacheKey); ok {
+		slog.Debug("wikidata: cache hit", "org", input.OrgName)
+		return cached, nil
 	}
 
-	// First, find the Wikidata entity ID for the organization
 	companyID, err := p.findCompanyEntity(ctx, input.OrgName)
 	if err != nil {
 		slog.Debug("wikidata: company lookup failed", "org", input.OrgName, "error", err)
@@ -147,76 +143,18 @@ func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 		return nil, nil
 	}
 
-	// Query for subsidiaries and owned entities
 	results, err := p.querySubsidiaries(ctx, companyID)
 	if err != nil {
 		slog.Warn("wikidata: subsidiary query failed", "org", input.OrgName, "error", err)
 		return nil, nil
 	}
 
-	seen := make(map[string]bool)
-	var findings []plugins.Finding
-
-	for _, r := range results {
-		// Extract domain from website URL if available
-		if r.Website.Value != "" {
-			domain := extractDomainFromURL(r.Website.Value)
-			if domain != "" && !seen[domain] {
-				seen[domain] = true
-				f := plugins.Finding{
-					Type:   plugins.FindingDomain,
-					Value:  domain,
-					Source: p.Name(),
-					Data: map[string]any{
-						"org":          input.OrgName,
-						"subsidiary":   r.EntityLabel.Value,
-						"wikidata_id":  extractEntityID(r.Entity.Value),
-						"website":      r.Website.Value,
-						"relationship": r.Relation.Value,
-						"method":       "wikidata-sparql",
-					},
-				}
-				// Two independent claims back a domain finding: that Wikidata
-				// relates the entity to the target at all, and that Wikidata names
-				// this domain as that entity's website. Either can be stale or
-				// wrong on its own.
-				plugins.AddConfidence(&f, confWikidataRelationship,
-					fmt.Sprintf("Wikidata identifies %q as a subsidiary or owned entity of the target (%s)",
-						r.EntityLabel.Value, r.Relation.Value))
-				plugins.AddConfidence(&f, confWikidataWebsite,
-					fmt.Sprintf("Wikidata identifies %q as the official website of %q",
-						r.Website.Value, r.EntityLabel.Value))
-				findings = append(findings, f)
-			}
-		}
-
-		entityName := r.EntityLabel.Value
-		if entityName != "" && !seen[entityName] && !strings.EqualFold(entityName, input.OrgName) {
-			seen[entityName] = true
-			f := plugins.Finding{
-				Type:   plugins.FindingPreseed,
-				Value:  entityName,
-				Source: p.Name(),
-				Data: map[string]any{
-					"preseed_type":  "whois+company",
-					"preseed_title": entityName,
-					"org":           input.OrgName,
-					"wikidata_id":   extractEntityID(r.Entity.Value),
-					"relationship":  r.Relation.Value,
-					"method":        "wikidata-sparql",
-				},
-			}
-			// A company-name preseed rests on the relationship alone — there is no
-			// website claim corroborating it — so it scores higher than the
-			// relationship entry above but lower than the corroborated pair.
-			plugins.AddConfidence(&f, confWikidataRelationshipOnly,
-				fmt.Sprintf("Wikidata identifies %q as a subsidiary or owned entity of the target (%s)",
-					entityName, r.Relation.Value))
-			findings = append(findings, f)
-		}
+	statuses, err := p.queryRelationshipStatuses(ctx, companyID, results)
+	if err != nil {
+		slog.Debug("wikidata: relationship qualifier query failed", "org", input.OrgName, "error", err)
 	}
 
-	// Cache results for 24 hours
+	findings := p.websiteFindings(input.OrgName, results, statuses)
 	if c != nil {
 		c.Set(cacheKey, findings)
 	}
@@ -224,24 +162,91 @@ func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 	return findings, nil
 }
 
+func cachedWikidataFindings(c *cache.APICache, cacheKey string) ([]plugins.Finding, bool) {
+	if c == nil {
+		return nil, false
+	}
+	var cached []plugins.Finding
+	return cached, c.Get(cacheKey, &cached)
+}
+
+func (p *WikidataPlugin) websiteFindings(orgName string, results []sparqlBinding, statuses map[string]wikidataRelationshipStatus) []plugins.Finding {
+	fs := plugins.NewFindingSet()
+	for _, r := range results {
+		status := statuses[extractEntityID(r.Entity.Value)]
+		if f := p.websiteFinding(orgName, r, status); f.Value != "" {
+			fs.Add(f)
+		}
+	}
+	return fs.Findings
+}
+
+func (p *WikidataPlugin) websiteFinding(orgName string, r sparqlBinding, status wikidataRelationshipStatus) plugins.Finding {
+	domain := extractDomainFromURL(r.Website.Value)
+	if domain == "" {
+		return plugins.Finding{}
+	}
+
+	f := plugins.Finding{
+		Type:   plugins.FindingDomain,
+		Value:  domain,
+		Source: p.Name(),
+		Data: map[string]any{
+			"org":                 orgName,
+			"subsidiary":          r.EntityLabel.Value,
+			"wikidata_id":         extractEntityID(r.Entity.Value),
+			"website":             r.Website.Value,
+			"relationship":        r.Relation.Value,
+			"relationship_status": relationshipStatusString(status),
+			"method":              "wikidata-sparql",
+		},
+	}
+	plugins.AddConfidence(&f, wikidataConfidence(status), wikidataConfidenceJustification(r, status))
+	return f
+}
+
 // findCompanyEntity searches for a Wikidata entity matching the organization name.
 // Returns the entity ID (e.g., "Q312") or empty string if not found.
 func (p *WikidataPlugin) findCompanyEntity(ctx context.Context, orgName string) (string, error) {
-	// SPARQL query to find company entity by label
-	// Filters for instances of company (Q783794), business (Q4830453), or organization (Q43229)
-	query := fmt.Sprintf(`
-SELECT ?entity WHERE {
-  ?entity rdfs:label "%s"@en .
-  { ?entity wdt:P31/wdt:P279* wd:Q783794 }  # instance of company
-  UNION
-  { ?entity wdt:P31/wdt:P279* wd:Q4830453 } # instance of business
-  UNION
-  { ?entity wdt:P31/wdt:P279* wd:Q43229 }   # instance of organization
+	companyID, err := p.findCompanyEntityByLabel(ctx, orgName, false)
+	if err != nil || companyID != "" {
+		return companyID, err
+	}
+	return p.findCompanyEntityByLabel(ctx, orgName, true)
 }
-LIMIT 1
-`, escapeSPARQL(orgName))
 
-	body, err := p.executeSPARQL(ctx, query)
+func wikidataConfidence(status wikidataRelationshipStatus) float64 {
+	switch status {
+	case wikidataRelationshipEnded:
+		return confWikidataEnded
+	case wikidataRelationshipCurrent:
+		return confWikidataCurrent
+	default:
+		return confWikidataUnverified
+	}
+}
+
+func wikidataConfidenceJustification(r sparqlBinding, status wikidataRelationshipStatus) string {
+	subsidiary, website, relation := r.EntityLabel.Value, r.Website.Value, r.Relation.Value
+	switch status {
+	case wikidataRelationshipEnded:
+		return fmt.Sprintf("Wikidata says %q was related to the target (%s), but the relationship is ended or deprecated", subsidiary, relation)
+	case wikidataRelationshipCurrent:
+		return fmt.Sprintf("Wikidata currently identifies %q as related to the target (%s) and lists %q as its official website", subsidiary, relation, website)
+	default:
+		return fmt.Sprintf("Wikidata identifies %q as related to the target (%s) and lists %q as its official website, but relationship qualifiers were not verified", subsidiary, relation, website)
+	}
+}
+
+func relationshipStatusString(status wikidataRelationshipStatus) string {
+	if status == "" {
+		return string(wikidataRelationshipUnverified)
+	}
+	return string(status)
+}
+
+func (p *WikidataPlugin) findCompanyEntityByLabel(ctx context.Context, orgName string, includeAliases bool) (string, error) {
+	body, err := p.executeSPARQL(ctx, companyEntityQuery(orgName, includeAliases))
 	if err != nil {
 		return "", err
 	}
@@ -250,42 +255,66 @@ LIMIT 1
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return "", fmt.Errorf("parse response: %w", err)
 	}
-
 	if len(resp.Results.Bindings) == 0 {
 		return "", nil
 	}
-
 	return extractEntityID(resp.Results.Bindings[0].Entity.Value), nil
 }
 
-// querySubsidiaries finds all entities related to the company via P749, P355, or P127.
+func companyEntityQuery(orgName string, includeAliases bool) string {
+	labelMatch := fmt.Sprintf(`?entity rdfs:label "%s"@en .`, escapeSPARQL(orgName))
+	if includeAliases {
+		labelMatch = fmt.Sprintf(`
+  {
+    ?entity rdfs:label "%s"@en .
+  }
+  UNION
+  {
+    ?entity skos:altLabel "%s"@en .
+  }`, escapeSPARQL(orgName), escapeSPARQL(orgName))
+	}
+
+	return fmt.Sprintf(`
+SELECT ?entity WHERE {
+  %s
+  {
+    { ?entity wdt:P31/wdt:P279* wd:Q783794 }  # instance of company
+    UNION
+    { ?entity wdt:P31/wdt:P279* wd:Q4830453 } # instance of business
+    UNION
+    { ?entity wdt:P31/wdt:P279* wd:Q43229 }   # instance of organization
+  }
+}
+LIMIT 1
+`, labelMatch)
+}
+
+// querySubsidiaries finds entities related to the company via P749 or P355.
 func (p *WikidataPlugin) querySubsidiaries(ctx context.Context, companyID string) ([]sparqlBinding, error) {
-	// SPARQL query for subsidiaries, owned entities, and their websites
+	// SPARQL query for subsidiaries and their websites.
 	// P749 = parent organization (inverse: entity has companyID as parent)
 	// P355 = subsidiary (companyID lists entity as subsidiary)
-	// P127 = owned by (inverse: entity is owned by companyID)
 	// P856 = official website
 	query := fmt.Sprintf(`
 SELECT DISTINCT ?entity ?entityLabel ?website ?relation WHERE {
   {
-    ?entity wdt:P749 wd:%s .
-    BIND("subsidiary (P749)" AS ?relation)
-  }
-  UNION
-  {
-    wd:%s wdt:P355 ?entity .
-    BIND("subsidiary (P355)" AS ?relation)
-  }
-  UNION
-  {
-    ?entity wdt:P127 wd:%s .
-    BIND("owned-by (P127)" AS ?relation)
+    SELECT DISTINCT ?entity ?relation WHERE {
+      {
+        ?entity wdt:P749 wd:%s .
+        BIND("subsidiary (P749)" AS ?relation)
+      }
+      UNION
+      {
+        wd:%s wdt:P355 ?entity .
+        BIND("subsidiary (P355)" AS ?relation)
+      }
+    }
+    LIMIT 500
   }
   OPTIONAL { ?entity wdt:P856 ?website }
   SERVICE wikibase:label { bd:serviceParam wikibase:language "en" }
 }
-LIMIT 500
-`, companyID, companyID, companyID)
+`, companyID, companyID)
 
 	body, err := p.executeSPARQL(ctx, query)
 	if err != nil {
@@ -298,6 +327,95 @@ LIMIT 500
 	}
 
 	return resp.Results.Bindings, nil
+}
+
+func (p *WikidataPlugin) queryRelationshipStatuses(ctx context.Context, companyID string, results []sparqlBinding) (map[string]wikidataRelationshipStatus, error) {
+	entityIDs := wikidataEntityIDs(results)
+	if len(entityIDs) == 0 {
+		return nil, nil
+	}
+
+	statuses := make(map[string]wikidataRelationshipStatus)
+	if err := p.enrichRelationshipStatuses(ctx, statuses, companyID, entityIDs, "P749"); err != nil {
+		return statuses, err
+	}
+	if err := p.enrichRelationshipStatuses(ctx, statuses, companyID, entityIDs, "P355"); err != nil {
+		return statuses, err
+	}
+	return statuses, nil
+}
+
+func wikidataEntityIDs(results []sparqlBinding) []string {
+	seen := make(map[string]bool)
+	var ids []string
+	for _, result := range results {
+		id := extractEntityID(result.Entity.Value)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (p *WikidataPlugin) enrichRelationshipStatuses(ctx context.Context, statuses map[string]wikidataRelationshipStatus, companyID string, entityIDs []string, property string) error {
+	body, err := p.executeSPARQL(ctx, relationshipStatusQuery(companyID, entityIDs, property))
+	if err != nil {
+		return err
+	}
+
+	var resp sparqlResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return fmt.Errorf("parse response: %w", err)
+	}
+	for _, binding := range resp.Results.Bindings {
+		id := extractEntityID(binding.Entity.Value)
+		if id == "" || binding.Rank.Value == "" {
+			continue
+		}
+		mergeRelationshipStatus(statuses, id, binding)
+	}
+	return nil
+}
+
+func relationshipStatusQuery(companyID string, entityIDs []string, property string) string {
+	values := make([]string, 0, len(entityIDs))
+	for _, id := range entityIDs {
+		values = append(values, "wd:"+id)
+	}
+
+	if property == "P355" {
+		return fmt.Sprintf(`
+SELECT ?entity ?rank ?endTime WHERE {
+  VALUES ?entity { %s }
+  wd:%s p:P355 ?statement .
+  ?statement ps:P355 ?entity .
+  ?statement wikibase:rank ?rank .
+  OPTIONAL { ?statement pq:P582 ?endTime }
+}
+`, strings.Join(values, " "), companyID)
+	}
+
+	return fmt.Sprintf(`
+SELECT ?entity ?rank ?endTime WHERE {
+  VALUES ?entity { %s }
+  ?entity p:P749 ?statement .
+  ?statement ps:P749 wd:%s .
+  ?statement wikibase:rank ?rank .
+  OPTIONAL { ?statement pq:P582 ?endTime }
+}
+`, strings.Join(values, " "), companyID)
+}
+
+func mergeRelationshipStatus(statuses map[string]wikidataRelationshipStatus, id string, binding sparqlBinding) {
+	if binding.EndTime.Value != "" || strings.HasSuffix(binding.Rank.Value, "DeprecatedRank") {
+		statuses[id] = wikidataRelationshipEnded
+		return
+	}
+	if statuses[id] == "" {
+		statuses[id] = wikidataRelationshipCurrent
+	}
 }
 
 // executeSPARQL sends a SPARQL query to the Wikidata endpoint.
@@ -322,23 +440,14 @@ func (p *WikidataPlugin) executeSPARQL(ctx context.Context, query string) ([]byt
 		return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
-	// Read response body with size limit
-	const maxResponseSize = 10 * 1024 * 1024 // 10MB
-	body := make([]byte, 0, 64*1024)
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			body = append(body, buf[:n]...)
-			if len(body) > maxResponseSize {
-				return nil, fmt.Errorf("response too large (>10MB)")
-			}
-		}
-		if err != nil {
-			break
-		}
+	const maxResponseSize = 10 * 1024 * 1024
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
 	}
-
+	if len(body) > maxResponseSize {
+		return nil, fmt.Errorf("response too large (>10MB)")
+	}
 	return body, nil
 }
 
@@ -356,6 +465,10 @@ func extractEntityID(uri string) string {
 func extractDomainFromURL(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
+		return ""
+	}
+
+	if parsed.RawQuery != "" {
 		return ""
 	}
 

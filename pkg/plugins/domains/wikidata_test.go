@@ -53,6 +53,30 @@ func wikidataEmptyResponse() []byte {
 	return b
 }
 
+func wikidataStatusResponse(statuses ...struct {
+	id      string
+	rank    string
+	endTime string
+}) []byte {
+	bindings := make([]sparqlBinding, len(statuses))
+	for i, status := range statuses {
+		bindings[i] = sparqlBinding{
+			Entity:  sparqlValue{Type: "uri", Value: "http://www.wikidata.org/entity/" + status.id},
+			Rank:    sparqlValue{Type: "uri", Value: "http://wikiba.se/ontology#" + status.rank},
+			EndTime: sparqlValue{Type: "literal", Value: status.endTime},
+		}
+	}
+	resp := sparqlResponse{
+		Results: struct {
+			Bindings []sparqlBinding `json:"bindings"`
+		}{
+			Bindings: bindings,
+		},
+	}
+	b, _ := json.Marshal(resp)
+	return b
+}
+
 func wikidataSubsidiaryResponse(subsidiaries ...struct {
 	id       string
 	label    string
@@ -91,7 +115,7 @@ func TestWikidataPlugin_Description(t *testing.T) {
 	desc := p.Description()
 	assert.Contains(t, desc, "Wikidata")
 	assert.Contains(t, desc, "SPARQL")
-	assert.Contains(t, desc, "subsidiaries")
+	assert.Contains(t, desc, "subsidiary")
 }
 
 func TestWikidataPlugin_Category(t *testing.T) {
@@ -164,6 +188,37 @@ func TestWikidataPlugin_Run_NoEntityFound(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
+func TestWikidataPlugin_Run_AliasEntityFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/sparql-results+json")
+		query := r.URL.Query().Get("query")
+
+		if strings.Contains(query, "skos:altLabel") {
+			_, _ = w.Write(wikidataCompanyResponse("Q1159256"))
+			return
+		}
+		if strings.Contains(query, "rdfs:label") && strings.Contains(query, "wdt:P31") {
+			_, _ = w.Write(wikidataEmptyResponse())
+			return
+		}
+		if strings.Contains(query, "P749") {
+			_, _ = w.Write(wikidataSubsidiaryResponse(
+				struct{ id, label, website, relation string }{"Q1532489", "Pall Corporation", "http://www.pall.com/", "subsidiary (P749)"},
+			))
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	p := newWikidataPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Danaher"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "pall.com", findings[0].Value)
+}
+
 func TestWikidataPlugin_Run_WithSubsidiariesAndWebsites(t *testing.T) {
 	requestCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -177,8 +232,20 @@ func TestWikidataPlugin_Run_WithSubsidiariesAndWebsites(t *testing.T) {
 			return
 		}
 
+		if strings.Contains(query, "wikibase:rank") {
+			_, _ = w.Write(wikidataStatusResponse(
+				struct{ id, rank, endTime string }{"Q18593264", "NormalRank", ""},
+				struct{ id, rank, endTime string }{"Q42904", "NormalRank", ""},
+				struct{ id, rank, endTime string }{"Q191789", "NormalRank", ""},
+			))
+			return
+		}
+
 		// Second request: subsidiaries
 		if strings.Contains(query, "P749") || strings.Contains(query, "P355") {
+			assert.NotContains(t, query, "P127")
+			assert.Contains(t, query, "SELECT DISTINCT ?entity ?relation")
+			assert.Contains(t, query, "OPTIONAL { ?entity wdt:P856 ?website }")
 			_, _ = w.Write(wikidataSubsidiaryResponse(
 				struct{ id, label, website, relation string }{"Q18593264", "LinkedIn", "https://www.linkedin.com", "subsidiary (P749)"},
 				struct{ id, label, website, relation string }{"Q42904", "GitHub", "https://github.com", "subsidiary (P749)"},
@@ -224,7 +291,6 @@ func TestWikidataPlugin_Run_SubsidiaryWithoutWebsite(t *testing.T) {
 		}
 
 		if strings.Contains(query, "P749") {
-			// Subsidiary without website
 			_, _ = w.Write(wikidataSubsidiaryResponse(
 				struct{ id, label, website, relation string }{"Q123456", "Apple Subsidiary LLC", "", "subsidiary (P749)"},
 			))
@@ -238,20 +304,7 @@ func TestWikidataPlugin_Run_SubsidiaryWithoutWebsite(t *testing.T) {
 	p := newWikidataPlugin(t, srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Apple Inc"})
 	require.NoError(t, err)
-
-	// Should have a FindingPreseed for the subsidiary name (for further enrichment)
-	var preseedFindings []plugins.Finding
-	for _, f := range findings {
-		if f.Type == plugins.FindingPreseed {
-			preseedFindings = append(preseedFindings, f)
-		}
-	}
-
-	require.Len(t, preseedFindings, 1)
-	assert.Equal(t, "Apple Subsidiary LLC", preseedFindings[0].Value)
-	assert.Equal(t, "wikidata", preseedFindings[0].Source)
-	assert.Equal(t, "whois+company", preseedFindings[0].Data["preseed_type"])
-	assert.Equal(t, "Apple Subsidiary LLC", preseedFindings[0].Data["preseed_title"])
+	assert.Empty(t, findings)
 }
 
 func TestWikidataPlugin_Run_Deduplication(t *testing.T) {
@@ -302,6 +355,14 @@ func TestWikidataPlugin_Run_ConfidenceScoring(t *testing.T) {
 			return
 		}
 
+		if strings.Contains(query, "wikibase:rank") {
+			_, _ = w.Write(wikidataStatusResponse(
+				struct{ id, rank, endTime string }{"Q42904", "NormalRank", ""},
+				struct{ id, rank, endTime string }{"Q123", "NormalRank", ""},
+			))
+			return
+		}
+
 		if strings.Contains(query, "P749") {
 			_, _ = w.Write(wikidataSubsidiaryResponse(
 				struct{ id, label, website, relation string }{"Q42904", "GitHub", "https://github.com", "subsidiary (P749)"},
@@ -317,33 +378,50 @@ func TestWikidataPlugin_Run_ConfidenceScoring(t *testing.T) {
 	p := newWikidataPlugin(t, srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Microsoft"})
 	require.NoError(t, err)
+	require.Len(t, findings, 1)
 
-	for _, f := range findings {
-		require.NotEmpty(t, f.Confidences, "confidence evidence should be set")
-		for _, c := range f.Confidences {
-			assert.NotEmpty(t, c.Justification, "every entry needs a justification")
-		}
-		conf := plugins.TotalConfidence(f)
+	require.Len(t, findings[0].Confidences, 1)
+	assert.InDelta(t, confWikidataCurrent, plugins.TotalConfidence(findings[0]), 0.001)
+	assert.True(t, plugins.NeedsReview(findings[0]))
+	assert.Contains(t, findings[0].Confidences[0].Justification, "currently identifies")
+	assert.Equal(t, "current", findings[0].Data["relationship_status"])
+}
 
-		switch f.Type {
-		case plugins.FindingDomain:
-			// A domain finding rests on two independent claims: the relationship
-			// and the website that names this domain.
-			assert.InDelta(t, plugins.ConfidenceHigh, conf, 0.001, "domain findings should have high confidence")
-			assert.False(t, plugins.NeedsReview(f),
-				"a corroborated Wikidata domain reaches the clean bar exactly; float rounding must not push it under")
-			require.Len(t, f.Confidences, 2)
-			assert.InDelta(t, confWikidataRelationship, f.Confidences[0].Score, 0.001)
-			assert.InDelta(t, confWikidataWebsite, f.Confidences[1].Score, 0.001)
-			assert.Contains(t, f.Confidences[1].Justification, "official website")
-		case plugins.FindingPreseed:
-			// A name preseed rests on the relationship alone.
-			assert.InDelta(t, 0.55, conf, 0.001, "subsidiary name findings should have medium confidence")
-			assert.True(t, plugins.NeedsReview(f))
-			require.Len(t, f.Confidences, 1)
-			assert.Contains(t, f.Confidences[0].Justification, "subsidiary or owned entity")
+func TestWikidataPlugin_Run_EndedRelationshipConfidence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/sparql-results+json")
+		query := r.URL.Query().Get("query")
+
+		if strings.Contains(query, "rdfs:label") && strings.Contains(query, "wdt:P31") {
+			_, _ = w.Write(wikidataCompanyResponse("Q1159256"))
+			return
 		}
-	}
+		if strings.Contains(query, "wikibase:rank") {
+			_, _ = w.Write(wikidataStatusResponse(
+				struct{ id, rank, endTime string }{"Q1719462", "NormalRank", "2019-01-01T00:00:00Z"},
+			))
+			return
+		}
+		if strings.Contains(query, "P749") {
+			_, _ = w.Write(wikidataSubsidiaryResponse(
+				struct{ id, label, website, relation string }{"Q1719462", "KaVo Dental", "https://www.kavo.com", "subsidiary (P749)"},
+			))
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	p := newWikidataPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Danaher"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	require.Len(t, findings[0].Confidences, 1)
+	assert.Equal(t, confWikidataEnded, plugins.TotalConfidence(findings[0]))
+	assert.True(t, plugins.NeedsReview(findings[0]))
+	assert.Contains(t, findings[0].Confidences[0].Justification, "ended or deprecated")
+	assert.Equal(t, "ended_or_deprecated", findings[0].Data["relationship_status"])
 }
 
 func TestWikidataPlugin_Run_HTTPError(t *testing.T) {
@@ -390,7 +468,7 @@ func TestWikidataPlugin_Run_ContextCanceled(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
-func TestWikidataPlugin_Run_ExcludesOrgFromFindings(t *testing.T) {
+func TestWikidataPlugin_Run_EmitsOnlyDomains(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/sparql-results+json")
 		query := r.URL.Query().Get("query")
@@ -401,7 +479,6 @@ func TestWikidataPlugin_Run_ExcludesOrgFromFindings(t *testing.T) {
 		}
 
 		if strings.Contains(query, "P749") {
-			// Include the parent org name in subsidiaries (should be excluded)
 			_, _ = w.Write(wikidataSubsidiaryResponse(
 				struct{ id, label, website, relation string }{"Q2283", "Microsoft", "https://microsoft.com", "subsidiary (P749)"},
 				struct{ id, label, website, relation string }{"Q42904", "GitHub", "https://github.com", "subsidiary (P749)"},
@@ -417,11 +494,8 @@ func TestWikidataPlugin_Run_ExcludesOrgFromFindings(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Microsoft"})
 	require.NoError(t, err)
 
-	// Should not emit "Microsoft" as a FindingPreseed (but domain is OK)
 	for _, f := range findings {
-		if f.Type == plugins.FindingPreseed {
-			assert.NotEqual(t, "Microsoft", f.Value, "should not emit org name as preseed")
-		}
+		assert.Equal(t, plugins.FindingDomain, f.Type)
 	}
 }
 
@@ -456,6 +530,7 @@ func TestExtractDomainFromURL(t *testing.T) {
 		{"http://linkedin.com", "linkedin.com"},
 		{"https://WWW.MICROSOFT.COM", "microsoft.com"},
 		{"https://www.example.com:8080/path", "example.com"},
+		{"https://resolver.library.example/resolver?ctx=journal", ""},
 		{"not-a-url", ""},
 		{"", ""},
 		{"https://localhost", ""},
