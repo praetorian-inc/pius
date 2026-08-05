@@ -175,11 +175,13 @@ var orgLegalSuffixes = map[string]bool{
 	"corporation": true, "incorporated": true, "company": true, "limited": true,
 }
 
-// normalizeOrg lowercases, tokenizes, and strips legal-suffix tokens so that
-// "Walmart Inc." and "Walmart" compare equal while disambiguating tokens are
-// preserved. Without suffix stripping, "Walmart Inc." vs a "…, Inc." query
-// would share the "inc" token and wrongly clear the mismatch-drop test.
-func normalizeOrg(s string) string {
+// normalizeOrgTokens lowercases, tokenizes, and strips legal-suffix tokens so that
+// "Acme Inc." and "Acme" compare equal while disambiguating tokens are preserved.
+// Without suffix stripping, "Acme Inc." vs a "…, Inc." query would share the "inc"
+// token and wrongly clear the mismatch-drop test. It returns the kept tokens
+// directly so decideConfidence can feed them to jaccardTokenSets without a second
+// tokenize pass.
+func normalizeOrgTokens(s string) []string {
 	tokens := tokenize(s)
 	kept := make([]string, 0, len(tokens))
 	for _, t := range tokens {
@@ -188,7 +190,13 @@ func normalizeOrg(s string) string {
 		}
 		kept = append(kept, t)
 	}
-	return strings.Join(kept, " ")
+	return kept
+}
+
+// normalizeOrg is the string form of normalizeOrgTokens, kept for callers and tests
+// that compare normalized names as text.
+func normalizeOrg(s string) string {
+	return strings.Join(normalizeOrgTokens(s), " ")
 }
 
 // maskedSubstringMinLen is the shortest privacy-guard phrase eligible for
@@ -359,14 +367,14 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 	if lookupErr != nil || res.Masked || res.Org == "" {
 		return unverified
 	}
-	nq, nc := normalizeOrg(queryOrg), normalizeOrg(res.Org)
-	if nq == "" || nc == "" {
+	qTokens, cTokens := normalizeOrgTokens(queryOrg), normalizeOrgTokens(res.Org)
+	if len(qTokens) == 0 || len(cTokens) == 0 {
 		// One side has no comparable tokens after legal-suffix stripping (e.g. an
 		// all-suffix org like "Co., Ltd."). Token similarity is undefined here, so
 		// the candidate is UNVERIFIABLE, not a mismatch — score mid-band.
 		return unverified
 	}
-	sim := tokenJaccard(nq, nc)
+	sim := jaccardTokenSets(qTokens, cTokens)
 	switch {
 	case sim >= simCorroborate:
 		return confidenceDecision{Score: confReverseWhoisCorroborated, Justification: justifyReverseWhoisCorroborated}

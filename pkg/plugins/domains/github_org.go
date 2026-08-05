@@ -335,8 +335,16 @@ func tokenSimilarity(a, b string) float64 {
 // deliberately KEEPS containment (tokenSimilarity): there a partial name overlap is
 // a weak, 0.25-weighted hint, not a corroboration gate.
 func tokenJaccard(a, b string) float64 {
-	aT := tokenize(a)
-	bT := tokenize(b)
+	return jaccardTokenSets(tokenize(a), tokenize(b))
+}
+
+// jaccardTokenSets is the token-slice core of tokenJaccard: |A ∩ B| / |A ∪ B|
+// over the DISTINCT tokens of aT and bT. Callers that already hold tokenized input
+// (decideConfidence, via normalizeOrgTokens) pass slices directly to avoid a second
+// tokenize pass. It returns 0 when either side is empty; past that guard both sets
+// hold at least one token, so the union is always >= 1 and the division is safe (no
+// zero-union case can reach the final line).
+func jaccardTokenSets(aT, bT []string) float64 {
 	if len(aT) == 0 || len(bT) == 0 {
 		return 0
 	}
@@ -355,9 +363,6 @@ func tokenJaccard(a, b string) float64 {
 		}
 	}
 	union := len(inA) + len(inB) - intersection
-	if union == 0 {
-		return 0
-	}
 	return float64(intersection) / float64(union)
 }
 

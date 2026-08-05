@@ -146,6 +146,7 @@ func TestTokenJaccard(t *testing.T) {
 		{"Acme Global Data Cloud", "Acme Global Data Widgets", 0.6}, // 3 shared / 5 union
 		{"Google", "Apple", 0.0},                                    // disjoint
 		{"Alpha Beta", "Alpha Beta", 1.0},                           // identical multi-token
+		{"Acme Acme Beta", "Acme Gamma", 1.0 / 3.0},                 // duplicate token collapses to the distinct set: {acme, beta} vs {acme, gamma} = 1/3
 		{"", "Google", 0.0},                                         // empty side
 		{"Google", "", 0.0},                                         // empty other side
 	}
