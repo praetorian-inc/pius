@@ -148,9 +148,9 @@ func whoxyTestServer(t *testing.T, live, history string) (*whoxyWhoisClient, *in
 		atomic.AddInt32(&hits, 1)
 		switch {
 		case r.URL.Query().Get("whois") != "":
-			fmt.Fprint(w, live)
+			_, _ = fmt.Fprint(w, live)
 		case r.URL.Query().Get("history") != "":
-			fmt.Fprint(w, history)
+			_, _ = fmt.Fprint(w, history)
 		default:
 			http.Error(w, "unknown endpoint", http.StatusBadRequest)
 		}
