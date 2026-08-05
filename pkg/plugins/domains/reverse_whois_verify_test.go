@@ -192,38 +192,128 @@ func TestNormalizeOrg(t *testing.T) {
 	}
 }
 
-// TestDistinctTokenCount pins the counting rule corroborationHasResolution's
-// floor is measured in: a repeated token is one piece of evidence, not several
-// (ENG-5374).
+// distinctPerSideCount counts the DISTINCT tokens in ONE string. It is the
+// measure corroborationHasResolution's floor was FIRST written in and no longer
+// uses (the production helper of this shape, distinctTokenCount, is deleted). It
+// survives here, in the test and implemented independently of production, purely
+// as the BASELINE the current rule has to beat: it lets each row of
+// TestDistinctSharedTokenCount state what the retired per-side floor would have
+// concluded, so the divergence is machine-checked instead of asserted in prose.
+func distinctPerSideCount(s string) int {
+	seen := make(map[string]bool)
+	for _, t := range tokenize(s) {
+		seen[t] = true
+	}
+	return len(seen)
+}
+
+// TestDistinctSharedTokenCount pins the measure corroborationHasResolution's
+// floor is taken in: DISTINCT SHARED tokens — tokens present on BOTH sides, each
+// counted once (ENG-5374, round 2 of the fix — PR #127 review, Codex).
 //
-// Each case also records what the RAW token-slice length would have been, because
-// the divergence is the whole reason the helper exists — the floor was previously
-// measured in raw length, and every row where wantDistinct < wantRaw is a pair
-// that could clear a k >= 2 floor while carrying fewer than two independent
-// tokens. Rows where the two agree are the ordinary case and must stay unchanged.
+// Round 1 counted distinct tokens PER SIDE and took a min over the two. That is
+// strictly weaker, because a per-side count says nothing about shared evidence,
+// so every row below records dq and dc alongside the shared count. Any row where
+// wantShared < min(dq, dc) is a pair the retired per-side floor ADMITTED and this
+// one refuses, and the loop asserts that refusal against PRODUCTION
+// (corroborationHasResolution) rather than re-deriving it from wantShared — so
+// reinstating the per-side form fails here, not only in the scoring tests.
 //
-// No empty-input row: distinctTokenCount is only ever called from
-// corroborationHasResolution, which decideConfidence reaches only AFTER its
-// `nq == "" || nc == ""` guard has already returned unverified, so the helper's
-// behavior on an empty string is unreachable in production and asserting one
-// would invent a contract nothing depends on.
-func TestDistinctTokenCount(t *testing.T) {
+// No empty-input row is asserted as a production contract: decideConfidence
+// reaches corroborationHasResolution only AFTER its `nq == "" || nc == ""` guard
+// has returned unverified. The empty rows are present only to record what the
+// helper in fact does at that unreachable input (tokenize returns no tokens, so
+// nothing can be shared and the count is 0) rather than to invent a contract.
+func TestDistinctSharedTokenCount(t *testing.T) {
 	tests := []struct {
-		name         string
-		in           string
-		wantDistinct int
-		wantRaw      int
+		name       string
+		nq, nc     string
+		wantShared int
+		wantDq     int // distinct tokens on the query side
+		wantDc     int // distinct tokens on the candidate side
 	}{
-		{"repeated token counts once", "acme acme", 1, 2},
-		{"repeated token among distinct ones", "acme global acme", 2, 3},
-		{"all tokens distinct", "praetorian security group", 3, 3},
-		{"single token", "praetorian", 1, 1},
+		{
+			// The defect round 1 missed. dq=2 ("acme", "holdings") and dc=3 both
+			// clear a per-side floor of 2, yet the sides share only "acme".
+			// normalizeOrg does not dedupe and "holdings" is deliberately absent
+			// from orgLegalSuffixes, so the repeat survives normalization;
+			// tokenSimilarity then credits it twice for sim = 2/3 = 0.667, which is
+			// >= simCorroborate. Only the SHARED count refuses this pair.
+			name: "duplicate query token inflates both per-side counts past the floor",
+			nq:   "acme acme holdings", nc: "acme landscaping tampa",
+			wantShared: 1, wantDq: 2, wantDc: 3,
+		},
+		{
+			// The same class against a differently-unrelated candidate, to show the
+			// first row is not an artifact of its particular filler tokens.
+			name: "duplicate query token with a different unrelated candidate",
+			nq:   "acme acme holdings", nc: "acme global widgets",
+			wantShared: 1, wantDq: 2, wantDc: 3,
+		},
+		{
+			// The benign control: two genuinely distinct tokens are present on both
+			// sides, so this pair clears the shared floor exactly as it cleared the
+			// per-side one. The narrowing must not touch it — it is the shape this
+			// plugin exists to find.
+			name: "genuine two-token overlap still clears the floor",
+			nq:   "praetorian security", nc: "praetorian security group",
+			wantShared: 2, wantDq: 2, wantDc: 3,
+		},
+		{
+			// The repeat is on the CANDIDATE side — the side
+			// distinctSharedTokenCount WALKS. This row is the regression guard for
+			// dropping the candidate-side dedupe: without slices.Compact the walk
+			// would credit "acme" once per occurrence and return 2, reproducing
+			// inside the floor the very multiset/set asymmetry the floor exists to
+			// neutralize.
+			name: "duplicate on the walked candidate side is not double-counted",
+			nq:   "acme tree services", nc: "acme acme",
+			wantShared: 1, wantDq: 3, wantDc: 1,
+		},
+		{
+			// No overlap at all. Distinguishing this from the rows above is what
+			// keeps the floor confined to the corroborate arm: a pair sharing zero
+			// tokens must stay a clear mismatch, never be rescued to unverified.
+			name: "no shared token",
+			nq:   "apple", nc: "walmart",
+			wantShared: 0, wantDq: 1, wantDc: 1,
+		},
+		{
+			name: "empty candidate side (unreachable in production)",
+			nq:   "acme holdings", nc: "",
+			wantShared: 0, wantDq: 2, wantDc: 0,
+		},
+		{
+			name: "both sides empty (unreachable in production)",
+			nq:   "", nc: "",
+			wantShared: 0, wantDq: 0, wantDc: 0,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.wantDistinct, distinctTokenCount(tt.in), "distinct tokens")
-			assert.Len(t, tokenize(tt.in), tt.wantRaw,
-				"raw token-slice length — the count this floor must NOT be measured in")
+			assert.Equal(t, tt.wantShared, distinctSharedTokenCount(tt.nq, tt.nc),
+				"distinct shared tokens")
+			// Shared evidence is a property of the PAIR, so the count must not
+			// depend on which argument is which. Checked on every row, which covers
+			// the asymmetric ones (differing token counts, and the duplicate moving
+			// from the walked side to the mapped side) where the walk direction
+			// reverses and a one-sided dedupe would show up as a disagreement.
+			assert.Equal(t, tt.wantShared, distinctSharedTokenCount(tt.nc, tt.nq),
+				"distinct shared tokens must not depend on argument order")
+
+			assert.Equal(t, tt.wantDq, distinctPerSideCount(tt.nq), "distinct tokens on the query side")
+			assert.Equal(t, tt.wantDc, distinctPerSideCount(tt.nc), "distinct tokens on the candidate side")
+
+			perSideFloorMet := min(tt.wantDq, tt.wantDc) >= minCorroborateTokens
+			sharedFloorMet := tt.wantShared >= minCorroborateTokens
+			if perSideFloorMet && !sharedFloorMet {
+				assert.False(t, corroborationHasResolution(tt.nq, tt.nc),
+					"the retired per-side floor admitted this pair on %d/%d distinct tokens per side while only %d distinct token is actually shared; the shared floor must refuse it",
+					tt.wantDq, tt.wantDc, tt.wantShared)
+				return
+			}
+			assert.Equal(t, sharedFloorMet || tt.nq == tt.nc, corroborationHasResolution(tt.nq, tt.nc),
+				"corroboration must require the shared-token floor, with exact equality exempt")
 		})
 	}
 }
@@ -290,40 +380,61 @@ func TestDecideConfidence(t *testing.T) {
 			// against a query org sharing only "acme". Counted in raw token-slice
 			// length the pair clears the k >= 2 floor and corroborates on a single
 			// shared token — k=1 resolution wearing a k=2 disguise. Counted in
-			// distinct tokens, min(3, 1) = 1 and the corroborate arm is refused.
+			// distinct SHARED tokens the pair carries exactly one ("acme"), and the
+			// corroborate arm is refused.
 			name:      "duplicate token is not two independent tokens (ENG-5374)",
 			queryOrg:  "Acme Tree Services",
 			res:       org("Acme Corp Acme Inc"),
 			wantScore: confReverseWhoisUnverified,
 		},
 		{
-			// The same class from the QUERY side, because the guard takes a min over
-			// both sides and a one-sided fix would leave this half open. "Apple Apple"
-			// normalizes to two raw / one distinct token, and it is the SHORTER side
-			// here, so it is the side tokenSimilarity iterates: both occurrences match
-			// the candidate's "apple" and sim saturates at 1.0 again.
+			// The same class with the duplicate on the QUERY side. The shared-token
+			// count is symmetric, so this is not a second half of the rule needing
+			// its own guard; the row is here because the duplicate-bearing side is
+			// also the SHORTER one, so it is the side tokenSimilarity iterates —
+			// both occurrences of "apple" match the candidate and sim saturates at
+			// 1.0 again, from the opposite direction.
 			name:      "duplicate token on the query side is not corroboration (ENG-5374)",
 			queryOrg:  "Apple Apple",
 			res:       org("Apple Tree Landscaping"),
 			wantScore: confReverseWhoisUnverified,
 		},
 		{
-			// The benign control for the two cases above: the distinct-token floor
-			// narrows the CORROBORATE arm only, so a duplicate-bearing pair that
-			// shares nothing must still de-rank. A blanket "too few distinct tokens =>
-			// unverified" rule would wrongly RESCUE this clean mismatch to mid-band.
+			// The benign control for the two cases above: the distinct-shared-token
+			// floor narrows the CORROBORATE arm only, so a duplicate-bearing pair
+			// that shares nothing must still de-rank. A blanket "too few distinct
+			// shared tokens => unverified" rule would wrongly RESCUE this clean
+			// mismatch to mid-band.
 			name:      "duplicate token with zero overlap still de-ranks (ENG-5374)",
 			queryOrg:  "Walmart Walmart",
 			res:       org("Acme Tree Services"),
 			wantScore: confReverseWhoisMismatch,
 		},
 		{
-			// The other benign control: genuine full containment at two distinct
-			// tokens per side is deliberately still corroboration. This is the case
-			// the ENG-5374 narrowing must NOT touch — "acme acme" and "praetorian
-			// security" both present two raw tokens to the metric, and only the
-			// distinct count tells them apart.
-			name:      "full containment at two distinct tokens still corroborates",
+			// ENG-5374 round 2 (PR #127 review, Codex). The class the FIRST fix
+			// missed, because it counted distinct tokens PER SIDE and took a min:
+			// dq=2 ("acme", "holdings") and dc=3 ("acme", "landscaping", "tampa")
+			// both clear a floor of 2, so min(dq,dc)=2 ADMITTED a pair whose only
+			// shared token is "acme". Nothing about the metric changed —
+			// tokenSimilarity for this pair is still 0.667 >= simCorroborate, since
+			// it walks the shorter side's token SLICE and credits the repeated "acme"
+			// twice (2/3) — so this expectation is held up entirely by the
+			// distinct-SHARED-token floor. Weaken the guard back to any per-side
+			// count and this case fails; that is the whole value of it.
+			name:      "duplicate query token inflating a per-side count is not corroboration (ENG-5374 round 2)",
+			queryOrg:  "Acme Acme Holdings",
+			res:       org("Acme Landscaping Tampa"),
+			wantScore: confReverseWhoisUnverified,
+		},
+		{
+			// The other benign control, and the one that bounds the round-2
+			// narrowing: genuine full containment on two distinct SHARED tokens is
+			// deliberately still corroboration, so the fix closes only the
+			// duplicate-artifact class. This is the case the ENG-5374 narrowing must
+			// NOT touch — "acme acme" and "praetorian security" both present two raw
+			// tokens to the metric, and only the shared-distinct count tells them
+			// apart.
+			name:      "full containment on two distinct shared tokens still corroborates",
 			queryOrg:  "Praetorian Security",
 			res:       org("Praetorian Security Group"),
 			wantScore: confReverseWhoisCorroborated,
@@ -421,6 +532,35 @@ func TestDecideConfidence(t *testing.T) {
 				"reverse-whois must never drop below needs_review")
 		})
 	}
+}
+
+// TestDecideConfidence_DuplicateTokenPastAPerSideFloorStaysUnverified pins the
+// ENG-5374 round-2 regression at its FULL decision — score AND justification —
+// rather than only the arm the table above checks (PR #127 review, Codex).
+//
+// The pair is the one a per-side distinct floor admits: "acme acme holdings"
+// carries two distinct tokens, "acme landscaping tampa" three, so min(dq,dc)=2
+// clears a floor of 2 while the sides share exactly one distinct token. The
+// similarity value is asserted here too, and deliberately: it is STILL 0.667,
+// still at or above simCorroborate, so this test states in one place that the
+// metric did not change and the outcome is owed entirely to
+// corroborationHasResolution's distinct-shared-token floor. The benign control
+// that bounds the narrowing ("Praetorian Security" vs "Praetorian Security
+// Group", still corroborated) lives in the TestDecideConfidence table.
+func TestDecideConfidence_DuplicateTokenPastAPerSideFloorStaysUnverified(t *testing.T) {
+	const queryOrg = "Acme Acme Holdings"
+	registrant := "Acme Landscaping Tampa"
+
+	nq, nc := normalizeOrg(queryOrg), normalizeOrg(registrant)
+	require.Equal(t, "acme acme holdings", nq,
+		"the duplicate must survive normalizeOrg, or this test no longer covers the defect")
+	require.GreaterOrEqual(t, tokenSimilarity(nq, nc), simCorroborate,
+		"similarity must still reach the corroborate cutoff, or the guard is not what this test proves")
+
+	got := decideConfidence(queryOrg, newRegistrantResult(registrant), nil)
+	assert.Equal(t, confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisUnverified}, got,
+		"one shared token behind two per-side tokens is unverifiable, not corroboration")
+	assertInsideReviewBand(t, got, "ENG-5374 round 2 duplicate-token pair")
 }
 
 // TestDecideConfidence_RedactedRegistrantScoresUnverified proves the ENG-5404

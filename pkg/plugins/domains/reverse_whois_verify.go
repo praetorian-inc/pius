@@ -66,16 +66,22 @@ const (
 	// exactly {0.0, 1.0}, so the cutoff VALUES decide nothing there: every
 	// possible simCorroborate in (0,1] classifies identically, and re-setting 0.60
 	// to 0.7/0.8/0.95 would not have fixed ENG-5374. The defect was the metric's
-	// RESOLUTION, not the threshold, so the fix is the k=1 guard in
+	// RESOLUTION, not the threshold, so the fix is the shared-evidence guard in
 	// corroborationHasResolution and these constants stay put. That guard counts
-	// DISTINCT normalized tokens per side, never raw slice length: tokenSimilarity
-	// credits a repeated token once per occurrence, so a raw-length floor would
-	// admit "acme acme" as k=2 evidence and reopen this exact class. Recorded known
-	// limitation: below k=4, simMismatch is reachable only at m=0, i.e. it is
-	// equivalent to "no shared tokens at all" in that range. Not fixed here — it
-	// never mis-ranks (every outcome stays inside the [0.35,0.65) review band) and
-	// fixing it means changing the shared tokenSimilarity, which github_org's
-	// floor assertion forbids and this ticket does not scope.
+	// DISTINCT tokens present on BOTH sides — never raw slice length, and never
+	// per-side distinct cardinality, because per-side cardinality does not imply
+	// shared evidence. tokenSimilarity credits a repeated token once per
+	// occurrence, so a raw-length floor would admit "acme acme" as k=2 evidence,
+	// and a per-side floor would admit "Acme Acme Holdings" vs "Acme Landscaping
+	// Tampa" (dq=2, dc=3, distinctShared=1, sim=0.667) — each reopens this exact
+	// class.
+	//
+	// Recorded known limitation: below k=4, simMismatch is reachable only at m=0,
+	// i.e. it is equivalent to "no shared tokens at all" in that range. Not fixed
+	// here — it never mis-ranks (every outcome stays inside the [0.35,0.65) review
+	// band) and fixing it means changing the shared tokenSimilarity, which
+	// github_org's floor assertion forbids and this ticket does not scope
+	// (tracked as ENG-5890).
 	//
 	// NOT establishable hermetically: that 0.60/0.30 are the precision-optimal
 	// cutoffs. That is a claim about a decision boundary and needs candidates from
@@ -94,10 +100,11 @@ const (
 	// bottom of the needs_review band (the walmart.com-from-a-Leica-query false
 	// positive) — de-ranked, never dropped.
 	simMismatch = 0.30
-	// minCorroborateTokens is the smallest k = min(kq,kc) — counted in DISTINCT
-	// normalized tokens — at which crossing simCorroborate carries information;
-	// below it, corroboration additionally requires exact equality. See
-	// corroborationHasResolution.
+	// minCorroborateTokens is the smallest number of DISTINCT SHARED normalized
+	// tokens — tokens present on BOTH sides, each counted once — at which crossing
+	// simCorroborate carries information; below it, corroboration additionally
+	// requires exact equality. Per-side distinct cardinality is NOT the measure: it
+	// says nothing about shared evidence. See corroborationHasResolution.
 	minCorroborateTokens = 2
 
 	// maxReverseWhoisCandidates caps how many candidates we verify per run.
@@ -411,9 +418,10 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 }
 
 // corroborationHasResolution reports whether tokenSimilarity is capable of
-// expressing anything at this pair's token counts. It is the precondition
-// ENG-5374 added to the corroborate arm of decideConfidence — and it is about
-// the metric, not about the cutoff.
+// expressing anything about this pair — that is, whether the pair carries enough
+// DISTINCT SHARED token evidence for the metric's value to mean something. It is
+// the precondition ENG-5374 added to the corroborate arm of decideConfidence —
+// and it is about the metric, not about the cutoff.
 //
 // tokenSimilarity (github_org.go) is the containment coefficient
 // m / min(kq,kc), so its denominator DISCARDS the longer side's unmatched
@@ -435,59 +443,96 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 // The exact-equality exemption is load-bearing, and it compares the
 // normalizeOrg OUTPUT rather than the raw strings: normalizeOrg strips
 // legal-form suffixes, so the legitimate "Praetorian" vs "Praetorian Inc" and
-// "Acme" vs "Acme Corp" each reduce to a single IDENTICAL token. A bare k >= 2
-// floor without the exemption would de-rank exactly the matches this plugin
-// exists to find.
+// "Acme" vs "Acme Corp" each reduce to a single IDENTICAL token. A bare
+// two-distinct-shared-token floor without the exemption would de-rank exactly the
+// matches this plugin exists to find.
 //
-// k >= 2 is deliberately OUT OF SCOPE. The full-containment class does still
-// saturate there ("Acme Global" vs "Acme Global Widgets Holdings" scores 1.0);
-// it was considered and left alone, because crossing simCorroborate at k >= 2
-// already requires m >= 2 shared normalized tokens (m/k >= 0.6 with k >= 2
-// forces m >= 2) — genuine corroborating evidence — and the cutoffs keep real
-// discriminating power there since the ambiguous arm is reachable. k=1 is the
-// only regime where the metric has ZERO resolution, so that is the only regime
-// guarded.
+// What stays OUT OF SCOPE is full containment where BOTH shared tokens are
+// genuinely distinct: "Acme Global" vs "Acme Global Widgets Holdings" shares two
+// distinct tokens, still scores 1.0, and still corroborates. That is deliberate —
+// two distinct shared tokens are real corroborating evidence, not a duplicate
+// artifact, and the cutoffs keep real discriminating power at that resolution
+// because the ambiguous arm is reachable there.
 //
-// Confined to the corroborate arm in both directions: a blanket
-// "k < 2 => unverified" rule would wrongly RESCUE a clean mismatch, since
-// "Apple" vs "Walmart" is k=1 with m=0 and must stay de-ranked at the bottom of
-// the band.
+// An earlier revision of this comment justified a per-side floor by arguing that
+// "crossing simCorroborate at k >= 2 already requires m >= 2 shared normalized
+// tokens (m/k >= 0.6 with k >= 2 forces m >= 2)". That inference is FALSE and must
+// not be reinstated: under the multiset/set metric described below, m counts
+// matching OCCURRENCES, not distinct tokens, so m >= 2 does NOT force two distinct
+// shared tokens. This guard therefore enforces the shared-evidence property
+// DIRECTLY rather than assuming the metric implies it.
 //
-// k is counted in DISTINCT normalized tokens per side, NEVER in raw token-slice
-// length, and that is not a refinement — a raw-length floor reopens the exact
-// ENG-5374 class this guard exists to close. tokenSimilarity compares a multiset
-// against a set: it walks the shorter side's token SLICE while testing
-// membership in a map built from the longer side, so one shared token repeated
-// on the shorter side scores a match on EVERY occurrence. normalizeOrg does not
-// dedupe either — it drops legal-form suffixes and rejoins whatever is left — so
-// a registrant reading as "<Name> Corp <Name> Inc" normalizes to two raw tokens
-// carrying one distinct token. Under a raw-length floor that pair clears k >= 2
-// and then scores m/k = 2/2 = 1.0 against a query org sharing only that one
-// token, corroborating on a single shared token: k=1 resolution wearing a k=2
-// disguise. Counting distinct tokens is what makes this floor mean "at least
-// this many INDEPENDENT tokens of evidence", which is the property the k >= 2
-// out-of-scope argument above silently assumes.
+// Confined to the corroborate arm in both directions: a blanket "fewer than two
+// distinct shared tokens => unverified" rule would wrongly RESCUE a clean
+// mismatch, since "Apple" vs "Walmart" shares ZERO tokens (k=1, m=0) and must stay
+// de-ranked at the bottom of the band.
+//
+// The floor is counted in DISTINCT SHARED tokens — tokens present on BOTH sides,
+// each counted once — NEVER in raw token-slice length and NEVER in per-side
+// distinct cardinality. Both weaker counts reopen the exact ENG-5374 class this
+// guard exists to close, because per-side cardinality (however carefully deduped)
+// says nothing about shared evidence, and because tokenSimilarity compares a
+// multiset against a set: it walks the shorter side's token SLICE while testing
+// membership in a map built from the longer side, so one shared token repeated on
+// the shorter side scores a match on EVERY occurrence. normalizeOrg does not
+// dedupe either — it drops legal-form suffixes and rejoins whatever is left — so a
+// registrant reading as "<Name> Corp <Name> Inc" normalizes to two raw tokens
+// carrying one distinct token. Concretely:
+//
+//   - A RAW-LENGTH floor lets that pair clear k >= 2 and then score m/k = 2/2 =
+//     1.0 against a query org sharing only that one token.
+//   - A PER-SIDE DISTINCT floor still admits "Acme Acme Holdings" (query) vs
+//     "Acme Landscaping Tampa" (candidate): two distinct tokens on the query side
+//     and three on the candidate side clear a per-side floor of 2, while the pair
+//     shares exactly ONE distinct token — and the duplicated "acme" is credited
+//     twice, scoring 2/3 = 0.667 >= simCorroborate. ("holdings" is deliberately
+//     absent from orgLegalSuffixes, so the duplicate survives normalization.)
+//
+// Both are k=1 resolution wearing a k=2 disguise. Counting DISTINCT SHARED tokens
+// is what makes this floor mean "at least this many INDEPENDENT tokens of evidence
+// common to both sides", which is the property the out-of-scope argument above
+// silently assumes. The shared count is bounded above by each side's distinct
+// count, so this predicate STRICTLY SUBSUMES the per-side one — it is a single
+// floor, never an additional check alongside one.
 //
 // The multiset/set asymmetry inside tokenSimilarity is NOT fixed here.
 // tokenSimilarity is the metric github_org also scores against and its pinned
 // floor assertion forbids changing it — the same constraint that leaves the
-// k >= 2 saturation alone. So this guard does not repair the metric; it only
-// keeps the metric's duplicate-counting from ever producing a corroboration.
+// two-distinct-token saturation alone. So this guard does not repair the metric;
+// it only keeps the metric's duplicate-counting from ever producing a
+// corroboration. The metric itself is tracked as ENG-5890.
 func corroborationHasResolution(nq, nc string) bool {
 	if nq == nc {
 		return true
 	}
-	return min(distinctTokenCount(nq), distinctTokenCount(nc)) >= minCorroborateTokens
+	return distinctSharedTokenCount(nq, nc) >= minCorroborateTokens
 }
 
-// distinctTokenCount counts the distinct tokens in s — the resolution-bearing
-// token count for corroborationHasResolution, where a repeated token is one
-// piece of evidence rather than several. Sorting in place is safe because
-// tokenize returns a freshly allocated slice that nothing else holds.
-func distinctTokenCount(s string) int {
-	tokens := tokenize(s)
-	slices.Sort(tokens)
-	return len(slices.Compact(tokens))
+// distinctSharedTokenCount counts the DISTINCT tokens present on BOTH sides —
+// the resolution-bearing count for corroborationHasResolution, where a token
+// repeated on either side is one piece of shared evidence rather than several.
+//
+// The query side becomes a set, so its duplicates collapse by construction; the
+// candidate side is deduped before it is walked, so a token repeated THERE is
+// not double-counted either. Skipping that second dedupe would reproduce
+// tokenSimilarity's own multiset/set asymmetry — the very defect this floor
+// exists to neutralize. Sorting in place is safe because tokenize returns a
+// freshly allocated slice that nothing else holds.
+func distinctSharedTokenCount(nq, nc string) int {
+	queryTokens := tokenize(nq)
+	inQuery := make(map[string]struct{}, len(queryTokens))
+	for _, t := range queryTokens {
+		inQuery[t] = struct{}{}
+	}
+	candidateTokens := tokenize(nc)
+	slices.Sort(candidateTokens)
+	shared := 0
+	for _, t := range slices.Compact(candidateTokens) {
+		if _, ok := inQuery[t]; ok {
+			shared++
+		}
+	}
+	return shared
 }
 
 // verifyCandidates scores each candidate by resolving its own registrant and

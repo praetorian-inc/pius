@@ -240,10 +240,13 @@ func TestSimilarityReachabilityByTokenCount(t *testing.T) {
 	// The kq=1 rows are the defect verbatim: "Apple" against a longer unrelated
 	// name saturates at 1.0 and, pre-fix, corroborated. Post-fix they are
 	// unverified. The kq>=2 rows record the deliberately OUT-OF-SCOPE class:
-	// full containment still saturates to 1.0 and still corroborates there, which
-	// is intended (crossing the cutoff at k>=2 requires m>=2 genuinely shared
-	// tokens) and is pinned here so narrowing or widening that scope is a visible
-	// change rather than a silent one.
+	// full containment still saturates to 1.0 and still corroborates there. That
+	// is intended, and it is intended because these constructed pairs carry m
+	// genuinely DISTINCT SHARED tokens — every side is built from distinct
+	// calibrationTokens — not because crossing the cutoff at k>=2 implies two
+	// distinct shared tokens in general. It does not; see Derived result 3. The
+	// rows are pinned here so narrowing or widening that scope is a visible change
+	// rather than a silent one.
 	asymmetric := []struct {
 		kq, kc, m int
 		wantSim   float64
@@ -319,9 +322,37 @@ func TestSimilarityReachabilityByTokenCount(t *testing.T) {
 	assert.Equal(t, []int{1}, k1CorroboratingM,
 		"at k=1 corroboration must require exact equality (m == k), not merely a shared token")
 
-	// Derived result 3 — why k >= 2 is deliberately left alone. Crossing
-	// simCorroborate there always requires at least two shared normalized tokens,
-	// which is genuine corroborating evidence rather than a saturation artifact.
+	// Derived result 3 — what this enumeration can and cannot say about k >= 2.
+	//
+	// What it says: within this table, every corroborating row at k>=2 carries
+	// m>=2, and because both sides of every constructed pair are built from
+	// DISTINCT calibrationTokens, m there is also the number of distinct SHARED
+	// tokens. So the k>=2 rows enumerated here do rest on two independent pieces of
+	// shared evidence rather than on a saturation artifact.
+	//
+	// What it does NOT say — and an earlier version of this comment claimed it did,
+	// asserting that "crossing simCorroborate at k>=2 always requires at least two
+	// shared normalized tokens" and offering that as the reason k>=2 is left alone.
+	// That inference is false (PR #127 review, Codex). m counts matching
+	// OCCURRENCES, not distinct tokens: tokenSimilarity walks the shorter side's
+	// token SLICE against a membership set built from the longer side, so one
+	// shared token repeated on the shorter side scores a match per occurrence.
+	// "acme acme holdings" against "acme landscaping tampa" reaches m=2 at k=3 for
+	// sim=0.667 >= simCorroborate on ONE distinct shared token. The coincidence
+	// above is a property of this file's CONSTRUCTION, which cannot express that
+	// shape at all — newCalibrationPair and newAsymmetricCalibrationPair both
+	// require every token on a side to be distinct.
+	//
+	// That class is closed by corroborationHasResolution's distinct-SHARED-token
+	// floor, not by the metric, and it is covered where the shape can be written
+	// down: TestDistinctSharedTokenCount and the "(ENG-5374 round 2)" case in
+	// TestDecideConfidence, plus
+	// TestDecideConfidence_DuplicateTokenPastAPerSideFloorStaysUnverified.
+	//
+	// The assertion below is unchanged and still true of this table — it pins the
+	// table's shape, so an added or altered k>=2 corroborating row has to keep
+	// m>=2 — but read it as a statement about the enumeration, never as a
+	// derivation about the metric.
 	for _, c := range table {
 		if c.k >= 2 && c.wantArm == armCorroborated {
 			assert.GreaterOrEqual(t, c.m, 2,
