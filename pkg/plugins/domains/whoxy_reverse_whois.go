@@ -20,24 +20,37 @@ func init() {
 	plugins.Register("whoxy-reverse-whois", func() plugins.Plugin { return &WhoxyReverseWhoisPlugin{client: client.New()} })
 }
 
+// WhoxyReverseWhoisPlugin discovers related domains via Whoxy reverse WHOIS.
+// It emits FindingDomain with Data["pivot_org"] for each discovered domain.
+// Verification is NOT done inline — Guard fans out whois jobs on discovered
+// domains for parallel corroboration.
 type WhoxyReverseWhoisPlugin struct {
-	client   *client.Client
-	baseURL  string             // overridable for tests
-	resolver registrantResolver // overridable for tests; defaults to rdapWhoisResolver
+	client  *client.Client
+	baseURL string // overridable for tests
+}
+
+// NewWhoxyReverseWhoisPlugin creates a plugin with an injectable HTTP client.
+func NewWhoxyReverseWhoisPlugin(httpClient *client.Client) *WhoxyReverseWhoisPlugin {
+	return &WhoxyReverseWhoisPlugin{client: httpClient}
 }
 
 func (p *WhoxyReverseWhoisPlugin) Name() string { return "whoxy-reverse-whois" }
 func (p *WhoxyReverseWhoisPlugin) Description() string {
-	return "Reverse WHOIS via Whoxy API — discovers related domains by registrant organization name or email (paid, requires WHOXY_API_KEY)"
+	return "Reverse WHOIS via Whoxy API (requires WHOXY_API_KEY)"
 }
 func (p *WhoxyReverseWhoisPlugin) Category() string { return "domain" }
 func (p *WhoxyReverseWhoisPlugin) Phase() int       { return 0 }
 func (p *WhoxyReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
-// Accepts only runs if WHOXY_API_KEY is set and an org name or registrant
-// email seed is provided.
 func (p *WhoxyReverseWhoisPlugin) Accepts(input plugins.Input) bool {
 	return os.Getenv("WHOXY_API_KEY") != "" && (input.OrgName != "" || input.Email != "")
+}
+
+func (p *WhoxyReverseWhoisPlugin) apiBase() string {
+	if p.baseURL != "" {
+		return p.baseURL
+	}
+	return "https://api.whoxy.com"
 }
 
 type whoxyResponse struct {
@@ -50,40 +63,23 @@ type whoxySearchResult struct {
 	QueryTime  string `json:"query_time"`
 }
 
-func (p *WhoxyReverseWhoisPlugin) apiBase() string {
-	if p.baseURL != "" {
-		return p.baseURL
-	}
-	return "https://api.whoxy.com"
-}
-
 func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("WHOXY_API_KEY")
 
-	// Active seed: org name by default, registrant email when only Email is set.
 	query, byEmail := input.OrgName, false
 	if input.OrgName == "" && input.Email != "" {
 		query, byEmail = input.Email, true
 	}
-	queryType := "org"
-	if byEmail {
-		queryType = "email"
-	}
 
 	page := 1
 	totalPages := 1
-	// Accumulate an ordered, deduped candidate list. Staleness filtering happens
-	// here, BEFORE verification, so stale records never trigger a lookup. Each
-	// Whoxy match is only a lead (registrant name/email match); corroboration
-	// against the candidate's own registrant happens in verifyCandidates
-	// (ENG-5123).
-	var cands []candidate
 	seen := make(map[string]struct{})
+	var findings []plugins.Finding
 
 	for {
 		resp, err := p.fetchPage(ctx, apiKey, query, byEmail, page)
 		if err != nil {
-			slog.Warn("whoxy-reverse-whois: stopping pagination", "page", page, "query_type", queryType, "error", err)
+			slog.Warn("whoxy-reverse-whois: stopping pagination", "page", page, "error", err)
 			break
 		}
 
@@ -92,29 +88,24 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		}
 
 		for _, result := range resp.SearchResult {
-			if result.DomainName == "" {
-				continue
-			}
-			if whoxyRecordStale(result.QueryTime) {
+			if result.DomainName == "" || whoxyRecordStale(result.QueryTime) {
 				continue
 			}
 			domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(result.DomainName), "."))
-			if domain == "" {
+			if domain == "" || !isPlausibleDomain(domain) {
 				continue
 			}
 			if _, ok := seen[domain]; ok {
 				continue
 			}
 			seen[domain] = struct{}{}
-			cands = append(cands, candidate{
-				domain: domain,
-				finding: plugins.Finding{
-					Type:   plugins.FindingDomain,
-					Value:  domain,
-					Source: p.Name(),
-					Data: map[string]any{
-						"org": query,
-					},
+
+			findings = append(findings, plugins.Finding{
+				Type:   plugins.FindingDomain,
+				Value:  domain,
+				Source: p.Name(),
+				Data: map[string]any{
+					"pivot_org": query,
 				},
 			})
 		}
@@ -125,16 +116,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		page++
 	}
 
-	// Resolve into a local rather than mutating p.resolver: writing shared plugin
-	// state inside Run() would be a data race if an instance were ever reused or
-	// run concurrently (Gemini review, ENG-5123).
-	resolver := p.resolver
-	if resolver == nil {
-		resolver = &rdapWhoisResolver{}
-	}
-	// input.OrgName drives corroboration; email-mode (OrgName == "") short-
-	// circuits inside verifyCandidates. Data["org"] provenance stays the query.
-	return verifyCandidates(ctx, resolver, input.OrgName, cands)
+	return findings, nil
 }
 
 func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, query string, byEmail bool, page int) (whoxyResponse, error) {
@@ -165,9 +147,7 @@ func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, query s
 	return resp, nil
 }
 
-// whoxyRecordStale filters out records where Whoxy's query_time (last cache
-// refresh) is older than 10 years. This is guard-core parity — note that
-// query_time is NOT the domain registration date but when Whoxy last crawled it.
+// whoxyRecordStale filters records where Whoxy's query_time is older than 10 years.
 func whoxyRecordStale(queryTime string) bool {
 	t, err := time.Parse(time.DateTime, queryTime)
 	if err != nil {

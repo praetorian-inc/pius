@@ -16,10 +16,18 @@ func init() {
 	plugins.Register("reverse-whois", func() plugins.Plugin { return &ReverseWhoisPlugin{client: client.New()} })
 }
 
+// ReverseWhoisPlugin discovers related domains via ViewDNS reverse WHOIS.
+// It emits FindingDomain with Data["pivot_org"] for each discovered domain.
+// Verification is NOT done inline — Guard fans out whois jobs on discovered
+// domains for parallel corroboration.
 type ReverseWhoisPlugin struct {
-	client   *client.Client
-	baseURL  string             // overridable for tests
-	resolver registrantResolver // overridable for tests; defaults to rdapWhoisResolver
+	client  *client.Client
+	baseURL string // overridable for tests
+}
+
+// NewReverseWhoisPlugin creates a plugin with an injectable HTTP client.
+func NewReverseWhoisPlugin(httpClient *client.Client) *ReverseWhoisPlugin {
+	return &ReverseWhoisPlugin{client: httpClient}
 }
 
 func (p *ReverseWhoisPlugin) apiBase() string {
@@ -29,16 +37,12 @@ func (p *ReverseWhoisPlugin) apiBase() string {
 	return "https://api.viewdns.info"
 }
 
-func (p *ReverseWhoisPlugin) Name() string { return "reverse-whois" }
-func (p *ReverseWhoisPlugin) Description() string {
-	return "ViewDNS Reverse WHOIS: discovers domain portfolio (requires VIEWDNS_API_KEY)"
-}
-func (p *ReverseWhoisPlugin) Category() string { return "domain" }
-func (p *ReverseWhoisPlugin) Phase() int       { return 0 }
-func (p *ReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
+func (p *ReverseWhoisPlugin) Name() string        { return "reverse-whois" }
+func (p *ReverseWhoisPlugin) Description() string { return "ViewDNS Reverse WHOIS (requires VIEWDNS_API_KEY)" }
+func (p *ReverseWhoisPlugin) Category() string    { return "domain" }
+func (p *ReverseWhoisPlugin) Phase() int          { return 0 }
+func (p *ReverseWhoisPlugin) Mode() string        { return plugins.ModePassive }
 
-// Only runs if VIEWDNS_API_KEY is set and an org name or registrant email
-// seed is provided.
 func (p *ReverseWhoisPlugin) Accepts(input plugins.Input) bool {
 	return os.Getenv("VIEWDNS_API_KEY") != "" && (input.OrgName != "" || input.Email != "")
 }
@@ -46,13 +50,11 @@ func (p *ReverseWhoisPlugin) Accepts(input plugins.Input) bool {
 func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("VIEWDNS_API_KEY")
 
-	// Active seed: org name by default, registrant email when only Email is set.
 	query := input.OrgName
 	if query == "" {
 		query = input.Email
 	}
 
-	// ViewDNS Reverse WHOIS API
 	reqURL := fmt.Sprintf(
 		"%s/reversewhois/?q=%s&apikey=%s&output=json",
 		p.apiBase(),
@@ -62,7 +64,6 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 
 	body, err := p.client.Get(ctx, reqURL)
 	if err != nil {
-		// Return sanitized error — strip URL which contains the API key.
 		return nil, fmt.Errorf("reverse-whois: request failed")
 	}
 
@@ -77,13 +78,9 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 		return nil, fmt.Errorf("reverse-whois: parse response: %w", err)
 	}
 
-	// Build an ordered, deduped candidate list (the resolve cap is applied
-	// downstream in verifyCandidates). A ViewDNS match is only
-	// a lead (broad substring/token search over the full WHOIS record), so each
-	// candidate is corroborated against its own registrant in verifyCandidates
-	// rather than emitted at a flat score here (ENG-5123).
-	cands := make([]candidate, 0, len(response.Response.Matches))
 	seen := make(map[string]struct{})
+	var findings []plugins.Finding
+
 	for _, d := range response.Response.Matches {
 		if d.Domain == "" {
 			continue
@@ -92,31 +89,23 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 		if domain == "" {
 			continue
 		}
+		if !isPlausibleDomain(domain) {
+			continue
+		}
 		if _, ok := seen[domain]; ok {
 			continue
 		}
 		seen[domain] = struct{}{}
-		cands = append(cands, candidate{
-			domain: domain,
-			finding: plugins.Finding{
-				Type:   plugins.FindingDomain,
-				Value:  domain,
-				Source: p.Name(),
-				Data: map[string]any{
-					"org": query,
-				},
+
+		findings = append(findings, plugins.Finding{
+			Type:   plugins.FindingDomain,
+			Value:  domain,
+			Source: p.Name(),
+			Data: map[string]any{
+				"pivot_org": query,
 			},
 		})
 	}
 
-	// Resolve into a local rather than mutating p.resolver: writing shared plugin
-	// state inside Run() would be a data race if an instance were ever reused or
-	// run concurrently (Gemini review, ENG-5123).
-	resolver := p.resolver
-	if resolver == nil {
-		resolver = &rdapWhoisResolver{}
-	}
-	// input.OrgName drives corroboration; email-mode (OrgName == "") short-
-	// circuits inside verifyCandidates. Data["org"] provenance stays the query.
-	return verifyCandidates(ctx, resolver, input.OrgName, cands)
+	return findings, nil
 }

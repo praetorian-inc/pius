@@ -23,6 +23,15 @@ const (
 	// Data["preseed_type"] carries the preseed classification (e.g., "whois+company").
 	// Data["preseed_title"] carries a human-readable label (often the same as Value).
 	FindingPreseed FindingType = "preseed"
+
+	// FindingWhoisResult carries structured WHOIS/RDAP registration data for a domain.
+	// Value is the domain name. Data carries:
+	//   registrant, email, registrar, country, province, city (strings)
+	//   purchased, updated, expiration (RFC3339 timestamps)
+	//   raw (raw WHOIS text for archival)
+	//   unregistered (bool, true if domain is not registered)
+	//   corroboration ("match", "mismatch", "unverifiable", "" if no pivot org)
+	FindingWhoisResult FindingType = "whois-result"
 )
 
 // Mode constants for plugin classification.

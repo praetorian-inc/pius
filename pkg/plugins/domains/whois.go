@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/mail"
+	"net/http"
 	"strings"
+	"time"
 
 	whoisparser "github.com/likexian/whois-parser"
 
@@ -16,256 +17,181 @@ func init() {
 	plugins.Register("whois", func() plugins.Plugin { return &WhoisPlugin{} })
 }
 
-// WhoisPlugin performs domain WHOIS lookups to extract registration information
-// (registrant organization, contact names, and emails) and emits them as preseed
-// findings for downstream discovery.
-type WhoisPlugin struct{}
-
-func (p *WhoisPlugin) Name() string { return "whois" }
-func (p *WhoisPlugin) Description() string {
-	return "Domain WHOIS: extracts registrant organization, contacts, and emails from WHOIS records"
-}
-func (p *WhoisPlugin) Category() string { return "domain" }
-func (p *WhoisPlugin) Phase() int       { return 0 }
-func (p *WhoisPlugin) Mode() string     { return plugins.ModePassive }
-
-func (p *WhoisPlugin) Accepts(input plugins.Input) bool {
-	return input.Domain != ""
+// WhoisResult is the structured output of an RDAP or WHOIS lookup.
+type WhoisResult struct {
+	Domain         *whoisparser.Domain
+	Registrar      *whoisparser.Contact
+	Registrant     *whoisparser.Contact
+	Administrative *whoisparser.Contact
+	Technical      *whoisparser.Contact
+	Billing        *whoisparser.Contact
+	Raw            string
+	Unregistered   bool
 }
 
-func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []plugins.Finding, err error) {
+// WhoisPlugin performs domain WHOIS lookups via RDAP (primary) with TCP 43
+// fallback, extracting registration information and emitting preseeds and
+// structured WHOIS result findings.
+type WhoisPlugin struct {
+	HTTPClient *http.Client // injectable for Guard's collector transport
+}
+
+// NewWhoisPlugin creates a WhoisPlugin with an injectable HTTP client.
+func NewWhoisPlugin(httpClient *http.Client) *WhoisPlugin {
+	return &WhoisPlugin{HTTPClient: httpClient}
+}
+
+func (p *WhoisPlugin) Name() string        { return "whois" }
+func (p *WhoisPlugin) Description() string { return "Domain WHOIS via RDAP and TCP 43" }
+func (p *WhoisPlugin) Category() string    { return "domain" }
+func (p *WhoisPlugin) Phase() int          { return 0 }
+func (p *WhoisPlugin) Mode() string        { return plugins.ModePassive }
+func (p *WhoisPlugin) Accepts(input plugins.Input) bool { return input.Domain != "" }
+
+func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	domain := rootDomain(input.Domain)
 	if domain == "" {
 		return nil, fmt.Errorf("whois: unable to determine root domain from %q", input.Domain)
 	}
 
-	// whoisparser.Parse runs over untrusted third-party WHOIS text. The
-	// reverse-whois verifier already wraps its identical Parse call in a
-	// worker-level recover (reverse_whois_verify.go) because plugins execute
-	// inside an errgroup goroutine (runner/run.go) with no framework-level
-	// recover — an unrecovered panic there crashes the whole pius run. Guard
-	// this sibling call site the same way so a malformed record during primary
-	// discovery de-grades to a logged error + no preseeds instead of a crash
-	// (ENG-5123 review, Gemini).
-	defer func() {
-		if rec := recover(); rec != nil {
-			slog.Warn("whois: recovered panic parsing WHOIS record; emitting no preseeds",
-				"domain", domain, "panic", rec)
-			findings = nil
-			err = fmt.Errorf("whois: recovered panic parsing record for %q: %v", domain, rec)
-		}
-	}()
-
-	raw, incomplete, err := whoisQuery(ctx, domain)
+	result, err := p.resolve(ctx, domain)
 	if err != nil {
-		return nil, fmt.Errorf("whois: lookup failed for %q: %w", domain, err)
-	}
-
-	// whoisQuery is shared with the reverse-whois verifier, where a caller
-	// cancellation deliberately salvages the last post-referral record
-	// (recall-safe). WhoisPlugin has no such recall contract: a cancelled run
-	// must abort, not emit preseeds from a salvaged partial record. Re-check the
-	// context before parsing/emitting (ENG-5123 review, Codex).
-	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	// An incomplete chain reaches this point in one of two regimes, and the
-	// re-check above is what separates them — do not read it as unreachable for
-	// incomplete records. The separation is exact because whoisQuery classifies on
-	// ctx.Err() and nothing else, so the re-check above is literally the same
-	// monotone test read a second time:
-	//
-	//   - ctx-CAUSED partiality (whoisIncompleteDeadline, i.e. ctx.Err() was
-	//     already non-nil inside whoisQuery): the re-check fires and we already
-	//     returned. Correct — a cancelled run must abort, not emit preseeds from a
-	//     salvaged partial record.
-	//   - a GENUINE transport failure on a referral hop after the registry
-	//     answered: ctx stays clean, so control falls through to here and emitting
-	//     is correct — the salvaged record is a real registry response, just less
-	//     specific, and preseeds are additive discovery where a MISSING seed is the
-	//     failure mode. Reaching this regime does NOT turn on the hop error's
-	//     identity, which is unusable for the purpose: a clean-ctx stall carries
-	//     either os.ErrDeadlineExceeded or context.DeadlineExceeded,
-	//     nondeterministically, because the dialer's own Timeout is armed both as an
-	//     fd poll deadline and as a context.AfterFunc (a scheduling race; the ratio
-	//     is not a stable property and must not be relied on — see the four-regime
-	//     table in whoisclient.go's salvage arm). Either way ctx.Err() is nil, so
-	//     whoisQuery classifies it whoisIncompleteReferral, which is the right
-	//     answer: it is an unresponsive server, not an exhausted budget.
-	//
-	// So this warn-and-emit path serves the second regime (plus a hop budget
-	// exhausted with a referral pending), and whoisIncompleteDeadline is genuinely
-	// unreachable here. Report the partiality so a thin preseed set is
-	// attributable, but never gate emission on it (ENG-5405).
-	//
-	// Log-injection safety here rests on slog, NOT on any property of `domain`.
-	// rootDomain is a SHAPE normalizer, not a sanitizer: it lowercases, trims outer
-	// whitespace and one trailing dot, and keeps the last two labels — it bounds no
-	// length and rejects no control characters, and capmodel.Domain reaches it
-	// unvalidated. What makes this site safe is that both values are in ATTRIBUTE
-	// VALUE position, and slog's handlers quote and escape value-position strings
-	// (verified against the text, JSON, and default handlers: an embedded
-	// "\nlevel=ERROR ..." comes out as an escaped \n inside a quoted string, so it
-	// cannot forge a log line). Only MESSAGE-position text could, and the message
-	// is a compile-time constant. The raw record and the unbounded referral server
-	// string are still deliberately never logged — that is a PII/volume decision,
-	// independent of injection.
-	if incomplete != whoisComplete {
-		slog.Warn("whois: referral chain incomplete; preseeds may be partial",
-			"domain", domain, "reason", incomplete)
+	if result.Unregistered {
+		return []plugins.Finding{p.whoisResultFinding(domain, result, input.OrgName)}, nil
 	}
 
-	parsed, perr := whoisParseFn(raw)
-	if perr != nil {
-		slog.Warn("whois: parse failed, skipping preseed extraction", "domain", domain, "error", perr)
-		return nil, nil
+	var findings []plugins.Finding
+
+	// Emit structured WHOIS result (metadata, raw text, corroboration)
+	findings = append(findings, p.whoisResultFinding(domain, result, input.OrgName))
+
+	// Emit preseeds (company, email, name)
+	findings = append(findings, p.extractPreseeds(domain, result)...)
+
+	return findings, nil
+}
+
+// resolve tries RDAP first, falls back to TCP 43 WHOIS.
+func (p *WhoisPlugin) resolve(ctx context.Context, domain string) (WhoisResult, error) {
+	// 1. Try RDAP
+	result, err := rdapLookup(p.HTTPClient, domain)
+	if err == nil && hasContacts(result) {
+		return result, nil
 	}
 
-	return extractPreseeds(parsed), nil
+	if err != nil && isDomainNotFound(err) {
+		return WhoisResult{Unregistered: true}, nil
+	}
+
+	var best WhoisResult
+	if err != nil {
+		slog.Debug("RDAP lookup failed, falling back to TCP 43", "domain", domain, "error", err)
+	} else {
+		slog.Debug("RDAP returned no contacts, falling back to TCP 43", "domain", domain)
+		best = result
+	}
+
+	// 2. Try TCP 43 WHOIS
+	raw, _, whoisErr := whoisQuery(ctx, domain)
+	if whoisErr != nil {
+		if isDomainNotFound(whoisErr) {
+			return WhoisResult{Unregistered: true}, nil
+		}
+		slog.Debug("TCP 43 WHOIS lookup failed", "domain", domain, "error", whoisErr)
+		// Return best RDAP result if we have one
+		if best.Domain != nil {
+			return best, nil
+		}
+		return WhoisResult{}, fmt.Errorf("whois: all methods failed for %s", domain)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return WhoisResult{}, err
+	}
+
+	parsed, parseErr := whoisparser.Parse(raw)
+	if parseErr != nil {
+		slog.Debug("whois: parse failed", "domain", domain, "error", parseErr)
+		if best.Domain != nil {
+			return best, nil
+		}
+		return WhoisResult{}, nil
+	}
+
+	tcp43Result := extractWhoisResultFromParsed(parsed, raw)
+	if hasContacts(tcp43Result) {
+		return tcp43Result, nil
+	}
+
+	// Use whichever has more data
+	if best.Domain != nil {
+		return best, nil
+	}
+	return tcp43Result, nil
 }
 
-// whoisParseFn is a seam over whoisparser.Parse so the panic-recover in
-// WhoisPlugin.Run can be exercised by a test that injects a panicking parse.
-var whoisParseFn = whoisparser.Parse
+// whoisResultFinding builds a FindingWhoisResult from a resolved WhoisResult.
+func (p *WhoisPlugin) whoisResultFinding(domain string, result WhoisResult, pivotOrg string) plugins.Finding {
+	data := map[string]any{}
 
-// whoisPrivacyNames contains name-field values used by WHOIS privacy
-// services. These appear as registrant name but don't identify a real person.
-// Keyed by lowercase for case-insensitive matching.
-var whoisPrivacyNames = map[string]bool{
-	"registration private":                  true,
-	"domain admin":                          true,
-	"domain administrator":                  true,
-	"whois agent":                           true,
-	"whois privacy":                         true,
-	"data protected":                        true,
-	"redacted for privacy":                  true,
-	"withheld for privacy":                  true,
-	"contact privacy inc. customer":         true,
-	"identity protection service":           true,
-	"domain privacy group":                  true,
-	"private registration":                  true,
-	"not disclosed":                         true,
-	"statutory masking enabled":             true,
-	"admin":                                 true,
-	"hostmaster":                            true,
-	"dns admin":                             true,
-	"domain hostmaster":                     true,
-	"abuse":                                 true,
-	"postmaster":                            true,
-	"super privacy service ltd c/o migadu": true,
-}
+	if result.Unregistered {
+		data["unregistered"] = true
+	} else {
+		if result.Registrant != nil {
+			data["registrant"] = registrantOrg(result.Registrant, domain)
+			data["country"] = normalizeRedacted(result.Registrant.Country)
+			data["province"] = normalizeRedacted(result.Registrant.Province)
+			data["city"] = normalizeRedacted(result.Registrant.City)
+		}
 
-// whoisPrivacyGuards contains organization names used by WHOIS privacy
-// services. These appear as registrant org but don't represent the actual
-// domain owner. Keyed by lowercase for case-insensitive matching.
-var whoisPrivacyGuards = map[string]bool{
-	"domains by proxy, llc":              true,
-	"domains by proxy":                   true,
-	"whoisguard, inc.":                   true,
-	"whoisguard protected":               true,
-	"whoisguard":                         true,
-	"privacy protect, llc":               true,
-	"contact privacy inc.":               true,
-	"contact privacy inc. customer":      true,
-	"privacyprotect.org":                 true,
-	"whois privacy corp.":                true,
-	"perfect privacy, llc":               true,
-	"data protected":                     true,
-	"identity protection service":        true,
-	"withheld for privacy":               true,
-	"redacted for privacy":               true,
-	"statutory masking enabled":          true,
-	"super privacy service ltd":          true,
-	"privacy service provided by withheld for privacy ehf": true,
-	"domain protection services, inc.":                     true,
-	"contactprivacy.com":                                   true,
-	"private by design, llc":                               true,
-	"domain privacy group, inc.":                           true,
-	"whoisprivacyprotect.com":                              true,
-	"gandi sas":                                            true,
-	"tucows domains inc.":                                  true,
-	"privacy hero, inc.":                                   true,
-	"proxy protection llc":                                 true,
-	"id shield":                                            true,
-}
+		email, sawProxy := contactEmail(result)
+		registrantRedacted := false
+		if reg, ok := data["registrant"].(string); ok {
+			data["registrant"] = normalizeRedacted(reg)
+			registrantRedacted = data["registrant"] == PrivacyRedaction
+		}
+		switch {
+		case email != "":
+			data["email"] = email
+		case sawProxy || registrantRedacted:
+			data["email"] = PrivacyRedaction
+		}
 
-// Redaction MARKER vocabulary (ENG-5404).
-//
-// The two tables above are exact-phrase allowlists, which makes privacy
-// detection structurally fail-open: it fires only when the registrant string is
-// an enumerated wording or a SUPERSTRING of one (the substring pass in
-// isMaskedOrg). Any wording assembled from the same vocabulary in a different
-// order therefore escapes entirely — it is neither enumerated nor a superstring
-// of anything enumerated. "DATA REDACTED", the live cloudflare.com registrant
-// org, is exactly that case: unmistakably a redaction placeholder, yet
-// unreachable by both tiers. Enumerating registrar wordings one at a time loses
-// that race by construction, so detection also keys on the MARKER vocabulary a
-// placeholder carries, independent of word order.
-//
-// Markers are matched on WHOLE TOKENS, never as substrings. That token boundary
-// is what keeps the class fix from becoming a false-positive machine: a genuine
-// org such as "Redactron Systems" contains "redact" but tokenizes to
-// ["redactron", "systems"], so no token equals a marker and it stays unmasked.
-// It is the same false-positive concern maskedSubstringMinLen encodes for the
-// substring pass, enforced structurally rather than by phrase length.
-//
-// SCOPE: these tables are consumed ONLY by isMaskedOrg in
-// reverse_whois_verify.go — the reverse-WHOIS ranking predicate. They are
-// deliberately NOT wired into extractPreseeds: the whoisPrivacyGuards lookup at
-// the "company" branch below is an EXACT-match preseed suppressor, and widening
-// it to marker matching would silently change which preseeds this plugin emits.
-// That is a separate behavior change with its own recall risk, outside
-// ENG-5404's scope.
-//
-// Every entry below names the redaction ACTION ("redacted", "withheld",
-// "masked"). That is the membership rule, and it is what keeps the table from
-// drifting back into wording enumeration: a token qualifies only if its presence
-// as a whole token IS the evidence of redaction, in any word order.
-//
-// EXCLUDED marker — "privacy": the ticket floated a bare "privacy" token as a
-// candidate marker; it was considered and rejected. Genuine organizations carry
-// it as a whole token (e.g. "Privacy International", a real NGO), so it would
-// mask real registrants — and it buys nothing, because the multi-word privacy
-// wordings ("whois privacy", "privacy protect, llc", "redacted for privacy", …)
-// are already covered by tiers 1 and 2.
-//
-// EXCLUDED marker — "gdpr": the ticket floated it too, and it was carried here
-// in the first cut before review (Codex, PR #106) pushed back. It fails the
-// membership rule above: GDPR is the legal REASON a registrant is hidden, not
-// the hiding itself, so it is not evidence on its own. A registrant genuinely
-// named for the statute ("GDPR Register B.V.", "The GDPR Institute") would be
-// read as a placeholder, and because the query org is compared against every
-// candidate, a GDPR-named CUSTOMER would lose corroboration on all of its own
-// domains at once — 0.60 to 0.50 across the board, plus a wasted WHOIS lookup
-// each. Against that it buys no reach: the real registrar wordings that carry
-// the statute carry an action word beside it ("REDACTED FOR GDPR",
-// "GDPR Masked", "Data Protected by GDPR"), so all three remain masked: the
-// first two through the "redacted" and "masked" markers here, and the third
-// through tier 2's "data protected" guard phrase, which the substring pass
-// answers before tier 3 is reached. Asserted by
-// TestIsMaskedOrg_PrivacyMarkers, which keeps those wordings in the masked set
-// and a statute-named org in the genuine set.
-var whoisPrivacyMarkerTokens = map[string]bool{
-	"redacted":  true,
-	"redaction": true,
-	"redact":    true,
-	"withheld":  true,
-	"masked":    true,
-	"masking":   true,
-}
+		if result.Registrar != nil {
+			data["registrar"] = normalizeRegistrar(result.Registrar.Name)
+		}
 
-// whoisPrivacyMarkerPhrases are marker RUNS of CONSECUTIVE tokens whose
-// individual words are too generic to mark alone — "data", "not", and
-// "protected" all appear in real org names, so only the adjacent pair is
-// evidence of redaction.
-var whoisPrivacyMarkerPhrases = [][]string{
-	{"data", "protected"},
-	{"not", "disclosed"},
+		if result.Domain != nil {
+			data["purchased"] = result.Domain.CreatedDate
+			data["updated"] = result.Domain.UpdatedDate
+			data["expiration"] = result.Domain.ExpirationDate
+		}
+
+		data["raw"] = result.Raw
+
+		// Corroboration: if pivotOrg is set, compare against resolved registrant
+		if pivotOrg != "" {
+			resolvedOrg := ""
+			if result.Registrant != nil {
+				resolvedOrg = registrantOrg(result.Registrant, domain)
+			}
+			data["corroboration"] = corroborate(pivotOrg, resolvedOrg)
+		}
+	}
+
+	return plugins.Finding{
+		Type:   plugins.FindingWhoisResult,
+		Value:  domain,
+		Source: p.Name(),
+		Data:   data,
+	}
 }
 
 // extractPreseeds pulls registrant organization, name, and email from WHOIS contacts.
-func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
+func (p *WhoisPlugin) extractPreseeds(domain string, result WhoisResult) []plugins.Finding {
 	type param struct {
 		name  string
 		value string
@@ -275,15 +201,24 @@ func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
 	var findings []plugins.Finding
 
 	contacts := []*whoisparser.Contact{
-		info.Registrant, info.Administrative, info.Billing, info.Technical,
+		result.Registrant, result.Administrative, result.Billing, result.Technical,
 	}
 	for _, c := range contacts {
 		if c == nil {
 			continue
 		}
 
+		// For registrant, use registrantOrg to handle ccTLD promotion and
+		// registry artifact filtering.
+		org := c.Organization
+		if c == result.Registrant {
+			org = registrantOrg(c, domain)
+		} else if org != "" && isRegistryArtifact(org, domain) {
+			org = ""
+		}
+
 		candidates := []param{
-			{"company", c.Organization},
+			{"company", org},
 			{"name", c.Name},
 			{"email", c.Email},
 		}
@@ -292,13 +227,17 @@ func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
 			if p.value == "" || seen[p] {
 				continue
 			}
-			if p.name == "email" && !isEmail(p.value) {
+			if p.name == "email" && !isValidEmail(p.value) {
 				continue
 			}
-			if p.name == "company" && whoisPrivacyGuards[strings.ToLower(p.value)] {
+			if p.name == "company" && isNoisyWhoisParam(p.value) {
 				continue
 			}
 			if p.name == "name" && whoisPrivacyNames[strings.ToLower(p.value)] {
+				continue
+			}
+			// Skip noisy email values
+			if p.name == "email" && isNoisyWhoisParam(p.value) {
 				continue
 			}
 			seen[p] = true
@@ -319,10 +258,8 @@ func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
 	return findings
 }
 
-// rootDomain extracts the registrable domain (e.g., "example.com" from "sub.example.com").
-// Uses a simple heuristic: take the last two labels. This covers the common case;
-// multi-level TLDs (e.g., ".co.uk") are not handled here — WHOIS servers typically
-// resolve them correctly regardless.
+// rootDomain extracts the registrable domain (e.g., "example.com" from
+// "sub.example.com"). Uses a simple heuristic: take the last two labels.
 func rootDomain(domain string) string {
 	domain = strings.TrimSuffix(strings.TrimSpace(strings.ToLower(domain)), ".")
 	parts := strings.Split(domain, ".")
@@ -335,7 +272,11 @@ func rootDomain(domain string) string {
 	return strings.Join(parts[len(parts)-2:], ".")
 }
 
-func isEmail(s string) bool {
-	_, err := mail.ParseAddress(s)
-	return err == nil
+// parseExpirationDuration returns how long until the domain expires, if parseable.
+func parseExpirationDuration(expirationDate string) (time.Duration, bool) {
+	t, ok := parseExpirationTime(expirationDate)
+	if !ok {
+		return 0, false
+	}
+	return time.Until(t), true
 }
