@@ -252,10 +252,10 @@ func isMaskedOrg(v string) bool {
 	// decision.
 	//
 	// foldDiacritics before tokenize so that non-ASCII redaction wordings (e.g.
-	// "RÉDACTED", "DONNÉES PROTÉGÉES") have their diacritics stripped to ASCII
-	// base letters, letting the existing marker vocabulary match. This is applied
-	// only here — not in tokenize itself — to avoid changing similarity scoring
-	// (ENG-5420).
+	// "RÉDACTED" → "redacted", "MASKÉD" → "masked") have their diacritics
+	// stripped to ASCII base letters, letting the existing marker vocabulary
+	// match. This is applied only here — not in tokenize itself — to avoid
+	// changing similarity scoring (ENG-5420).
 	return hasPrivacyMarker(tokenize(foldDiacritics(key)))
 }
 
