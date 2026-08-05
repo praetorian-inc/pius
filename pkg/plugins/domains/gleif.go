@@ -175,15 +175,12 @@ func (p *GLEIFPlugin) resolveEntity(ctx context.Context, name string) (*leiRecor
 			log.Printf("[gleif] candidate %s failed: %v", lei, err)
 			continue
 		}
+		if record.Attributes.Entity.Status != "ACTIVE" {
+			continue
+		}
 		if hasParent(record) || p.hasChildren(ctx, lei) {
 			return record, i, nil
 		}
-	}
-
-	// No candidate had hierarchy; return the first if any.
-	if len(leis) > 0 {
-		record, err := p.getRecord(ctx, leis[0])
-		return record, 0, err
 	}
 	return nil, 0, nil
 }
