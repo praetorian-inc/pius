@@ -262,9 +262,8 @@ func newTestWhoisFreaksHistory(t *testing.T, handler http.HandlerFunc) (*whoisFr
 // through a Go shape: doing so silently rounds large integers and drops fields.
 func TestWhoisFreaksHistory_SinglePageReturnsRecordsVerbatim(t *testing.T) {
 	c, hits := newTestWhoisFreaksHistory(t, func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "1", r.URL.Query().Get("page"))
 		assert.Equal(t, "acme.com", r.URL.Query().Get("domainName"))
-		_, _ = fmt.Fprintf(w, `{"status":true,"total_records":1,"current_page":1,"total_pages":1,`+
+		_, _ = fmt.Fprintf(w, `{"status":true,"total_records":1,`+
 			`"whois_domains_historical":[%s]}`, whoisFreaksHistoryRecord)
 	})
 
@@ -293,44 +292,25 @@ func TestWhoisFreaksHistory_StringTotalRecordsStillParses(t *testing.T) {
 	assert.JSONEq(t, "["+whoisFreaksHistoryRecord+"]", string(got))
 }
 
-func TestWhoisFreaksHistory_JoinsPagesInProviderOrder(t *testing.T) {
-	var requested []string
+// The v2.0 history endpoint does not paginate: its documented response carries
+// only status, whois, total_records, and whois_domains_historical, and the
+// published request takes only domainName and apiKey.
+func TestWhoisFreaksHistory_SendsOnlyDocumentedParamsAndFetchesOnce(t *testing.T) {
 	c, hits := newTestWhoisFreaksHistory(t, func(w http.ResponseWriter, r *http.Request) {
-		page := r.URL.Query().Get("page")
-		requested = append(requested, page)
-		_, _ = fmt.Fprintf(w, `{"status":true,"total_pages":3,"current_page":%s,`+
-			`"whois_domains_historical":[{"page":%s,"seq":"a"},{"page":%s,"seq":"b"}]}`, page, page, page)
+		q := r.URL.Query()
+		assert.Equal(t, "acme.com", q.Get("domainName"))
+		assert.Equal(t, whoisFreaksTestKey, q.Get("apiKey"))
+		assert.False(t, q.Has("page"), "the endpoint has no page parameter; sending one invents an API")
+		_, _ = fmt.Fprintf(w, `{"status":true,"whois":"historical","total_records":"246",`+
+			`"whois_domains_historical":[%s]}`, whoisFreaksHistoryRecord)
 	})
 
 	got, err := c.history(context.Background(), "acme.com")
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"1", "2", "3"}, requested,
-		"total_pages from page 1 must actually drive requests for the remaining pages")
-	assert.Equal(t, int32(3), atomic.LoadInt32(hits))
-	assert.JSONEq(t, `[{"page":1,"seq":"a"},{"page":1,"seq":"b"},`+
-		`{"page":2,"seq":"a"},{"page":2,"seq":"b"},`+
-		`{"page":3,"seq":"a"},{"page":3,"seq":"b"}]`, string(got))
-}
-
-// total_pages is provider input, so a hostile or broken value must not spin the
-// fetch.
-func TestWhoisFreaksHistory_StopsAtThePageCap(t *testing.T) {
-	c, hits := newTestWhoisFreaksHistory(t, func(w http.ResponseWriter, r *http.Request) {
-		page := r.URL.Query().Get("page")
-		_, _ = fmt.Fprintf(w, `{"status":true,"total_pages":5000,"current_page":%s,`+
-			`"whois_domains_historical":[{"page":%s}]}`, page, page)
-	})
-
-	got, err := c.history(context.Background(), "acme.com")
-
-	require.NoError(t, err)
-	assert.Equal(t, int32(maxWhoisFreaksHistoryPages), atomic.LoadInt32(hits))
-
-	var records []json.RawMessage
-	require.NoError(t, json.Unmarshal(got, &records))
-	assert.Len(t, records, maxWhoisFreaksHistoryPages,
-		"the truncated set is still returned; the cap bounds the walk, it does not void the result")
+	assert.Equal(t, int32(1), atomic.LoadInt32(hits),
+		"total_records is a record count, not a page count: a large one must not drive extra requests")
+	assert.JSONEq(t, "["+whoisFreaksHistoryRecord+"]", string(got))
 }
 
 // A domain with no WHOIS history is a result the cascade records, not a failure
@@ -340,7 +320,7 @@ func TestWhoisFreaksHistory_NoRecordsIsAResultNotAnError(t *testing.T) {
 		name string
 		body string
 	}{
-		{"provider reports zero records", `{"status":true,"total_records":0,"total_pages":1}`},
+		{"provider reports zero records", `{"status":true,"whois":"historical","total_records":"0"}`},
 		{"records key absent entirely", `{"status":true,"total_records":0}`},
 		{"records key is JSON null", `{"status":true,"whois_domains_historical":null}`},
 		{"records key is an empty array", `{"status":true,"whois_domains_historical":[]}`},
