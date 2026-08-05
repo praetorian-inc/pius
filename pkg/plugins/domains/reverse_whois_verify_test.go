@@ -192,6 +192,42 @@ func TestNormalizeOrg(t *testing.T) {
 	}
 }
 
+// TestDistinctTokenCount pins the counting rule corroborationHasResolution's
+// floor is measured in: a repeated token is one piece of evidence, not several
+// (ENG-5374).
+//
+// Each case also records what the RAW token-slice length would have been, because
+// the divergence is the whole reason the helper exists — the floor was previously
+// measured in raw length, and every row where wantDistinct < wantRaw is a pair
+// that could clear a k >= 2 floor while carrying fewer than two independent
+// tokens. Rows where the two agree are the ordinary case and must stay unchanged.
+//
+// No empty-input row: distinctTokenCount is only ever called from
+// corroborationHasResolution, which decideConfidence reaches only AFTER its
+// `nq == "" || nc == ""` guard has already returned unverified, so the helper's
+// behavior on an empty string is unreachable in production and asserting one
+// would invent a contract nothing depends on.
+func TestDistinctTokenCount(t *testing.T) {
+	tests := []struct {
+		name         string
+		in           string
+		wantDistinct int
+		wantRaw      int
+	}{
+		{"repeated token counts once", "acme acme", 1, 2},
+		{"repeated token among distinct ones", "acme global acme", 2, 3},
+		{"all tokens distinct", "praetorian security group", 3, 3},
+		{"single token", "praetorian", 1, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.wantDistinct, distinctTokenCount(tt.in), "distinct tokens")
+			assert.Len(t, tokenize(tt.in), tt.wantRaw,
+				"raw token-slice length — the count this floor must NOT be measured in")
+		})
+	}
+}
+
 func TestDecideConfidence(t *testing.T) {
 	lookupErr := errors.New("boom")
 	tests := []struct {
@@ -242,6 +278,54 @@ func TestDecideConfidence(t *testing.T) {
 			name:      "exact equality at k=1 still corroborates (exemption pin)",
 			queryOrg:  "Praetorian",
 			res:       org("Praetorian Inc"),
+			wantScore: confReverseWhoisCorroborated,
+		},
+		{
+			// A repeated token is ONE piece of evidence, not two (ENG-5374). The
+			// registrant normalizes to "acme acme" — normalizeOrg strips the legal
+			// forms "corp" and "inc" and rejoins whatever is left, deduping nothing —
+			// so it carries two RAW tokens but one DISTINCT token. tokenSimilarity
+			// walks the shorter side's token SLICE against a SET built from the longer
+			// side, so the repeat scores a match on every occurrence: sim = 2/2 = 1.0
+			// against a query org sharing only "acme". Counted in raw token-slice
+			// length the pair clears the k >= 2 floor and corroborates on a single
+			// shared token — k=1 resolution wearing a k=2 disguise. Counted in
+			// distinct tokens, min(3, 1) = 1 and the corroborate arm is refused.
+			name:      "duplicate token is not two independent tokens (ENG-5374)",
+			queryOrg:  "Acme Tree Services",
+			res:       org("Acme Corp Acme Inc"),
+			wantScore: confReverseWhoisUnverified,
+		},
+		{
+			// The same class from the QUERY side, because the guard takes a min over
+			// both sides and a one-sided fix would leave this half open. "Apple Apple"
+			// normalizes to two raw / one distinct token, and it is the SHORTER side
+			// here, so it is the side tokenSimilarity iterates: both occurrences match
+			// the candidate's "apple" and sim saturates at 1.0 again.
+			name:      "duplicate token on the query side is not corroboration (ENG-5374)",
+			queryOrg:  "Apple Apple",
+			res:       org("Apple Tree Landscaping"),
+			wantScore: confReverseWhoisUnverified,
+		},
+		{
+			// The benign control for the two cases above: the distinct-token floor
+			// narrows the CORROBORATE arm only, so a duplicate-bearing pair that
+			// shares nothing must still de-rank. A blanket "too few distinct tokens =>
+			// unverified" rule would wrongly RESCUE this clean mismatch to mid-band.
+			name:      "duplicate token with zero overlap still de-ranks (ENG-5374)",
+			queryOrg:  "Walmart Walmart",
+			res:       org("Acme Tree Services"),
+			wantScore: confReverseWhoisMismatch,
+		},
+		{
+			// The other benign control: genuine full containment at two distinct
+			// tokens per side is deliberately still corroboration. This is the case
+			// the ENG-5374 narrowing must NOT touch — "acme acme" and "praetorian
+			// security" both present two raw tokens to the metric, and only the
+			// distinct count tells them apart.
+			name:      "full containment at two distinct tokens still corroborates",
+			queryOrg:  "Praetorian Security",
+			res:       org("Praetorian Security Group"),
 			wantScore: confReverseWhoisCorroborated,
 		},
 		{

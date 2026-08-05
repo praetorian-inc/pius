@@ -372,11 +372,21 @@ func TestSimilarityReachabilityByTokenCount(t *testing.T) {
 //
 // Two distinct claims, deliberately kept apart. The per-case wantArm is the
 // behavioral assertion, checked against production. The closing Len(covered, 5)
-// is only a claim about this table's SHAPE — that all five return points are
-// enumerated — because three of the five (both guards and the default arm) return
-// the same unverified value, so the return point taken cannot be recovered from
-// the score. It catches a sixth return point added without a case here; it does
-// not by itself prove which return point ran.
+// is only a claim about this table's SHAPE — that five distinct return-point
+// labels are enumerated — because three of the five (both guards and the default
+// arm) return the same unverified value, so the return point taken cannot be
+// recovered from the score.
+//
+// Be exact about that closing assertion's reach, because an earlier version of
+// this comment overclaimed it (PR #127 review). `covered` is keyed on the
+// returnPoint label DECLARED IN THE TABLE BELOW, never on anything production
+// reports, so the assertion observes this table and nothing else: it fires when a
+// label is added to — or dropped from — the cases without the expected count
+// being updated to match. It does NOT observe decideConfidence. A sixth `return`
+// statement added there with no case here leaves `covered` at five keys and this
+// assertion still passing, so keeping the count in step with decideConfidence's
+// actual return statements stays a MANUAL step. And the labels are declarations
+// either way: the assertion cannot prove which return point ran.
 func TestDecideConfidenceEveryReturnPointStaysInsideTheReviewBand(t *testing.T) {
 	cases := []struct {
 		name        string

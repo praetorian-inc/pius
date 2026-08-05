@@ -67,7 +67,10 @@ const (
 	// possible simCorroborate in (0,1] classifies identically, and re-setting 0.60
 	// to 0.7/0.8/0.95 would not have fixed ENG-5374. The defect was the metric's
 	// RESOLUTION, not the threshold, so the fix is the k=1 guard in
-	// corroborationHasResolution and these constants stay put. Recorded known
+	// corroborationHasResolution and these constants stay put. That guard counts
+	// DISTINCT normalized tokens per side, never raw slice length: tokenSimilarity
+	// credits a repeated token once per occurrence, so a raw-length floor would
+	// admit "acme acme" as k=2 evidence and reopen this exact class. Recorded known
 	// limitation: below k=4, simMismatch is reachable only at m=0, i.e. it is
 	// equivalent to "no shared tokens at all" in that range. Not fixed here — it
 	// never mis-ranks (every outcome stays inside the [0.35,0.65) review band) and
@@ -91,9 +94,10 @@ const (
 	// bottom of the needs_review band (the walmart.com-from-a-Leica-query false
 	// positive) — de-ranked, never dropped.
 	simMismatch = 0.30
-	// minCorroborateTokens is the smallest k = min(kq,kc) at which crossing
-	// simCorroborate carries information; below it, corroboration additionally
-	// requires exact equality. See corroborationHasResolution.
+	// minCorroborateTokens is the smallest k = min(kq,kc) — counted in DISTINCT
+	// normalized tokens — at which crossing simCorroborate carries information;
+	// below it, corroboration additionally requires exact equality. See
+	// corroborationHasResolution.
 	minCorroborateTokens = 2
 
 	// maxReverseWhoisCandidates caps how many candidates we verify per run.
@@ -448,11 +452,42 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 // "k < 2 => unverified" rule would wrongly RESCUE a clean mismatch, since
 // "Apple" vs "Walmart" is k=1 with m=0 and must stay de-ranked at the bottom of
 // the band.
+//
+// k is counted in DISTINCT normalized tokens per side, NEVER in raw token-slice
+// length, and that is not a refinement — a raw-length floor reopens the exact
+// ENG-5374 class this guard exists to close. tokenSimilarity compares a multiset
+// against a set: it walks the shorter side's token SLICE while testing
+// membership in a map built from the longer side, so one shared token repeated
+// on the shorter side scores a match on EVERY occurrence. normalizeOrg does not
+// dedupe either — it drops legal-form suffixes and rejoins whatever is left — so
+// a registrant reading as "<Name> Corp <Name> Inc" normalizes to two raw tokens
+// carrying one distinct token. Under a raw-length floor that pair clears k >= 2
+// and then scores m/k = 2/2 = 1.0 against a query org sharing only that one
+// token, corroborating on a single shared token: k=1 resolution wearing a k=2
+// disguise. Counting distinct tokens is what makes this floor mean "at least
+// this many INDEPENDENT tokens of evidence", which is the property the k >= 2
+// out-of-scope argument above silently assumes.
+//
+// The multiset/set asymmetry inside tokenSimilarity is NOT fixed here.
+// tokenSimilarity is the metric github_org also scores against and its pinned
+// floor assertion forbids changing it — the same constraint that leaves the
+// k >= 2 saturation alone. So this guard does not repair the metric; it only
+// keeps the metric's duplicate-counting from ever producing a corroboration.
 func corroborationHasResolution(nq, nc string) bool {
 	if nq == nc {
 		return true
 	}
-	return min(len(tokenize(nq)), len(tokenize(nc))) >= minCorroborateTokens
+	return min(distinctTokenCount(nq), distinctTokenCount(nc)) >= minCorroborateTokens
+}
+
+// distinctTokenCount counts the distinct tokens in s — the resolution-bearing
+// token count for corroborationHasResolution, where a repeated token is one
+// piece of evidence rather than several. Sorting in place is safe because
+// tokenize returns a freshly allocated slice that nothing else holds.
+func distinctTokenCount(s string) int {
+	tokens := tokenize(s)
+	slices.Sort(tokens)
+	return len(slices.Compact(tokens))
 }
 
 // verifyCandidates scores each candidate by resolving its own registrant and
