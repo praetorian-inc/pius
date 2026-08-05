@@ -2362,6 +2362,52 @@ func TestSummarizeVerifyPass_TalliesEachReasonAndLeaksNoPayload(t *testing.T) {
 	})
 }
 
+// TestSummarizeVerifyPass_UnknownIncompletenessDegrades guards the drift case:
+// a whoisIncompleteness value outside the three known reasons must land in the
+// degraded predicate via the default arm, never pass silently as whoisComplete.
+// The synthetic value is intentionally NOT a production constant — the test
+// proves the switch's default arm works without coupling to a future enum member.
+func TestSummarizeVerifyPass_UnknownIncompletenessDegrades(t *testing.T) {
+	t.Run("synthetic reason triggers degraded pass with incomplete_unknown", func(t *testing.T) {
+		logs := captureSlog(t)
+		outcomes := []candidateOutcome{
+			{incomplete: whoisIncompleteness("synthetic_test_reason")},
+			{incomplete: whoisIncompleteness("synthetic_test_reason")},
+			{}, // one clean candidate
+		}
+		summarizeVerifyPass(len(outcomes), len(outcomes), false, outcomes)
+
+		recs := logs()
+		assert.False(t, hasLogRecord(recs, verifyPassMsgClean),
+			"an unknown incompleteness reason must degrade the pass, not report it clean")
+		rec := findLogRecord(t, recs, verifyPassMsgDegraded)
+		assert.Equal(t, slog.LevelWarn.String(), rec["level"])
+		assert.EqualValues(t, 3, rec["candidates"])
+		assert.EqualValues(t, 3, rec["attempted"])
+		require.Contains(t, rec, "incomplete_unknown",
+			"the unknown-reason counter must appear on the degraded record")
+		assert.EqualValues(t, 2, rec["incomplete_unknown"])
+		assert.EqualValues(t, 0, rec["incomplete_deadline"])
+		assert.EqualValues(t, 0, rec["incomplete_referral"])
+		assert.EqualValues(t, 0, rec["incomplete_referral_budget"])
+	})
+
+	t.Run("whoisComplete still produces a clean pass", func(t *testing.T) {
+		logs := captureSlog(t)
+		outcomes := []candidateOutcome{
+			{incomplete: whoisComplete},
+			{incomplete: whoisComplete},
+			{},
+		}
+		summarizeVerifyPass(len(outcomes), len(outcomes), false, outcomes)
+
+		recs := logs()
+		assert.False(t, hasLogRecord(recs, verifyPassMsgDegraded),
+			"whoisComplete must not increment any counter")
+		findLogRecord(t, recs, verifyPassMsgClean)
+	})
+}
+
 // TestVerifyCandidates_BudgetExpiredReportsWhichBoundEndedThePass drives
 // budget_expired through verifyCandidates rather than handing the bool to
 // summarizeVerifyPass, so what is under test is the DERIVATION

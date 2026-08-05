@@ -620,15 +620,18 @@ func budgetFired(bctx context.Context) bool {
 // whether the pass was degraded: a budget that fires after the last worker
 // finished lost nothing.
 func summarizeVerifyPass(total, attempted int, budgetExpired bool, outcomes []candidateOutcome) {
-	var deadline, referral, hops, failed, panicked int
+	var deadline, referral, hops, unknown, failed, panicked int
 	for _, o := range outcomes {
 		switch o.incomplete {
+		case whoisComplete:
 		case whoisIncompleteDeadline:
 			deadline++
 		case whoisIncompleteReferral:
 			referral++
 		case whoisIncompleteHops:
 			hops++
+		default:
+			unknown++
 		}
 		if o.failed {
 			failed++
@@ -650,7 +653,7 @@ func summarizeVerifyPass(total, attempted int, budgetExpired bool, outcomes []ca
 	// last worker returned, so a true here proves nothing was lost; adding it as a
 	// fifth arm would downgrade complete passes to Warn on the strength of a race.
 	// It rides on both records as a field instead.
-	if deadline+referral+hops+failed+panicked == 0 && attempted >= total {
+	if deadline+referral+hops+unknown+failed+panicked == 0 && attempted >= total {
 		slog.Info("reverse-whois: verification pass complete",
 			"candidates", total, "attempted", attempted,
 			"budget_expired", budgetExpired)
@@ -682,6 +685,7 @@ func summarizeVerifyPass(total, attempted int, budgetExpired bool, outcomes []ca
 		"incomplete_deadline", deadline,
 		"incomplete_referral", referral,
 		"incomplete_referral_budget", hops,
+		"incomplete_unknown", unknown,
 		"lookup_failed", failed,
 		"panicked", panicked,
 		"budget_expired", budgetExpired,
