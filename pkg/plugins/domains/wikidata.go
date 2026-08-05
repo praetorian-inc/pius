@@ -26,15 +26,13 @@ type wikidataConfidenceScenario struct {
 	justification func(subsidiary, website, relation string) string
 }
 
-type wikidataRelationshipStatus string
-
 const (
-	wikidataRelationshipCurrent    wikidataRelationshipStatus = "current"
-	wikidataRelationshipEnded      wikidataRelationshipStatus = "ended_or_deprecated"
-	wikidataRelationshipUnverified wikidataRelationshipStatus = "unverified"
+	wikidataRelationshipCurrent    = "current"
+	wikidataRelationshipEnded      = "ended_or_deprecated"
+	wikidataRelationshipUnverified = "unverified"
 )
 
-var wikidataConfidenceScenarios = map[wikidataRelationshipStatus]wikidataConfidenceScenario{
+var wikidataConfidenceScenarios = map[string]wikidataConfidenceScenario{
 	wikidataRelationshipCurrent: {
 		score: confWikidataCurrent,
 		justification: func(subsidiary, website, relation string) string {
@@ -196,7 +194,7 @@ func cachedWikidataFindings(c *cache.APICache, cacheKey string) ([]plugins.Findi
 	return cached, c.Get(cacheKey, &cached)
 }
 
-func (p *WikidataPlugin) websiteFindings(orgName string, results []sparqlBinding, statuses map[string]wikidataRelationshipStatus) []plugins.Finding {
+func (p *WikidataPlugin) websiteFindings(orgName string, results []sparqlBinding, statuses map[string]string) []plugins.Finding {
 	fs := plugins.NewFindingSet()
 	for _, r := range results {
 		status := statuses[extractEntityID(r.Entity.Value)]
@@ -207,7 +205,7 @@ func (p *WikidataPlugin) websiteFindings(orgName string, results []sparqlBinding
 	return fs.Findings
 }
 
-func (p *WikidataPlugin) websiteFinding(orgName string, r sparqlBinding, status wikidataRelationshipStatus) plugins.Finding {
+func (p *WikidataPlugin) websiteFinding(orgName string, r sparqlBinding, status string) plugins.Finding {
 	domain := extractDomainFromURL(r.Website.Value)
 	if domain == "" {
 		return plugins.Finding{}
@@ -241,26 +239,26 @@ func (p *WikidataPlugin) findCompanyEntity(ctx context.Context, orgName string) 
 	return p.findCompanyEntityByLabel(ctx, orgName, true)
 }
 
-func wikidataConfidence(status wikidataRelationshipStatus) float64 {
+func wikidataConfidence(status string) float64 {
 	return wikidataScenario(status).score
 }
 
-func wikidataConfidenceJustification(r sparqlBinding, status wikidataRelationshipStatus) string {
+func wikidataConfidenceJustification(r sparqlBinding, status string) string {
 	return wikidataScenario(status).justification(r.EntityLabel.Value, r.Website.Value, r.Relation.Value)
 }
 
-func wikidataScenario(status wikidataRelationshipStatus) wikidataConfidenceScenario {
+func wikidataScenario(status string) wikidataConfidenceScenario {
 	if scenario, ok := wikidataConfidenceScenarios[status]; ok {
 		return scenario
 	}
 	return wikidataConfidenceScenarios[wikidataRelationshipUnverified]
 }
 
-func relationshipStatusString(status wikidataRelationshipStatus) string {
+func relationshipStatusString(status string) string {
 	if status == "" {
-		return string(wikidataRelationshipUnverified)
+		return wikidataRelationshipUnverified
 	}
-	return string(status)
+	return status
 }
 
 func (p *WikidataPlugin) findCompanyEntityByLabel(ctx context.Context, orgName string, includeAliases bool) (string, error) {
@@ -347,13 +345,13 @@ SELECT DISTINCT ?entity ?entityLabel ?website ?relation WHERE {
 	return resp.Results.Bindings, nil
 }
 
-func (p *WikidataPlugin) queryRelationshipStatuses(ctx context.Context, companyID string, results []sparqlBinding) (map[string]wikidataRelationshipStatus, error) {
+func (p *WikidataPlugin) queryRelationshipStatuses(ctx context.Context, companyID string, results []sparqlBinding) (map[string]string, error) {
 	entityIDs := wikidataEntityIDs(results)
 	if len(entityIDs) == 0 {
 		return nil, nil
 	}
 
-	statuses := make(map[string]wikidataRelationshipStatus)
+	statuses := make(map[string]string)
 	if err := p.enrichRelationshipStatuses(ctx, statuses, companyID, entityIDs, "P749"); err != nil {
 		return statuses, err
 	}
@@ -377,7 +375,7 @@ func wikidataEntityIDs(results []sparqlBinding) []string {
 	return ids
 }
 
-func (p *WikidataPlugin) enrichRelationshipStatuses(ctx context.Context, statuses map[string]wikidataRelationshipStatus, companyID string, entityIDs []string, property string) error {
+func (p *WikidataPlugin) enrichRelationshipStatuses(ctx context.Context, statuses map[string]string, companyID string, entityIDs []string, property string) error {
 	body, err := p.executeSPARQL(ctx, relationshipStatusQuery(companyID, entityIDs, property))
 	if err != nil {
 		return err
@@ -426,7 +424,7 @@ SELECT ?entity ?rank ?endTime WHERE {
 `, strings.Join(values, " "), companyID)
 }
 
-func mergeRelationshipStatus(statuses map[string]wikidataRelationshipStatus, id string, binding sparqlBinding) {
+func mergeRelationshipStatus(statuses map[string]string, id string, binding sparqlBinding) {
 	if binding.EndTime.Value != "" || strings.HasSuffix(binding.Rank.Value, "DeprecatedRank") {
 		statuses[id] = wikidataRelationshipEnded
 		return
