@@ -279,6 +279,20 @@ func TestWhoisFreaksHistory_SinglePageReturnsRecordsVerbatim(t *testing.T) {
 	assert.JSONEq(t, "["+whoisFreaksHistoryRecord+"]", string(got))
 }
 
+// The v2.0 endpoint sends total_records as a quoted string, so the response
+// struct must declare no numeric field for it: one would fail the whole unmarshal.
+func TestWhoisFreaksHistory_StringTotalRecordsStillParses(t *testing.T) {
+	c, _ := newTestWhoisFreaksHistory(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"status":true,"whois":"historical","total_records":"246",`+
+			`"whois_domains_historical":[%s]}`, whoisFreaksHistoryRecord)
+	})
+
+	got, err := c.history(context.Background(), "acme.com")
+
+	require.NoError(t, err)
+	assert.JSONEq(t, "["+whoisFreaksHistoryRecord+"]", string(got))
+}
+
 func TestWhoisFreaksHistory_JoinsPagesInProviderOrder(t *testing.T) {
 	var requested []string
 	c, hits := newTestWhoisFreaksHistory(t, func(w http.ResponseWriter, r *http.Request) {

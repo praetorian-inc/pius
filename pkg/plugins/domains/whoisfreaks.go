@@ -118,9 +118,8 @@ type whoisFreaksLiveResponse struct {
 }
 
 type whoisFreaksHistoryResponse struct {
-	Status       *bool `json:"status"`
-	TotalRecords int   `json:"total_records"`
-	TotalPages   int   `json:"total_pages"`
+	Status     *bool `json:"status"`
+	TotalPages int   `json:"total_pages"`
 	// Records stays raw: the consumer persists the provider's JSON verbatim, so
 	// re-marshalling through a Go shape would drop fields it retains.
 	Records json.RawMessage `json:"whois_domains_historical"`
