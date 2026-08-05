@@ -57,12 +57,23 @@ const (
 	confReverseWhoisMismatch = 0.40
 
 	// simCorroborate is the token-similarity threshold at/above which the
-	// candidate's registrant org is treated as corroborating the query org.
+	// candidate's registrant org is treated as corroborating the query org. The
+	// metric is Jaccard (tokenJaccard): |shared tokens| / |union of tokens|, so
+	// BOTH sides' distinguishing tokens count against the score. 0.60 means the two
+	// org names must agree on at least ~60% of their combined vocabulary before a
+	// candidate ranks at the top of the band. This forecloses the single-token
+	// over-corroboration bug (ENG-5172): a one-token query org ("Acme") against a
+	// registrant that merely CONTAINS it ("Acme Enterprises LLC" → {acme} vs
+	// {acme, enterprises}) scores 1/2 = 0.5 and stays UNVERIFIED, where the old
+	// containment metric divided by the shorter set and read it as a spurious 1.0.
 	simCorroborate = 0.60
-	// simMismatch is the token-similarity threshold below which a present,
+	// simMismatch is the token-similarity (Jaccard) threshold below which a present,
 	// unmasked registrant org is treated as a clear mismatch and de-ranked to the
 	// bottom of the needs_review band (the walmart.com-from-a-Leica-query false
-	// positive) — de-ranked, never dropped.
+	// positive, which shares zero tokens → Jaccard 0). A candidate that shares the
+	// query's brand token but adds several distinguishing ones (a plausible
+	// subsidiary) sits between the two thresholds and stays unverified — de-ranked
+	// only when overlap is genuinely sparse, and NEVER dropped.
 	simMismatch = 0.30
 
 	// maxReverseWhoisCandidates caps how many candidates we verify per run.
@@ -211,13 +222,14 @@ const maskedSubstringMinLen = 8
 // DIRECTIONAL band move, and both were wrong (Codex, PR #106 rounds 2 and 3).
 // Direction is not the thing to state. What the tier does is force the DIRECTLY
 // SCORED value to unverifiable (0.50) — which may raise, preserve, or LOWER what
-// that same string would otherwise have scored. Lowering is not exotic: for a
-// query org "Data Inc.", normalizeOrg gives "data" against the placeholder's
-// "data redacted", and tokenSimilarity divides by the SHORTER token set, so the
-// placeholder used to score a spurious 1.0 and corroborate at 0.60. And in the
-// integrated path, masking additionally routes through resolveWithFallback,
-// whose WHOIS result is scored FRESH by decideConfidence and can land in any of
-// the three bands, 0.40 included.
+// that same string would otherwise have scored. Lowering happens through the
+// integrated path: masking routes through resolveWithFallback, whose WHOIS result
+// is scored FRESH by decideConfidence and can land in any of the three bands, 0.40
+// included. (Before ENG-5172 the DIRECT comparison could lower too — a query org
+// "Data Inc." normalized to "data" scored a spurious containment 1.0 against the
+// placeholder "data redacted" and corroborated at 0.60. The Jaccard metric now
+// reads {data} vs {data, redacted} as 0.5 → already unverifiable, so the direct
+// comparison PRESERVES 0.50; the integrated-path lowering is unaffected.)
 //
 // The invariant that does hold unconditionally — and all ENG-5123 ever claimed —
 // is "never DROPS", not "never demotes": every outcome stays inside the
@@ -354,7 +366,7 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 		// the candidate is UNVERIFIABLE, not a mismatch — score mid-band.
 		return unverified
 	}
-	sim := tokenSimilarity(nq, nc)
+	sim := tokenJaccard(nq, nc)
 	switch {
 	case sim >= simCorroborate:
 		return confidenceDecision{Score: confReverseWhoisCorroborated, Justification: justifyReverseWhoisCorroborated}

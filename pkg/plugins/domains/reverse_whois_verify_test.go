@@ -208,14 +208,47 @@ func TestDecideConfidence(t *testing.T) {
 			wantScore: confReverseWhoisCorroborated,
 		},
 		{
-			name:      "corroborated partial (shorter fully contained)",
+			// After legal-suffix stripping BOTH sides normalize to the single token
+			// {acme} (normalizeOrg drops "corp"), so Jaccard is 1/1 = 1.0. This
+			// corroborates because the org names are equal, NOT because a shorter
+			// string is contained in a longer one — see the ENG-5172 cases below for
+			// the containment path that Jaccard deliberately no longer clears.
+			name:      "corroborated single token (legal suffix stripped)",
 			queryOrg:  "Acme",
 			res:       org("Acme Corp"),
 			wantScore: confReverseWhoisCorroborated,
 		},
 		{
+			// ENG-5172: a single-token query org merely CONTAINED in a longer
+			// registrant no longer over-corroborates. {acme} vs {acme,
+			// enterprises} is Jaccard 1/2 = 0.5 (below simCorroborate), so it stays
+			// UNVERIFIED and needs review. The old containment metric divided by the
+			// shorter set and read this as a spurious 1.0 → 0.60 corroboration.
+			name:      "single-token query contained in longer registrant stays unverified (ENG-5172)",
+			queryOrg:  "Acme",
+			res:       org("Acme Enterprises LLC"),
+			wantScore: confReverseWhoisUnverified,
+		},
+		{
+			// ENG-5172: a genuine single-token exact match (post legal-suffix
+			// stripping) MUST still corroborate. {praetorian} vs {praetorian} = 1.0.
+			name:      "single-token query exact match still corroborates (ENG-5172)",
+			queryOrg:  "Praetorian",
+			res:       org("Praetorian Inc."),
+			wantScore: confReverseWhoisCorroborated,
+		},
+		{
+			// ENG-5172: another single-token containment case. {okta} vs {okta,
+			// security} is Jaccard 0.5 → unverified, not corroborated.
+			name:      "single-token query with extra registrant descriptor stays unverified (ENG-5172)",
+			queryOrg:  "Okta",
+			res:       org("Okta Security Inc."),
+			wantScore: confReverseWhoisUnverified,
+		},
+		{
 			// De-ranked to the bottom of the band, NOT dropped: a textual
 			// registrant mismatch is not proof of non-ownership (ENG-5123 #1).
+			// Zero shared tokens → Jaccard 0 → clear mismatch.
 			name:      "clear mismatch de-ranks (walmart from Leica)",
 			queryOrg:  "Leica Biosystems Richmond, Inc.",
 			res:       org("Walmart Inc."),
@@ -241,33 +274,39 @@ func TestDecideConfidence(t *testing.T) {
 			wantScore: confReverseWhoisUnverified,
 		},
 		{
+			// Genuine ambiguity in [simMismatch, simCorroborate): shares 2 of 4
+			// union tokens ({acme, global} of {acme, global, services, holdings}) =
+			// Jaccard 0.50. Enough overlap not to be a clear mismatch, not enough to
+			// corroborate → stays unverified.
 			name:      "ambiguous partial overlap stays unverified",
 			queryOrg:  "Acme Global Services",
-			res:       org("Acme Widgets Manufacturing Holdings"),
+			res:       org("Acme Global Holdings"),
 			wantScore: confReverseWhoisUnverified,
 		},
 		{
-			// 3 of 5 shared tokens = 0.60 == simCorroborate. Non-degenerate
-			// (both sides >1 token, partial overlap) so it exercises the real
-			// ratio, not a fully-contained shorter string.
+			// 3 shared of 5 union tokens = Jaccard 0.60 == simCorroborate.
+			// Non-degenerate (both sides >1 token, one distinguishing token each) so
+			// it exercises the real union ratio, not a fully-contained shorter string.
 			name:      "sim exactly at corroborate threshold corroborates",
-			queryOrg:  "Acme Global Data Cloud Services",
-			res:       org("Acme Global Data Widgets Holdings"),
+			queryOrg:  "Acme Global Data Cloud",
+			res:       org("Acme Global Data Widgets"),
 			wantScore: confReverseWhoisCorroborated,
 		},
 		{
-			// 3 of 10 shared tokens = 0.30 == simMismatch. The mismatch test is
-			// strictly-less-than, so the boundary stays unverified (not de-ranked).
+			// 3 shared of 10 union tokens = Jaccard 0.30 == simMismatch. The mismatch
+			// test is strictly-less-than, so the boundary stays unverified (not
+			// de-ranked). |A|=6, |B|=7, shared 3 → union 10.
 			name:      "sim exactly at mismatch threshold stays unverified (boundary)",
-			queryOrg:  "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
-			res:       org("alpha bravo charlie kilo lima mike november oscar papa quebec"),
+			queryOrg:  "alpha bravo charlie delta echo foxtrot",
+			res:       org("alpha bravo charlie golf hotel india juliet"),
 			wantScore: confReverseWhoisUnverified,
 		},
 		{
-			// 2 of 10 shared tokens = 0.20 < simMismatch → clear mismatch de-ranks.
+			// 2 shared of 9 union tokens = Jaccard 0.222 < simMismatch → clear
+			// mismatch de-ranks. |A|=5, |B|=6, shared 2 → union 9.
 			name:      "sim just below mismatch threshold de-ranks",
-			queryOrg:  "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
-			res:       org("alpha bravo kilo lima mike november oscar papa quebec romeo"),
+			queryOrg:  "alpha bravo charlie delta echo",
+			res:       org("alpha bravo foxtrot golf hotel india"),
 			wantScore: confReverseWhoisMismatch,
 		},
 		{

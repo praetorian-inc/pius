@@ -321,6 +321,46 @@ func tokenSimilarity(a, b string) float64 {
 	return float64(matches) / float64(len(shorter))
 }
 
+// tokenJaccard computes the Jaccard similarity between two strings' token sets:
+// |A ∩ B| / |A ∪ B|, over DISTINCT tokens. Unlike tokenSimilarity, which divides
+// by the SHORTER set (containment), Jaccard counts tokens present on ONLY one side
+// against the score, so a short string merely CONTAINED in a longer one no longer
+// scores 1.0.
+//
+// This is the metric the reverse-whois verifier needs (ENG-5172). A single-token
+// query org such as "Acme" against a registrant "Acme Enterprises LLC"
+// (normalized {acme} vs {acme, enterprises}) scores 1/2 = 0.5 under Jaccard,
+// not the 1/1 = 1.0 containment gave — so it lands in the unverified band and needs
+// review instead of spuriously corroborating. github_org's name-similarity signal
+// deliberately KEEPS containment (tokenSimilarity): there a partial name overlap is
+// a weak, 0.25-weighted hint, not a corroboration gate.
+func tokenJaccard(a, b string) float64 {
+	aT := tokenize(a)
+	bT := tokenize(b)
+	if len(aT) == 0 || len(bT) == 0 {
+		return 0
+	}
+	inA := make(map[string]bool, len(aT))
+	for _, t := range aT {
+		inA[t] = true
+	}
+	inB := make(map[string]bool, len(bT))
+	for _, t := range bT {
+		inB[t] = true
+	}
+	intersection := 0
+	for t := range inA {
+		if inB[t] {
+			intersection++
+		}
+	}
+	union := len(inA) + len(inB) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
 // tokenize lowercases s and splits on non-alphanumeric characters.
 func tokenize(s string) []string {
 	s = strings.ToLower(s)
