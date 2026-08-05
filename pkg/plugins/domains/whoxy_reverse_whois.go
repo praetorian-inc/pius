@@ -12,6 +12,7 @@ import (
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
+	"github.com/praetorian-inc/pius/pkg/whois"
 )
 
 const maxWhoxyPages = 100
@@ -21,9 +22,8 @@ func init() {
 }
 
 // WhoxyReverseWhoisPlugin discovers related domains via Whoxy reverse WHOIS.
-// It emits FindingDomain with Data["pivot_org"] for each discovered domain.
-// Verification is NOT done inline — Guard fans out whois jobs on discovered
-// domains for parallel corroboration.
+// Emits FindingDomain with Data["pivot_org"]. Verification happens when Guard
+// runs the whois capability on each discovered domain.
 type WhoxyReverseWhoisPlugin struct {
 	client  *client.Client
 	baseURL string // overridable for tests
@@ -92,7 +92,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 				continue
 			}
 			domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(result.DomainName), "."))
-			if domain == "" || !isPlausibleDomain(domain) {
+			if domain == "" || !whois.IsPlausibleDomain(domain) {
 				continue
 			}
 			if _, ok := seen[domain]; ok {
@@ -104,9 +104,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 				Type:   plugins.FindingDomain,
 				Value:  domain,
 				Source: p.Name(),
-				Data: map[string]any{
-					"pivot_org": query,
-				},
+				Data:   map[string]any{"pivot_org": query},
 			})
 		}
 
@@ -135,7 +133,6 @@ func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, query s
 
 	body, err := p.client.Get(ctx, reqURL)
 	if err != nil {
-		// Do not propagate the URL — it contains the API key.
 		return whoxyResponse{}, fmt.Errorf("request failed")
 	}
 
@@ -147,7 +144,6 @@ func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, query s
 	return resp, nil
 }
 
-// whoxyRecordStale filters records where Whoxy's query_time is older than 10 years.
 func whoxyRecordStale(queryTime string) bool {
 	t, err := time.Parse(time.DateTime, queryTime)
 	if err != nil {
