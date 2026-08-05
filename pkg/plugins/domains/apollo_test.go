@@ -335,15 +335,26 @@ func TestApolloPlugin_Run_EmptyResponseNoFindings(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
-func TestApolloPlugin_Run_GracefulOnNetworkError(t *testing.T) {
+func TestApolloPlugin_Run_GracefulOnHTTPError(t *testing.T) {
 	t.Setenv("APOLLO_API_KEY", "test-key")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "bad gateway", http.StatusBadRequest)
+		http.Error(w, "bad request", http.StatusBadRequest)
 	}))
 	defer srv.Close()
 
 	p := newTestPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
+func TestApolloPlugin_Run_GracefulOnNetworkError(t *testing.T) {
+	t.Setenv("APOLLO_API_KEY", "test-key")
+
+	c, err := piuscache.NewAPI(t.TempDir(), "apollo")
+	require.NoError(t, err)
+	p := &ApolloPlugin{client: client.NewNoRetry(), baseURL: "http://127.0.0.1:1", apiCache: c}
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
 	assert.NoError(t, err)
 	assert.Empty(t, findings)
