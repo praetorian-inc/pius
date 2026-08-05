@@ -432,6 +432,52 @@ func stubWhoisRawFn(t *testing.T, fn func(ctx context.Context, domain, server st
 	t.Cleanup(func() { whoisRawFn = prev })
 }
 
+func TestQueryWHOISResponse_ReportsServerThatSuppliedRecord(t *testing.T) {
+	tests := []struct {
+		name           string
+		responses      map[string]string
+		failedServer   string
+		wantServer     string
+		wantIncomplete whoisIncompleteness
+	}{
+		{
+			name: "complete registrar response",
+			responses: map[string]string{
+				defaultServer:          "refer: whois.registrar.test\n",
+				"whois.registrar.test": whoisRegistrantRecord,
+			},
+			wantServer: "whois.registrar.test",
+		},
+		{
+			name: "salvaged registry response",
+			responses: map[string]string{
+				defaultServer:    "refer: whois.tld.test\n",
+				"whois.tld.test": whoisRegistrantRecord + "Registrar WHOIS Server: whois.registrar.test\n",
+			},
+			failedServer:   "whois.registrar.test",
+			wantServer:     "whois.tld.test",
+			wantIncomplete: whoisIncompleteReferral,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubWhoisRawFn(t, func(_ context.Context, _, server string) (string, error) {
+				if server == tt.failedServer {
+					return "", errors.New("synthetic transport failure")
+				}
+				return tt.responses[server], nil
+			})
+
+			response, err := queryWHOISResponse(context.Background(), "example.com")
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantServer, response.server)
+			assert.Equal(t, tt.wantIncomplete, response.incomplete)
+			assert.NotEmpty(t, response.raw)
+		})
+	}
+}
+
 // TestWhoisQuery_SeedOnlyChainReturnsError pins Fix A's core invariant: when only
 // the bootstrap seed (whois.iana.org) answers and it carries NO referral, the
 // chain never advances past the seed, so whoisQuery returns the seed-guard error
@@ -1175,6 +1221,7 @@ func TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds(t *testing.T)
 	tests := []struct {
 		name       string
 		wantReason whoisIncompleteness
+		wantServer string
 		raw        func(server string) (string, error)
 	}{
 		{
@@ -1184,6 +1231,7 @@ func TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds(t *testing.T)
 			// the TLD record and classifies it on ctx.Err()==nil -> referral_failed.
 			name:       "referral hop transport failure",
 			wantReason: whoisIncompleteReferral,
+			wantServer: "whois.tld.test",
 			raw: func(server string) (string, error) {
 				switch server {
 				case defaultServer:
@@ -1202,6 +1250,7 @@ func TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds(t *testing.T)
 			// endpoint -> referral_budget.
 			name:       "hop budget exhausted with a referral pending",
 			wantReason: whoisIncompleteHops,
+			wantServer: "next-next-next-hop1.test",
 			raw: func(server string) (string, error) {
 				if server == defaultServer {
 					return "refer: hop1.test\n", nil
@@ -1231,6 +1280,12 @@ func TestWhoisPlugin_Run_IncompleteChainWarnsAndStillEmitsPreseeds(t *testing.T)
 			require.NotEmpty(t, findings, "preseeds from a salvaged partial record must still be emitted")
 			assert.Contains(t, findingValues(findings), "Acme Corp",
 				"the salvaged record's registrant org must survive into the preseeds")
+			for _, finding := range findings {
+				require.Len(t, finding.Confidences, 1)
+				assert.InDelta(t, confWhoisServerRecord, finding.Confidences[0].Score, 0.001)
+				assert.Contains(t, finding.Confidences[0].Justification, tt.wantServer,
+					"confidence must name the server that supplied the salvaged record")
+			}
 
 			// (2) The partiality is reported exactly once, with the domain and the
 			// reason whoisQuery actually classified.
@@ -1266,6 +1321,11 @@ func TestWhoisPlugin_Run_CompleteChainEmitsNoIncompleteWarn(t *testing.T) {
 	// whois.go:114 and evaluated the predicate.
 	require.NoError(t, err)
 	require.NotEmpty(t, findings, "a complete chain must still emit preseeds, proving the warn site was reached")
+	for _, finding := range findings {
+		require.Len(t, finding.Confidences, 1)
+		assert.InDelta(t, confWhoisServerRecord, finding.Confidences[0].Score, 0.001)
+		assert.Contains(t, finding.Confidences[0].Justification, "whois.registrar.test")
+	}
 
 	assert.False(t, hasLogRecord(logs(), whoisIncompleteWarnMsg),
 		"a referral chain that ran to a natural end must emit no incompleteness warn")

@@ -148,6 +148,10 @@ func dnsPermutationJustification(seeds []string, candidate string, ips []string)
 
 	sortedIPs := append([]string(nil), ips...)
 	sort.Strings(sortedIPs)
+	displayedIPs := sortedIPs
+	if len(sortedIPs) > 3 {
+		displayedIPs = append(append([]string(nil), sortedIPs[:3]...), "...")
+	}
 
 	addressNoun := "IP addresses"
 	if len(sortedIPs) == 1 {
@@ -156,10 +160,10 @@ func dnsPermutationJustification(seeds []string, candidate string, ips []string)
 
 	if len(seeds) == 1 {
 		return fmt.Sprintf("Starting with discovered domain %s, DNS permutation generated variant domain %q, which resolved to %d %s (%s)",
-			quotedSeeds[0], candidate, len(sortedIPs), addressNoun, strings.Join(sortedIPs, ", "))
+			quotedSeeds[0], candidate, len(sortedIPs), addressNoun, strings.Join(displayedIPs, ", "))
 	}
 	return fmt.Sprintf("Starting with discovered domains %s, DNS permutation generated variant domain %q, which resolved to %d %s (%s)",
-		strings.Join(quotedSeeds, ", "), candidate, len(sortedIPs), addressNoun, strings.Join(sortedIPs, ", "))
+		strings.Join(quotedSeeds, ", "), candidate, len(sortedIPs), addressNoun, strings.Join(displayedIPs, ", "))
 }
 
 // generateCandidates produces permutation candidates keyed by domain, with the

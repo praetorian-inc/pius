@@ -195,7 +195,7 @@ func TestGenerateCandidates_Dedup(t *testing.T) {
 	seeds := []string{"api.example.com"}
 	candidates := p.generateCandidates(seeds, "example.com")
 
-	// Should have dash, direct, insert, and number strategies combined
+	// Should have dash, direct, insert, and number strategies combined.
 	assert.NotEmpty(t, candidates)
 	assert.Contains(t, candidates, "api-dev.example.com")
 	assert.Contains(t, candidates, "apidev.example.com")
@@ -209,6 +209,18 @@ func TestGenerateCandidates_DeduplicatesSeedProvenance(t *testing.T) {
 	candidates := p.generateCandidates([]string{"api.example.com", "API.EXAMPLE.COM"}, "example.com")
 
 	assert.Equal(t, []string{"api.example.com"}, candidates["api-dev.example.com"])
+}
+
+func TestDNSPermutationJustification_TruncatesSortedIPs(t *testing.T) {
+	justification := dnsPermutationJustification(
+		[]string{"api.example.com"},
+		"api-dev.example.com",
+		[]string{"192.0.2.4", "192.0.2.2", "192.0.2.1", "192.0.2.3"},
+	)
+
+	assert.Equal(t,
+		`Starting with discovered domain "api.example.com", DNS permutation generated variant domain "api-dev.example.com", which resolved to 4 IP addresses (192.0.2.1, 192.0.2.2, 192.0.2.3, ...)`,
+		justification)
 }
 
 func TestGenerateCandidates_SkipsBaseOnly(t *testing.T) {
