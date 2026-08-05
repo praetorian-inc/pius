@@ -54,6 +54,14 @@ func init() {
 	})
 }
 
+// NewDoHEnumPlugin builds the plugin around a caller-supplied HTTP client. Note
+// this only injects the DoH-query transport; the plugin can still provision and
+// tear down AWS API Gateway stacks as a resolver-fronting side effect (see
+// deployAPIGateways), which is not routed through this client.
+func NewDoHEnumPlugin(doer *http.Client) *DoHEnumPlugin {
+	return &DoHEnumPlugin{doer: doer}
+}
+
 // DoHEnumPlugin performs active subdomain enumeration using DNS-over-HTTPS resolvers.
 // It supports a three-stage concurrent pipeline: generate → resolve → collect.
 type DoHEnumPlugin struct {

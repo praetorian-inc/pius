@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -27,10 +28,22 @@ type Client struct {
 
 // New creates a Client with default timeout and retry settings.
 func New() *Client {
+	return NewWithHTTPClient(&http.Client{Timeout: defaultTimeout})
+}
+
+func NewWithHTTPClient(hc *http.Client) *Client {
 	return &Client{
-		http:    &http.Client{Timeout: defaultTimeout},
+		http:    hc,
 		retries: defaultRetries,
 	}
+}
+
+var sensitiveQueryParams = map[string]bool{
+	"key":          true,
+	"apikey":       true,
+	"api_key":      true,
+	"token":        true,
+	"access_token": true,
 }
 
 // sanitizeURL redacts sensitive query parameters (API keys, tokens) from URLs
@@ -42,8 +55,8 @@ func sanitizeURL(rawURL string) string {
 	}
 	q := parsed.Query()
 	redacted := false
-	for _, key := range []string{"key", "apikey", "api_key", "token", "access_token"} {
-		if q.Has(key) {
+	for key := range q {
+		if sensitiveQueryParams[strings.ToLower(key)] {
 			q.Set(key, "REDACTED")
 			redacted = true
 		}

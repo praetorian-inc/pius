@@ -23,6 +23,22 @@ func init() {
 type ShodanPlugin struct {
 	client  *client.Client
 	baseURL string // override for testing
+	apiKey  string // set by NewShodanPlugin; falls back to SHODAN_API_KEY when empty
+}
+
+// NewShodanPlugin builds the plugin around a caller-supplied client and API key,
+// so embedders can route its egress through their own transport and resolve the
+// key from their own secret store instead of the environment.
+func NewShodanPlugin(c *client.Client, apiKey string) *ShodanPlugin {
+	return &ShodanPlugin{client: c, apiKey: apiKey}
+}
+
+// key prefers an injected key so embedders never depend on process environment.
+func (p *ShodanPlugin) key() string {
+	if p.apiKey != "" {
+		return p.apiKey
+	}
+	return os.Getenv("SHODAN_API_KEY")
 }
 
 func (p *ShodanPlugin) Name() string { return "shodan" }
@@ -42,14 +58,14 @@ func (p *ShodanPlugin) shodanBase() string {
 
 // Accepts if SHODAN_API_KEY is set and we have something to search
 func (p *ShodanPlugin) Accepts(input plugins.Input) bool {
-	if os.Getenv("SHODAN_API_KEY") == "" {
+	if p.key() == "" {
 		return false
 	}
 	return input.OrgName != "" || input.Domain != "" || input.ASN != "" || input.CIDR != ""
 }
 
 func (p *ShodanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	apiKey := os.Getenv("SHODAN_API_KEY")
+	apiKey := p.key()
 	if apiKey == "" {
 		return nil, nil
 	}

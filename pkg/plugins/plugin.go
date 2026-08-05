@@ -20,6 +20,20 @@ const (
 	// Data["preseed_type"] carries the preseed classification (e.g., "whois+company").
 	// Data["preseed_title"] carries a human-readable label (often the same as Value).
 	FindingPreseed FindingType = "preseed"
+
+	// FindingWhoisRecord is a raw WHOIS record for the domain in Value.
+	// Data["method"] names the source that answered ("rdap", "whois43", "whoxy")
+	// and Data["raw"] carries the record text. A definitive registry "no such
+	// domain" answer instead sets Data["unregistered"] = true and carries no raw
+	// text — an unregistered domain is a result, not a failure.
+	FindingWhoisRecord FindingType = "whois-record"
+
+	// FindingWhoisHistory is a provider's historical WHOIS record set for the
+	// domain in Value. Data["method"] names the provider and Data["history"]
+	// carries the provider's raw JSON verbatim. It is separate from
+	// FindingWhoisRecord because it is a distinct artifact with its own
+	// retention in the consumer.
+	FindingWhoisHistory FindingType = "whois-history"
 )
 
 // Mode constants for plugin classification.

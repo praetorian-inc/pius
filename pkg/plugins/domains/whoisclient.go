@@ -17,6 +17,11 @@ const (
 	defaultServer = "whois.iana.org"
 	queryTimeout  = 10 * time.Second
 
+	// whoisHopAttempts bounds the per-hop retry. Registry and registrar WHOIS
+	// servers throttle and drop connections routinely, and without a retry a
+	// single dropped hop truncates the whole chain.
+	whoisHopAttempts = 3
+
 	// maxWhoisResponseBytes caps a single WHOIS response. A raw WHOIS record is a
 	// few KB; 1 MiB is generous headroom for verbose registries while bounding the
 	// worst case. The reverse-whois verifier drives this read for up to
@@ -27,6 +32,33 @@ const (
 	// review, Codex — broader whoisclient hardening tracked as ENG-5167).
 	maxWhoisResponseBytes = 1 << 20
 )
+
+// whoisIncompleteness names WHY a WHOIS record is known to be partial.
+//
+// The zero value, whoisComplete, means "the referral chain ran to a natural end"
+// — so a whoisIncompleteness that is never assigned reads as complete, and every
+// pre-existing registrantResult literal keeps its old meaning. This polarity is
+// load-bearing: a `Complete bool` field would default to false and make every
+// existing zero-valued struct claim incompleteness (ENG-5405).
+//
+// It is a string, not an int enum, so the value logs directly as a slog
+// attribute with no String() method to maintain. The set is closed and
+// compile-time constant, which is why it is safe to log where the raw WHOIS
+// payload and the unbounded, attacker-chosen referral server string are not.
+type whoisIncompleteness string
+
+const (
+	whoisComplete           whoisIncompleteness = ""
+	whoisIncompleteDeadline whoisIncompleteness = "deadline_expired" // ctx deadline/cancel observed mid-chain
+	whoisIncompleteReferral whoisIncompleteness = "referral_failed"  // a referral hop's transport failed
+	whoisIncompleteHops     whoisIncompleteness = "referral_budget"  // hop budget exhausted with a referral pending
+)
+
+// maxWhoisReferrals bounds the referral chain to prevent loops. Eight matches
+// the bound the consumer's own referral walker used before this became the only
+// TCP/43 path in production; a few registries chain seed -> registry ->
+// registrar -> a reseller's server, and five hops truncated those.
+const maxWhoisReferrals = 8
 
 // disallowedDialPrefixes is the enumerated layer of the two-layer "public
 // unicast only" guard on untrusted WHOIS referrals (see isDisallowedDialIP):
@@ -208,24 +240,113 @@ func ssrfSafeControl(_, address string, _ syscall.RawConn) error {
 // Every hop is bounded by ctx: the referral loop bails as soon as ctx is
 // cancelled or its deadline passes, and whoisRaw honors ctx on the socket read.
 // This keeps the fallback path inside the overall verification budget instead of
-// letting 5 referrals x queryTimeout stack past it (ENG-5123 review).
-func whoisQuery(ctx context.Context, domain string) (string, error) {
+// letting maxWhoisReferrals referrals x queryTimeout stack past it
+// (ENG-5123 review).
+//
+// The second return value reports WHY the returned record is known to be
+// partial. Recall is unchanged: both salvage arms below still return the payload
+// with a nil error. What is new is that a caller which previously saw only
+// (record, nil) could not tell a truncated chain from a chain that ran to
+// completion and found no registrant — so an incomplete lookup surfaced as
+// found=false, err=nil. Every non-salvaged path reports whoisComplete, including
+// all three error paths (the no-salvage deadline arm, the no-salvage hop-error
+// arm, and the "no record beyond bootstrap seed" arm): with no payload there is
+// nothing to describe as partial and the error is already the signal (ENG-5405).
+func whoisQuery(ctx context.Context, domain string) (string, whoisIncompleteness, error) {
+	return whoisQueryWithRaw(ctx, domain, whoisRawFn)
+}
+
+func whoisQueryWithRaw(ctx context.Context, domain string, rawFn func(context.Context, string, string) (string, error)) (string, whoisIncompleteness, error) {
 	server := defaultServer
 	var lastRaw string
+	var pendingRefer string
 
-	for i := 0; i < 5; i++ { // max 5 referrals to prevent loops
+	for i := 0; i < maxWhoisReferrals; i++ {
 		if err := ctx.Err(); err != nil {
 			if lastRaw != "" {
-				return lastRaw, nil // return last post-referral result
+				// Recall-safe salvage, UNCHANGED: return the last post-referral
+				// record rather than dropping the candidate. What is new is the
+				// second return: the caller can now tell this apart from a chain
+				// that ran to completion and found no registrant (ENG-5405).
+				return lastRaw, whoisIncompleteDeadline, nil
 			}
-			return "", err
+			return "", whoisComplete, err
 		}
-		raw, err := whoisRawFn(ctx, domain, server)
+		raw, err := whoisHopWithRaw(ctx, domain, server, rawFn)
 		if err != nil {
 			if lastRaw != "" {
-				return lastRaw, nil // return last post-referral result
+				// Classify on ctx.Err(), NOT on the call site. An earlier revision of
+				// this branch returned whoisIncompleteReferral unconditionally, so a
+				// deadline that landed MID-hop was bucketed as a transport failure and
+				// whoisIncompleteDeadline was reachable only in the window between hops
+				// (the loop-top ctx.Err() check). That is the defect this fixes.
+				//
+				// ctx.Err() is the COMPLETE test for ctx-caused partiality, not a
+				// partial one: it is monotone (once non-nil it never clears), it is read
+				// here immediately after the failing call, and cancelCtx.cancel sets a
+				// parent's err BEFORE it descends to the children. So an ancestor
+				// deadline or cancel — the per-lookup wctx, the pass-wide budget bctx,
+				// or the caller's own ctx — that fires mid-hop is already visible here,
+				// whatever the hop error itself looks like.
+				//
+				// Never classify on the hop error's IDENTITY — not
+				// context.DeadlineExceeded, not os.ErrDeadlineExceeded, not
+				// net.Error.Timeout(). A clean-ctx stall bounded by the dialer's own
+				// Timeout (queryTimeout, see whoisRaw) is a NONDETERMINISTIC MIXTURE of
+				// the first two identities, so no identity match can separate "we ran
+				// out of budget" from "the server never answered". Measured on
+				// go1.26.2, reading ctx.Err() immediately after the failing call:
+				//
+				//   regime                                  Is(ctxDeadline)  Is(osDeadline)  ctx.Err()
+				//   A dialer.Timeout fires, ctx clean       EITHER (race)    EITHER (race)   nil
+				//   B ctx's own deadline fires              100%             0%              non-nil
+				//   C ctx cancelled                         0% (Canceled)    0%              non-nil
+				//   D conn.SetDeadline read stall, clean    0%               100%            nil
+				//
+				// Regime A's split is a scheduling race in net/fd_unix.go (~110-126):
+				// the dialer's sub-context deadline is armed BOTH as an fd poll
+				// write-deadline and as a context.AfterFunc, so when WaitWrite returns
+				// poll.ErrDeadlineExceeded the select on ctx.Done() decides which
+				// identity escapes — mapErr(ctx.Err()) => net.errTimeout, whose Is
+				// reports context.DeadlineExceeded, when the context timer won the
+				// race; the bare os.ErrDeadlineExceeded when it did not. Same server,
+				// same timeout, either label, decided by goroutine scheduling.
+				//
+				// The RATIO is deliberately not recorded, because it is not a stable
+				// property: two independent probes on this same toolchain, over the
+				// same dialer timeouts of 60ms/250ms/1s, measured INVERTED majorities
+				// (~16-30% vs ~99% context.DeadlineExceeded). Do not rely on either
+				// identity being the common case, and do not write a test that asserts
+				// one — it will be flaky. What both probes agreed on unanimously is all
+				// the code needs: both identities occur, and ctx.Err() was nil in 100%
+				// of regime-A samples.
+				//
+				// So the errors.Is(err, context.DeadlineExceeded) disjunct this
+				// predicate used to carry was ACTIVELY WRONG, not merely redundant. No
+				// rate is needed to condemn it: it fires AT ALL on a clean ctx, and
+				// each time it does it labels an unresponsive referral server
+				// deadline_expired and sends the operator to resize a budget on a path
+				// (WhoisPlugin.Run) that has none. Matching os.ErrDeadlineExceeded or
+				// net.Error.Timeout() would be worse still: that identity occurs in
+				// regime A and ALWAYS in regime D, both with a clean ctx — so it would
+				// mislabel every read stall, deterministically. Only ctx.Err() answers
+				// the question actually being asked.
+				//
+				// The split has to hold because it drives OPPOSITE remedies: a
+				// genuinely failed referral hop means pius is being throttled (pace
+				// it), while an expired ctx means it is out of budget (resize it) —
+				// and pacing an already-exhausted budget is actively harmful
+				// (architecture-plan.md §D6, ENG-5405).
+				//
+				// Both arms stay `return`s on purpose: a `continue`/`break` or a
+				// set-a-flag-and-fall-through would escape the maxWhoisReferrals bound
+				// and the loop-top deadline bail.
+				if ctx.Err() != nil {
+					return lastRaw, whoisIncompleteDeadline, nil // last post-referral result
+				}
+				return lastRaw, whoisIncompleteReferral, nil // last post-referral result
 			}
-			return "", fmt.Errorf("whois query to %s: %w", server, err)
+			return "", whoisComplete, fmt.Errorf("whois query to %s: %w", server, err)
 		}
 		// Only a post-referral record is salvageable: the bootstrap seed's
 		// response describes the TLD registry, not the domain's registrant.
@@ -236,15 +357,64 @@ func whoisQuery(ctx context.Context, domain string) (string, error) {
 		// Look for referral to a more specific server
 		refer := extractReferral(raw)
 		if refer == "" || strings.EqualFold(refer, server) {
+			pendingRefer = "" // the chain ended naturally
 			break
 		}
+		pendingRefer = refer
 		server = refer
 	}
 
 	if lastRaw == "" {
-		return "", fmt.Errorf("whois query for %s: no record beyond bootstrap seed %s", domain, defaultServer)
+		return "", whoisComplete, fmt.Errorf("whois query for %s: no record beyond bootstrap seed %s", domain, defaultServer)
 	}
-	return lastRaw, nil
+	if pendingRefer != "" {
+		// The loop exited on maxWhoisReferrals with a referral still unfollowed,
+		// so lastRaw is a mid-chain record, not the chain's endpoint (ENG-5405).
+		return lastRaw, whoisIncompleteHops, nil
+	}
+	return lastRaw, whoisComplete, nil
+}
+
+// whoisHopBackoff is the base delay between hop attempts, a var so tests can
+// shrink it — the same seam idiom as reverseWhoisTotalBudget.
+var whoisHopBackoff = 250 * time.Millisecond
+
+// whoisHopWithRaw queries one WHOIS server, retrying a failed attempt with
+// exponential backoff. The retry stays inside the caller's deadline: ctx bounds
+// the attempt and the backoff sleep alike, and an ended ctx returns its error
+// immediately rather than funding another attempt. That matters because
+// whoisQuery's caller may be inside the pass-wide reverse-whois budget, and a
+// retry that outlived it would spend recall it cannot use.
+func whoisHopWithRaw(ctx context.Context, domain, server string, rawFn func(context.Context, string, string) (string, error)) (string, error) {
+	var err error
+	for attempt := range whoisHopAttempts {
+		if attempt > 0 {
+			if serr := sleepBounded(ctx, whoisHopBackoff<<(attempt-1)); serr != nil {
+				return "", serr
+			}
+		}
+		var raw string
+		raw, err = rawFn(ctx, domain, server)
+		if err == nil {
+			return raw, nil
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return "", cerr
+		}
+	}
+	return "", err
+}
+
+// sleepBounded waits d, returning the context error if ctx ends first.
+func sleepBounded(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // whoisDialAddr normalizes a (possibly untrusted) referral server string into a
