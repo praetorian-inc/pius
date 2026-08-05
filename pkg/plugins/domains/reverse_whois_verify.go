@@ -9,10 +9,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	whoisparser "github.com/likexian/whois-parser"
 	"github.com/openrdap/rdap"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
@@ -248,7 +250,27 @@ func isMaskedOrg(v string) bool {
 	// normalizeOrg is deliberately NOT used: it strips legal-suffix tokens, a
 	// similarity-comparison concern that would silently drop tokens from a masking
 	// decision.
-	return hasPrivacyMarker(tokenize(key))
+	//
+	// foldDiacritics before tokenize so that non-ASCII redaction wordings (e.g.
+	// "RÉDACTED", "DONNÉES PROTÉGÉES") have their diacritics stripped to ASCII
+	// base letters, letting the existing marker vocabulary match. This is applied
+	// only here — not in tokenize itself — to avoid changing similarity scoring
+	// (ENG-5420).
+	return hasPrivacyMarker(tokenize(foldDiacritics(key)))
+}
+
+// foldDiacritics decomposes s into NFD form and strips combining marks (Unicode
+// category Mn), collapsing accented characters to their ASCII base letter:
+// "rédacted" → "redacted", "données protégées" → "donnees protegees".
+func foldDiacritics(s string) string {
+	var buf strings.Builder
+	buf.Grow(len(s))
+	for _, r := range norm.NFD.String(s) {
+		if !unicode.Is(unicode.Mn, r) {
+			buf.WriteRune(r)
+		}
+	}
+	return buf.String()
 }
 
 // hasPrivacyMarker reports whether tokens carry redaction-placeholder

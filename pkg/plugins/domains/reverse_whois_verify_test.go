@@ -454,6 +454,75 @@ func TestIsMaskedOrg_MarkerPhrasesMatchTokenRuns(t *testing.T) {
 	})
 }
 
+// TestFoldDiacritics covers the NFD decomposition + combining-mark strip used by
+// isMaskedOrg to handle non-ASCII redaction wordings (ENG-5420).
+func TestFoldDiacritics(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"rédacted", "redacted"},
+		{"DONNÉES PROTÉGÉES", "DONNEES PROTEGEES"},
+		{"redacted", "redacted"},
+		{"", ""},
+		{"Ångström AB", "Angstrom AB"},
+		{"naïve café", "naive cafe"},
+		// CJK katakana dakuten decomposes under NFD (デ → テ + combining dakuten);
+		// this is harmless for isMaskedOrg because tokenize discards non-ASCII anyway.
+		{"データ保護", "テータ保護"},
+	}
+	for _, tt := range tests {
+		assert.Equalf(t, tt.want, foldDiacritics(tt.in), "foldDiacritics(%q)", tt.in)
+	}
+}
+
+// TestIsMaskedOrg_NonASCIIRedaction covers ENG-5420: non-ASCII redaction
+// wordings whose diacritics fragment tokens in the ASCII-only tokenizer, causing
+// all three tiers of isMaskedOrg to miss them. foldDiacritics strips combining
+// marks before tier 3's tokenize call so the existing marker vocabulary matches.
+func TestIsMaskedOrg_NonASCIIRedaction(t *testing.T) {
+	masked := []string{
+		"RÉDACTED",
+		"RÉDACTED FOR PRIVACY",
+		"WITHHÉLD FOR PRIVACY",
+		"MASKÉD",
+		"Données Masquées — Masking Activé", // "masking" token survives
+		"Rédaction appliquée",               // "redaction" token survives after fold
+	}
+	for _, org := range masked {
+		assert.Truef(t, isMaskedOrg(org),
+			"%q contains a diacritic-folded marker token and must be detected as masked (ENG-5420)", org)
+	}
+
+	genuine := []string{
+		"Société Générale",
+		"Müller GmbH",
+		"Ørsted A/S",
+		"Citroën Group",
+		"François Première Holdings",
+	}
+	for _, org := range genuine {
+		assert.Falsef(t, isMaskedOrg(org),
+			"%q is a real organization with diacritics; folding must not cause a false positive", org)
+	}
+}
+
+// TestIsMaskedOrg_NonASCIIFallbackIntegration proves the full consequence path
+// from ENG-5420: a non-ASCII masked registrant must cause resolveWithFallback to
+// consult the WHOIS step (the Masked field triggers the fallback), not just the
+// predicate returning true.
+func TestIsMaskedOrg_NonASCIIFallbackIntegration(t *testing.T) {
+	res := newRegistrantResult("RÉDACTED FOR PRIVACY")
+	require.True(t, res.Masked,
+		"newRegistrantResult must mark a non-ASCII redaction wording as Masked")
+	require.True(t, res.Found,
+		"newRegistrantResult must set Found for a non-empty org")
+
+	dec := decideConfidence("Acme Corp", res, nil)
+	assert.Equalf(t, confReverseWhoisUnverified, dec.Score,
+		"a masked registrant must score unverified (%.2f), not mismatch (%.2f)",
+		confReverseWhoisUnverified, confReverseWhoisMismatch)
+}
+
 // TestMaskedSubstringMinLenGuardsTheSubstringPass asserts the length gate that
 // keeps isMaskedOrg's substring pass from firing on an incidental fragment of a
 // real org name (ENG-5404 AC4). The gate is SILENT by construction: a phrase
