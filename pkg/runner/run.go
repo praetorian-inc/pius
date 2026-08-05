@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -343,22 +344,83 @@ func runPhaseWithResults(ctx context.Context, pluginList []plugins.Plugin, input
 	return findings
 }
 
-// enrichWithHandles groups cidr-handle findings by registry and injects them into Input.Meta.
-func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.Input {
+// cloneInput copies input for enrichment, giving the copy a Meta map and an
+// UpstreamFindings slice it owns outright.
+//
+// Both need their own backing storage. Enrichment runs more than once per
+// pipeline (Phase 3's input is enriched with CIDRs and then with domains), and
+// appending onto the original's slice would let the second pass overwrite the
+// first pass's tail in place.
+func cloneInput(input plugins.Input) plugins.Input {
 	enriched := input
+
 	enriched.Meta = make(map[string]string, len(input.Meta))
 	for k, v := range input.Meta {
 		enriched.Meta[k] = v
 	}
+
+	enriched.UpstreamFindings = slices.Clone(input.UpstreamFindings)
+
+	return enriched
+}
+
+// provenanceKey identifies one upstream observation: a value discovered by a
+// plugin, at a type. Two findings sharing it are the same sighting reported
+// twice, so only the first is carried.
+//
+// The source is part of the key on purpose. Meta dedupes by value alone, which
+// is right for a list of things to go look up, but two plugins that
+// independently found the same value are two pieces of provenance and both must
+// survive — that is exactly the corroboration a consumer composes into separate
+// evidence entries.
+func provenanceKey(f plugins.Finding) string {
+	return string(f.Type) + "\x00" + strings.ToLower(strings.TrimSpace(f.Value)) + "\x00" + f.Source
+}
+
+// appendUpstream carries every finding of type typ into
+// enriched.UpstreamFindings, skipping any observation already there.
+//
+// It filters by type itself so callers do not each build an intermediate slice
+// to hand over — the type is exactly what distinguishes what each enrichment
+// step contributes.
+func appendUpstream(enriched *plugins.Input, typ plugins.FindingType, findings []plugins.Finding) {
+	seen := make(map[string]bool, len(enriched.UpstreamFindings)+len(findings))
+	for _, f := range enriched.UpstreamFindings {
+		seen[provenanceKey(f)] = true
+	}
+
+	for _, f := range findings {
+		if f.Type != typ {
+			continue
+		}
+		key := provenanceKey(f)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		enriched.UpstreamFindings = append(enriched.UpstreamFindings, f)
+	}
+}
+
+// enrichWithHandles groups cidr-handle findings by registry and injects them into Input.Meta.
+//
+// A handle whose registry is unknown is broadcast to every RIR in Meta, because
+// there is no way to tell which registry will recognize it — but it contributes
+// one upstream finding, not five. The finding says which plugin found the handle
+// and why; duplicating it per registry would multiply one discovery into five
+// pieces of evidence for whichever registry happened to resolve it.
+func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.Input {
+	enriched := cloneInput(input)
 
 	groups := make(map[string][]string)
 	for _, f := range findings {
 		if f.Type != plugins.FindingCIDRHandle {
 			continue
 		}
+
 		reg, _ := f.Data["registry"].(string)
-		if reg == "" || reg == "unknown" {
-			for _, r := range []string{"arin", "ripe", "apnic", "afrinic", "lacnic"} {
+		if reg == "" || reg == plugins.RegistryUnknown {
+			for _, r := range plugins.RIRRegistries {
 				groups[r] = append(groups[r], f.Value)
 			}
 			continue
@@ -375,16 +437,14 @@ func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.
 			enriched.Meta[key] = strings.Join(handles, ",")
 		}
 	}
+
+	appendUpstream(&enriched, plugins.FindingCIDRHandle, findings)
 	return enriched
 }
 
 // enrichWithCIDRs extracts CIDR findings and injects them into Input.Meta["cidrs"].
 func enrichWithCIDRs(input plugins.Input, findings []plugins.Finding) plugins.Input {
-	enriched := input
-	enriched.Meta = make(map[string]string, len(input.Meta))
-	for k, v := range input.Meta {
-		enriched.Meta[k] = v
-	}
+	enriched := cloneInput(input)
 
 	var cidrs []string
 	seen := make(map[string]bool)
@@ -401,17 +461,15 @@ func enrichWithCIDRs(input plugins.Input, findings []plugins.Finding) plugins.In
 	if len(cidrs) > 0 {
 		enriched.Meta["cidrs"] = strings.Join(cidrs, ",")
 	}
+
+	appendUpstream(&enriched, plugins.FindingCIDR, findings)
 	return enriched
 }
 
 // enrichWithDomains collects FindingDomain values from findings and injects them
 // into Input.Meta["discovered_domains"] as a comma-separated list for Phase 3 plugins.
 func enrichWithDomains(input plugins.Input, findings []plugins.Finding) plugins.Input {
-	enriched := input
-	enriched.Meta = make(map[string]string, len(input.Meta))
-	for k, v := range input.Meta {
-		enriched.Meta[k] = v
-	}
+	enriched := cloneInput(input)
 
 	seen := make(map[string]bool)
 	var domains []string
@@ -420,10 +478,11 @@ func enrichWithDomains(input plugins.Input, findings []plugins.Finding) plugins.
 			continue
 		}
 		d := strings.ToLower(strings.TrimSpace(f.Value))
-		if d != "" && !seen[d] {
-			seen[d] = true
-			domains = append(domains, d)
+		if d == "" || seen[d] {
+			continue
 		}
+		seen[d] = true
+		domains = append(domains, d)
 	}
 
 	// Filter out high-entropy and OOB/canary domains before passing to Phase 3.
@@ -431,9 +490,24 @@ func enrichWithDomains(input plugins.Input, findings []plugins.Finding) plugins.
 	// all Phase 3 consumers and prevents the domains from being permuted at all.
 	domains = domainspkg.FilterJunkDomains(domains)
 
+	// Carry provenance for exactly the domains that survived the filter. A
+	// consumer must not be able to attribute work to a seed the filter removed.
+	survived := make(map[string]bool, len(domains))
+	for _, d := range domains {
+		survived[d] = true
+	}
+	upstream := make([]plugins.Finding, 0, len(domains))
+	for _, f := range findings {
+		if f.Type == plugins.FindingDomain && survived[strings.ToLower(strings.TrimSpace(f.Value))] {
+			upstream = append(upstream, f)
+		}
+	}
+
 	if len(domains) > 0 {
 		enriched.Meta["discovered_domains"] = strings.Join(domains, ",")
 	}
+
+	appendUpstream(&enriched, plugins.FindingDomain, upstream)
 	return enriched
 }
 
@@ -471,10 +545,13 @@ func printFindings(findings []plugins.Finding, format string) error {
 		for _, f := range findings {
 			line := fmt.Sprintf("[%s] %s (%s)", f.Type, f.Value, f.Source)
 			// Surface review flag and confidence for borderline findings.
-			// Only findings a plugin actually scored are annotated: most output
-			// comes from plugins that never score (crt.sh, wayback, RDAP CIDR
-			// expansion), and labelling those "needs-review [confidence:0.00]"
-			// would report an assessment that never happened on nearly every line.
+			// Only findings a plugin actually scored are annotated. Every
+			// in-tree plugin now scores what it emits, so the unscored case is
+			// no longer the common one — but labelling such a finding
+			// "needs-review [confidence:0.00]" would still report an assessment
+			// that never happened, and an embedder's own plugin or a plugin
+			// cache entry written before scoring can reach here without
+			// evidence.
 			if len(f.Confidences) > 0 && plugins.NeedsReview(f) {
 				if colorEnabled() {
 					line += fmt.Sprintf(" ⚠ needs-review [confidence:%.2f]", plugins.TotalConfidence(f))

@@ -49,6 +49,11 @@ func (p *ASNBGPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 			Type:   plugins.FindingCIDR,
 			Value:  cidr,
 			Source: "asn-bgp",
+			Confidences: []plugins.Confidence{{
+				Score: confASNAnnouncedPrefix,
+				Justification: fmt.Sprintf("RIPE RIS reports that ASN %s announces prefix %q",
+					input.ASN, cidr),
+			}},
 			Data: map[string]any{
 				"asn": input.ASN,
 				"org": input.OrgName,
@@ -58,6 +63,18 @@ func (p *ASNBGPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 
 	return findings, nil
 }
+
+// confASNAnnouncedPrefix is the evidence weight of a prefix observed in BGP
+// under the target's ASN.
+//
+// It needs no upstream provenance: the ASN is a caller-supplied input, not
+// something this pipeline inferred, so there is no name-matching guess in the
+// chain to bound it. What is left is an observation of the global routing table
+// — the operator of the ASN is announcing the prefix — which is about as direct
+// as network ownership evidence gets. Short of certainty only because
+// announcing a prefix and owning it are not identical: transit providers and
+// DDoS scrubbers announce prefixes on a customer's behalf.
+const confASNAnnouncedPrefix = 0.85
 
 // fetchFromRIPERIS queries RIPE RIS announced-prefixes API
 func (p *ASNBGPPlugin) fetchFromRIPERIS(ctx context.Context, asn string) ([]string, error) {

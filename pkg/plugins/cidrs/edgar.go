@@ -91,14 +91,27 @@ func (p *EDGARPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 			}
 			seenHandles[handle] = true
 
+			data := map[string]any{
+				"registry":    "unknown", // Runner will try all RIRs
+				"org":         input.OrgName,
+				"entity_name": hit.Source.EntityName,
+			}
+			if hit.Source.FormType != "" {
+				data["form_type"] = hit.Source.FormType
+			}
+			if hit.Source.FileNum != "" {
+				data["file_num"] = hit.Source.FileNum
+			}
+
 			findings = append(findings, plugins.Finding{
 				Type:   plugins.FindingCIDRHandle,
 				Value:  handle,
 				Source: "edgar",
-				Data: map[string]any{
-					"registry": "unknown", // Runner will try all RIRs
-					"org":      input.OrgName,
-				},
+				Confidences: []plugins.Confidence{{
+					Score:         confEDGARHandleExtraction,
+					Justification: edgarJustification(input.OrgName, handle, hit.Source),
+				}},
+				Data: data,
 			})
 		}
 	}
@@ -106,13 +119,54 @@ func (p *EDGARPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	return findings, nil
 }
 
+// confEDGARHandleExtraction is the evidence weight of an RIR-shaped token found
+// in an SEC filing returned by an organization search.
+//
+// It is the weakest handle discovery in the pipeline and scored accordingly.
+// Two inferences stack: that the filing belongs to the queried organization
+// (EDGAR full-text search is a name match, so a filing merely *mentioning* the
+// name qualifies), and that a token shaped like PREFIX-123 is an RIR handle
+// rather than a docket, ticker, or internal reference. nonRIRPrefixes removes
+// the known impostors, not the unknown ones.
+const confEDGARHandleExtraction = 0.40
+
+// edgarJustification explains one extracted handle, naming the filing it came
+// out of so a reviewer can go read the same document.
+func edgarJustification(org, handle string, source edgarSource) string {
+	justification := fmt.Sprintf("SEC EDGAR filing for %q contained the RIR-style handle %q",
+		org, handle)
+
+	if source.EntityName != "" && source.EntityName != org {
+		justification += fmt.Sprintf(", filed under entity %q", source.EntityName)
+	}
+
+	var identifiers []string
+	if source.FormType != "" {
+		identifiers = append(identifiers, "form "+source.FormType)
+	}
+	if source.FileNum != "" {
+		identifiers = append(identifiers, "file "+source.FileNum)
+	}
+	if len(identifiers) > 0 {
+		justification += " (" + strings.Join(identifiers, ", ") + ")"
+	}
+
+	return justification
+}
+
+// edgarSource is the per-hit metadata EDGAR returns for the fields the query
+// asks for in _source.
+type edgarSource struct {
+	EntityName string `json:"entity_name"`
+	FormType   string `json:"form_type"`
+	FileNum    string `json:"file_num"`
+}
+
 // EDGARResponse represents SEC EDGAR search results
 type EDGARResponse struct {
 	Hits struct {
 		Hits []struct {
-			Source struct {
-				EntityName string `json:"entity_name"`
-			} `json:"_source"`
+			Source edgarSource `json:"_source"`
 		} `json:"hits"`
 	} `json:"hits"`
 }

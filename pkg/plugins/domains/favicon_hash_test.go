@@ -205,9 +205,9 @@ func TestParseFOFAResponse_EmptyResults(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
-// ── deduplicateFindings ───────────────────────────────────────────────────────
+// ── mergeScannerFindings ──────────────────────────────────────────────────────
 
-func TestDeduplicateFindings_RemovesDuplicates(t *testing.T) {
+func TestMergeScannerFindings_RemovesDuplicates(t *testing.T) {
 	findings := []plugins.Finding{
 		{Type: plugins.FindingDomain, Value: "a.com", Source: "favicon-hash"},
 		{Type: plugins.FindingDomain, Value: "a.com", Source: "favicon-hash"},
@@ -215,17 +215,104 @@ func TestDeduplicateFindings_RemovesDuplicates(t *testing.T) {
 		{Type: plugins.FindingCIDR, Value: "1.2.3.4/32", Source: "favicon-hash"},
 		{Type: plugins.FindingDomain, Value: "b.com", Source: "favicon-hash"},
 	}
-	result := deduplicateFindings(findings, "favicon-hash")
+	result := mergeScannerFindings(findings)
 	assert.Len(t, result, 3)
 }
 
-func TestDeduplicateFindings_SameValueDifferentType(t *testing.T) {
+func TestMergeScannerFindings_SameValueDifferentType(t *testing.T) {
 	findings := []plugins.Finding{
 		{Type: plugins.FindingDomain, Value: "1.2.3.4/32", Source: "favicon-hash"},
 		{Type: plugins.FindingCIDR, Value: "1.2.3.4/32", Source: "favicon-hash"},
 	}
-	result := deduplicateFindings(findings, "favicon-hash")
+	result := mergeScannerFindings(findings)
 	assert.Len(t, result, 2, "same value but different types should both be kept")
+}
+
+// faviconFinding builds one scanner observation for merge tests.
+func faviconFinding(typ plugins.FindingType, value, scanner, justification string) plugins.Finding {
+	return plugins.Finding{
+		Type:   typ,
+		Value:  value,
+		Source: "favicon-hash",
+		Confidences: []plugins.Confidence{{
+			Score: confSharedFaviconHash, Justification: justification,
+		}},
+		Data: map[string]any{"scanner": scanner, "scanners": scanner},
+	}
+}
+
+// TestMergeScannerFindings_RepeatedScannerMatchesCollapse: asking Shodan which
+// hosts serve an icon and getting several back is one observation about one hash.
+func TestMergeScannerFindings_RepeatedScannerMatchesCollapse(t *testing.T) {
+	findings := []plugins.Finding{
+		faviconFinding(plugins.FindingDomain, "a.com", scannerShodan, "Shodan observed IP 1.2.3.4 ..."),
+		faviconFinding(plugins.FindingDomain, "a.com", scannerShodan, "Shodan observed IP 5.6.7.8 ..."),
+		faviconFinding(plugins.FindingDomain, "a.com", scannerShodan, "Shodan observed IP 9.10.11.12 ..."),
+	}
+
+	result := mergeScannerFindings(findings)
+
+	require.Len(t, result, 1)
+	require.Len(t, result[0].Confidences, 1, "three matches from one scanner is one signal")
+	assert.InDelta(t, confSharedFaviconHash, plugins.TotalConfidence(result[0]), 0.001)
+	assert.Equal(t, scannerShodan, result[0].Data["scanners"])
+}
+
+// TestMergeScannerFindings_DistinctScannersBothSurvive is the regression guard:
+// keeping only the first finding used to discard FOFA's provenance entirely.
+func TestMergeScannerFindings_DistinctScannersBothSurvive(t *testing.T) {
+	findings := []plugins.Finding{
+		faviconFinding(plugins.FindingDomain, "a.com", scannerShodan, "Shodan observed ..."),
+		faviconFinding(plugins.FindingDomain, "a.com", scannerFOFA, "FOFA observed ..."),
+	}
+
+	result := mergeScannerFindings(findings)
+
+	require.Len(t, result, 1, "one value")
+	require.Len(t, result[0].Confidences, 2, "two independent scanners, two entries")
+	assert.Equal(t, "Shodan observed ...", result[0].Confidences[0].Justification)
+	assert.Equal(t, "FOFA observed ...", result[0].Confidences[1].Justification)
+	assert.Equal(t, "shodan,fofa", result[0].Data["scanners"])
+}
+
+func TestDescribeFaviconMatch_NamesHashAndSourceDomain(t *testing.T) {
+	assert.Equal(t,
+		`Shodan observed IP 203.0.113.4 serving favicon hash 123456789, matching the favicon fetched from "acme.com"`,
+		describeFaviconMatch(scannerShodan, "IP 203.0.113.4", 123456789, "acme.com"))
+	assert.Equal(t,
+		`FOFA observed host "api.acme.com" serving favicon hash 123456789, matching the favicon fetched from "acme.com"`,
+		describeFaviconMatch(scannerFOFA, `host "api.acme.com"`, 123456789, "acme.com"))
+}
+
+// TestSharedFaviconEvidence_OneScannerNeedsReview: a generic framework icon is
+// shared by thousands of unrelated hosts, and this code cannot tell one from a
+// distinctive corporate logo, so a single scanner's answer must reach a human.
+func TestSharedFaviconEvidence_OneScannerNeedsReview(t *testing.T) {
+	assert.Less(t, confSharedFaviconHash, plugins.ConfidenceHigh)
+
+	// Above the noise floor, so a single-scanner match is not discarded — that
+	// is the constraint that fixes this score from below.
+	assert.GreaterOrEqual(t, confSharedFaviconHash, plugins.ConfidenceLow)
+
+	one := plugins.Finding{Confidences: []plugins.Confidence{
+		{Score: confSharedFaviconHash, Justification: "Shodan observed ..."},
+	}}
+	assert.True(t, plugins.NeedsReview(one))
+}
+
+// TestSharedFaviconEvidence_TwoScannersClearTheThreshold pins the calibration
+// consequence deliberately, so a future reader knows it was chosen and not
+// stumbled into: Shodan and FOFA are independent crawls, their entries add, and
+// no per-entry score both survives the noise floor alone and stays under
+// ConfidenceHigh when doubled.
+func TestSharedFaviconEvidence_TwoScannersClearTheThreshold(t *testing.T) {
+	both := plugins.Finding{Confidences: []plugins.Confidence{
+		{Score: confSharedFaviconHash, Justification: "Shodan observed ..."},
+		{Score: confSharedFaviconHash, Justification: "FOFA observed ..."},
+	}}
+
+	assert.InDelta(t, 0.90, plugins.TotalConfidence(both), 0.001)
+	assert.False(t, plugins.NeedsReview(both))
 }
 
 // ── normalizeDomain ───────────────────────────────────────────────────────────

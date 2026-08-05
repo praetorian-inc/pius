@@ -74,9 +74,7 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 		preseedCapability = fmt.Sprintf("pius_%s", f.Source)
 	}
 
-	confidences := buildConfidences(f)
-	totalConfidence := plugins.TotalConfidence(f)
-	needsReview := plugins.NeedsReview(f)
+	confidences, totalConfidence, needsReview := confidenceFields(f)
 
 	switch f.Type {
 	case plugins.FindingDomain:
@@ -121,17 +119,26 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 	}
 }
 
-// buildConfidences projects a finding's evidence onto the three capmodel
+// confidenceFields projects a finding's evidence onto the three capmodel
 // confidence fields: the evidence list, the materialized aggregate, and the
 // derived review flag.
 //
-// A finding with no evidence emits all three as nil rather than a materialized
-// 0.0. That is the load-bearing distinction: TotalConfidence of empty evidence
-// is 0.0, but emitting that would assert "we scored this and got nothing",
-// blocking Guard's fallback for records and producers that predate structured
-// confidence. An explicit zero-score entry DOES materialize as 0.0, because
-// there the producer really did make that judgement.
-func buildConfidences(finding plugins.Finding) []capmodel.Confidence {
+// A finding with no evidence returns all three as nil rather than a
+// materialized 0.0. That is the load-bearing distinction: TotalConfidence of
+// empty evidence is 0.0, but emitting that would assert "we scored this and got
+// nothing", blocking Guard's fallback for records and producers that predate
+// structured confidence. An explicit zero-score entry DOES materialize as 0.0,
+// because there the producer really did make that judgement — so the test is
+// len(Confidences), never the total.
+//
+// Every entry crosses verbatim, in order: score and justification both. The
+// aggregate is capped at 1.0 by TotalConfidence while the entries are not, so a
+// reviewer can still see the decomposition that summed past the cap.
+func confidenceFields(finding plugins.Finding) ([]capmodel.Confidence, *float64, *bool) {
+	if len(finding.Confidences) == 0 {
+		return nil, nil, nil
+	}
+
 	confidences := make([]capmodel.Confidence, len(finding.Confidences))
 	for i, confidence := range finding.Confidences {
 		confidences[i] = capmodel.Confidence{
@@ -140,7 +147,9 @@ func buildConfidences(finding plugins.Finding) []capmodel.Confidence {
 		}
 	}
 
-	return confidences
+	total := plugins.TotalConfidence(finding)
+	needsReview := plugins.NeedsReview(finding)
+	return confidences, &total, &needsReview
 }
 
 // piusCredentialMapping maps capability parameter names to the environment

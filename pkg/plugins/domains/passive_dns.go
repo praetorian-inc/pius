@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -73,24 +72,48 @@ func (p *PassiveDNSPlugin) Run(ctx context.Context, input plugins.Input) ([]plug
 		return nil, fmt.Errorf("passive-dns: parse response: %w", err)
 	}
 
+	base := normalizeDomain(input.Domain)
+
 	findings := make([]plugins.Finding, 0, len(response.Subdomains))
 	for _, sub := range response.Subdomains {
 		if sub == "" {
 			continue
 		}
-		domain := sub + "." + input.Domain
-		domain = strings.ToLower(domain)
-		domain = strings.TrimSpace(domain)
-		domain = strings.TrimSuffix(domain, ".")
+		domain := normalizeDomain(sub + "." + input.Domain)
 		findings = append(findings, plugins.Finding{
 			Type:   plugins.FindingDomain,
 			Value:  domain,
 			Source: p.Name(),
+			Confidences: []plugins.Confidence{{
+				Score:         confPassiveDNSHistorical,
+				Justification: describePassiveDNSObservation(domain, base),
+			}},
 			Data: map[string]any{
 				"org":         input.OrgName,
 				"base_domain": input.Domain,
+				"historical":  true,
 			},
 		})
 	}
 	return findings, nil
+}
+
+// confPassiveDNSHistorical is the evidence weight of a name SecurityTrails has
+// on record beneath a known domain.
+//
+// It sits just under the clean threshold, and the reason is in the request: this
+// plugin asks for include_inactive=true, so the answer is "this name existed at
+// some point", not "this name exists". A decommissioned staging host from six
+// years ago is a true historical record and a false current asset, and only a
+// human can tell which one a given name is. The zone membership itself is solid
+// — SecurityTrails observed the record beneath the target's domain — which is why
+// this stays well above the noise floor.
+const confPassiveDNSHistorical = 0.60
+
+// describePassiveDNSObservation explains one subdomain. It says "historical"
+// deliberately: the request asks for include_inactive=true, so a reader must not
+// take the name for a live host.
+func describePassiveDNSObservation(domain, base string) string {
+	return fmt.Sprintf("SecurityTrails reports historical subdomain %q beneath the known domain %q",
+		domain, base)
 }

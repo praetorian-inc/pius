@@ -3,6 +3,7 @@ package domains
 import (
 	"context"
 	_ "embed"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -65,6 +66,11 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 	// Group seeds by base domain for wildcard detection.
 	byBase := groupByBaseDomain(seeds)
 
+	// Index seed provenance once, before the fan-out: every resolved candidate
+	// needs it, and rescanning UpstreamFindings per candidate inside the
+	// resolver goroutines costs seconds of CPU on a broad scan.
+	provenance := newDomainProvenance(input)
+
 	var (
 		mu       sync.Mutex
 		findings []plugins.Finding
@@ -76,41 +82,26 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 		// Detect wildcard DNS for this base domain.
 		wildcardIPs := detectWildcard(ctx, base, p.resolver)
 
-		// Generate all permutation candidates for this base domain.
+		// Generate all permutation candidates for this base domain, keeping the
+		// seed each one came from.
 		candidates := p.generateCandidates(subs, base)
-
-		// Deduplicate candidates and exclude seeds.
-		seedSet := make(map[string]bool, len(subs))
-		for _, s := range subs {
-			seedSet[normalizeDomain(s)] = true
-		}
-
-		seen := make(map[string]bool, len(candidates))
-		var unique []string
-		for _, c := range candidates {
-			c = normalizeDomain(c)
-			if !seen[c] && !seedSet[c] {
-				seen[c] = true
-				unique = append(unique, c)
-			}
-		}
 
 		// Resolve each candidate concurrently.
 		var wg sync.WaitGroup
-		for _, candidate := range unique {
+		for _, candidate := range candidates {
 			if ctx.Err() != nil {
 				break
 			}
 
 			wg.Add(1)
 			sem <- struct{}{}
-			go func(fqdn string) {
+			go func(candidate permutationCandidate) {
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				ips, err := resolveIPs(ctx, fqdn, p.resolver)
+				ips, err := resolveIPs(ctx, candidate.fqdn, p.resolver)
 				if err != nil {
-					slog.Debug("dns-permutation: resolve failed", "fqdn", fqdn, "error", err)
+					slog.Debug("dns-permutation: resolve failed", "fqdn", candidate.fqdn, "error", err)
 					return
 				}
 				if len(ips) == 0 {
@@ -122,14 +113,18 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 					return
 				}
 
+				confidences := composeSeedEvidence(provenance, candidate)
+
 				mu.Lock()
 				findings = append(findings, plugins.Finding{
-					Type:   plugins.FindingDomain,
-					Value:  fqdn,
-					Source: "dns-permutation",
+					Type:        plugins.FindingDomain,
+					Value:       candidate.fqdn,
+					Source:      "dns-permutation",
+					Confidences: confidences,
 					Data: map[string]any{
 						"method": "dns-permutation",
 						"domain": base,
+						"seeds":  strings.Join(candidate.seeds, ","),
 					},
 				})
 				mu.Unlock()
@@ -141,24 +136,127 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 	return findings, nil
 }
 
+// permutationCandidate is one generated name together with the seeds that
+// generated it.
+//
+// The lineage is what makes a permutation attributable. The name itself was
+// invented by this plugin — nothing observed it anywhere — so the only reason to
+// believe it belongs to the target is that a domain the target owns was mutated
+// into it. Losing the seed loses the entire argument.
+type permutationCandidate struct {
+	fqdn  string
+	seeds []string
+}
+
 // generateCandidates produces all permutation candidates for a set of subdomains
 // sharing the same base domain. Implements four altdns-style strategies.
-func (p *DNSPermutationPlugin) generateCandidates(seeds []string, base string) []string {
-	var candidates []string
+//
+// Candidates are deduplicated by name, and seeds already known are dropped: a
+// permutation that reproduces a seed adds nothing, and the plugin that found the
+// seed already scored it. Two seeds converging on the same candidate keep both
+// lineages — that convergence is corroboration, and the caller turns each seed
+// into its own evidence entry.
+func (p *DNSPermutationPlugin) generateCandidates(seeds []string, base string) []permutationCandidate {
+	seedSet := make(map[string]bool, len(seeds))
+	for _, seed := range seeds {
+		seedSet[normalizeDomain(seed)] = true
+	}
+
+	var order []string
+	byFQDN := make(map[string]*permutationCandidate)
 
 	for _, seed := range seeds {
+		seed = normalizeDomain(seed)
 		labels := extractLabels(seed, base)
 		if len(labels) == 0 {
 			continue
 		}
 
-		candidates = append(candidates, p.dashConcat(labels, base)...)
-		candidates = append(candidates, p.directConcat(labels, base)...)
-		candidates = append(candidates, p.insertWord(labels, base)...)
-		candidates = append(candidates, numberSuffix(labels, base)...)
+		var generated []string
+		generated = append(generated, p.dashConcat(labels, base)...)
+		generated = append(generated, p.directConcat(labels, base)...)
+		generated = append(generated, p.insertWord(labels, base)...)
+		generated = append(generated, numberSuffix(labels, base)...)
+
+		seenForSeed := make(map[string]bool, len(generated))
+		for _, fqdn := range generated {
+			fqdn = normalizeDomain(fqdn)
+			if fqdn == "" || seedSet[fqdn] || seenForSeed[fqdn] {
+				continue
+			}
+			seenForSeed[fqdn] = true
+
+			candidate, ok := byFQDN[fqdn]
+			if !ok {
+				candidate = &permutationCandidate{fqdn: fqdn}
+				byFQDN[fqdn] = candidate
+				order = append(order, fqdn)
+			}
+			candidate.seeds = append(candidate.seeds, seed)
+		}
 	}
 
+	candidates := make([]permutationCandidate, 0, len(order))
+	for _, fqdn := range order {
+		candidates = append(candidates, *byFQDN[fqdn])
+	}
 	return candidates
+}
+
+// confPermutationResolvedNonWildcard is the weight of the permutation leg: a
+// generated name that resolves in DNS and is not a wildcard artifact.
+//
+// The resolution is a real observation — the host exists — which is why this
+// sits alongside direct DNS resolution rather than below it. It is a ceiling on
+// the chain, not an independent signal: what the leg cannot establish is that
+// the host belongs to the target, since resolving proves only that somebody
+// registered the name the guess happened to hit.
+const confPermutationResolvedNonWildcard = 0.70
+
+// composeSeedEvidence builds the evidence for one resolved permutation.
+//
+// Seed provenance and permutation resolution are a chain, composed rather than
+// summed (see plugins.Compose). The seed's own confidence is whatever the plugin
+// that discovered it could establish, and a name derived from that seed cannot be
+// better supported than the seed itself — permuting an uncertain domain does not
+// produce a certain one.
+//
+// Distinct seeds do contribute separate entries. Two independently discovered
+// domains mutating into the same live host is genuine corroboration: it is
+// unlikely twice over that the name belongs to someone else.
+//
+// A seed with no upstream provenance still yields an entry for the resolution
+// itself. Inside the pipeline every seed arrives with provenance, because
+// enrichWithDomains carries both views together — but a plugin invoked directly,
+// with seeds handed straight to Meta, has none, and the permutation resolving is
+// a fact worth recording even when the seed's own standing is unstated.
+func composeSeedEvidence(provenance domainProvenance, candidate permutationCandidate) []plugins.Confidence {
+	var confidences []plugins.Confidence
+
+	for _, seed := range candidate.seeds {
+		confidences = append(confidences,
+			plugins.Compose(provenance.find(seed), confPermutationResolvedNonWildcard,
+				func(upstream *plugins.Finding) string {
+					if upstream == nil {
+						return describePermutation(seed, candidate.fqdn, "")
+					}
+					return describePermutation(seed, candidate.fqdn, upstream.Source)
+				})...)
+	}
+
+	return confidences
+}
+
+// describePermutation explains one generated name: what it was derived from, who
+// observed that seed, and what happened when the guess was resolved.
+func describePermutation(seed, fqdn, seedSource string) string {
+	origin := fmt.Sprintf("Permutation of seed %q", seed)
+	if seedSource != "" {
+		origin = fmt.Sprintf("Permutation of seed %q, originally observed by %s,", seed, seedSource)
+	}
+
+	return fmt.Sprintf("%s produced %q, which resolved in DNS and did not match wildcard DNS",
+		origin, fqdn)
 }
 
 // dashConcat generates label-word and word-label variations for each label.

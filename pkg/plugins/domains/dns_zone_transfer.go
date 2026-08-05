@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 
 	"github.com/miekg/dns"
@@ -52,8 +53,11 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 		}
 	}
 
-	seen := make(map[string]bool)
-	var findings []plugins.Finding
+	// Group by hostname across nameservers. A zone's servers all serve the same
+	// zone, so a record returned by three of them was disclosed three times, not
+	// corroborated three times — one entry, naming every server that served it.
+	var order []string
+	servers := make(map[string][]string)
 
 	for _, ns := range nameservers {
 		records, err := attemptAXFR(ctx, domain, ns)
@@ -62,29 +66,83 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 			continue
 		}
 
+		seenHere := make(map[string]bool)
 		for _, hostname := range records {
 			hostname = normalizeDomain(hostname)
 
-			// Skip the base domain itself, empty, and already-seen
-			if hostname == "" || hostname == domain || seen[hostname] {
+			// Skip the base domain itself and empties; a hostname repeated
+			// within one transfer (an A and an MX for the same name) is one
+			// disclosure by one server.
+			if hostname == "" || hostname == domain || seenHere[hostname] {
 				continue
 			}
-			seen[hostname] = true
+			seenHere[hostname] = true
 
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingDomain,
-				Value:  hostname,
-				Source: "dns-zone-transfer",
-				Data: map[string]any{
-					"method":     "axfr",
-					"nameserver": ns,
-					"domain":     input.Domain,
-				},
-			})
+			if _, ok := servers[hostname]; !ok {
+				order = append(order, hostname)
+			}
+			servers[hostname] = append(servers[hostname], ns)
 		}
 	}
 
+	findings := make([]plugins.Finding, 0, len(order))
+	for _, hostname := range order {
+		responders := servers[hostname]
+		findings = append(findings, plugins.Finding{
+			Type:   plugins.FindingDomain,
+			Value:  hostname,
+			Source: "dns-zone-transfer",
+			Confidences: []plugins.Confidence{{
+				Score:         confAXFRRecord,
+				Justification: describeAXFRDisclosure(hostname, domain, responders),
+			}},
+			Data: map[string]any{
+				"method":      "axfr",
+				"nameserver":  responders[0],
+				"nameservers": strings.Join(responders, ","),
+				"domain":      input.Domain,
+			},
+		})
+	}
+
 	return findings, nil
+}
+
+// confAXFRRecord is the evidence weight of a hostname read out of a successful
+// zone transfer.
+//
+// It is the strongest domain evidence in the pipeline. The record came from the
+// zone's own authoritative server, which is the definitive statement of what the
+// zone contains — not a third-party index, not an inference from a certificate,
+// and not a guess that happened to resolve. It stays below certainty for the
+// same reason DNS resolution does: a zone can hold records pointing at
+// infrastructure the target does not operate.
+const confAXFRRecord = 0.90
+
+// describeAXFRDisclosure explains one hostname, naming every nameserver that
+// served it so a reviewer knows which servers are misconfigured.
+func describeAXFRDisclosure(hostname, domain string, nameservers []string) string {
+	named := make([]string, 0, len(nameservers))
+	for _, ns := range nameservers {
+		named = append(named, fmt.Sprintf("%q", stripDNSPort(ns)))
+	}
+
+	noun := "nameserver"
+	if len(named) > 1 {
+		noun = "nameservers"
+	}
+
+	return fmt.Sprintf("Authoritative %s %s included %q in a successful AXFR response for %q",
+		noun, plugins.JoinPhrase(named), hostname, domain)
+}
+
+// stripDNSPort renders a nameserver the way a reader knows it. Transfers are
+// addressed as host:port; the port is transport detail, not identity.
+func stripDNSPort(nameserver string) string {
+	if host, _, err := net.SplitHostPort(nameserver); err == nil {
+		return host
+	}
+	return nameserver
 }
 
 const defaultDNSResolver = "8.8.8.8:53"

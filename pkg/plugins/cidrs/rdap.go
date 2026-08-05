@@ -63,11 +63,19 @@ func (p *rdapPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 			// Log but don't fail all handles
 			continue
 		}
+		// The handle's provenance is the same for every netblock it expands to,
+		// so look it up once per handle rather than once per CIDR.
+		provenance := handleProvenance(input, handle, p.cfg.registry)
 		for _, cidr := range cidrs {
 			findings = append(findings, plugins.Finding{
 				Type:   plugins.FindingCIDR,
 				Value:  cidr,
 				Source: p.Name(),
+				Confidences: composeHandleEvidence(provenance, registryMapping{
+					registry: p.cfg.registry,
+					handle:   handle,
+					cidr:     cidr,
+				}),
 				Data: map[string]any{
 					"handle":   handle,
 					"org":      input.OrgName,

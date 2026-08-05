@@ -135,10 +135,29 @@ func TestShodanPlugin_BuildQueries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := p.buildQueries(tt.input)
+			var got []string
+			for _, q := range p.buildQueries(tt.input) {
+				got = append(got, q.query)
+			}
 			assert.Equal(t, tt.expected, got)
 		})
 	}
+}
+
+// TestShodanPlugin_BuildQueries_ClassifiesEachQuery pins the kind alongside the
+// query string, because the kind is what the evidence weight is read from.
+func TestShodanPlugin_BuildQueries_ClassifiesEachQuery(t *testing.T) {
+	p := &ShodanPlugin{}
+
+	queries := p.buildQueries(plugins.Input{
+		OrgName: "Acme Corp", ASN: "AS64500", CIDR: "203.0.113.0/24", Domain: "acme.com",
+	})
+
+	require.Len(t, queries, 4)
+	assert.Equal(t, shodanQuery{kind: shodanQueryOrg, value: "Acme Corp", query: `org:"Acme Corp"`}, queries[0])
+	assert.Equal(t, shodanQuery{kind: shodanQueryASN, value: "AS64500", query: "asn:AS64500"}, queries[1])
+	assert.Equal(t, shodanQuery{kind: shodanQueryCIDR, value: "203.0.113.0/24", query: "net:203.0.113.0/24"}, queries[2])
+	assert.Equal(t, shodanQuery{kind: shodanQueryHostname, value: "acme.com", query: "hostname:acme.com"}, queries[3])
 }
 
 func TestShodanPlugin_Run(t *testing.T) {

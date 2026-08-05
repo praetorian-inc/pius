@@ -76,26 +76,107 @@ func (p *ReverseRIRPlugin) Run(ctx context.Context, input plugins.Input) ([]plug
 	return findings, nil
 }
 
-// queryARIN queries multiple ARIN entity types with handle deduplication
-func (p *ReverseRIRPlugin) queryARIN(ctx context.Context, org string) ([]plugins.Finding, error) {
-	seen := make(map[string]bool)
-	var findings []plugins.Finding
+// confReverseRIROrgSearch is the evidence weight of an RIR name search
+// returning a handle.
+//
+// It is deliberately review-level. The query is a substring or fuzzy match on a
+// company name against registry records, so "Acme" matches Acme Corporation and
+// Acme Plumbing of Ohio alike, and the registry offers nothing to tell them
+// apart. What the handle then resolves to is a separate, deterministic step —
+// see confRegistryResolution — and this score is the ceiling on that chain.
+const confReverseRIROrgSearch = 0.45
 
-	// Query all entity types, deduplicating by handle value
+// arinEntityLabels renders ARIN's REST path segments as the thing a reader
+// recognizes. The entity type is the one piece of an ARIN match that says how
+// the name was found, so it survives into both Data and the justification.
+var arinEntityLabels = map[string]string{
+	"orgs":      "organization",
+	"customers": "customer",
+	"nets":      "network",
+	"asns":      "ASN",
+}
+
+// arinMatch accumulates every ARIN entity search that returned one handle.
+//
+// The four searches are not independent evidence of ownership: they run the same
+// name pattern against four record types in one registry, so a handle returned
+// by both the org and the net search was matched by the same reasoning twice.
+// They are recorded together in a single entry rather than summed — but which
+// ones matched is kept, because "the org record is named Acme" and "a netblock
+// record is named Acme" are different facts to a reviewer.
+type arinMatch struct {
+	handle   string
+	name     string
+	entities []string
+}
+
+// queryARIN queries every ARIN entity type and merges the results by handle.
+func (p *ReverseRIRPlugin) queryARIN(ctx context.Context, org string) ([]plugins.Finding, error) {
+	var order []string
+	matches := make(map[string]*arinMatch)
+
 	for _, entity := range []string{"orgs", "customers", "nets", "asns"} {
-		for _, f := range p.queryArinEntity(ctx, entity, org) {
-			if !seen[f.Value] {
-				seen[f.Value] = true
-				findings = append(findings, f)
+		for _, ref := range p.queryArinEntity(ctx, entity, org) {
+			match, ok := matches[ref.Handle]
+			if !ok {
+				match = &arinMatch{handle: ref.Handle}
+				matches[ref.Handle] = match
+				order = append(order, ref.Handle)
+			}
+			match.entities = append(match.entities, entity)
+			if match.name == "" {
+				match.name = ref.Name
 			}
 		}
 	}
 
+	findings := make([]plugins.Finding, 0, len(order))
+	for _, handle := range order {
+		findings = append(findings, matches[handle].finding(org))
+	}
 	return findings, nil
 }
 
+// finding builds the handle finding for one ARIN match, evidence included.
+func (m *arinMatch) finding(org string) plugins.Finding {
+	labels := make([]string, 0, len(m.entities))
+	for _, entity := range m.entities {
+		labels = append(labels, arinEntityLabels[entity])
+	}
+
+	noun := "search"
+	if len(labels) > 1 {
+		noun = "searches"
+	}
+	justification := fmt.Sprintf("ARIN %s %s for %q returned handle %q",
+		plugins.JoinPhrase(labels), noun, org, m.handle)
+	if m.name != "" {
+		justification += fmt.Sprintf(" (%q)", m.name)
+	}
+
+	data := map[string]any{
+		"registry":     "arin",
+		"org":          org,
+		"entity_types": strings.Join(m.entities, ","),
+	}
+	if m.name != "" {
+		data["name"] = m.name
+	}
+
+	return plugins.Finding{
+		Type:   plugins.FindingCIDRHandle,
+		Value:  m.handle,
+		Source: "reverse-rir",
+		Confidences: []plugins.Confidence{{
+			Score:         confReverseRIROrgSearch,
+			Justification: justification,
+		}},
+		Data: data,
+	}
+}
+
 // queryArinEntity queries a specific ARIN entity type
-func (p *ReverseRIRPlugin) queryArinEntity(ctx context.Context, entity, org string) []plugins.Finding {
+func (p *ReverseRIRPlugin) queryArinEntity(ctx context.Context, entity, org string) []ArinRef {
 	apiURL := fmt.Sprintf("https://whois.arin.net/rest/%s;name=*%s*", entity, url.PathEscape(org))
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
@@ -106,65 +187,42 @@ func (p *ReverseRIRPlugin) queryArinEntity(ctx context.Context, entity, org stri
 	}
 
 	// Parse response based on entity type
-	var handles []string
+	var refs ArinRefs
 	switch entity {
 	case "orgs":
 		var resp ArinOrgsResponse
 		if err := json.Unmarshal(body, &resp); err != nil {
 			return nil
 		}
-		for _, ref := range resp.Orgs.OrgRef {
-			if ref.Handle != "" {
-				handles = append(handles, ref.Handle)
-			}
-		}
+		refs = resp.Orgs.OrgRef
 	case "customers":
 		var resp ArinCustomersResponse
 		if err := json.Unmarshal(body, &resp); err != nil {
 			return nil
 		}
-		for _, ref := range resp.Customers.CustomerRef {
-			if ref.Handle != "" {
-				handles = append(handles, ref.Handle)
-			}
-		}
+		refs = resp.Customers.CustomerRef
 	case "nets":
 		var resp ArinNetsResponse
 		if err := json.Unmarshal(body, &resp); err != nil {
 			return nil
 		}
-		for _, ref := range resp.Nets.NetRef {
-			if ref.Handle != "" {
-				handles = append(handles, ref.Handle)
-			}
-		}
+		refs = resp.Nets.NetRef
 	case "asns":
 		var resp ArinAsnsResponse
 		if err := json.Unmarshal(body, &resp); err != nil {
 			return nil
 		}
-		for _, ref := range resp.Asns.AsnRef {
-			if ref.Handle != "" {
-				handles = append(handles, ref.Handle)
-			}
+		refs = resp.Asns.AsnRef
+	}
+
+	result := make([]ArinRef, 0, len(refs))
+	for _, ref := range refs {
+		if ref.Handle != "" {
+			result = append(result, ref)
 		}
 	}
 
-	// Convert to findings
-	var findings []plugins.Finding
-	for _, handle := range handles {
-		findings = append(findings, plugins.Finding{
-			Type:   plugins.FindingCIDRHandle,
-			Value:  handle,
-			Source: "reverse-rir",
-			Data: map[string]any{
-				"registry": "arin",
-				"org":      org,
-			},
-		})
-	}
-
-	return findings
+	return result
 }
 
 // queryRIPE queries RIPE search API
@@ -197,9 +255,15 @@ func (p *ReverseRIRPlugin) queryRIPE(ctx context.Context, org string) ([]plugins
 				Type:   plugins.FindingCIDRHandle,
 				Value:  value,
 				Source: "reverse-rir",
+				Confidences: []plugins.Confidence{{
+					Score: confReverseRIROrgSearch,
+					Justification: fmt.Sprintf("RIPE organisation search for %q returned handle %q",
+						org, value),
+				}},
 				Data: map[string]any{
-					"registry": "ripe",
-					"org":      org,
+					"registry":   "ripe",
+					"org":        org,
+					"query_type": "organisation",
 				},
 			})
 		}
@@ -236,9 +300,15 @@ func (p *ReverseRIRPlugin) queryAPNIC(ctx context.Context, org string) ([]plugin
 			Type:   plugins.FindingCIDRHandle,
 			Value:  item.PrimaryKey,
 			Source: "reverse-rir",
+			Confidences: []plugins.Confidence{{
+				Score: confReverseRIROrgSearch,
+				Justification: fmt.Sprintf("APNIC organisation search for %q returned handle %q",
+					org, item.PrimaryKey),
+			}},
 			Data: map[string]any{
-				"registry": "apnic",
-				"org":      org,
+				"registry":   "apnic",
+				"org":        org,
+				"query_type": "organisation",
 			},
 		})
 	}
@@ -277,9 +347,15 @@ func (p *ReverseRIRPlugin) queryAFRINIC(ctx context.Context, org string) ([]plug
 			Type:   plugins.FindingCIDRHandle,
 			Value:  handle,
 			Source: "reverse-rir",
+			Confidences: []plugins.Confidence{{
+				Score: confReverseRIROrgSearch,
+				Justification: fmt.Sprintf("AFRINIC entity search for %q returned organisation handle %q",
+					org, handle),
+			}},
 			Data: map[string]any{
-				"registry": "afrinic",
-				"org":      org,
+				"registry":   "afrinic",
+				"org":        org,
+				"query_type": "entity",
 			},
 		})
 	}
@@ -316,9 +392,15 @@ func (p *ReverseRIRPlugin) queryLACNIC(ctx context.Context, org string) ([]plugi
 			Type:   plugins.FindingCIDRHandle,
 			Value:  entity.Handle,
 			Source: "reverse-rir",
+			Confidences: []plugins.Confidence{{
+				Score: confReverseRIROrgSearch,
+				Justification: fmt.Sprintf("LACNIC entity search for %q returned handle %q",
+					org, entity.Handle),
+			}},
 			Data: map[string]any{
-				"registry": "lacnic",
-				"org":      org,
+				"registry":   "lacnic",
+				"org":        org,
+				"query_type": "entity",
 			},
 		})
 	}

@@ -56,6 +56,22 @@ type Input struct {
 	// Meta["apnic_handles"], Meta["afrinic_handles"] with comma-separated handles.
 	// Phase 2 plugins read from Meta to know which handles to look up.
 	Meta map[string]string
+
+	// UpstreamFindings carries the complete findings that earlier pipeline
+	// phases contributed to this input, so a downstream plugin can attribute
+	// what it derives from them.
+	//
+	// Meta flattens each value to a comma-separated string, which preserves the
+	// value and discards everything about where it came from — the source
+	// plugin, its evidence, its metadata. A plugin that resolves a handle to a
+	// CIDR or permutes a seed domain is extending an upstream observation, not
+	// making an independent one, and it cannot say so from Meta alone.
+	//
+	// Meta keeps its value-only representation: every existing reader stays
+	// correct, and the two views are enriched together from the same findings.
+	// Confidence entries travel here as they already are — no conversion, and
+	// never encoded into Meta.
+	UpstreamFindings []Finding
 }
 
 // Confidence is a single piece of scored, explained evidence supporting a

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
+	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -108,32 +110,82 @@ func (p *URLScanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 		return nil, nil
 	}
 
-	seen := make(map[string]bool)
-	var findings []plugins.Finding
+	// Aggregate by host, recording which fields carried it.
+	//
+	// Neither axis of repetition is corroboration. The same domain in both
+	// page.domain and task.domain of one scan is one scan: urlscan submitted a
+	// URL and recorded where it landed. And a hundred scans of the same host are
+	// a hundred people pasting the same link — popularity, not ownership. Which
+	// fields saw it does go in the justification, because "we submitted this
+	// URL" and "the page we landed on served this domain" are different
+	// observations to a reader.
+	base := normalizeDomain(input.Domain)
+
+	var order []string
+	fields := make(map[string][]string)
 
 	for _, result := range response.Results {
-		for _, raw := range []string{result.Page.Domain, result.Task.Domain} {
-			host := normalizeDomain(raw)
-			if host == "" {
+		for _, observed := range []struct {
+			field string
+			value string
+		}{
+			{"page", result.Page.Domain},
+			{"task", result.Task.Domain},
+		} {
+			host := normalizeDomain(observed.value)
+			if host == "" || !matchesDomain(host, base) {
 				continue
 			}
-			if !matchesDomain(host, input.Domain) {
+
+			seenIn, seen := fields[host]
+			if !seen {
+				order = append(order, host)
+			}
+			if slices.Contains(seenIn, observed.field) {
 				continue
 			}
-			if seen[host] {
-				continue
-			}
-			seen[host] = true
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingDomain,
-				Value:  host,
-				Source: p.Name(),
-				Data: map[string]any{
-					"base_domain": input.Domain,
-				},
-			})
+			fields[host] = append(seenIn, observed.field)
 		}
 	}
 
+	findings := make([]plugins.Finding, 0, len(order))
+	for _, host := range order {
+		observedIn := fields[host]
+		findings = append(findings, plugins.Finding{
+			Type:   plugins.FindingDomain,
+			Value:  host,
+			Source: p.Name(),
+			Confidences: []plugins.Confidence{{
+				Score:         confURLScanObservation,
+				Justification: describeURLScanObservation(host, base, observedIn),
+			}},
+			Data: map[string]any{
+				"base_domain": input.Domain,
+				"fields":      strings.Join(observedIn, ","),
+			},
+		})
+	}
+
 	return findings, nil
+}
+
+// confURLScanObservation is the evidence weight of a host in urlscan's public
+// scan history beneath a known domain.
+//
+// The zone membership is what carries it: the name sits under a domain already
+// tied to the target. What holds it below the clean threshold is that urlscan
+// records what somebody submitted, whenever they submitted it — the scan may be
+// years old, and the submitter may have been a stranger scanning a link, so the
+// host is not established to be live or to be the target's to operate.
+const confURLScanObservation = 0.60
+
+// describeURLScanObservation explains one host, naming the fields it was seen in.
+func describeURLScanObservation(host, base string, fields []string) string {
+	described := make([]string, 0, len(fields))
+	for _, field := range fields {
+		described = append(described, "a "+field+" domain")
+	}
+
+	return fmt.Sprintf("URLScan public scan history observed %q as %s beneath %q",
+		host, plugins.JoinPhrase(described), base)
 }

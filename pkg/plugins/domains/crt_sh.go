@@ -44,10 +44,34 @@ func (p *CRTShPlugin) Accepts(input plugins.Input) bool {
 	return isDomainName(input.Domain) || input.OrgName != ""
 }
 
+// Evidence weights for Certificate Transparency results, by what the query
+// establishes about the names it returns.
+//
+// A domain query returns names on certificates issued for that domain, so a
+// result beneath the queried domain is a strong signal: somebody who controlled
+// the zone proved that control to a CA. It is not certainty — CDN and SaaS
+// providers hold certificates for customer subdomains they operate rather than
+// own.
+//
+// A name OUTSIDE the queried domain is a different claim. It shares a
+// certificate with the target's name, which happens for genuine sibling brands
+// and equally for unrelated tenants on shared hosting whose SANs a provider
+// bundled together.
+//
+// An organization-name query is the weakest: it matches the certificate's
+// subject organization string, and that is a free-text field a CA validated at
+// issuance against a company name hundreds of unrelated entities can resemble.
+const (
+	confCTBeneathKnownDomain = 0.70
+	confCTSharedCertificate  = 0.50
+	confCTOrganizationQuery  = 0.45
+)
+
 func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	// Search by domain if available, otherwise by org name
 	query := input.Domain
-	if query == "" {
+	byDomain := query != ""
+	if !byDomain {
 		query = input.OrgName
 	}
 
@@ -57,10 +81,7 @@ func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 		return nil, nil // Rate limit or network error — not critical
 	}
 
-	// Parse crt.sh response
-	var entries []struct {
-		NameValue string `json:"name_value"`
-	}
+	var entries []crtShEntry
 	if err := json.Unmarshal(body, &entries); err != nil {
 		return nil, nil
 	}
@@ -71,26 +92,66 @@ func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	for _, entry := range entries {
 		// name_value can contain multiple domains separated by newlines
 		for _, domain := range strings.Split(entry.NameValue, "\n") {
-			domain = strings.TrimSpace(domain)
-			domain = strings.ToLower(domain)
-			domain = strings.TrimSuffix(domain, ".")
+			domain = normalizeDomain(domain)
 			// Skip wildcards and empty
 			if domain == "" || strings.HasPrefix(domain, "*") {
 				continue
 			}
-			if !seen[domain] {
-				seen[domain] = true
-				findings = append(findings, plugins.Finding{
-					Type:   plugins.FindingDomain,
-					Value:  domain,
-					Source: p.Name(),
-					Data: map[string]any{
-						"org":   input.OrgName,
-						"query": query,
-					},
-				})
+			if seen[domain] {
+				continue
 			}
+			seen[domain] = true
+
+			data := map[string]any{
+				"org":   input.OrgName,
+				"query": query,
+				"field": "name_value",
+			}
+			if entry.ID != 0 {
+				data["crtsh_id"] = entry.ID
+			}
+
+			findings = append(findings, plugins.Finding{
+				Type:        plugins.FindingDomain,
+				Value:       domain,
+				Source:      p.Name(),
+				Confidences: []plugins.Confidence{crtShEvidence(domain, query, byDomain)},
+				Data:        data,
+			})
 		}
 	}
 	return findings, nil
+}
+
+// crtShEvidence scores one CT result by which query returned it and, for a
+// domain query, whether the name actually sits beneath the domain asked about.
+func crtShEvidence(domain, query string, byDomain bool) plugins.Confidence {
+	if !byDomain {
+		return plugins.Confidence{
+			Score: confCTOrganizationQuery,
+			Justification: fmt.Sprintf("Certificate Transparency logs contain %q in results for organization query %q",
+				domain, query),
+		}
+	}
+
+	if matchesDomain(domain, query) {
+		return plugins.Confidence{
+			Score: confCTBeneathKnownDomain,
+			Justification: fmt.Sprintf("Certificate Transparency logs contain %q in results for known domain %q",
+				domain, query),
+		}
+	}
+
+	return plugins.Confidence{
+		Score: confCTSharedCertificate,
+		Justification: fmt.Sprintf("Certificate Transparency logs list %q on a certificate returned for known domain %q",
+			domain, query),
+	}
+}
+
+// crtShEntry is one crt.sh result. The plugin reads names out of name_value and
+// keeps the log entry id so a reviewer can pull the same certificate back up.
+type crtShEntry struct {
+	NameValue string `json:"name_value"`
+	ID        int64  `json:"id"`
 }

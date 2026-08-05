@@ -190,17 +190,64 @@ func TestNumberSuffix_MultiLabel(t *testing.T) {
 
 // ── generateCandidates ───────────────────────────────────────────────────────
 
+// candidateNames flattens generated candidates to their names, for assertions
+// that do not care about seed lineage.
+func candidateNames(candidates []permutationCandidate) []string {
+	names := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		names = append(names, c.fqdn)
+	}
+	return names
+}
+
 func TestGenerateCandidates_Dedup(t *testing.T) {
 	p := &DNSPermutationPlugin{wordlist: []string{"dev"}}
 	seeds := []string{"api.example.com"}
 	candidates := p.generateCandidates(seeds, "example.com")
 
 	// Should have dash, direct, insert, and number strategies combined
-	assert.NotEmpty(t, candidates)
-	assert.Contains(t, candidates, "api-dev.example.com")
-	assert.Contains(t, candidates, "apidev.example.com")
-	assert.Contains(t, candidates, "dev.api.example.com")
-	assert.Contains(t, candidates, "api-0.example.com")
+	names := candidateNames(candidates)
+	assert.NotEmpty(t, names)
+	assert.Contains(t, names, "api-dev.example.com")
+	assert.Contains(t, names, "apidev.example.com")
+	assert.Contains(t, names, "dev.api.example.com")
+	assert.Contains(t, names, "api-0.example.com")
+
+	// Every candidate names the seed it was derived from.
+	for _, c := range candidates {
+		assert.Equal(t, []string{"api.example.com"}, c.seeds, "candidate %q", c.fqdn)
+	}
+}
+
+// TestGenerateCandidates_ConvergentSeedsKeepBothLineages proves two seeds
+// mutating into the same name are recorded as two derivations, not one.
+func TestGenerateCandidates_ConvergentSeedsKeepBothLineages(t *testing.T) {
+	// Word insertion reaches "dev.api.example.com" from both directions:
+	// inserting "dev" into the "api" seed, and inserting "api" into the "dev"
+	// seed.
+	p := &DNSPermutationPlugin{wordlist: []string{"api", "dev"}}
+	candidates := p.generateCandidates(
+		[]string{"api.example.com", "dev.example.com"}, "example.com")
+
+	byName := make(map[string][]string)
+	for _, c := range candidates {
+		byName[c.fqdn] = c.seeds
+	}
+
+	seeds := byName["dev.api.example.com"]
+	require.Len(t, seeds, 2, "both derivations must be recorded")
+	assert.ElementsMatch(t, []string{"api.example.com", "dev.example.com"}, seeds)
+}
+
+// TestGenerateCandidates_ExcludesSeeds keeps the plugin from re-emitting a
+// domain another plugin already found and scored.
+func TestGenerateCandidates_ExcludesSeeds(t *testing.T) {
+	p := &DNSPermutationPlugin{wordlist: []string{"dev"}}
+	candidates := p.generateCandidates(
+		[]string{"api.example.com", "dev.api.example.com"}, "example.com")
+
+	assert.NotContains(t, candidateNames(candidates), "dev.api.example.com",
+		"a permutation that reproduces a known seed adds nothing")
 }
 
 func TestGenerateCandidates_SkipsBaseOnly(t *testing.T) {
@@ -208,7 +255,7 @@ func TestGenerateCandidates_SkipsBaseOnly(t *testing.T) {
 	// example.com has no subdomain labels relative to base
 	seeds := []string{"example.com"}
 	candidates := p.generateCandidates(seeds, "example.com")
-	assert.Empty(t, candidates)
+	assert.Empty(t, candidateNames(candidates))
 }
 
 // ── isWildcardMatch ──────────────────────────────────────────────────────────

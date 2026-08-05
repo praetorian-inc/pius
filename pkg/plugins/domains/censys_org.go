@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/cache"
@@ -353,9 +354,7 @@ func buildCensysQuery(orgName, domain string) string {
 // name (other than the searched orgName itself) that appears across 5+ distinct
 // host IPs.
 func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit) []plugins.Finding {
-	seenDomains := make(map[string]bool)
-	seenCIDRs := make(map[string]bool)
-	var findings []plugins.Finding
+	values := newCensysAggregator()
 
 	// orgHosts tracks distinct host IPs per org name (lowercased key for
 	// case-insensitive deduplication). orgDisplay maps the lowercased key to
@@ -375,11 +374,11 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 				continue
 			}
 			for _, name := range svc.Cert.Names {
-				p.emitDomain(&findings, seenDomains, orgName, name, "certificate_names")
+				p.emitDomain(values, orgName, name, censysFieldCertificateNames)
 			}
 			if svc.Cert.Parsed != nil && svc.Cert.Parsed.Subject != nil {
 				for _, cn := range svc.Cert.Parsed.Subject.CommonName {
-					p.emitDomain(&findings, seenDomains, orgName, cn, "subject_cn")
+					p.emitDomain(values, orgName, cn, censysFieldSubjectCN)
 				}
 
 				// Collect org names from TLS cert Subject Organization fields.
@@ -406,22 +405,24 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 		// Domains from reverse DNS
 		if res.DNS != nil && res.DNS.ReverseDNS != nil {
 			for _, name := range res.DNS.ReverseDNS.Names {
-				p.emitDomain(&findings, seenDomains, orgName, name, "reverse_dns")
+				p.emitDomain(values, orgName, name, censysFieldReverseDNS)
 			}
 		}
 
 		// CIDRs from WHOIS network allocations
 		if res.Whois != nil && res.Whois.Network != nil {
 			for _, cidr := range res.Whois.Network.CIDRs {
-				p.emitCIDR(&findings, seenCIDRs, orgName, cidr, "whois_network")
+				p.emitCIDR(values, orgName, cidr, censysFieldWhoisNetwork)
 			}
 		}
 
 		// CIDRs from BGP prefix announcements
 		if res.AutonomousSystem != nil && res.AutonomousSystem.BGPPrefix != "" {
-			p.emitCIDR(&findings, seenCIDRs, orgName, res.AutonomousSystem.BGPPrefix, "bgp_prefix")
+			p.emitCIDR(values, orgName, res.AutonomousSystem.BGPPrefix, censysFieldBGPPrefix)
 		}
 	}
+
+	findings := values.findings()
 
 	// Emit preseed for any org name that appears across 5+ distinct hosts.
 	// orgKey is the lowercase-normalized key; orgDisplay[orgKey] is the original casing.
@@ -453,40 +454,163 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 	return findings
 }
 
-// emitDomain normalizes and deduplicates a domain before appending to findings.
-func (p *CensysOrgPlugin) emitDomain(findings *[]plugins.Finding, seen map[string]bool, orgName, raw, field string) {
-	domain := normalizeCensysDomain(raw)
-	if domain == "" || seen[domain] {
-		return
-	}
-	seen[domain] = true
-	*findings = append(*findings, plugins.Finding{
-		Type:   plugins.FindingDomain,
-		Value:  domain,
-		Source: "censys-org",
-		Data: map[string]any{
-			"org":   orgName,
-			"field": field,
-		},
-	})
+// Censys host fields this plugin reads values out of. The field is retained per
+// value because it is what the evidence is worth: a name on a certificate the
+// host actually serves and a PTR record its provider set are different claims.
+const (
+	censysFieldCertificateNames = "certificate_names"
+	censysFieldSubjectCN        = "subject_cn"
+	censysFieldReverseDNS       = "reverse_dns"
+	censysFieldWhoisNetwork     = "whois_network"
+	censysFieldBGPPrefix        = "bgp_prefix"
+)
+
+// Evidence weights per Censys field.
+//
+// Every one of these is review-level, and that is structural rather than
+// timid: the hosts came back from a search on the organization NAME in
+// certificate subjects, so each finding inherits a name match as its weakest
+// link no matter how solid the field itself is. infraOrgDenyList removes the
+// providers it knows; a certificate naming an unlisted hosting company still
+// gets through.
+//
+// Within that band the fields still differ. A certificate name and a subject CN
+// are things the host presented as itself. A PTR record is set by whoever
+// controls the reverse zone — very often the hosting provider, not the tenant.
+// The two CIDR fields are the broadest claims of all: a WHOIS network can be a
+// provider's whole allocation and a BGP prefix broader still, so one matched
+// host inside them says the least about the range as a whole.
+const (
+	confCensysCertificateName = 0.50
+	confCensysSubjectCN       = 0.50
+	confCensysReverseDNS      = 0.40
+	confCensysWhoisNetwork    = 0.45
+	confCensysBGPPrefix       = 0.40
+)
+
+// censysFieldWeight is one field's score and the clause that describes it. The
+// clause carries its own preposition and ends where the shared tail begins.
+type censysFieldWeight struct {
+	score  float64
+	phrase string
 }
 
-// emitCIDR deduplicates a CIDR before appending to findings.
-func (p *CensysOrgPlugin) emitCIDR(findings *[]plugins.Finding, seen map[string]bool, orgName, cidr, field string) {
-	cidr = strings.TrimSpace(cidr)
-	if cidr == "" || seen[cidr] {
+// censysFieldWeights pairs each field with its weight. Every justification ends
+// in the same clause — the host came back from the organization query — because
+// that shared weakest link is why they all sit in the review band.
+var censysFieldWeights = map[string]censysFieldWeight{
+	censysFieldCertificateNames: {confCensysCertificateName, "observed %q in a certificate name on"},
+	censysFieldSubjectCN:        {confCensysSubjectCN, "observed %q as a certificate subject common name on"},
+	censysFieldReverseDNS:       {confCensysReverseDNS, "reported %q as the reverse DNS name of"},
+	censysFieldWhoisNetwork:     {confCensysWhoisNetwork, "reported %q as the WHOIS network of"},
+	censysFieldBGPPrefix:        {confCensysBGPPrefix, "reported %q as the announced BGP prefix of"},
+}
+
+// censysFieldEvidence scores one value by the field that carried it.
+//
+// An unknown field is scored at the weakest weight rather than silently
+// inheriting another field's: a new field added to the extractor without a
+// weight should read as the least it could be worth, not as a certificate name.
+func censysFieldEvidence(orgName, value, field string) plugins.Confidence {
+	weight, ok := censysFieldWeights[field]
+	if !ok {
+		weight = censysFieldWeight{confCensysBGPPrefix, "associated %q with"}
+	}
+
+	return plugins.Confidence{
+		Score: weight.score,
+		Justification: fmt.Sprintf("Censys "+weight.phrase+" a host returned by the organization query for %q",
+			value, orgName),
+	}
+}
+
+// censysKey identifies one aggregated value.
+type censysKey struct {
+	typ   plugins.FindingType
+	value string
+}
+
+// censysAggregator collects findings by value, keeping ONE evidence entry per
+// distinct field that carried it.
+//
+// The boolean seen-set it replaces conflated two different repetitions. A domain
+// appearing in the certificate names of forty hosts is one field saying one
+// thing forty times — no more evidence than the first. But a domain that is both
+// a certificate name and the host's reverse DNS was established two ways, and
+// keeping only whichever came first threw the second away silently.
+type censysAggregator struct {
+	order []censysKey
+	byKey map[censysKey]*censysValue
+}
+
+// censysValue is one aggregated value and the fields that carried it. The field
+// list is both the dedup set and what Data reports — there are at most five, so
+// a scan beats a second map keyed by the value all over again.
+type censysValue struct {
+	finding plugins.Finding
+	fields  []string
+}
+
+func newCensysAggregator() *censysAggregator {
+	return &censysAggregator{byKey: make(map[censysKey]*censysValue)}
+}
+
+// observe records that field carried value, adding evidence the first time each
+// distinct field does.
+func (a *censysAggregator) observe(typ plugins.FindingType, value, orgName, field string) {
+	key := censysKey{typ, value}
+
+	entry, ok := a.byKey[key]
+	if !ok {
+		entry = &censysValue{finding: plugins.Finding{
+			Type:   typ,
+			Value:  value,
+			Source: "censys-org",
+			Data: map[string]any{
+				"org":   orgName,
+				"field": field,
+			},
+		}}
+		a.byKey[key] = entry
+		a.order = append(a.order, key)
+	}
+
+	if slices.Contains(entry.fields, field) {
 		return
 	}
-	seen[cidr] = true
-	*findings = append(*findings, plugins.Finding{
-		Type:   plugins.FindingCIDR,
-		Value:  cidr,
-		Source: "censys-org",
-		Data: map[string]any{
-			"org":   orgName,
-			"field": field,
-		},
-	})
+	entry.fields = append(entry.fields, field)
+
+	evidence := censysFieldEvidence(orgName, value, field)
+	plugins.AddConfidence(&entry.finding, evidence.Score, evidence.Justification)
+}
+
+// findings returns the aggregated findings in first-seen order.
+func (a *censysAggregator) findings() []plugins.Finding {
+	result := make([]plugins.Finding, 0, len(a.order))
+	for _, key := range a.order {
+		entry := a.byKey[key]
+		entry.finding.Data["fields"] = strings.Join(entry.fields, ",")
+		result = append(result, entry.finding)
+	}
+	return result
+}
+
+// emitDomain normalizes a domain and records the field that carried it.
+func (p *CensysOrgPlugin) emitDomain(values *censysAggregator, orgName, raw, field string) {
+	domain := normalizeCensysDomain(raw)
+	if domain == "" {
+		return
+	}
+	values.observe(plugins.FindingDomain, domain, orgName, field)
+}
+
+// emitCIDR records a CIDR and the field that carried it.
+func (p *CensysOrgPlugin) emitCIDR(values *censysAggregator, orgName, cidr, field string) {
+	cidr = strings.TrimSpace(cidr)
+	if cidr == "" {
+		return
+	}
+	values.observe(plugins.FindingCIDR, cidr, orgName, field)
 }
 
 // normalizeCensysDomain extends normalizeDomain with Censys-specific cleanup:

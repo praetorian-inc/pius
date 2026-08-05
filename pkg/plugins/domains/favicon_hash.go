@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/twmb/murmur3"
@@ -81,8 +82,8 @@ func (p *FaviconHashPlugin) Run(ctx context.Context, input plugins.Input) ([]plu
 		}
 	}
 
-	// Deduplicate findings by value
-	return deduplicateFindings(findings, p.Name()), nil
+	// Collapse repeats within each scanner, keep both scanners' evidence.
+	return mergeScannerFindings(findings), nil
 }
 
 // fetchFavicon downloads the favicon from the target domain.
@@ -158,38 +159,58 @@ func parseShodanResponse(body []byte, hash int32, input plugins.Input) ([]plugin
 
 	var findings []plugins.Finding
 	for _, match := range resp.Matches {
-		data := map[string]any{
-			"org":           input.OrgName,
-			"source_domain": input.Domain,
-			"favicon_hash":  hash,
-			"scanner":       "shodan",
-		}
-
-		// Emit IP as CIDR (/32)
-		if match.IPStr != "" {
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingCIDR,
-				Value:  match.IPStr + "/32",
-				Source: "favicon-hash",
-				Data:   copyData(data),
-			})
-		}
-
-		// Emit hostnames as domains
-		for _, hostname := range match.Hostnames {
-			hostname = normalizeFaviconHost(hostname)
-			if hostname == "" {
-				continue
-			}
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingDomain,
-				Value:  hostname,
-				Source: "favicon-hash",
-				Data:   copyData(data),
-			})
-		}
+		findings = appendFaviconMatch(findings, scannerShodan, match.IPStr, match.Hostnames, hash, input)
 	}
 	return findings, nil
+}
+
+// appendFaviconMatch emits the IP and hostnames of one scanner match.
+//
+// Both scanners produce the same two finding shapes from the same evidence, and
+// differ only in how their JSON is decoded — so decoding is all their parse
+// functions do, and the emit half lives here once.
+func appendFaviconMatch(findings []plugins.Finding, scanner, ip string, hostnames []string, hash int32, input plugins.Input) []plugins.Finding {
+	data := map[string]any{
+		"org":           input.OrgName,
+		"source_domain": input.Domain,
+		"favicon_hash":  hash,
+		"scanner":       scanner,
+	}
+
+	// Emit IP as CIDR (/32)
+	if ip != "" {
+		findings = append(findings, plugins.Finding{
+			Type:   plugins.FindingCIDR,
+			Value:  ip + "/32",
+			Source: "favicon-hash",
+			Confidences: []plugins.Confidence{{
+				Score:         confSharedFaviconHash,
+				Justification: describeFaviconMatch(scanner, "IP "+ip, hash, input.Domain),
+			}},
+			Data: copyData(data),
+		})
+	}
+
+	// Emit hostnames as domains
+	for _, hostname := range hostnames {
+		hostname = normalizeFaviconHost(hostname)
+		if hostname == "" {
+			continue
+		}
+		findings = append(findings, plugins.Finding{
+			Type:   plugins.FindingDomain,
+			Value:  hostname,
+			Source: "favicon-hash",
+			Confidences: []plugins.Confidence{{
+				Score: confSharedFaviconHash,
+				Justification: describeFaviconMatch(scanner,
+					fmt.Sprintf("host %q", hostname), hash, input.Domain),
+			}},
+			Data: copyData(data),
+		})
+	}
+
+	return findings
 }
 
 // queryFOFA queries FOFA for hosts matching the favicon hash.
@@ -232,31 +253,7 @@ func parseFOFAResponse(body []byte, hash int32, input plugins.Input) ([]plugins.
 			continue
 		}
 		host, ip := result[0], result[1]
-		data := map[string]any{
-			"org":           input.OrgName,
-			"source_domain": input.Domain,
-			"favicon_hash":  hash,
-			"scanner":       "fofa",
-		}
-
-		if ip != "" {
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingCIDR,
-				Value:  ip + "/32",
-				Source: "favicon-hash",
-				Data:   copyData(data),
-			})
-		}
-
-		host = normalizeFaviconHost(host)
-		if host != "" {
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingDomain,
-				Value:  host,
-				Source: "favicon-hash",
-				Data:   copyData(data),
-			})
-		}
+		findings = appendFaviconMatch(findings, scannerFOFA, ip, []string{host}, hash, input)
 	}
 	return findings, nil
 }
@@ -270,20 +267,109 @@ func normalizeFaviconHost(d string) string {
 	return normalizeDomain(d)
 }
 
-// deduplicateFindings removes duplicate findings by type+value, keeping the first.
-func deduplicateFindings(findings []plugins.Finding, source string) []plugins.Finding {
+// Scanners this plugin asks about a favicon hash. The identifiers are the stable
+// machine-readable form that Data and the merge key use; scannerDisplayName
+// renders them for justifications.
+const (
+	scannerShodan = "shodan"
+	scannerFOFA   = "fofa"
+)
+
+// scannerDisplayName renders a scanner identifier the way its operators spell it.
+func scannerDisplayName(scanner string) string {
+	switch scanner {
+	case scannerShodan:
+		return "Shodan"
+	case scannerFOFA:
+		return "FOFA"
+	default:
+		return scanner
+	}
+}
+
+// confSharedFaviconHash is the evidence weight of one scanner reporting a host
+// that serves the same favicon as the target.
+//
+// One scanner's answer is review-level however many hosts come back, because a
+// favicon is not an identity. Default framework icons, unmodified CMS installs,
+// and stock hosting-panel logos all hash to values shared by thousands of
+// unrelated hosts, and this plugin cannot tell a distinctive corporate logo from
+// a WordPress default. When the icon IS distinctive the signal is strong — which
+// is exactly the judgement a reviewer can make and this code cannot.
+//
+// Two scanners reporting the same host therefore DO clear the clean threshold
+// (0.45 + 0.45), and that is a deliberate consequence of treating Shodan and
+// FOFA as independent observers rather than an oversight. The alternative was to
+// pick a score low enough that both scanners together stayed under
+// ConfidenceHigh, but nothing below 0.325 does, and that puts a single-scanner
+// match under ConfidenceLow — the noise floor, where findings are dropped
+// outright. Losing every single-scanner match to protect against a generic-icon
+// false positive is the worse trade: the false positive gets reviewed, the
+// dropped finding is never seen again.
+const confSharedFaviconHash = 0.45
+
+// describeFaviconMatch explains one scanner's match, naming the hash so a
+// reviewer can re-run the same query and judge whether the icon is distinctive.
+func describeFaviconMatch(scanner, subject string, hash int32, sourceDomain string) string {
+	return fmt.Sprintf("%s observed %s serving favicon hash %d, matching the favicon fetched from %q",
+		scannerDisplayName(scanner), subject, hash, sourceDomain)
+}
+
+// mergeScannerFindings collapses findings by type+value, keeping ONE confidence
+// entry per scanner.
+//
+// The two axes of repetition differ, and the old dedup-by-value collapsed both.
+// Many matches from one scanner are one answer to one question: asking Shodan
+// which hosts serve this icon and getting forty back is a single observation
+// about a single hash, so those merge into one entry. Two scanners are
+// independent crawls of the internet, so Shodan and FOFA each keep their own
+// entry — and that is the corroboration the plugin exists to surface.
+//
+// Keeping only the first finding, as this function used to, silently discarded
+// the second scanner's provenance: the merged record claimed one source when two
+// had seen it.
+func mergeScannerFindings(findings []plugins.Finding) []plugins.Finding {
 	type key struct {
 		typ   plugins.FindingType
 		value string
 	}
-	seen := make(map[key]bool, len(findings))
-	result := make([]plugins.Finding, 0, len(findings))
+
+	// merged holds the finding built so far plus the scanners already folded
+	// into it. The scanner list is both the dedup set and what Data reports;
+	// there are only ever two, so a scan beats a second map.
+	type merge struct {
+		finding  plugins.Finding
+		scanners []string
+	}
+
+	var order []key
+	merged := make(map[key]*merge, len(findings))
+
 	for _, f := range findings {
 		k := key{f.Type, f.Value}
-		if !seen[k] {
-			seen[k] = true
-			result = append(result, f)
+		scanner, _ := f.Data["scanner"].(string)
+
+		entry, ok := merged[k]
+		if !ok {
+			entry = &merge{finding: f}
+			merged[k] = entry
+			order = append(order, k)
+		} else {
+			if slices.Contains(entry.scanners, scanner) {
+				continue
+			}
+			entry.finding.Confidences = append(entry.finding.Confidences, f.Confidences...)
 		}
+		entry.scanners = append(entry.scanners, scanner)
+	}
+
+	result := make([]plugins.Finding, 0, len(order))
+	for _, k := range order {
+		entry := merged[k]
+		if entry.finding.Data != nil {
+			entry.finding.Data["scanners"] = strings.Join(entry.scanners, ",")
+		}
+		result = append(result, entry.finding)
 	}
 	return result
 }

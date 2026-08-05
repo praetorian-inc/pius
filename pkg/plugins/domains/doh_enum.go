@@ -147,7 +147,7 @@ func (p *DoHEnumPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				if finding, ok := p.queryWithRetry(ctx, fqdn, rot); ok {
+				if finding, ok := p.queryWithRetry(ctx, fqdn, domain, rot); ok {
 					select {
 					case resultCh <- finding:
 					case <-ctx.Done():
@@ -199,7 +199,12 @@ func (p *DoHEnumPlugin) detectWildcardDoH(ctx context.Context, domain string, en
 // endpoints on rate-limit (429) or server errors (5xx). Returns (finding, true)
 // when the subdomain exists. rotation[0] is the primary endpoint; subsequent
 // entries are used for retries in order.
-func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, fqdn string, rotation []DoHEndpoint) (plugins.Finding, bool) {
+//
+// The evidence names the endpoint that actually answered, not rotation[0]. When
+// the primary is rate-limited and a fallback resolves the name, crediting the
+// primary would send a reviewer to re-query a resolver that never saw the name
+// — and would hide that the answer came from a different vantage point.
+func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, fqdn, domain string, rotation []DoHEndpoint) (plugins.Finding, bool) {
 	for attempt := 0; attempt < dohEnumMaxRetries; attempt++ {
 		ep := rotation[attempt%len(rotation)]
 		exists, err := p.queryDoH(ctx, fqdn, ep)
@@ -209,9 +214,13 @@ func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, fqdn string, rotatio
 					Type:   plugins.FindingDomain,
 					Value:  fqdn,
 					Source: "doh-enum",
+					Confidences: []plugins.Confidence{{
+						Score:         confDNSResolvedNonWildcard,
+						Justification: describeDNSResolution(fqdn, domain, ep.Name),
+					}},
 					Data: map[string]any{
 						"method":   "doh-enum",
-						"resolver": rotation[0].Name,
+						"resolver": ep.Name,
 					},
 				}, true
 			}

@@ -190,7 +190,7 @@ func TestDoHEnumPlugin_Run_RateLimitRetry(t *testing.T) {
 	endpoint := DoHEndpoint{URL: srv.URL, Name: "test"}
 	rotation := []DoHEndpoint{endpoint}
 
-	finding, ok := p.queryWithRetry(context.Background(), "www.example.com", rotation)
+	finding, ok := p.queryWithRetry(context.Background(), "www.example.com", "example.com", rotation)
 	assert.True(t, ok, "should succeed after retry")
 	assert.Equal(t, "www.example.com", finding.Value)
 	assert.GreaterOrEqual(t, callCount, 2, "should have made at least 2 calls")

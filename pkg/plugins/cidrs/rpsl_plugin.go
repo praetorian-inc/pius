@@ -59,6 +59,9 @@ func (p *rpslPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 	// Convert IP ranges to CIDRs and create findings
 	var findings []plugins.Finding
 	for handle, ipRanges := range ranges {
+		// One lookup per handle: an inetnum range can expand to thousands of
+		// CIDRs, and the handle's provenance is identical for all of them.
+		provenance := handleProvenance(input, handle, p.cfg.registry)
 		for _, r := range ipRanges {
 			cidrs, err := cidr.ConvertIPv4RangeToCIDR(r.start, r.end)
 			if err != nil {
@@ -69,6 +72,12 @@ func (p *rpslPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 					Type:   plugins.FindingCIDR,
 					Value:  c,
 					Source: p.Name(),
+					Confidences: composeHandleEvidence(provenance, registryMapping{
+						registry: p.cfg.registry,
+						handle:   handle,
+						cidr:     c,
+						netname:  r.netname,
+					}),
 					Data: map[string]any{
 						"handle":   handle,
 						"org":      input.OrgName,

@@ -114,11 +114,17 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 				return
 			}
 			if exists {
+				confidence := plugins.Confidence{
+					Score:         confDNSResolvedNonWildcard,
+					Justification: describeDNSResolution(fqdn, domain, ""),
+				}
+
 				mu.Lock()
 				findings = append(findings, plugins.Finding{
-					Type:   plugins.FindingDomain,
-					Value:  fqdn,
-					Source: p.Name(),
+					Type:        plugins.FindingDomain,
+					Value:       fqdn,
+					Source:      p.Name(),
+					Confidences: []plugins.Confidence{confidence},
 					Data: map[string]any{
 						"method": "dns-brute",
 						"domain": input.Domain,

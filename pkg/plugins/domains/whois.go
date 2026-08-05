@@ -122,7 +122,7 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 		return nil, nil
 	}
 
-	return extractPreseeds(parsed), nil
+	return extractPreseeds(domain, parsed), nil
 }
 
 // whoisParseFn is a seam over whoisparser.Parse so the panic-recover in
@@ -264,8 +264,101 @@ var whoisPrivacyMarkerPhrases = [][]string{
 	{"not", "disclosed"},
 }
 
+// WHOIS contact roles, in the order the record presents them.
+const (
+	whoisRoleRegistrant     = "registrant"
+	whoisRoleAdministrative = "administrative"
+	whoisRoleBilling        = "billing"
+	whoisRoleTechnical      = "technical"
+)
+
+// whoisContact pairs a parsed contact with the role it holds in the record.
+//
+// The role is the larger half of what a WHOIS value is worth. A registrant
+// organization is the registry's statement of who owns the domain; a technical
+// contact is frequently the hosting provider, the registrar, or an agency that
+// set the zone up years ago. Iterating over a bare []*Contact throws that
+// distinction away before scoring can use it.
+type whoisContact struct {
+	Role    string
+	Contact *whoisparser.Contact
+}
+
+// Evidence weights for WHOIS-derived preseeds.
+//
+// The registrant organization is the only field in a WHOIS record that states
+// ownership: registries define it as the entity the domain is registered to. It
+// still falls short of clean on its own because the string is self-reported at
+// registration, goes years without revision, and is routinely a parent, a
+// holding company, or a contracted agency rather than the operator.
+//
+// Everything else is weaker in a specific way. A registrant *name* is a person,
+// and a person is evidence about an individual rather than an organization. A
+// non-registrant contact — administrative, billing, technical — describes who
+// administers the domain, which is a service relationship, not ownership; the
+// company in a technical contact is very often the hosting provider.
+const (
+	confWhoisRegistrantOrg  = 0.60
+	confWhoisRegistrantName = 0.45
+	confWhoisContactOrg     = 0.45
+	confWhoisContactValue   = 0.35
+)
+
+// whoisEvidence scores one extracted value by role and field.
+func whoisEvidence(domain, role, field, value string) plugins.Confidence {
+	return plugins.Confidence{
+		Score:         whoisScore(role, field),
+		Justification: describeWhoisField(domain, role, field, value),
+	}
+}
+
+// whoisScore weighs a value by the role that carried it and the kind of value it
+// is. Registrant organization is the only ownership statement in the record.
+func whoisScore(role, field string) float64 {
+	if role == whoisRoleRegistrant {
+		if field == "company" {
+			return confWhoisRegistrantOrg
+		}
+		return confWhoisRegistrantName
+	}
+	if field == "company" {
+		return confWhoisContactOrg
+	}
+	return confWhoisContactValue
+}
+
+// describeWhoisField explains one extracted value, naming the role it came from
+// so a reviewer can weigh "registrant organization" against "technical contact"
+// without re-reading the record.
+//
+// It reproduces the emitted value and nothing else from the record. The value is
+// already the preseed, so it is not a new disclosure — but the surrounding WHOIS
+// fields are third-party PII this plugin does not otherwise log, and a
+// justification is stored and displayed downstream.
+func describeWhoisField(domain, role, field, value string) string {
+	switch field {
+	case "company":
+		if role == whoisRoleRegistrant {
+			return fmt.Sprintf("WHOIS for %q lists %q as the registrant organization", domain, value)
+		}
+		return fmt.Sprintf("WHOIS for %q lists %q as the organization of the %s contact", domain, value, role)
+	case "email":
+		return fmt.Sprintf("WHOIS for %q lists %q as %s contact email", domain, value, articleFor(role))
+	default:
+		return fmt.Sprintf("WHOIS for %q lists %q as %s contact name", domain, value, articleFor(role))
+	}
+}
+
+// articleFor renders a role with the article English wants in front of it.
+func articleFor(role string) string {
+	if role == whoisRoleAdministrative {
+		return "an " + role
+	}
+	return "a " + role
+}
+
 // extractPreseeds pulls registrant organization, name, and email from WHOIS contacts.
-func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
+func extractPreseeds(domain string, info whoisparser.WhoisInfo) []plugins.Finding {
 	type param struct {
 		name  string
 		value string
@@ -274,10 +367,14 @@ func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
 	seen := make(map[param]bool)
 	var findings []plugins.Finding
 
-	contacts := []*whoisparser.Contact{
-		info.Registrant, info.Administrative, info.Billing, info.Technical,
+	contacts := []whoisContact{
+		{whoisRoleRegistrant, info.Registrant},
+		{whoisRoleAdministrative, info.Administrative},
+		{whoisRoleBilling, info.Billing},
+		{whoisRoleTechnical, info.Technical},
 	}
-	for _, c := range contacts {
+	for _, wc := range contacts {
+		c := wc.Contact
 		if c == nil {
 			continue
 		}
@@ -303,14 +400,20 @@ func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
 			}
 			seen[p] = true
 
+			// The same value under two roles is one fact recorded twice — the
+			// registrant and technical contact are usually the same person — so
+			// `seen` keeps the first, strongest role. Roles run
+			// registrant-first for exactly that reason.
 			preseedType := "whois+" + p.name
 			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingPreseed,
-				Value:  p.value,
-				Source: "whois",
+				Type:        plugins.FindingPreseed,
+				Value:       p.value,
+				Source:      "whois",
+				Confidences: []plugins.Confidence{whoisEvidence(domain, wc.Role, p.name, p.value)},
 				Data: map[string]any{
 					"preseed_type":  preseedType,
 					"preseed_title": p.value,
+					"whois_role":    wc.Role,
 				},
 			})
 		}

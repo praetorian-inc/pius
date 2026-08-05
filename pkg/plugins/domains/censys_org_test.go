@@ -880,3 +880,161 @@ func censysPreseeds(findings []plugins.Finding) []plugins.Finding {
 	}
 	return preseeds
 }
+
+// ── field-derived confidence (plan §7) ───────────────────────────────────────
+
+func TestCensysExtractFindings_DomainsAreScored(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{makeHitFull(hitOpts{ip: "203.0.113.4", certNames: []string{"api.acme.com"}})}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	require.Len(t, findings, 1)
+	require.Len(t, findings[0].Confidences, 1)
+	assert.InDelta(t, confCensysCertificateName, findings[0].Confidences[0].Score, 0.001)
+	assert.Equal(t,
+		`Censys observed "api.acme.com" in a certificate name on a host returned by the organization query for "Acme Corp"`,
+		findings[0].Confidences[0].Justification)
+}
+
+func TestCensysExtractFindings_CIDRsAreScored(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{makeHitFull(hitOpts{
+		ip:         "203.0.113.4",
+		whoisCIDRs: []string{"203.0.113.0/24"},
+		bgpPrefix:  "203.0.112.0/22",
+	})}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	require.Len(t, findings, 2)
+	for _, f := range findings {
+		require.Len(t, f.Confidences, 1, "unscored CIDR %q", f.Value)
+		assert.NotEmpty(t, f.Confidences[0].Justification)
+	}
+
+	whoisNet, ok := findingByValue(findings, "203.0.113.0/24")
+	require.True(t, ok)
+	assert.Equal(t,
+		`Censys reported "203.0.113.0/24" as the WHOIS network of a host returned by the organization query for "Acme Corp"`,
+		whoisNet.Confidences[0].Justification)
+
+	bgp, ok := findingByValue(findings, "203.0.112.0/22")
+	require.True(t, ok)
+	assert.InDelta(t, confCensysBGPPrefix, bgp.Confidences[0].Score, 0.001)
+}
+
+// TestCensysExtractFindings_RepeatedFieldDoesNotInflate is the aggregation rule:
+// one field saying the same thing across forty hosts is one observation.
+func TestCensysExtractFindings_RepeatedFieldDoesNotInflate(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{
+		makeHitFull(hitOpts{ip: "203.0.113.4", certNames: []string{"api.acme.com"}}),
+		makeHitFull(hitOpts{ip: "203.0.113.5", certNames: []string{"api.acme.com"}}),
+		makeHitFull(hitOpts{ip: "203.0.113.6", certNames: []string{"api.acme.com"}}),
+	}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	require.Len(t, findings, 1)
+	require.Len(t, findings[0].Confidences, 1, "three hosts, one certificate-name observation")
+	assert.InDelta(t, confCensysCertificateName, plugins.TotalConfidence(findings[0]), 0.001)
+	assert.Equal(t, censysFieldCertificateNames, findings[0].Data["fields"])
+}
+
+// TestCensysExtractFindings_DistinctFieldsCoexist is the other half: a name that
+// is both on the certificate and in reverse DNS was established two ways, and
+// the old boolean seen-set discarded whichever came second.
+func TestCensysExtractFindings_DistinctFieldsCoexist(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{makeHitFull(hitOpts{
+		ip: "203.0.113.4", certNames: []string{"api.acme.com"}, reverseDNS: []string{"api.acme.com"},
+	})}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	require.Len(t, findings, 1)
+	require.Len(t, findings[0].Confidences, 2, "certificate and reverse DNS are separate observations")
+	assert.Equal(t, "certificate_names,reverse_dns", findings[0].Data["fields"])
+	assert.Contains(t, findings[0].Confidences[0].Justification, "certificate name")
+	assert.Contains(t, findings[0].Confidences[1].Justification, "reverse DNS")
+}
+
+func TestCensysExtractFindings_CertificateAndSubjectCNCoexist(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{makeHitFull(hitOpts{
+		ip: "203.0.113.4", certNames: []string{"api.acme.com"}, cnNames: []string{"api.acme.com"},
+	})}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	require.Len(t, findings, 1)
+	require.Len(t, findings[0].Confidences, 2)
+	assert.Equal(t, "certificate_names,subject_cn", findings[0].Data["fields"])
+}
+
+// TestCensysExtractFindings_EverythingIsScored is the plugin-level invariant.
+func TestCensysExtractFindings_EverythingIsScored(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	hits := []censysSearchHit{
+		makeHitFull(hitOpts{
+			ip:         "203.0.113.4",
+			certNames:  []string{"api.acme.com", "www.acme.com"},
+			cnNames:    []string{"acme.com"},
+			reverseDNS: []string{"host4.acme.com"},
+		}),
+		makeHitFull(hitOpts{
+			ip:         "203.0.113.5",
+			whoisCIDRs: []string{"203.0.113.0/24"},
+			bgpPrefix:  "203.0.112.0/22",
+		}),
+	}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	require.NotEmpty(t, findings)
+	for _, f := range findings {
+		require.NotEmpty(t, f.Confidences, "unscored %s finding %q", f.Type, f.Value)
+		for _, c := range f.Confidences {
+			assert.NotEmpty(t, c.Justification, "empty justification on %q", f.Value)
+		}
+	}
+}
+
+// TestCensysFieldScores_AllReviewLevel: every field inherits the certificate
+// organization-NAME match as its weakest link, so none reads clean alone.
+func TestCensysFieldScores_AllReviewLevel(t *testing.T) {
+	for _, field := range []string{
+		censysFieldCertificateNames, censysFieldSubjectCN, censysFieldReverseDNS,
+		censysFieldWhoisNetwork, censysFieldBGPPrefix,
+	} {
+		score := censysFieldEvidence("Acme Corp", "value", field).Score
+		assert.Less(t, score, plugins.ConfidenceHigh, "field %s reads as clean", field)
+		assert.GreaterOrEqual(t, score, plugins.ConfidenceLow, "field %s is below the noise floor", field)
+	}
+
+	// A name the host presented as itself outranks one its provider set.
+	assert.Greater(t, confCensysCertificateName, confCensysReverseDNS)
+	// The broadest claim scores lowest.
+	assert.Greater(t, confCensysWhoisNetwork, confCensysBGPPrefix)
+}
+
+// TestCensysExtractFindings_OrgPreseedStaysOneEntry guards the existing
+// threshold behaviour: crossing 5 hosts is one binary judgement.
+func TestCensysExtractFindings_OrgPreseedStaysOneEntry(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	var hits []censysSearchHit
+	for i := 4; i < 10; i++ {
+		hits = append(hits, makeHitFull(hitOpts{
+			ip:           fmt.Sprintf("203.0.113.%d", i),
+			certOrgNames: []string{"Acme Subsidiary Ltd"},
+		}))
+	}
+
+	findings := p.extractFindings("Acme Corp", hits)
+
+	preseed, ok := findingByValue(findings, "Acme Subsidiary Ltd")
+	require.True(t, ok)
+	require.Len(t, preseed.Confidences, 1, "one threshold crossing, one entry")
+	assert.InDelta(t, plugins.ConfidenceHigh, preseed.Confidences[0].Score, 0.001)
+}
