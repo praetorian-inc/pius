@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	whoisparser "github.com/likexian/whois-parser"
@@ -95,6 +96,10 @@ const (
 	// v1.0 one this plugin already parses.
 	whoisFreaksLiveVersion    = "v1.0"
 	whoisFreaksHistoryVersion = "v2.0"
+
+	// maxWhoisFreaksHistoryPages bounds the page walk: total_pages is provider
+	// input and a bad value must not spin the fetch.
+	maxWhoisFreaksHistoryPages = 10
 )
 
 type whoisFreaksClient struct {
@@ -113,7 +118,8 @@ type whoisFreaksLiveResponse struct {
 }
 
 type whoisFreaksHistoryResponse struct {
-	Status *bool `json:"status"`
+	Status     *bool `json:"status"`
+	TotalPages int   `json:"total_pages"`
 	// Records stays raw: the consumer persists the provider's JSON verbatim, so
 	// re-marshalling through a Go shape would drop fields it retains.
 	Records json.RawMessage `json:"whois_domains_historical"`
@@ -132,23 +138,44 @@ func (c *whoisFreaksClient) live(ctx context.Context, domain string) (whoisFreak
 func (c *whoisFreaksClient) history(ctx context.Context, domain string) (json.RawMessage, error) {
 	endpoint := c.apiBase(whoisFreaksHistoryVersion) + "/whois/history"
 
-	var resp whoisFreaksHistoryResponse
-	if err := c.fetch(ctx, "history", endpoint, domain, url.Values{}, &resp); err != nil {
-		return nil, err
-	}
-	if resp.Status != nil && !*resp.Status {
-		return nil, fmt.Errorf("whoisfreaks history: request rejected for %q", domain)
-	}
-	var records []json.RawMessage
-	if len(resp.Records) > 0 {
-		if err := json.Unmarshal(resp.Records, &records); err != nil {
-			return nil, fmt.Errorf("whoisfreaks history: parse records for %q: %w", domain, err)
+	var (
+		records    []json.RawMessage
+		totalPages = 1
+	)
+	for page := 1; page <= totalPages && page <= maxWhoisFreaksHistoryPages; page++ {
+		var resp whoisFreaksHistoryResponse
+		params := url.Values{"page": {strconv.Itoa(page)}}
+		if err := c.fetch(ctx, "history", endpoint, domain, params, &resp); err != nil {
+			return nil, err
+		}
+		if resp.Status != nil && !*resp.Status {
+			return nil, fmt.Errorf("whoisfreaks history: request rejected for %q", domain)
+		}
+		if len(resp.Records) > 0 {
+			var pageRecords []json.RawMessage
+			if err := json.Unmarshal(resp.Records, &pageRecords); err != nil {
+				return nil, fmt.Errorf("whoisfreaks history: parse records for %q: %w", domain, err)
+			}
+			records = append(records, pageRecords...)
+		}
+		if resp.TotalPages > totalPages {
+			totalPages = resp.TotalPages
 		}
 	}
+
+	if totalPages > maxWhoisFreaksHistoryPages {
+		slog.Warn("whoisfreaks history: page cap reached, record set truncated",
+			"domain", domain, "pages_fetched", maxWhoisFreaksHistoryPages, "total_pages", totalPages)
+	}
+
 	if len(records) == 0 {
 		return json.RawMessage("[]"), nil
 	}
-	return resp.Records, nil
+	joined, err := json.Marshal(records)
+	if err != nil {
+		return nil, fmt.Errorf("whoisfreaks history: join records for %q: %w", domain, err)
+	}
+	return joined, nil
 }
 
 func (c *whoisFreaksClient) key() string {
