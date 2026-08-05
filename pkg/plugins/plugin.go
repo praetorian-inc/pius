@@ -1,6 +1,9 @@
 package plugins
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // FindingType categorizes what was discovered
 type FindingType string
@@ -55,6 +58,18 @@ type Input struct {
 	Meta map[string]string
 }
 
+// Confidence is a single piece of scored, explained evidence supporting a
+// finding. Entries are additive: a finding's total confidence is the sum of its
+// entry scores, capped at 1.0 (see TotalConfidence).
+type Confidence struct {
+	// Score is this evidence's contribution to the total confidence.
+	Score float64 `json:"score"`
+
+	// Justification explains, in human-readable terms, why this evidence
+	// supports the finding.
+	Justification string `json:"justification"`
+}
+
 // Finding represents a single discovered asset or intermediate result.
 type Finding struct {
 	// Type classifies what was found.
@@ -66,8 +81,40 @@ type Finding struct {
 	// Source is the name of the plugin that produced this finding.
 	Source string
 
-	// Data contains source-specific metadata.
+	// Confidences is the scored, justified evidence supporting this finding.
+	// An empty slice means the finding was never scored, which is distinct from
+	// a finding carrying an explicit zero-score entry. Append through
+	// AddConfidence; read the aggregate through TotalConfidence.
+	Confidences []Confidence
+
+	// Data contains source-specific metadata. It must never carry confidence
+	// state — that lives in Confidences.
 	Data map[string]any
+}
+
+// findingFields aliases Finding so MarshalJSON can encode the plain struct
+// without re-entering itself. A defined type does not inherit Finding's
+// methods, which is exactly what breaks the recursion.
+type findingFields Finding
+
+// MarshalJSON emits a Finding's stored fields plus its two derived confidence
+// values, so a reader of `--output json` or `--output ndjson` can see the
+// aggregate and the review verdict without summing the entries by hand.
+//
+// TotalConfidence and NeedsReview are output-only: Confidences remains the sole
+// source of truth, so both are recomputed on demand and simply ignored when
+// findings are read back (the plugin caches round-trip through this encoding).
+// Nothing should ever populate them as stored state.
+func (f Finding) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		findingFields
+		TotalConfidence float64
+		NeedsReview     bool
+	}{
+		findingFields:   findingFields(f),
+		TotalConfidence: TotalConfidence(f),
+		NeedsReview:     NeedsReview(f),
+	})
 }
 
 // Descriptor identifies and describes a plugin.

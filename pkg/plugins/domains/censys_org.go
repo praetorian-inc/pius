@@ -13,6 +13,16 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
+// censysMinHosts is the number of distinct hosts a certificate Subject
+// Organization must appear on before it is emitted as a preseed.
+//
+// Crossing it is a binary judgement, scored plugins.ConfidenceHigh: the
+// threshold is what the evidence rests on, and appearing on more hosts past it
+// does not make the organization more likely to belong to the target. Scoring
+// per host instead would push any organization on eight or more hosts to the
+// 1.0 cap purely on breadth of scanning.
+const censysMinHosts = 5
+
 func init() {
 	plugins.Register("censys-org", func() plugins.Plugin {
 		return &CensysOrgPlugin{client: client.New()}
@@ -416,7 +426,7 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 	// Emit preseed for any org name that appears across 5+ distinct hosts.
 	// orgKey is the lowercase-normalized key; orgDisplay[orgKey] is the original casing.
 	for orgKey, hosts := range orgHosts {
-		if len(hosts) < 5 {
+		if len(hosts) < censysMinHosts {
 			continue
 		}
 		displayName := orgDisplay[orgKey]
@@ -432,7 +442,11 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 				"host_count":    len(hosts),
 			},
 		}
-		plugins.SetConfidence(&f, plugins.ConfidenceHigh)
+		// The host count is the only detail in the justification — no certificate
+		// contents, and no host addresses.
+		plugins.AddConfidence(&f, plugins.ConfidenceHigh,
+			fmt.Sprintf("Certificate Subject Organization %q was observed on %d distinct hosts, at or above the %d-host threshold",
+				displayName, len(hosts), censysMinHosts))
 		findings = append(findings, f)
 	}
 

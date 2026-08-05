@@ -49,6 +49,21 @@ type httpDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// Wikidata evidence contributions. A domain finding carries the relationship
+// and website entries together (0.65, matching the previous flat score); a
+// company-name preseed carries only confWikidataRelationshipOnly, since nothing
+// corroborates the relationship there.
+//
+// This pair lands exactly ON ConfidenceHigh, and their float64 sum is
+// 0.6499999999999999 — see plugins.confidenceEpsilon, which is what keeps a
+// corroborated Wikidata domain reading as clean rather than being pushed into
+// the review queue by rounding.
+const (
+	confWikidataRelationship     = 0.30
+	confWikidataWebsite          = 0.35
+	confWikidataRelationshipOnly = 0.55
+)
+
 func (p *WikidataPlugin) Name() string { return "wikidata" }
 func (p *WikidataPlugin) Description() string {
 	return "Wikidata SPARQL: discovers subsidiaries and acquisitions via structured corporate data (free, no API key)"
@@ -161,8 +176,16 @@ func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 						"method":       "wikidata-sparql",
 					},
 				}
-				// Direct website from Wikidata is high confidence
-				plugins.SetConfidence(&f, plugins.ConfidenceHigh)
+				// Two independent claims back a domain finding: that Wikidata
+				// relates the entity to the target at all, and that Wikidata names
+				// this domain as that entity's website. Either can be stale or
+				// wrong on its own.
+				plugins.AddConfidence(&f, confWikidataRelationship,
+					fmt.Sprintf("Wikidata identifies %q as a subsidiary or owned entity of the target (%s)",
+						r.EntityLabel.Value, r.Relation.Value))
+				plugins.AddConfidence(&f, confWikidataWebsite,
+					fmt.Sprintf("Wikidata identifies %q as the official website of %q",
+						r.Website.Value, r.EntityLabel.Value))
 				findings = append(findings, f)
 			}
 		}
@@ -183,7 +206,12 @@ func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 					"method":        "wikidata-sparql",
 				},
 			}
-			plugins.SetConfidence(&f, 0.55)
+			// A company-name preseed rests on the relationship alone — there is no
+			// website claim corroborating it — so it scores higher than the
+			// relationship entry above but lower than the corroborated pair.
+			plugins.AddConfidence(&f, confWikidataRelationshipOnly,
+				fmt.Sprintf("Wikidata identifies %q as a subsidiary or owned entity of the target (%s)",
+					entityName, r.Relation.Value))
 			findings = append(findings, f)
 		}
 	}

@@ -390,3 +390,52 @@ func TestStripScheme_URLWithPath(t *testing.T) {
 func TestStripScheme_PlainDomain(t *testing.T) {
 	assert.Equal(t, "acme-corp.com", stripScheme("acme-corp.com"))
 }
+
+// TestApolloPlugin_Run_DomainQueryJustification and its org-name counterpart pin
+// which query actually resolved the organization — the one thing that separates
+// a precise Apollo answer from an ambiguous one.
+func TestApolloPlugin_Run_DomainQueryJustification(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"organization":{"primary_domain":"acme.com"}}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("APOLLO_API_KEY", "test-key")
+	p := newTestPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp", Domain: "acme.com"})
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+
+	for _, f := range findings {
+		require.Len(t, f.Confidences, 1, "one query, one piece of evidence")
+		assert.InDelta(t, 0.85, f.Confidences[0].Score, 0.001)
+		assert.Contains(t, f.Confidences[0].Justification, "known domain")
+		assert.Contains(t, f.Confidences[0].Justification, "acme.com")
+		assert.False(t, plugins.NeedsReview(f))
+	}
+}
+
+func TestApolloPlugin_Run_OrgNameQueryJustification(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"organization":{"primary_domain":"acme.com"}}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("APOLLO_API_KEY", "test-key")
+	p := newTestPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+
+	for _, f := range findings {
+		require.Len(t, f.Confidences, 1)
+		assert.InDelta(t, 0.70, f.Confidences[0].Score, 0.001)
+		assert.Contains(t, f.Confidences[0].Justification, "organization-name query")
+		assert.Contains(t, f.Confidences[0].Justification, "Acme Corp")
+		// 0.70 still clears ConfidenceHigh — the org-name query is de-ranked
+		// relative to a domain query, not pushed into the review band.
+		assert.False(t, plugins.NeedsReview(f))
+	}
+}

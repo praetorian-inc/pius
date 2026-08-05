@@ -800,3 +800,83 @@ func TestCensysOrgPlugin_AppearsInList(t *testing.T) {
 	}
 	assert.True(t, found)
 }
+
+// TestCensysOrgPlugin_ExtractPreseeds_ThresholdScoresHighConfidence pins the
+// binary judgement: crossing censysMinHosts is the evidence, scored
+// plugins.ConfidenceHigh as one entry.
+func TestCensysOrgPlugin_ExtractPreseeds_ThresholdScoresHighConfidence(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	var hits []censysSearchHit
+	for i := 0; i < 5; i++ {
+		hits = append(hits, makeHitFull(hitOpts{
+			ip:           fmt.Sprintf("10.0.0.%d", i),
+			certOrgNames: []string{"Contoso Ltd"},
+		}))
+	}
+
+	preseeds := censysPreseeds(p.extractFindings("Acme Corp", hits))
+	require.Len(t, preseeds, 1)
+
+	require.Len(t, preseeds[0].Confidences, 1, "crossing the threshold is one judgement")
+	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]), 0.001)
+	assert.False(t, plugins.NeedsReview(preseeds[0]))
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "Contoso Ltd")
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "5 distinct hosts")
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_MoreHostsDoNotRaiseScore: appearing on
+// more hosts past the threshold reflects how widely Censys scanned, not how
+// likely the organization is to belong to the target. Scoring per host would
+// have pushed this to the 1.0 cap on breadth alone.
+func TestCensysOrgPlugin_ExtractPreseeds_MoreHostsDoNotRaiseScore(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	var hits []censysSearchHit
+	for i := 0; i < 12; i++ {
+		hits = append(hits, makeHitFull(hitOpts{
+			ip:           fmt.Sprintf("10.0.1.%d", i),
+			certOrgNames: []string{"Contoso Ltd"},
+		}))
+	}
+
+	preseeds := censysPreseeds(p.extractFindings("Acme Corp", hits))
+	require.Len(t, preseeds, 1)
+
+	require.Len(t, preseeds[0].Confidences, 1)
+	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]), 0.001,
+		"twelve hosts score the same as five")
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "12 distinct hosts")
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_RepeatedHostCountedOnce guards the
+// threshold itself: a host observed on several ports or certificates must not
+// count twice toward censysMinHosts.
+func TestCensysOrgPlugin_ExtractPreseeds_RepeatedHostCountedOnce(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	var hits []censysSearchHit
+	for i := 0; i < 5; i++ {
+		hits = append(hits, makeHitFull(hitOpts{
+			ip:           fmt.Sprintf("10.0.2.%d", i),
+			certOrgNames: []string{"Contoso Ltd"},
+		}))
+	}
+	// The first host shows up a second time — same IP, same Subject Organization.
+	hits = append(hits, makeHitFull(hitOpts{ip: "10.0.2.0", certOrgNames: []string{"Contoso Ltd"}}))
+
+	preseeds := censysPreseeds(p.extractFindings("Acme Corp", hits))
+	require.Len(t, preseeds, 1)
+
+	require.Len(t, preseeds[0].Confidences, 1)
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "5 distinct hosts",
+		"the repeated host must not be counted twice")
+	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]), 0.001)
+}
+
+func censysPreseeds(findings []plugins.Finding) []plugins.Finding {
+	var preseeds []plugins.Finding
+	for _, f := range findings {
+		if f.Type == plugins.FindingPreseed {
+			preseeds = append(preseeds, f)
+		}
+	}
+	return preseeds
+}

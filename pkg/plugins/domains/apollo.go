@@ -154,13 +154,18 @@ func (p *ApolloPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 	findings := p.extractFindings(input.OrgName, &resp.Organization)
 
 	// Score confidence: domain-based queries are precise; org-name queries
-	// may return data for a similarly-named company.
-	confidence := 0.85 // ?domain= query
+	// may return data for a similarly-named company. One query resolved the
+	// whole response, so every finding carries the same single entry — there is
+	// no second, independent signal here to decompose into.
+	score := 0.85
+	justification := fmt.Sprintf("Apollo resolved the organization through the known domain %q", input.Domain)
 	if input.Domain == "" {
-		confidence = 0.70 // ?organization_name= query — org name is ambiguous
+		score = 0.70
+		justification = fmt.Sprintf("Apollo resolved the organization through an organization-name query for %q, which can match a similarly-named company", input.OrgName)
 	}
+
 	for i := range findings {
-		plugins.SetConfidence(&findings[i], confidence)
+		plugins.AddConfidence(&findings[i], score, justification)
 	}
 
 	if c != nil {

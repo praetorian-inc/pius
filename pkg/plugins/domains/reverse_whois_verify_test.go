@@ -289,13 +289,20 @@ func TestDecideConfidence(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			score := decideConfidence(tt.queryOrg, tt.res, tt.lookupErr)
-			assert.InDelta(t, tt.wantScore, score, 0.001, "score")
+			got := decideConfidence(tt.queryOrg, tt.res, tt.lookupErr)
+			assert.InDelta(t, tt.wantScore, got.Score, 0.001, "score")
+			assert.NotEmpty(t, got.Justification, "every decision explains itself")
+			// The justification must never leak the resolved registrant, which is
+			// exactly the third-party WHOIS PII this plugin declines to log.
+			if tt.res.Org != "" {
+				assert.NotContains(t, got.Justification, tt.res.Org,
+					"justifications must not reproduce the registrant organization")
+			}
 			// Design invariant: every score stays in needs_review — below clean
 			// (never auto-clean) and at/above the noise floor (never dropped).
-			assert.Less(t, score, plugins.ConfidenceHigh,
+			assert.Less(t, got.Score, plugins.ConfidenceHigh,
 				"reverse-whois must never auto-clean")
-			assert.GreaterOrEqual(t, score, plugins.ConfidenceLow,
+			assert.GreaterOrEqual(t, got.Score, plugins.ConfidenceLow,
 				"reverse-whois must never drop below needs_review")
 		})
 	}
@@ -314,7 +321,7 @@ func TestDecideConfidence_RedactedRegistrantScoresUnverified(t *testing.T) {
 	for _, org := range []string{"DATA REDACTED", "REDACTED FOR GDPR", "GDPR Masked"} {
 		t.Run(org, func(t *testing.T) {
 			got := decideConfidence(queryOrg, newRegistrantResult(org), nil)
-			assert.Equal(t, confReverseWhoisUnverified, got,
+			assert.Equal(t, confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisUnverified}, got,
 				"a redaction placeholder is unverifiable, not a clear mismatch")
 		})
 	}
@@ -485,7 +492,7 @@ func TestVerifyCandidates_EmailModeShortCircuits(t *testing.T) {
 	require.Len(t, findings, 2)
 	assert.Empty(t, stub.calls, "email-mode must not call the resolver")
 	for _, f := range findings {
-		assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(f), 0.001)
+		assert.InDelta(t, confReverseWhoisUnverified, plugins.TotalConfidence(f), 0.001)
 		assert.True(t, plugins.NeedsReview(f))
 	}
 }
@@ -512,9 +519,9 @@ func TestVerifyCandidates_OrderPreservedAllEmitted(t *testing.T) {
 	assert.Equal(t, "first.com", findings[0].Value)
 	assert.Equal(t, "second.com", findings[1].Value)
 	assert.Equal(t, "third.com", findings[2].Value)
-	assert.InDelta(t, confReverseWhoisCorroborated, plugins.Confidence(findings[0]), 0.001)
-	assert.InDelta(t, confReverseWhoisMismatch, plugins.Confidence(findings[1]), 0.001)
-	assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(findings[2]), 0.001)
+	assert.InDelta(t, confReverseWhoisCorroborated, plugins.TotalConfidence(findings[0]), 0.001)
+	assert.InDelta(t, confReverseWhoisMismatch, plugins.TotalConfidence(findings[1]), 0.001)
+	assert.InDelta(t, confReverseWhoisUnverified, plugins.TotalConfidence(findings[2]), 0.001)
 	// De-ranked mismatch is still in the needs_review band, not discarded.
 	assert.True(t, plugins.NeedsReview(findings[1]))
 }
@@ -541,11 +548,11 @@ func TestVerifyCandidates_ResolverPanicScoresUnverified(t *testing.T) {
 	assert.Equal(t, "boom.com", findings[1].Value)
 	// The panicked candidate keeps the pre-filled unverified score, staying inside
 	// the needs_review band rather than the 0.0 discard floor.
-	assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(findings[1]), 0.001)
+	assert.InDelta(t, confReverseWhoisUnverified, plugins.TotalConfidence(findings[1]), 0.001)
 	assert.True(t, plugins.NeedsReview(findings[1]))
 	// A clean sibling still scores corroborated — the recover() is scoped per
 	// worker and does not poison the rest of the pass.
-	assert.InDelta(t, confReverseWhoisCorroborated, plugins.Confidence(findings[0]), 0.001)
+	assert.InDelta(t, confReverseWhoisCorroborated, plugins.TotalConfidence(findings[0]), 0.001)
 }
 
 // TestVerifyCandidates_DropsImplausibleDomains proves malformed candidates
@@ -608,7 +615,7 @@ func TestVerifyCandidates_TotalBudgetCapsRuntime(t *testing.T) {
 	assert.Less(t, elapsed, reverseWhoisLookupTimeout,
 		"total budget must cap the pass well under one per-lookup timeout")
 	for _, f := range findings {
-		assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(f), 0.001,
+		assert.InDelta(t, confReverseWhoisUnverified, plugins.TotalConfidence(f), 0.001,
 			"budget-expired lookup must score unverified")
 		assert.True(t, plugins.NeedsReview(f))
 	}
@@ -700,7 +707,7 @@ func TestReverseWhois_NeverAutoCleans(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, findings)
 	for _, f := range findings {
-		assert.Less(t, plugins.Confidence(f), plugins.ConfidenceHigh,
+		assert.Less(t, plugins.TotalConfidence(f), plugins.ConfidenceHigh,
 			"reverse-whois finding %q must never be emitted as clean", f.Value)
 		assert.True(t, plugins.NeedsReview(f),
 			"reverse-whois finding %q must be flagged needs_review", f.Value)
@@ -910,9 +917,9 @@ func TestVerifyCandidates_DeRankOrderingAndLiteralAnchors(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, findings, 3)
 
-	corr := plugins.Confidence(findings[0])
-	unver := plugins.Confidence(findings[1])
-	mism := plugins.Confidence(findings[2])
+	corr := plugins.TotalConfidence(findings[0])
+	unver := plugins.TotalConfidence(findings[1])
+	mism := plugins.TotalConfidence(findings[2])
 
 	// Literal band anchors — NOT the package constants, so a constant edit cannot
 	// move the expectation together with the emission.
@@ -968,13 +975,13 @@ func TestVerifyCandidates_CapLimitsCallsNotRecall(t *testing.T) {
 	// preserved through the cap boundary.
 	overflow := findings[maxReverseWhoisCandidates]
 	assert.Equal(t, cands[maxReverseWhoisCandidates].domain, overflow.Value, "output order preserved through the cap")
-	assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(overflow), 0.001,
+	assert.InDelta(t, confReverseWhoisUnverified, plugins.TotalConfidence(overflow), 0.001,
 		"a candidate beyond the cap is emitted unverified WITHOUT a lookup")
 	assert.False(t, stub.queried(overflow.Value), "the overflow candidate must not be resolved")
 
 	// A resolved candidate below the cap corroborates (0.60), proving resolution
 	// did happen up to the boundary — the cap is where calls stop, not recall.
-	assert.InDelta(t, confReverseWhoisCorroborated, plugins.Confidence(findings[0]), 0.001)
+	assert.InDelta(t, confReverseWhoisCorroborated, plugins.TotalConfidence(findings[0]), 0.001)
 }
 
 // TestVerifyCandidates_CapTruncationDegradesThePass covers ENG-5405 fix A2 and
@@ -1826,7 +1833,7 @@ func TestVerifyCandidates_UnparseableSalvagedRecordTalliesBothFailedAndItsReason
 	}
 	for i, d := range order {
 		assert.Equal(t, d, findings[i].Value, "input order must survive the summary")
-		assert.InDelta(t, wantConfidence[d], plugins.Confidence(findings[i]), 0.001,
+		assert.InDelta(t, wantConfidence[d], plugins.TotalConfidence(findings[i]), 0.001,
 			"%s must score on registrant corroboration ALONE — the incompleteness reason is "+
 				"observational and must not enter ranking", d)
 	}
@@ -1863,12 +1870,14 @@ func TestDecideConfidence_IncompleteAndNotFoundBothScoreUnverified(t *testing.T)
 		res := res
 		t.Run(name, func(t *testing.T) {
 			got := decideConfidence("Acme Corp", res, nil)
-			assert.InDelta(t, confReverseWhoisUnverified, got, 0.001,
+			assert.InDelta(t, confReverseWhoisUnverified, got.Score, 0.001,
 				"AC4: the ENG-5405 observability signal must not change ranking")
+			assert.Equal(t, justifyReverseWhoisUnverified, got.Justification,
+				"AC4: nor may it change the explanation an operator reads")
 
 			var f plugins.Finding
-			plugins.SetConfidence(&f, got)
-			assert.InDelta(t, confReverseWhoisUnverified, plugins.Confidence(f), 0.001)
+			plugins.AddConfidence(&f, got.Score, got.Justification)
+			assert.InDelta(t, confReverseWhoisUnverified, plugins.TotalConfidence(f), 0.001)
 			assert.True(t, plugins.NeedsReview(f), "the de-rank-never-drop band is unchanged")
 		})
 	}
@@ -2010,7 +2019,7 @@ func TestVerifyCandidates_DegradedPassIsCountedAndEmitsEveryCandidate(t *testing
 	}
 	for i, d := range order {
 		assert.Equal(t, d, findings[i].Value, "input order must survive the summary")
-		got := plugins.Confidence(findings[i])
+		got := plugins.TotalConfidence(findings[i])
 		assert.GreaterOrEqual(t, got, 0.35, "%s must stay above the discard floor", d)
 		assert.Less(t, got, 0.65, "%s must stay inside the needs_review band", d)
 		assert.True(t, plugins.NeedsReview(findings[i]), "%s must remain flagged for review", d)

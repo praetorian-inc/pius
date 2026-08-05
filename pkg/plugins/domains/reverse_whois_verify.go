@@ -35,8 +35,8 @@ import (
 // asset. Corroboration is therefore used ONLY to RANK within the needs_review
 // band: a clear mismatch is de-ranked to the bottom of the band, never dropped.
 // Reverse-WHOIS never removes a candidate from the graph. Every emitted finding
-// is scored strictly below plugins.ConfidenceHigh, so SetConfidence always
-// flags needs_review. An auto-clean path, if ever wanted, must come from an
+// is scored strictly below plugins.ConfidenceHigh, so plugins.NeedsReview always
+// flags it. An auto-clean path, if ever wanted, must come from an
 // INDEPENDENT corroboration channel calibrated against labeled data — out of
 // scope, filed as follow-up.
 const (
@@ -138,7 +138,7 @@ type candidate struct {
 // candidateOutcome is one worker's observability report for one candidate.
 //
 // Written index-disjointly — worker i writes only outcomes[i], exactly like the
-// existing scores[i] — so verifyCandidates stays lock-free and g.Wait() remains
+// existing decisions[i] — so verifyCandidates stays lock-free and g.Wait() remains
 // the single happens-before barrier that publishes every write (ENG-5123 review;
 // ENG-5405). No mutex and no atomic: either would introduce the first shared
 // mutable state into this fan-out and weaken a property the pass documents.
@@ -311,33 +311,61 @@ func isPlausibleDomain(d string) bool {
 	return strings.Contains(d, ".")
 }
 
+// confidenceDecision is one verification outcome: the score it earns and the
+// explanation a reviewer sees.
+//
+// It is a SINGLE entry, deliberately — unlike the additive plugins, the three
+// outcomes here are mutually exclusive classifications of one verification
+// operation, not independent signals that could co-occur. Emitting them as
+// separate additive entries would let a candidate accumulate contradictory
+// evidence and climb out of the needs_review band, breaking the invariant that
+// every reverse-WHOIS finding stays below ConfidenceHigh.
+type confidenceDecision struct {
+	Score         float64
+	Justification string
+}
+
+// Justifications never name the resolved registrant. The registrant string is
+// exactly the third-party WHOIS/RDAP PII this plugin is careful not to log, and
+// a justification travels into Guard and onto an operator's screen — so these
+// describe the RELATION to the queried organization ("corroborates", "differs")
+// without reproducing the value itself.
+const (
+	justifyReverseWhoisCorroborated = "The candidate domain's own registrant organization corroborates the queried organization"
+	justifyReverseWhoisUnverified   = "The candidate domain's registrant organization could not be verified (masked, absent, or unresolvable)"
+	justifyReverseWhoisMismatch     = "The candidate domain's registrant organization differs from the queried organization; retained for review because a textual mismatch is not proof of non-ownership"
+)
+
 // decideConfidence maps a candidate's resolved registrant against the query org
-// to a needs_review score. A lookup error means "unverifiable", NOT "mismatch":
-// it is scored mid-band. Nothing here ever drops a candidate — a clear mismatch
-// is de-ranked to the bottom of the band, and every return is < ConfidenceHigh.
-func decideConfidence(queryOrg string, res registrantResult, lookupErr error) float64 {
+// to a needs-review decision. A lookup error means "unverifiable", NOT
+// "mismatch": it is scored mid-band. Nothing here ever drops a candidate — a
+// clear mismatch is de-ranked to the bottom of the band, and every return scores
+// < ConfidenceHigh.
+func decideConfidence(queryOrg string, res registrantResult, lookupErr error) confidenceDecision {
+	unverified := confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisUnverified}
+
 	if lookupErr != nil || res.Masked || res.Org == "" {
-		return confReverseWhoisUnverified
+		return unverified
 	}
 	nq, nc := normalizeOrg(queryOrg), normalizeOrg(res.Org)
 	if nq == "" || nc == "" {
 		// One side has no comparable tokens after legal-suffix stripping (e.g. an
 		// all-suffix org like "Co., Ltd."). Token similarity is undefined here, so
 		// the candidate is UNVERIFIABLE, not a mismatch — score mid-band.
-		return confReverseWhoisUnverified
+		return unverified
 	}
 	sim := tokenSimilarity(nq, nc)
 	switch {
 	case sim >= simCorroborate:
-		return confReverseWhoisCorroborated
+		return confidenceDecision{Score: confReverseWhoisCorroborated, Justification: justifyReverseWhoisCorroborated}
 	case sim < simMismatch:
 		// Present, unmasked, clear mismatch → de-rank to the bottom of the
 		// needs_review band (walmart.com-from-a-Leica-query). A textual registrant
 		// mismatch is not proof of non-ownership, so this is never dropped.
-		return confReverseWhoisMismatch
+		return confidenceDecision{Score: confReverseWhoisMismatch, Justification: justifyReverseWhoisMismatch}
 	default:
 		// Ambiguous partial overlap [simMismatch, simCorroborate).
-		return confReverseWhoisUnverified
+		return unverified
 	}
 }
 
@@ -385,7 +413,7 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		findings := make([]plugins.Finding, 0, len(cands))
 		for _, c := range cands {
 			f := c.finding
-			plugins.SetConfidence(&f, confReverseWhoisUnverified)
+			plugins.AddConfidence(&f, confReverseWhoisUnverified, justifyReverseWhoisUnverified)
 			findings = append(findings, f)
 		}
 		// Re-check before returning: the plausibility filter and the scoring loop
@@ -414,13 +442,13 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 	// discard floor and would silently drop the candidate — violating
 	// de-rank-never-drop (Gemini review, ENG-5123). Successful workers overwrite
 	// their index with the decided band.
-	scores := make([]float64, len(cands))
-	for i := range scores {
-		scores[i] = confReverseWhoisUnverified
+	decisions := make([]confidenceDecision, len(cands))
+	for i := range decisions {
+		decisions[i] = confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisUnverified}
 	}
 
 	// Per-candidate observability, sized len(cands) — NOT resolveCount — so it
-	// indexes identically to scores and a stray index can never be out of range.
+	// indexes identically to decisions and a stray index can never be out of range.
 	// Unlike scores this needs no pre-fill loop: the zero candidateOutcome
 	// (whoisComplete, not failed, not panicked) is already the correct reading for
 	// the overflow indices >= resolveCount, which were never looked up, and for any
@@ -465,7 +493,7 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 				}
 			}()
 			res, err := r.resolveRegistrant(gctx, cands[i].domain)
-			scores[i] = decideConfidence(queryOrg, res, err)
+			decisions[i] = decideConfidence(queryOrg, res, err)
 			// Record why this candidate is (or is not) fully verified. res.Incomplete is
 			// PURELY OBSERVATIONAL — decideConfidence above never reads it, so scoring
 			// stays byte-identical to ENG-5123 (ENG-5405 AC4). err is otherwise
@@ -548,7 +576,7 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 	findings := make([]plugins.Finding, 0, len(cands))
 	for i, c := range cands {
 		f := c.finding
-		plugins.SetConfidence(&f, scores[i])
+		plugins.AddConfidence(&f, decisions[i].Score, decisions[i].Justification)
 		findings = append(findings, f)
 	}
 	return findings, nil

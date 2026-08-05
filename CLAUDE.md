@@ -95,7 +95,14 @@ Use `pkg/client.Client` for HTTP requests. Provides:
 
 ### Confidence Scoring
 
-For name-resolution plugins where mapping may be ambiguous, use `plugins.SetConfidence(finding, score)`. Findings between 0.35-0.65 get `needs_review` flag.
+For name-resolution plugins where mapping may be ambiguous, attach evidence with `plugins.AddConfidence(finding, score, justification)` — **one call per independently observed signal**, never one call carrying a pre-summed score. The evidence list is what Guard surfaces to a human, so a single opaque entry throws away exactly the information it exists to carry.
+
+**What counts as a separate entry.** The test is whether the signals are independent evidence *of ownership*, not whether they are countable occurrences. `github-org` decomposes into four entries because a blog-domain match, a name-similarity match, a login-token match and repo activity can each be right while the others are wrong. Repeats of one observation do not: `censys-org` scores crossing its 5-host threshold as a single `ConfidenceHigh` entry, and `builtwith` emits one entry listing every matching analytics identifier, because a certificate seen on more hosts and a second tracker on the same marketing stack are more of the same sighting rather than corroboration from a new direction. Watch the arithmetic when deciding — additive entries reach the 1.0 cap fast (two BuiltWith identifiers would have summed to 1.20), and capping to full certainty on a repeated signal is worse than one honest entry.
+
+- `plugins.TotalConfidence(f)` is the sum of the entry scores, capped at 1.0. **No entries means 0.0**, not 1.0 — absence of evidence is not confidence.
+- `plugins.NeedsReview(f)` is derived, never stored: `len(f.Confidences) == 0 || TotalConfidence(f) < ConfidenceHigh`. It reads off the total, so an unscored finding needs review just like an explicitly-zero one. **It therefore cannot distinguish "never assessed" from "assessed and found wanting"** — anything that must test `len(f.Confidences)` directly. The SDK emitter and the Guard adapter both do, because only an unscored finding may fall back to a downstream default. So does terminal output in `run.go`, which annotates only scored findings: most output comes from plugins that never score, and labelling those `needs-review [confidence:0.00]` would report an assessment that never happened.
+- Confidence never lives in `Finding.Data`. `Data` is source-specific metadata only.
+- Entries are summed at runtime, so a decomposition meant to land exactly on `ConfidenceHigh` can fall a hair short in float64 (wikidata's `0.30 + 0.35` is `0.6499999999999999`). `NeedsReview` compares against `ConfidenceHigh - confidenceEpsilon` so whether a finding reads as clean does not depend on how its score was spelled.
 
 ### Reverse-WHOIS Verify-After-Retrieve
 
@@ -104,8 +111,9 @@ The reverse-whois domain plugins (`reverse-whois` over ViewDNS, `whoxy-reverse-w
 - **`registrantResolver`** resolves each candidate's registrant org — **RDAP primary** (`github.com/openrdap/rdap`, pooled per-worker `*rdap.Client` via a pre-filled fixed-size channel that survives GC — a shared client is unsafe for concurrent `Do`, and `sync.Pool` evicted warm clients mid-pass (ENG-5376)), **WHOIS fallback** (`whoisclient.go`) when RDAP yields nothing. `registrantOrgFromDomain` reads the registrant entity's jCard `org` (falling back to `fn`).
 - **`verifyCandidates`** compares the resolved registrant org against the query org (normalized similarity) and assigns per-candidate confidence rather than one flat score:
   - corroborated (similarity ≥ 0.60) → `confReverseWhoisCorroborated` = 0.60
-  - masked / unresolved registrant → `confReverseWhoisUnverified` = 0.50 (`needs_review`)
-  - mismatch → `confReverseWhoisMismatch` = 0.40 (`needs_review`)
+  - masked / unresolved registrant → `confReverseWhoisUnverified` = 0.50 (needs review)
+  - mismatch → `confReverseWhoisMismatch` = 0.40 (needs review)
+  - `decideConfidence` returns a `confidenceDecision{Score, Justification}` and the caller makes **one** `AddConfidence` call with it. These three are mutually exclusive classifications of a single verification operation, not independent additive signals — emitting them as separate entries would let a candidate accumulate contradictory evidence and climb out of the review band. Justifications describe the *relation* to the queried org ("corroborates", "differs") and never reproduce the resolved registrant, which is the same WHOIS/RDAP PII this plugin declines to log.
   - **De-rank, never drop:** every candidate is still emitted; scores stay within the `needs_review` band `[0.35, 0.65)` so nothing is silently removed from the graph.
 - Work is bounded: `maxReverseWhoisCandidates` (500) cap, `reverseWhoisWorkers` (6) concurrency, per-lookup `reverseWhoisLookupTimeout` (10s), and a pass-wide `reverseWhoisTotalBudget` (90s) derived from the caller `ctx`. Budget expiry is recall-safe (emit what resolved); a caller-cancelled `ctx` aborts with the error.
 - **Incomplete lookups are observable, not silent:** a WHOIS leg that could not finish its referral chain — deadline expiry mid-chain, a referral hop whose transport failed, or the hop budget exhausted with a referral still pending — still returns its salvaged post-referral record with a `nil` error (recall unchanged), but now **reports why it is partial**: `whoisQuery` returns a `whoisIncompleteness` reason that `viaWHOIS` stamps onto `registrantResult.Incomplete` (ENG-5405). The contract, arm by arm:

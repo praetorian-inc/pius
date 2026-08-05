@@ -457,8 +457,104 @@ func TestCalculateConfidence(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := calculateConfidence(tt.hostname, tt.baseDomain, tt.orgName, tt.isCDN)
-			assert.Equal(t, tt.expected, got)
+			var f plugins.Finding
+			scoreReverseIP(&f, tt.hostname, tt.baseDomain, tt.orgName, "192.0.2.1", tt.isCDN)
+
+			assert.InDelta(t, tt.expected, plugins.TotalConfidence(f), 0.001)
+			require.NotEmpty(t, f.Confidences, "every scored hostname carries evidence")
+			for _, c := range f.Confidences {
+				assert.NotEmpty(t, c.Justification, "every entry needs a justification")
+			}
+			// The base association entry always fires; the rest are conditional,
+			// so the entry count is what distinguishes the branches.
+			assert.InDelta(t, confReverseIPAssociated, f.Confidences[0].Score, 0.001)
 		})
 	}
+}
+
+// TestScoreReverseIP_EvidenceBreakdown asserts which entries fire per branch,
+// not just the totals — two different branches can reach the same sum, and only
+// the breakdown says why.
+func TestScoreReverseIP_EvidenceBreakdown(t *testing.T) {
+	tests := []struct {
+		name       string
+		hostname   string
+		baseDomain string
+		orgName    string
+		isCDN      bool
+		wantScores []float64
+		wantTotal  float64
+	}{
+		{
+			name:       "non-CDN known-domain match credits association, non-CDN and domain",
+			hostname:   "www.example.com",
+			baseDomain: "example.com",
+			orgName:    "Example Inc",
+			isCDN:      false,
+			wantScores: []float64{confReverseIPAssociated, confReverseIPNonCDN, confReverseIPKnownDomain},
+			wantTotal:  0.85,
+		},
+		{
+			name:       "non-CDN org-name match credits the weaker org-name entry",
+			hostname:   "mail.exampleinc.net",
+			baseDomain: "example.com",
+			orgName:    "Example Inc",
+			isCDN:      false,
+			wantScores: []float64{confReverseIPAssociated, confReverseIPNonCDN, confReverseIPOrgName},
+			wantTotal:  0.70,
+		},
+		{
+			// Same 0.55 total as the CDN known-domain case below, reached by a
+			// completely different route.
+			name:       "non-CDN unmatched hostname credits only association and non-CDN",
+			hostname:   "unrelated.net",
+			baseDomain: "example.com",
+			orgName:    "Example Inc",
+			isCDN:      false,
+			wantScores: []float64{confReverseIPAssociated, confReverseIPNonCDN},
+			wantTotal:  0.55,
+		},
+		{
+			name:       "CDN known-domain match drops the non-CDN entry",
+			hostname:   "www.example.com",
+			baseDomain: "example.com",
+			orgName:    "Example Inc",
+			isCDN:      true,
+			wantScores: []float64{confReverseIPAssociated, confReverseIPKnownDomain},
+			wantTotal:  0.55,
+		},
+		{
+			name:       "CDN unrelated hostname carries the base signal alone",
+			hostname:   "unrelated.net",
+			baseDomain: "example.com",
+			orgName:    "Example Inc",
+			isCDN:      true,
+			wantScores: []float64{confReverseIPAssociated},
+			wantTotal:  0.25,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var f plugins.Finding
+			scoreReverseIP(&f, tt.hostname, tt.baseDomain, tt.orgName, "192.0.2.1", tt.isCDN)
+
+			require.Len(t, f.Confidences, len(tt.wantScores))
+			for i, want := range tt.wantScores {
+				assert.InDelta(t, want, f.Confidences[i].Score, 0.001, "entry %d", i)
+				assert.NotEmpty(t, f.Confidences[i].Justification, "entry %d", i)
+			}
+			assert.InDelta(t, tt.wantTotal, plugins.TotalConfidence(f), 0.001)
+		})
+	}
+}
+
+// TestScoreReverseIP_KnownDomainSupersedesOrgName keeps a hostname that matches
+// both from double-counting one claim and inflating past the 0.85 branch.
+func TestScoreReverseIP_KnownDomainSupersedesOrgName(t *testing.T) {
+	var f plugins.Finding
+	scoreReverseIP(&f, "exampleinc.example.com", "example.com", "Example Inc", "192.0.2.1", false)
+
+	assert.Len(t, f.Confidences, 3)
+	assert.InDelta(t, 0.85, plugins.TotalConfidence(f), 0.001)
 }
