@@ -170,7 +170,10 @@ func TestGLEIFPlugin_Run_TopLevelWithSubsidiaries(t *testing.T) {
 		assert.Equal(t, plugins.FindingPreseed, f.Type)
 		assert.Equal(t, "gleif", f.Source)
 		assert.Equal(t, "subsidiary", f.Data["corporate_relationship"])
-		assert.InDelta(t, confGLEIF, plugins.TotalConfidence(f), 0.001)
+		// name-resolution(0.15) + subsidiary(0.30) + active(0.10) = 0.55
+		// Sub A shares jurisdiction US (+0.05=0.60), Sub B is GB (no jurisdiction bonus)
+		assert.InDelta(t, 0.55, plugins.TotalConfidence(f), 0.06)
+		assert.True(t, len(f.Confidences) >= 3, "expected at least 3 confidence signals")
 	}
 	names := []string{findings[0].Value, findings[1].Value}
 	assert.Contains(t, names, "Acme Subsidiary A")
@@ -396,6 +399,111 @@ func TestGLEIFPlugin_Run_PreseedData_ContainsJurisdiction(t *testing.T) {
 	require.NotNil(t, preseed, "expected preseed finding for subsidiary")
 	assert.Equal(t, "GB", preseed.Data["jurisdiction"])
 	assert.Equal(t, "LEI010", preseed.Data["lei"])
+}
+
+// ── Confidence decomposition tests ──────────────────────────────────────────
+
+func TestGLEIFPlugin_Run_ConfidenceSignals_Parent(t *testing.T) {
+	primary := makeLEI("LEI001", "Acme Corp", "US", true)
+	parent := makeLEI("LEI_PARENT", "Acme Holdings", "US", false)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
+		case r.URL.Path == "/lei-records/LEI001":
+			_, _ = w.Write(gleifRecordResp(primary))
+		case r.URL.Path == "/lei-records/LEI001/direct-parent-relationship":
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
+		case r.URL.Path == "/lei-records/LEI001/ultimate-parent-relationship":
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
+		case r.URL.Path == "/lei-records/LEI_PARENT":
+			_, _ = w.Write(gleifRecordResp(parent))
+		case strings.Contains(r.URL.Path, "/direct-children"):
+			_, _ = w.Write(gleifChildrenResp(1, 1))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	p := newGLEIFPlugin(srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+
+	f := findings[0]
+	require.Len(t, f.Confidences, 4, "expected 4 signals: resolution + parent + active + jurisdiction")
+
+	// Signal 1: name resolution (top candidate)
+	assert.InDelta(t, 0.15, f.Confidences[0].Score, 0.001)
+	assert.Contains(t, f.Confidences[0].Justification, "top candidate")
+	assert.Contains(t, f.Confidences[0].Justification, "Acme Corp")
+
+	// Signal 2: relationship
+	assert.InDelta(t, 0.35, f.Confidences[1].Score, 0.001)
+	assert.Contains(t, f.Confidences[1].Justification, "direct parent")
+
+	// Signal 3: active status
+	assert.InDelta(t, 0.10, f.Confidences[2].Score, 0.001)
+	assert.Contains(t, f.Confidences[2].Justification, "active LEI")
+
+	// Signal 4: shared jurisdiction
+	assert.InDelta(t, 0.05, f.Confidences[3].Score, 0.001)
+	assert.Contains(t, f.Confidences[3].Justification, "US")
+
+	// Total: 0.15 + 0.35 + 0.10 + 0.05 = 0.65
+	assert.InDelta(t, 0.65, plugins.TotalConfidence(f), 0.001)
+	assert.False(t, plugins.NeedsReview(f), "parent with all signals should not need review")
+}
+
+func TestGLEIFPlugin_Run_ConfidenceSignals_Sibling_DifferentJurisdiction(t *testing.T) {
+	primary := makeLEI("LEI001", "Acme Corp", "US", true)
+	parent := makeLEI("LEI_PARENT", "Acme Holdings", "GB", false)
+	sibling := makeLEI("LEI010", "Acme Japan", "JP", true)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
+		case r.URL.Path == "/lei-records/LEI001":
+			_, _ = w.Write(gleifRecordResp(primary))
+		case r.URL.Path == "/lei-records/LEI001/direct-parent-relationship":
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
+		case r.URL.Path == "/lei-records/LEI001/ultimate-parent-relationship":
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
+		case r.URL.Path == "/lei-records/LEI_PARENT":
+			_, _ = w.Write(gleifRecordResp(parent))
+		case r.URL.Path == "/lei-records/LEI001/direct-children":
+			_, _ = w.Write(gleifChildrenResp(1, 1))
+		case r.URL.Path == "/lei-records/LEI_PARENT/direct-children":
+			_, _ = w.Write(gleifChildrenResp(1, 1, primary, sibling))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	p := newGLEIFPlugin(srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
+	require.NoError(t, err)
+
+	// Find the sibling finding.
+	var sib *plugins.Finding
+	for i := range findings {
+		if findings[i].Value == "Acme Japan" {
+			sib = &findings[i]
+		}
+	}
+	require.NotNil(t, sib)
+
+	// Sibling with different jurisdiction: resolution(0.15) + sibling(0.20) + active(0.10) = 0.45
+	// No jurisdiction bonus (JP != US).
+	require.Len(t, sib.Confidences, 3)
+	assert.InDelta(t, 0.45, plugins.TotalConfidence(*sib), 0.001)
+	assert.True(t, plugins.NeedsReview(*sib), "sibling in different jurisdiction should need review")
 }
 
 // ── Sibling discovery tests ──────────────────────────────────────────────────
