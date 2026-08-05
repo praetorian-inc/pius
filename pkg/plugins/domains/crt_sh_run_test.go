@@ -136,11 +136,20 @@ func TestCRTShPlugin_PrefersDomainOverOrgName(t *testing.T) {
 	assert.Equal(t, "acme.com", receivedQuery, "domain should be used over org name")
 }
 
-func TestCRTShPlugin_GracefulOnNetworkError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
+func TestCRTShPlugin_GracefulOnHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
 
 	p := &CRTShPlugin{client: client.New(), baseURL: srv.URL}
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
+func TestCRTShPlugin_GracefulOnNetworkError(t *testing.T) {
+	p := &CRTShPlugin{client: client.NewNoRetry(), baseURL: "http://127.0.0.1:1"}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
 	assert.NoError(t, err)
 	assert.Empty(t, findings)
