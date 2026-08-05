@@ -335,11 +335,22 @@ func TestGitHubOrgPlugin_Run_UsesCacheOnSecondCall(t *testing.T) {
 	assert.Equal(t, calls1, callCount, "second call should use cache, not hit API")
 }
 
-func TestGitHubOrgPlugin_Run_GracefulOnNetworkError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
+func TestGitHubOrgPlugin_Run_GracefulOnHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
 
 	p := newGitHubTestPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
+func TestGitHubOrgPlugin_Run_GracefulOnNetworkError(t *testing.T) {
+	c, err := piuscache.NewAPI(t.TempDir(), "github-org")
+	require.NoError(t, err)
+	p := &GitHubOrgPlugin{client: client.NewNoRetry(), baseURL: "http://127.0.0.1:1", apiCache: c}
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
 	assert.NoError(t, err)
 	assert.Empty(t, findings)
