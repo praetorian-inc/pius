@@ -470,8 +470,12 @@ func printFindings(findings []plugins.Finding, format string) error {
 		}
 		for _, f := range findings {
 			line := fmt.Sprintf("[%s] %s (%s)", f.Type, f.Value, f.Source)
-			// Surface review flag and confidence for borderline findings
-			if plugins.NeedsReview(f) {
+			// Surface review flag and confidence for borderline findings.
+			// Only findings a plugin actually scored are annotated: most output
+			// comes from plugins that never score (crt.sh, wayback, RDAP CIDR
+			// expansion), and labelling those "needs-review [confidence:0.00]"
+			// would report an assessment that never happened on nearly every line.
+			if len(f.Confidences) > 0 && plugins.NeedsReview(f) {
 				if colorEnabled() {
 					line += fmt.Sprintf(" ⚠ needs-review [confidence:%.2f]", plugins.TotalConfidence(f))
 				} else {

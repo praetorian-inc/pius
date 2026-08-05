@@ -157,13 +157,13 @@ func (p *ApolloPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 	// may return data for a similarly-named company. One query resolved the
 	// whole response, so every finding carries the same single entry — there is
 	// no second, independent signal here to decompose into.
-	score, justification := 0.85, fmt.Sprintf(
-		"Apollo resolved the organization through the known domain %q", input.Domain)
+	score := 0.85
+	justification := fmt.Sprintf("Apollo resolved the organization through the known domain %q", input.Domain)
 	if input.Domain == "" {
-		score, justification = 0.70, fmt.Sprintf(
-			"Apollo resolved the organization through an organization-name query for %q, which can match a similarly-named company",
-			input.OrgName)
+		score = 0.70
+		justification = fmt.Sprintf("Apollo resolved the organization through an organization-name query for %q, which can match a similarly-named company", input.OrgName)
 	}
+
 	for i := range findings {
 		plugins.AddConfidence(&findings[i], score, justification)
 	}

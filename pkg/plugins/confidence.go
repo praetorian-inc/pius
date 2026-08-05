@@ -58,13 +58,15 @@ func TotalConfidence(f Finding) float64 {
 	return min(total, 1.0)
 }
 
-// NeedsReview reports whether a finding carries an explicit judgement that falls
-// short of ConfidenceHigh.
+// NeedsReview reports whether a finding falls short of ConfidenceHigh, which
+// includes a finding nothing has vouched for at all.
 //
-// An unscored finding is not a review judgement — a plugin that never scores
-// (deterministic RDAP expansion, crt.sh transparency logs) has made no claim
-// about ambiguity, so it returns false even though its total is 0.0. A finding
-// carrying an explicit zero-score entry has made that claim, and needs review.
+// It reads directly off the total: no evidence totals 0.0 and needs review, an
+// explicit zero-score entry totals 0.0 and needs review, and anything scored
+// below the threshold needs review. Callers that must distinguish "never
+// assessed" from "assessed and found wanting" test len(f.Confidences) rather
+// than asking here — the SDK emitter and the Guard adapter both do, because
+// only unscored findings may fall back to a downstream default.
 func NeedsReview(f Finding) bool {
-	return len(f.Confidences) > 0 && TotalConfidence(f) < ConfidenceHigh-confidenceEpsilon
+	return len(f.Confidences) == 0 || TotalConfidence(f) < ConfidenceHigh-confidenceEpsilon
 }

@@ -102,9 +102,26 @@ func TestTotalConfidence_CapsAtOne(t *testing.T) {
 	assert.InDelta(t, 1.0, TotalConfidence(f), 0.001, "1.25 of evidence caps at 1.0")
 }
 
-func TestNeedsReview_FalseForEmptyEvidence(t *testing.T) {
-	assert.False(t, NeedsReview(Finding{}),
-		"an unscored finding has made no review judgement, despite totalling 0.0")
+func TestNeedsReview_TrueForEmptyEvidence(t *testing.T) {
+	assert.True(t, NeedsReview(Finding{}),
+		"nothing has vouched for an unscored finding, and it totals 0.0")
+}
+
+// TestNeedsReview_DoesNotSeparateUnscoredFromExplicitZero is the caveat that
+// comes with reading straight off the total: both cases need review, so
+// NeedsReview can no longer tell them apart. Anything that must — the SDK
+// emitter and the Guard adapter, where only an unscored finding may fall back
+// to a downstream default — tests len(Confidences) instead.
+func TestNeedsReview_DoesNotSeparateUnscoredFromExplicitZero(t *testing.T) {
+	unscored := Finding{}
+
+	var explicitZero Finding
+	AddConfidence(&explicitZero, 0.0, "explicitly scored zero")
+
+	assert.Equal(t, NeedsReview(unscored), NeedsReview(explicitZero),
+		"the predicate alone cannot separate them")
+	assert.Empty(t, unscored.Confidences)
+	assert.Len(t, explicitZero.Confidences, 1, "the entry count is what still separates them")
 }
 
 func TestNeedsReview_TrueForExplicitZero(t *testing.T) {
@@ -181,4 +198,67 @@ func TestNeedsReview_EpsilonDoesNotSwallowRealShortfalls(t *testing.T) {
 	AddConfidence(&f, 0.6499, "just short of the bar")
 
 	assert.True(t, NeedsReview(f))
+}
+
+// TestFinding_JSONIncludesDerivedValues covers the `json` and `ndjson` output
+// modes: the aggregate and the review verdict appear alongside the evidence so
+// a reader does not have to sum the entries.
+func TestFinding_JSONIncludesDerivedValues(t *testing.T) {
+	f := Finding{Type: FindingDomain, Value: "example.com", Source: "github-org"}
+	AddConfidence(&f, 0.60, "blog URL matches the known domain")
+	AddConfidence(&f, 0.05, "organization has 86 public repositories")
+
+	encoded, err := json.Marshal(f)
+	require.NoError(t, err)
+
+	var decoded struct {
+		Value           string
+		Confidences     []Confidence
+		TotalConfidence float64
+		NeedsReview     bool
+	}
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+
+	assert.Equal(t, "example.com", decoded.Value)
+	assert.Len(t, decoded.Confidences, 2, "the evidence still travels")
+	assert.InDelta(t, 0.65, decoded.TotalConfidence, 0.001)
+	assert.False(t, decoded.NeedsReview, "0.65 clears the bar")
+}
+
+func TestFinding_JSONDerivedValuesReflectReviewState(t *testing.T) {
+	f := Finding{Type: FindingDomain, Value: "example.com", Source: "gleif"}
+	AddConfidence(&f, ConfidenceLow, "secondary legal-name search match")
+
+	encoded, err := json.Marshal(f)
+	require.NoError(t, err)
+
+	var decoded struct {
+		TotalConfidence float64
+		NeedsReview     bool
+	}
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+
+	assert.InDelta(t, ConfidenceLow, decoded.TotalConfidence, 0.001)
+	assert.True(t, decoded.NeedsReview)
+}
+
+// TestFinding_JSONRoundTripIgnoresDerivedValues pins that the derived fields are
+// output-only. Findings round-trip through this encoding in the plugin caches,
+// and rehydrating must rebuild the totals from Confidences rather than trusting
+// whatever was written — otherwise a stale cache entry could carry a total that
+// disagrees with its own evidence.
+func TestFinding_JSONRoundTripIgnoresDerivedValues(t *testing.T) {
+	original := Finding{Type: FindingDomain, Value: "example.com", Source: "github-org"}
+	AddConfidence(&original, 0.30, "first")
+	AddConfidence(&original, 0.25, "second")
+
+	encoded, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var restored Finding
+	require.NoError(t, json.Unmarshal(encoded, &restored))
+
+	assert.Equal(t, original.Confidences, restored.Confidences)
+	assert.InDelta(t, TotalConfidence(original), TotalConfidence(restored), 0.001)
+	assert.Equal(t, NeedsReview(original), NeedsReview(restored))
 }

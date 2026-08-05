@@ -801,11 +801,10 @@ func TestCensysOrgPlugin_AppearsInList(t *testing.T) {
 	assert.True(t, found)
 }
 
-// TestCensysOrgPlugin_ExtractPreseeds_FiveHostsReproduceHighConfidence pins the
-// emission threshold to the score it used to be a flat stand-in for: at exactly
-// censysMinHosts distinct hosts the per-host entries still sum to
-// plugins.ConfidenceHigh.
-func TestCensysOrgPlugin_ExtractPreseeds_FiveHostsReproduceHighConfidence(t *testing.T) {
+// TestCensysOrgPlugin_ExtractPreseeds_ThresholdScoresHighConfidence pins the
+// binary judgement: crossing censysMinHosts is the evidence, scored
+// plugins.ConfidenceHigh as one entry.
+func TestCensysOrgPlugin_ExtractPreseeds_ThresholdScoresHighConfidence(t *testing.T) {
 	p := &CensysOrgPlugin{}
 	var hits []censysSearchHit
 	for i := 0; i < 5; i++ {
@@ -818,19 +817,18 @@ func TestCensysOrgPlugin_ExtractPreseeds_FiveHostsReproduceHighConfidence(t *tes
 	preseeds := censysPreseeds(p.extractFindings("Acme Corp", hits))
 	require.Len(t, preseeds, 1)
 
-	assert.Len(t, preseeds[0].Confidences, 5, "one entry per distinct host observation")
+	require.Len(t, preseeds[0].Confidences, 1, "crossing the threshold is one judgement")
 	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]), 0.001)
 	assert.False(t, plugins.NeedsReview(preseeds[0]))
-	for _, c := range preseeds[0].Confidences {
-		assert.Contains(t, c.Justification, "Contoso Ltd")
-		assert.NotEmpty(t, c.Justification)
-	}
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "Contoso Ltd")
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "5 distinct hosts")
 }
 
-// TestCensysOrgPlugin_ExtractPreseeds_MoreHostsApproachCap shows the payoff of
-// decomposing: breadth of observation now raises confidence instead of being
-// flattened into one fixed score.
-func TestCensysOrgPlugin_ExtractPreseeds_MoreHostsApproachCap(t *testing.T) {
+// TestCensysOrgPlugin_ExtractPreseeds_MoreHostsDoNotRaiseScore: appearing on
+// more hosts past the threshold reflects how widely Censys scanned, not how
+// likely the organization is to belong to the target. Scoring per host would
+// have pushed this to the 1.0 cap on breadth alone.
+func TestCensysOrgPlugin_ExtractPreseeds_MoreHostsDoNotRaiseScore(t *testing.T) {
 	p := &CensysOrgPlugin{}
 	var hits []censysSearchHit
 	for i := 0; i < 12; i++ {
@@ -843,13 +841,16 @@ func TestCensysOrgPlugin_ExtractPreseeds_MoreHostsApproachCap(t *testing.T) {
 	preseeds := censysPreseeds(p.extractFindings("Acme Corp", hits))
 	require.Len(t, preseeds, 1)
 
-	assert.Len(t, preseeds[0].Confidences, 12)
-	assert.InDelta(t, 1.0, plugins.TotalConfidence(preseeds[0]), 0.001, "12 x 0.13 caps at 1.0")
+	require.Len(t, preseeds[0].Confidences, 1)
+	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]), 0.001,
+		"twelve hosts score the same as five")
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "12 distinct hosts")
 }
 
-// TestCensysOrgPlugin_ExtractPreseeds_RepeatedHostScoresOnce guards against a
-// host observed on several ports or certificates inflating its own evidence.
-func TestCensysOrgPlugin_ExtractPreseeds_RepeatedHostScoresOnce(t *testing.T) {
+// TestCensysOrgPlugin_ExtractPreseeds_RepeatedHostCountedOnce guards the
+// threshold itself: a host observed on several ports or certificates must not
+// count twice toward censysMinHosts.
+func TestCensysOrgPlugin_ExtractPreseeds_RepeatedHostCountedOnce(t *testing.T) {
 	p := &CensysOrgPlugin{}
 	var hits []censysSearchHit
 	for i := 0; i < 5; i++ {
@@ -864,7 +865,9 @@ func TestCensysOrgPlugin_ExtractPreseeds_RepeatedHostScoresOnce(t *testing.T) {
 	preseeds := censysPreseeds(p.extractFindings("Acme Corp", hits))
 	require.Len(t, preseeds, 1)
 
-	assert.Len(t, preseeds[0].Confidences, 5, "a repeated host must not be credited twice")
+	require.Len(t, preseeds[0].Confidences, 1)
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "5 distinct hosts",
+		"the repeated host must not be counted twice")
 	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]), 0.001)
 }
 

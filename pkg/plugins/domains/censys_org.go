@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"os"
-	"slices"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/cache"
@@ -15,14 +13,15 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-// Censys certificate-organization evidence. A Subject Organization is only
-// emitted once it has been seen on censysMinHosts distinct hosts, and each such
-// host contributes confCensysPerHost — so the emission threshold reproduces the
-// previous flat plugins.ConfidenceHigh and broader sightings score higher.
-const (
-	censysMinHosts    = 5
-	confCensysPerHost = 0.13
-)
+// censysMinHosts is the number of distinct hosts a certificate Subject
+// Organization must appear on before it is emitted as a preseed.
+//
+// Crossing it is a binary judgement, scored plugins.ConfidenceHigh: the
+// threshold is what the evidence rests on, and appearing on more hosts past it
+// does not make the organization more likely to belong to the target. Scoring
+// per host instead would push any organization on eight or more hosts to the
+// 1.0 cap purely on breadth of scanning.
+const censysMinHosts = 5
 
 func init() {
 	plugins.Register("censys-org", func() plugins.Plugin {
@@ -443,17 +442,11 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 				"host_count":    len(hosts),
 			},
 		}
-		// Each distinct host observing this Subject Organization is an
-		// independent sighting, so each contributes its own entry: the
-		// censysMinHosts threshold reproduces the previous flat 0.65, and a
-		// certificate org seen across more hosts climbs toward the 1.0 cap.
-		// Hosts are keyed in a set, so a host cannot be credited twice. Host
-		// identifiers are the only detail in the justification — no certificate
-		// contents.
-		for _, host := range slices.Sorted(maps.Keys(hosts)) {
-			plugins.AddConfidence(&f, confCensysPerHost,
-				fmt.Sprintf("Certificate Subject Organization %q was observed on host %s", displayName, host))
-		}
+		// The host count is the only detail in the justification — no certificate
+		// contents, and no host addresses.
+		plugins.AddConfidence(&f, plugins.ConfidenceHigh,
+			fmt.Sprintf("Certificate Subject Organization %q was observed on %d distinct hosts, at or above the %d-host threshold",
+				displayName, len(hosts), censysMinHosts))
 		findings = append(findings, f)
 	}
 
