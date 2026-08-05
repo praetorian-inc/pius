@@ -199,8 +199,8 @@ func TestWhoisFreaks_Run_SubdomainReducesToRootDomain(t *testing.T) {
 }
 
 // Auth is a query parameter, so a wrapped transport error would carry the key
-// into logs. pkg/client's own sanitizeURL does not redact the camelCase
-// "apiKey" name, so the plugin must discard the error rather than rely on it.
+// into logs: pkg/client wraps a transport failure with %w and never calls
+// sanitizeURL on that path, so the plugin must discard the error, not wrap it.
 func TestWhoisFreaks_Run_ErrorNeverContainsTheAPIKey(t *testing.T) {
 	p := newTestWhoisFreaks(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -363,8 +363,8 @@ func TestWhoisFreaksHistory_NoRecordsIsAResultNotAnError(t *testing.T) {
 }
 
 // The key rides in the query string and this error reaches job.Comment, which is
-// served to tenant users. pkg/client's sanitizeURL does not redact the camelCase
-// "apiKey" name, so history must discard the transport error rather than wrap it.
+// served to tenant users. pkg/client wraps a transport failure with %w and never
+// calls sanitizeURL there, so history must discard that error rather than wrap it.
 func TestWhoisFreaksHistory_ErrorNeverCarriesTheAPIKey(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
 	t.Setenv("WHOISFREAKS_API_KEY", whoisFreaksTestKey)

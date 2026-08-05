@@ -199,9 +199,9 @@ func (c *whoisFreaksClient) fetch(ctx context.Context, leg, endpoint, domain str
 
 	body, err := c.client.Get(ctx, endpoint+"?"+params.Encode())
 	if err != nil {
-		// Replace, never wrap: Go renders a transport failure as
-		// `Get "<full url>": <cause>`, and the URL carries the API key in its
-		// apiKey parameter, which pkg/client's sanitizeURL does not redact.
+		// Replace, never wrap: pkg/client wraps a transport failure with %w and
+		// never calls sanitizeURL on that path, so the *url.Error underneath
+		// renders the full URL — apiKey included — if we wrap it.
 		return fmt.Errorf("whoisfreaks %s: request failed for %q", leg, domain)
 	}
 	if err := json.Unmarshal(body, out); err != nil {
