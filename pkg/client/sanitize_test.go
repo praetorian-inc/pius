@@ -12,8 +12,8 @@ func TestSanitizeURL_EdgeCases(t *testing.T) {
 		name     string
 		input    string
 		expected string
-		contains []string    // strings that MUST be in output
-		excludes []string    // strings that MUST NOT be in output
+		contains []string // strings that MUST be in output
+		excludes []string // strings that MUST NOT be in output
 	}{
 		{
 			name:     "basic key param",
@@ -84,10 +84,22 @@ func TestSanitizeURL_EdgeCases(t *testing.T) {
 			excludes: []string{"OAUTH_SECRET"},
 		},
 		{
-			name:     "case sensitivity - KEY vs key",
+			name:     "uppercase KEY is redacted",
 			input:    "https://api.example.com/search?KEY=UPPERCASE_SECRET&query=test",
-			// KEY (uppercase) is NOT in our list, so should be preserved
-			contains: []string{"KEY=UPPERCASE_SECRET", "query=test"},
+			contains: []string{"KEY=REDACTED", "query=test"},
+			excludes: []string{"UPPERCASE_SECRET"},
+		},
+		{
+			name:     "camelCase apiKey param (WhoisFreaks style)",
+			input:    "https://api.whoisfreaks.com/v1.0/whois?apiKey=WF_SECRET&whois=live&domainName=example.com",
+			contains: []string{"apiKey=REDACTED", "whois=live", "domainName=example.com"},
+			excludes: []string{"WF_SECRET"},
+		},
+		{
+			name:     "mixed-case Access_Token param",
+			input:    "https://api.example.com/me?Access_Token=MIXED_OAUTH_SECRET&fields=id,name",
+			contains: []string{"Access_Token=REDACTED", "fields=id"},
+			excludes: []string{"MIXED_OAUTH_SECRET"},
 		},
 		{
 			name:     "invalid URL returns marker",

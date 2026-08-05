@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -37,6 +38,14 @@ func NewWithHTTPClient(hc *http.Client) *Client {
 	}
 }
 
+var sensitiveQueryParams = map[string]bool{
+	"key":          true,
+	"apikey":       true,
+	"api_key":      true,
+	"token":        true,
+	"access_token": true,
+}
+
 // sanitizeURL redacts sensitive query parameters (API keys, tokens) from URLs
 // to prevent accidental credential exposure in error messages and logs.
 func sanitizeURL(rawURL string) string {
@@ -46,8 +55,8 @@ func sanitizeURL(rawURL string) string {
 	}
 	q := parsed.Query()
 	redacted := false
-	for _, key := range []string{"key", "apikey", "api_key", "token", "access_token"} {
-		if q.Has(key) {
+	for key := range q {
+		if sensitiveQueryParams[strings.ToLower(key)] {
 			q.Set(key, "REDACTED")
 			redacted = true
 		}
