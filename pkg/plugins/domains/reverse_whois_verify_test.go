@@ -208,9 +208,40 @@ func TestDecideConfidence(t *testing.T) {
 			wantScore: confReverseWhoisCorroborated,
 		},
 		{
-			name:      "corroborated partial (shorter fully contained)",
+			// NOT a containment case, despite what this case used to be called
+			// (ENG-5374): normalizeOrg strips the legal-suffix token "corp", so both
+			// sides become the single token "acme" — an EXACT EQUALITY. It therefore
+			// corroborates through the exact-equality exemption, not through the k=1
+			// similarity value. The old name ("corroborated partial (shorter fully
+			// contained)") claimed coverage of non-exact single-token containment that
+			// this table never actually had, which is exactly the hole that let
+			// ENG-5374 survive. Expectation deliberately unchanged.
+			name:      "corroborated exact equality after suffix stripping (acme == acme)",
 			queryOrg:  "Acme",
 			res:       org("Acme Corp"),
+			wantScore: confReverseWhoisCorroborated,
+		},
+		{
+			// ENG-5374. normalizeOrg gives "apple" vs "apple tree landscaping", so
+			// k = min(1,3) = 1 and tokenSimilarity divides by the SHORTER side: sim
+			// saturates at 1.0 and an unrelated landscaping company corroborates at the
+			// top of the band. At k=1 the metric has no resolution at all (the reachable
+			// set is {0.0, 1.0} for every possible cutoff), so corroboration there must
+			// require exact equality.
+			name:      "single shared token with unmatched remainder is not corroboration (ENG-5374)",
+			queryOrg:  "Apple",
+			res:       org("Apple Tree Landscaping"),
+			wantScore: confReverseWhoisUnverified,
+		},
+		{
+			// Pins the exact-equality exemption the ENG-5374 guard carves out. Without
+			// this case a later refactor could delete the exemption and silently demote
+			// every legitimate single-token match ("Praetorian" vs "Praetorian Inc",
+			// where normalizeOrg strips "inc" so both sides become "praetorian") with
+			// nothing failing.
+			name:      "exact equality at k=1 still corroborates (exemption pin)",
+			queryOrg:  "Praetorian",
+			res:       org("Praetorian Inc"),
 			wantScore: confReverseWhoisCorroborated,
 		},
 		{

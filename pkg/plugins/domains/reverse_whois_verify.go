@@ -56,6 +56,33 @@ const (
 	// dropped, because a textual registrant mismatch is not proof of non-ownership.
 	confReverseWhoisMismatch = 0.40
 
+	// CALIBRATION BASIS (ENG-5374). simCorroborate and simMismatch are CONFIRMED
+	// at these values, not re-tuned, and this is the recorded basis.
+	//
+	// Established by enumeration, not by a fixture corpus (see
+	// TestSimilarityReachabilityByTokenCount): sim is always m/k for
+	// k = min(kq,kc) and m in [0,k], so the reachable value set — and therefore
+	// which arm can fire at all — is fully determined by k. At k=1 that set is
+	// exactly {0.0, 1.0}, so the cutoff VALUES decide nothing there: every
+	// possible simCorroborate in (0,1] classifies identically, and re-setting 0.60
+	// to 0.7/0.8/0.95 would not have fixed ENG-5374. The defect was the metric's
+	// RESOLUTION, not the threshold, so the fix is the k=1 guard in
+	// corroborationHasResolution and these constants stay put. Recorded known
+	// limitation: below k=4, simMismatch is reachable only at m=0, i.e. it is
+	// equivalent to "no shared tokens at all" in that range. Not fixed here — it
+	// never mis-ranks (every outcome stays inside the [0.35,0.65) review band) and
+	// fixing it means changing the shared tokenSimilarity, which github_org's
+	// floor assertion forbids and this ticket does not scope.
+	//
+	// NOT establishable hermetically: that 0.60/0.30 are the precision-optimal
+	// cutoffs. That is a claim about a decision boundary and needs candidates from
+	// the real ViewDNS/Whoxy return distribution, live-resolved registrant
+	// strings, and per-candidate ownership labels of INDEPENDENT provenance. The
+	// latter two are forbidden by this ticket's hermetic requirement, and
+	// hand-authored fixtures cannot substitute: their labels would come from the
+	// same judgment that picked the threshold, so any precision/recall figure
+	// would restate the prior while reading as a measurement.
+	//
 	// simCorroborate is the token-similarity threshold at/above which the
 	// candidate's registrant org is treated as corroborating the query org.
 	simCorroborate = 0.60
@@ -64,6 +91,10 @@ const (
 	// bottom of the needs_review band (the walmart.com-from-a-Leica-query false
 	// positive) — de-ranked, never dropped.
 	simMismatch = 0.30
+	// minCorroborateTokens is the smallest k = min(kq,kc) at which crossing
+	// simCorroborate carries information; below it, corroboration additionally
+	// requires exact equality. See corroborationHasResolution.
+	minCorroborateTokens = 2
 
 	// maxReverseWhoisCandidates caps how many candidates we verify per run.
 	maxReverseWhoisCandidates = 500
@@ -356,7 +387,7 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 	}
 	sim := tokenSimilarity(nq, nc)
 	switch {
-	case sim >= simCorroborate:
+	case sim >= simCorroborate && corroborationHasResolution(nq, nc):
 		return confidenceDecision{Score: confReverseWhoisCorroborated, Justification: justifyReverseWhoisCorroborated}
 	case sim < simMismatch:
 		// Present, unmasked, clear mismatch → de-rank to the bottom of the
@@ -364,9 +395,64 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 		// mismatch is not proof of non-ownership, so this is never dropped.
 		return confidenceDecision{Score: confReverseWhoisMismatch, Justification: justifyReverseWhoisMismatch}
 	default:
-		// Ambiguous partial overlap [simMismatch, simCorroborate).
+		// Could not corroborate. Two shapes land here and they mean the same
+		// thing: a genuine partial overlap in [simMismatch, simCorroborate), and a
+		// similarity that cleared simCorroborate on a token count where the metric
+		// was incapable of expressing anything else (ENG-5374 — see
+		// corroborationHasResolution). Both reuse the SAME already-constructed
+		// PII-free unverified value, so no new justification wording is needed:
+		// "could not be verified" is accurate for both.
 		return unverified
 	}
+}
+
+// corroborationHasResolution reports whether tokenSimilarity is capable of
+// expressing anything at this pair's token counts. It is the precondition
+// ENG-5374 added to the corroborate arm of decideConfidence — and it is about
+// the metric, not about the cutoff.
+//
+// tokenSimilarity (github_org.go) is the containment coefficient
+// m / min(kq,kc), so its denominator DISCARDS the longer side's unmatched
+// tokens and the value is invariant under adding disconfirming evidence:
+// "Apple" against "Apple Tree Landscaping", against "Apple Tree Landscaping Of
+// Tampa Bay", and against every longer superstring all score exactly 1.0. That
+// violates specificity monotonicity — a similarity feeding a threshold must be
+// non-increasing when unmatched tokens are added to either side — and
+// containment instead saturates at 1.0 forever.
+//
+// The consequence is total at k = min(kq,kc) = 1. Since sim is always m/k with
+// m in [0,k], the reachable value set at k=1 is exactly {0.0, 1.0}: the
+// ambiguous middle arm is UNREACHABLE, any shared token corroborates and none
+// mismatches — for every possible value of simCorroborate in (0,1]. That is why
+// the fix is not a new cutoff. Moving 0.60 to 0.7, 0.8 or 0.95 changes the
+// "Apple" verdict not at all; requiring exact equality is the only thing that
+// restores discriminating power there.
+//
+// The exact-equality exemption is load-bearing, and it compares the
+// normalizeOrg OUTPUT rather than the raw strings: normalizeOrg strips
+// legal-form suffixes, so the legitimate "Praetorian" vs "Praetorian Inc" and
+// "Acme" vs "Acme Corp" each reduce to a single IDENTICAL token. A bare k >= 2
+// floor without the exemption would de-rank exactly the matches this plugin
+// exists to find.
+//
+// k >= 2 is deliberately OUT OF SCOPE. The full-containment class does still
+// saturate there ("Acme Global" vs "Acme Global Widgets Holdings" scores 1.0);
+// it was considered and left alone, because crossing simCorroborate at k >= 2
+// already requires m >= 2 shared normalized tokens (m/k >= 0.6 with k >= 2
+// forces m >= 2) — genuine corroborating evidence — and the cutoffs keep real
+// discriminating power there since the ambiguous arm is reachable. k=1 is the
+// only regime where the metric has ZERO resolution, so that is the only regime
+// guarded.
+//
+// Confined to the corroborate arm in both directions: a blanket
+// "k < 2 => unverified" rule would wrongly RESCUE a clean mismatch, since
+// "Apple" vs "Walmart" is k=1 with m=0 and must stay de-ranked at the bottom of
+// the band.
+func corroborationHasResolution(nq, nc string) bool {
+	if nq == nc {
+		return true
+	}
+	return min(len(tokenize(nq)), len(tokenize(nc))) >= minCorroborateTokens
 }
 
 // verifyCandidates scores each candidate by resolving its own registrant and
