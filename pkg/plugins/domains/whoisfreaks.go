@@ -79,7 +79,6 @@ func (p *WhoisFreaksPlugin) Run(ctx context.Context, input plugins.Input) ([]plu
 	return extractPreseeds(parsed, p.Name()), nil
 }
 
-// parseWhoisRecordSafely wraps the parser in a recover scoped to that one call.
 func parseWhoisRecordSafely(raw string) (info whoisparser.WhoisInfo, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
