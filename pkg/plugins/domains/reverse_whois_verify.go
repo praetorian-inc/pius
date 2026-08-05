@@ -58,7 +58,7 @@ const (
 
 	// simCorroborate is the token-similarity threshold at/above which the
 	// candidate's registrant org is treated as corroborating the query org. The
-	// metric is Jaccard (tokenJaccard): |shared tokens| / |union of tokens|, so
+	// metric is Jaccard (jaccardTokenSets): |shared tokens| / |union of tokens|, so
 	// BOTH sides' distinguishing tokens count against the score. 0.60 means the two
 	// org names must agree on at least ~60% of their combined vocabulary before a
 	// candidate ranks at the top of the band. This forecloses the single-token

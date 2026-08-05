@@ -128,14 +128,17 @@ func TestTokenSimilarity(t *testing.T) {
 	}
 }
 
-// ── tokenJaccard ───────────────────────────────────────────────────────────────
+// ── jaccardTokenSets ──────────────────────────────────────────────────────────
 
-// TestTokenJaccard pins the Jaccard metric (|A ∩ B| / |A ∪ B|) that the
+// TestJaccardTokenSets pins the Jaccard metric (|A ∩ B| / |A ∪ B|) that the
 // reverse-whois verifier uses (ENG-5172). The load-bearing difference from
 // tokenSimilarity is the single-token containment case: "Praetorian" vs
 // "Praetorian Security" is 1.0 under containment but 0.5 under Jaccard, because
 // the extra "security" token counts against the union.
-func TestTokenJaccard(t *testing.T) {
+//
+// The table holds raw strings and tokenizes at the call site, so the tokenize
+// step stays inside what these cases cover.
+func TestJaccardTokenSets(t *testing.T) {
 	tests := []struct {
 		a, b string
 		want float64
@@ -152,7 +155,7 @@ func TestTokenJaccard(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.a+"_vs_"+tt.b, func(t *testing.T) {
-			assert.InDelta(t, tt.want, tokenJaccard(tt.a, tt.b), 0.0001,
+			assert.InDelta(t, tt.want, jaccardTokenSets(tokenize(tt.a), tokenize(tt.b)), 0.0001,
 				"jaccard %q vs %q", tt.a, tt.b)
 		})
 	}

@@ -321,11 +321,11 @@ func tokenSimilarity(a, b string) float64 {
 	return float64(matches) / float64(len(shorter))
 }
 
-// tokenJaccard computes the Jaccard similarity between two strings' token sets:
-// |A ∩ B| / |A ∪ B|, over DISTINCT tokens. Unlike tokenSimilarity, which divides
-// by the SHORTER set (containment), Jaccard counts tokens present on ONLY one side
-// against the score, so a short string merely CONTAINED in a longer one no longer
-// scores 1.0.
+// jaccardTokenSets computes the Jaccard similarity of two token slices:
+// |A ∩ B| / |A ∪ B|, over the DISTINCT tokens of aT and bT. Unlike
+// tokenSimilarity, which divides by the SHORTER set (containment), Jaccard counts
+// tokens present on ONLY one side against the score, so a short string merely
+// CONTAINED in a longer one no longer scores 1.0.
 //
 // This is the metric the reverse-whois verifier needs (ENG-5172). A single-token
 // query org such as "Acme" against a registrant "Acme Enterprises LLC"
@@ -334,16 +334,11 @@ func tokenSimilarity(a, b string) float64 {
 // review instead of spuriously corroborating. github_org's name-similarity signal
 // deliberately KEEPS containment (tokenSimilarity): there a partial name overlap is
 // a weak, 0.25-weighted hint, not a corroboration gate.
-func tokenJaccard(a, b string) float64 {
-	return jaccardTokenSets(tokenize(a), tokenize(b))
-}
-
-// jaccardTokenSets is the token-slice core of tokenJaccard: |A ∩ B| / |A ∪ B|
-// over the DISTINCT tokens of aT and bT. Callers that already hold tokenized input
-// (decideConfidence, via normalizeOrgTokens) pass slices directly to avoid a second
-// tokenize pass. It returns 0 when either side is empty; past that guard both sets
-// hold at least one token, so the union is always >= 1 and the division is safe (no
-// zero-union case can reach the final line).
+//
+// Callers pass tokenized input directly (decideConfidence, via normalizeOrgTokens).
+// It returns 0 when either side is empty; past that guard both sets hold at least
+// one token, so the union is always >= 1 and the division is safe (no zero-union
+// case can reach the final line).
 func jaccardTokenSets(aT, bT []string) float64 {
 	if len(aT) == 0 || len(bT) == 0 {
 		return 0
