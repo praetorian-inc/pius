@@ -178,7 +178,7 @@ func parseShodanResponse(body []byte, hash int32, input plugins.Input, findings 
 		ip := strings.TrimSpace(match.IPStr)
 		cidr, err := faviconHostCIDR(ip)
 
-		if err != nil {
+		if err == nil {
 			observations = appendUniqueFaviconObservation(observations, seen, faviconObservation{
 				scanner:      "shodan",
 				findingType:  plugins.FindingCIDR,
@@ -250,7 +250,7 @@ func parseFOFAResponse(body []byte, hash int32, input plugins.Input, findings fa
 		host, ip := result[0], strings.TrimSpace(result[1])
 		cidr, err := faviconHostCIDR(ip)
 
-		if err != nil {
+		if err == nil {
 			observations = appendUniqueFaviconObservation(observations, seen, faviconObservation{
 				scanner:      "fofa",
 				findingType:  plugins.FindingCIDR,
