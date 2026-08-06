@@ -508,16 +508,17 @@ func (p *CensysOrgPlugin) emitDomain(findings *[]plugins.Finding, seen map[strin
 		return
 	}
 	seen[domain] = true
-	*findings = append(*findings, plugins.Finding{
-		Type:        plugins.FindingDomain,
-		Value:       domain,
-		Source:      "censys-org",
-		Confidences: []plugins.Confidence{confidence},
+	newFinding := plugins.Finding{
+		Type:   plugins.FindingDomain,
+		Value:  domain,
+		Source: "censys-org",
 		Data: map[string]any{
 			"org":   orgName,
 			"field": field,
 		},
-	})
+	}
+	plugins.AddConfidence(&newFinding, confidence.Score, confidence.Justification)
+	*findings = append(*findings, newFinding)
 }
 
 // emitCIDR deduplicates a CIDR before appending to findings.
@@ -527,16 +528,17 @@ func (p *CensysOrgPlugin) emitCIDR(findings *[]plugins.Finding, seen map[string]
 		return
 	}
 	seen[cidr] = true
-	*findings = append(*findings, plugins.Finding{
-		Type:        plugins.FindingCIDR,
-		Value:       cidr,
-		Source:      "censys-org",
-		Confidences: []plugins.Confidence{confidence},
+	newFinding := plugins.Finding{
+		Type:   plugins.FindingCIDR,
+		Value:  cidr,
+		Source: "censys-org",
 		Data: map[string]any{
 			"org":   orgName,
 			"field": field,
 		},
-	})
+	}
+	plugins.AddConfidence(&newFinding, confidence.Score, confidence.Justification)
+	*findings = append(*findings, newFinding)
 }
 
 // normalizeCensysDomain extends normalizeDomain with Censys-specific cleanup:
