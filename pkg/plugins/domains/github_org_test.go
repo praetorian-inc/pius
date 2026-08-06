@@ -114,9 +114,9 @@ func TestTokenSimilarity(t *testing.T) {
 		min  float64
 	}{
 		{"Praetorian", "Praetorian", 1.0},
-		{"Praetorian", "Praetorian Security", 1.0},  // shorter (1 token) fully matches
-		{"Praetorian Security", "Praetorian Inc", 0.49},  // 1/2 = 0.50
-		{"Acme Corp", "Acme Corporation", 0.49}, // "acme" matches, "corp" != "corporation" = 1/2 = 0.50
+		{"Praetorian", "Praetorian Security", 1.0},      // shorter (1 token) fully matches
+		{"Praetorian Security", "Praetorian Inc", 0.49}, // 1/2 = 0.50
+		{"Acme Corp", "Acme Corporation", 0.49},         // "acme" matches, "corp" != "corporation" = 1/2 = 0.50
 		{"Google", "Apple", 0.0},
 		{"", "Google", 0.0},
 	}
@@ -124,6 +124,39 @@ func TestTokenSimilarity(t *testing.T) {
 		t.Run(tt.a+"_vs_"+tt.b, func(t *testing.T) {
 			got := tokenSimilarity(tt.a, tt.b)
 			assert.GreaterOrEqual(t, got, tt.min, "similarity %q vs %q", tt.a, tt.b)
+		})
+	}
+}
+
+// ── jaccardTokenSets ──────────────────────────────────────────────────────────
+
+// TestJaccardTokenSets pins the Jaccard metric (|A ∩ B| / |A ∪ B|) that the
+// reverse-whois verifier uses (ENG-5172). The load-bearing difference from
+// tokenSimilarity is the single-token containment case: "Praetorian" vs
+// "Praetorian Security" is 1.0 under containment but 0.5 under Jaccard, because
+// the extra "security" token counts against the union.
+//
+// The table holds raw strings and tokenizes at the call site, so the tokenize
+// step stays inside what these cases cover.
+func TestJaccardTokenSets(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want float64
+	}{
+		{"Praetorian", "Praetorian", 1.0},                           // identical single token
+		{"Praetorian", "Praetorian Security", 0.5},                  // {p} vs {p, security} = 1/2 — the containment case Jaccard fixes
+		{"Praetorian Security", "Praetorian Inc", 0.333333},         // {p, security} vs {p, inc} = 1/3
+		{"Acme Global Data Cloud", "Acme Global Data Widgets", 0.6}, // 3 shared / 5 union
+		{"Google", "Apple", 0.0},                                    // disjoint
+		{"Alpha Beta", "Alpha Beta", 1.0},                           // identical multi-token
+		{"Acme Acme Beta", "Acme Gamma", 1.0 / 3.0},                 // duplicate token collapses to the distinct set: {acme, beta} vs {acme, gamma} = 1/3
+		{"", "Google", 0.0},                                         // empty side
+		{"Google", "", 0.0},                                         // empty other side
+	}
+	for _, tt := range tests {
+		t.Run(tt.a+"_vs_"+tt.b, func(t *testing.T) {
+			assert.InDelta(t, tt.want, jaccardTokenSets(tokenize(tt.a), tokenize(tt.b)), 0.0001,
+				"jaccard %q vs %q", tt.a, tt.b)
 		})
 	}
 }

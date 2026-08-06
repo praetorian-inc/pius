@@ -57,31 +57,46 @@ const (
 	confReverseWhoisMismatch = 0.40
 
 	// CALIBRATION BASIS (ENG-5374). simCorroborate and simMismatch are CONFIRMED
-	// at these values, not re-tuned, and this is the recorded basis.
+	// at these values, not re-tuned, and this is the recorded basis. ENG-5374 adds
+	// NO production predicate of its own: the Jaccard metric ENG-5172 installed
+	// above already closes the over-corroboration class, and the enumeration below
+	// is what proves it rather than assuming it.
 	//
 	// Established by enumeration, not by a fixture corpus (see
-	// TestSimilarityReachabilityByTokenCount): sim is always m/k for
-	// k = min(kq,kc) and m in [0,k], so the reachable value set — and therefore
-	// which arm can fire at all — is fully determined by k. At k=1 that set is
-	// exactly {0.0, 1.0}, so the cutoff VALUES decide nothing there: every
-	// possible simCorroborate in (0,1] classifies identically, and re-setting 0.60
-	// to 0.7/0.8/0.95 would not have fixed ENG-5374. The defect was the metric's
-	// RESOLUTION, not the threshold, so the fix is the shared-evidence guard in
-	// corroborationHasResolution and these constants stay put. That guard counts
-	// DISTINCT tokens present on BOTH sides — never raw slice length, and never
-	// per-side distinct cardinality, because per-side cardinality does not imply
-	// shared evidence. tokenSimilarity credits a repeated token once per
-	// occurrence, so a raw-length floor would admit "acme acme" as k=2 evidence,
-	// and a per-side floor would admit "Acme Acme Holdings" vs "Acme Landscaping
-	// Tampa" (dq=2, dc=3, distinctShared=1, sim=0.667) — each reopens this exact
-	// class.
+	// TestJaccardReachabilityByTokenCount): with kq and kc the DISTINCT token
+	// counts and m = |shared distinct tokens|, sim is always m/(kq+kc-m), so the
+	// reachable value set — and therefore which arm can fire at all — is fully
+	// determined by the shape (kq,kc,m). Three results follow, each enumerated:
 	//
-	// Recorded known limitation: below k=4, simMismatch is reachable only at m=0,
-	// i.e. it is equivalent to "no shared tokens at all" in that range. Not fixed
-	// here — it never mis-ranks (every outcome stays inside the [0.35,0.65) review
-	// band) and fixing it means changing the shared tokenSimilarity, which
-	// github_org's floor assertion forbids and this ticket does not scope
-	// (tracked as ENG-5890).
+	//  1. THE CUTOFF VALUE DECIDES NOTHING AT kq=kc=1. There the reachable set is
+	//     exactly {0.0, 1.0}, so every possible simCorroborate in (0,1] classifies
+	//     that shape identically — re-setting 0.60 to 0.7/0.8/0.95 changes no
+	//     verdict. This is why neither ENG-5172 nor ENG-5374 is a re-tuning: at
+	//     single-token resolution a threshold has nothing to grip. Metric-
+	//     independent — it held for the old containment coefficient too.
+	//  2. JACCARD ALREADY FORCES >= 2 SHARED DISTINCT TOKENS TO CORROBORATE. The
+	//     only shape with m == 1 that reaches simCorroborate is kq=kc=1, i.e. both
+	//     sides normalize to the SAME single token ("Praetorian" vs
+	//     "Praetorian Inc"), which is the legitimate match this plugin exists to
+	//     find. Solving 1/(kq+kc-1) >= 0.60 gives kq+kc <= 2, so (1,1) is the only
+	//     solution and the bound is exact, not a search limit. Under the old
+	//     containment metric m/min(kq,kc) the same question admits an UNBOUNDED
+	//     family — every (1,kc) and (kq,1) shape scores 1/1 = 1.0 on one shared
+	//     token — which is precisely the ENG-5374 defect. An explicit
+	//     shared-evidence floor on top of Jaccard would therefore be redundant,
+	//     and worse than redundant: "Acme Acme" vs "Acme" has distinct sets that
+	//     are the same singleton (Jaccard 1.0, correctly corroborated) yet differ
+	//     as joined strings, so such a floor would de-rank it. It was carried in
+	//     an earlier revision of this PR and is deliberately NOT reinstated.
+	//  3. THE DE-RANK ARM NEEDS tokenSetContained, AND JACCARD IS WHY. Under the
+	//     old metric, crossing simMismatch with any shared token at all required
+	//     kq+kc >= 8, so the mismatch arm was in practice "no shared tokens".
+	//     Jaccard divides by the union, so that bound drops to kq+kc >= 5
+	//     ("Walmart" vs {walmart,global,enterprises,holdings} = 1/4 = 0.25) — and
+	//     34 of the 342 shapes below simMismatch are PURE CONTAINMENT. Making the
+	//     metric specificity-monotone is what put legitimate subsidiary names in
+	//     reach of the de-rank arm, which is exactly the hole tokenSetContained
+	//     fills.
 	//
 	// NOT establishable hermetically: that 0.60/0.30 are the precision-optimal
 	// cutoffs. That is a claim about a decision boundary and needs candidates from
@@ -90,22 +105,34 @@ const (
 	// latter two are forbidden by this ticket's hermetic requirement, and
 	// hand-authored fixtures cannot substitute: their labels would come from the
 	// same judgment that picked the threshold, so any precision/recall figure
-	// would restate the prior while reading as a measurement.
+	// would restate the prior while reading as a measurement. That work needs
+	// production data and stays in ENG-5166, which carries the AC verbatim.
 	//
 	// simCorroborate is the token-similarity threshold at/above which the
-	// candidate's registrant org is treated as corroborating the query org.
+	// candidate's registrant org is treated as corroborating the query org. The
+	// metric is Jaccard (jaccardTokenSets): |shared tokens| / |union of tokens|, so
+	// BOTH sides' distinguishing tokens count against the score. 0.60 means the two
+	// org names must agree on at least ~60% of their combined vocabulary before a
+	// candidate ranks at the top of the band. This forecloses the single-token
+	// over-corroboration bug (ENG-5172): a one-token query org ("Acme") against a
+	// registrant that merely CONTAINS it ("Acme Enterprises LLC" → {acme} vs
+	// {acme, enterprises}) scores 1/2 = 0.5 and stays UNVERIFIED, where the old
+	// containment metric divided by the shorter set and read it as a spurious 1.0.
 	simCorroborate = 0.60
-	// simMismatch is the token-similarity threshold below which a present,
-	// unmasked registrant org is treated as a clear mismatch and de-ranked to the
+	// simMismatch is the token-similarity (Jaccard) threshold below which a present,
+	// unmasked registrant org MAY be treated as a clear mismatch and de-ranked to the
 	// bottom of the needs_review band (the walmart.com-from-a-Leica-query false
-	// positive) — de-ranked, never dropped.
+	// positive, which shares zero tokens → Jaccard 0). Sparse overlap alone is not
+	// sufficient: the de-rank arm additionally requires that neither side's token set
+	// is contained in the other (tokenSetContained). Containment is
+	// under-specification, not disagreement, and Jaccard cannot tell them apart — a
+	// one-token query org inside a longer registrant ("Walmart" vs {walmart, global,
+	// enterprises, holdings} = 1/4 = 0.25) is a plausible subsidiary, yet the bare
+	// threshold sank it BELOW candidates whose WHOIS never resolved at all. So: a
+	// sparse-overlap NON-contained name de-ranks to confReverseWhoisMismatch; a
+	// contained (subset) name never de-ranks and stays unverified at
+	// confReverseWhoisUnverified. Either way it is de-ranked, NEVER dropped (ENG-5172).
 	simMismatch = 0.30
-	// minCorroborateTokens is the smallest number of DISTINCT SHARED normalized
-	// tokens — tokens present on BOTH sides, each counted once — at which crossing
-	// simCorroborate carries information; below it, corroboration additionally
-	// requires exact equality. Per-side distinct cardinality is NOT the measure: it
-	// says nothing about shared evidence. See corroborationHasResolution.
-	minCorroborateTokens = 2
 
 	// maxReverseWhoisCandidates caps how many candidates we verify per run.
 	maxReverseWhoisCandidates = 500
@@ -206,11 +233,13 @@ var orgLegalSuffixes = map[string]bool{
 	"corporation": true, "incorporated": true, "company": true, "limited": true,
 }
 
-// normalizeOrg lowercases, tokenizes, and strips legal-suffix tokens so that
-// "Walmart Inc." and "Walmart" compare equal while disambiguating tokens are
-// preserved. Without suffix stripping, "Walmart Inc." vs a "…, Inc." query
-// would share the "inc" token and wrongly clear the mismatch-drop test.
-func normalizeOrg(s string) string {
+// normalizeOrgTokens lowercases, tokenizes, and strips legal-suffix tokens so that
+// "Acme Inc." and "Acme" compare equal while disambiguating tokens are preserved.
+// Without suffix stripping, "Acme Inc." vs a "…, Inc." query would share the "inc"
+// token and wrongly clear the mismatch-drop test. It returns the kept tokens
+// directly so decideConfidence can feed them to jaccardTokenSets without a second
+// tokenize pass.
+func normalizeOrgTokens(s string) []string {
 	tokens := tokenize(s)
 	kept := make([]string, 0, len(tokens))
 	for _, t := range tokens {
@@ -219,7 +248,13 @@ func normalizeOrg(s string) string {
 		}
 		kept = append(kept, t)
 	}
-	return strings.Join(kept, " ")
+	return kept
+}
+
+// normalizeOrg is the string form of normalizeOrgTokens, kept for callers and tests
+// that compare normalized names as text.
+func normalizeOrg(s string) string {
+	return strings.Join(normalizeOrgTokens(s), " ")
 }
 
 // maskedSubstringMinLen is the shortest privacy-guard phrase eligible for
@@ -253,13 +288,14 @@ const maskedSubstringMinLen = 8
 // DIRECTIONAL band move, and both were wrong (Codex, PR #106 rounds 2 and 3).
 // Direction is not the thing to state. What the tier does is force the DIRECTLY
 // SCORED value to unverifiable (0.50) — which may raise, preserve, or LOWER what
-// that same string would otherwise have scored. Lowering is not exotic: for a
-// query org "Data Inc.", normalizeOrg gives "data" against the placeholder's
-// "data redacted", and tokenSimilarity divides by the SHORTER token set, so the
-// placeholder used to score a spurious 1.0 and corroborate at 0.60. And in the
-// integrated path, masking additionally routes through resolveWithFallback,
-// whose WHOIS result is scored FRESH by decideConfidence and can land in any of
-// the three bands, 0.40 included.
+// that same string would otherwise have scored. Lowering happens through the
+// integrated path: masking routes through resolveWithFallback, whose WHOIS result
+// is scored FRESH by decideConfidence and can land in any of the three bands, 0.40
+// included. (Before ENG-5172 the DIRECT comparison could lower too — a query org
+// "Data Inc." normalized to "data" scored a spurious containment 1.0 against the
+// placeholder "data redacted" and corroborated at 0.60. The Jaccard metric now
+// reads {data} vs {data, redacted} as 0.5 → already unverifiable, so the direct
+// comparison PRESERVES 0.50; the integrated-path lowering is unaffected.)
 //
 // The invariant that does hold unconditionally — and all ENG-5123 ever claimed —
 // is "never DROPS", not "never demotes": every outcome stays inside the
@@ -378,6 +414,50 @@ const (
 	justifyReverseWhoisMismatch     = "The candidate domain's registrant organization differs from the queried organization; retained for review because a textual mismatch is not proof of non-ownership"
 )
 
+// tokenSetContained reports whether either side's DISTINCT token set is a subset
+// of the other's. It exists to separate the two things a low Jaccard score
+// conflates: DISAGREEMENT and UNDER-SPECIFICATION.
+//
+// A clear mismatch means the two org names genuinely contradict each other —
+// each contributes at least one token the other lacks. Containment is not that.
+// When one token set is a subset of the other, one name is simply a
+// LESS-SPECIFIC spelling of the same name ("Walmart" vs "Walmart Global
+// Enterprises Holdings"), which is unverifiable, not contradictory. Jaccard
+// alone cannot see the difference: it divides by the union, so a fully contained
+// single-token query org drops below simMismatch as soon as the registrant adds
+// three descriptor tokens, de-ranking a plausible subsidiary below candidates
+// whose WHOIS could not be resolved at all (ENG-5172).
+//
+// Comparing only the smaller set against the larger is exhaustive: a strictly
+// larger set can never be a subset of a smaller one, and equal-sized sets are
+// subsets only when they are equal, which either direction detects. An empty
+// side returns false — the empty set is vacuously a subset of anything, and
+// reading that as "one name specializes the other" would be meaningless (that
+// case is already short-circuited as unverifiable in decideConfidence anyway).
+func tokenSetContained(aT, bT []string) bool {
+	if len(aT) == 0 || len(bT) == 0 {
+		return false
+	}
+	inA := make(map[string]bool, len(aT))
+	for _, t := range aT {
+		inA[t] = true
+	}
+	inB := make(map[string]bool, len(bT))
+	for _, t := range bT {
+		inB[t] = true
+	}
+	smaller, larger := inA, inB
+	if len(inB) < len(inA) {
+		smaller, larger = inB, inA
+	}
+	for t := range smaller {
+		if !larger[t] {
+			return false
+		}
+	}
+	return true
+}
+
 // decideConfidence maps a candidate's resolved registrant against the query org
 // to a needs-review decision. A lookup error means "unverifiable", NOT
 // "mismatch": it is scored mid-band. Nothing here ever drops a candidate — a
@@ -389,150 +469,32 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 	if lookupErr != nil || res.Masked || res.Org == "" {
 		return unverified
 	}
-	nq, nc := normalizeOrg(queryOrg), normalizeOrg(res.Org)
-	if nq == "" || nc == "" {
+	qTokens, cTokens := normalizeOrgTokens(queryOrg), normalizeOrgTokens(res.Org)
+	if len(qTokens) == 0 || len(cTokens) == 0 {
 		// One side has no comparable tokens after legal-suffix stripping (e.g. an
 		// all-suffix org like "Co., Ltd."). Token similarity is undefined here, so
 		// the candidate is UNVERIFIABLE, not a mismatch — score mid-band.
 		return unverified
 	}
-	sim := tokenSimilarity(nq, nc)
+	sim := jaccardTokenSets(qTokens, cTokens)
 	switch {
-	case sim >= simCorroborate && corroborationHasResolution(nq, nc):
+	case sim >= simCorroborate:
 		return confidenceDecision{Score: confReverseWhoisCorroborated, Justification: justifyReverseWhoisCorroborated}
-	case sim < simMismatch:
-		// Present, unmasked, clear mismatch → de-rank to the bottom of the
-		// needs_review band (walmart.com-from-a-Leica-query). A textual registrant
-		// mismatch is not proof of non-ownership, so this is never dropped.
+	case sim < simMismatch && !tokenSetContained(qTokens, cTokens):
+		// Present, unmasked, and the two names genuinely DISAGREE — each side
+		// contributes tokens the other lacks — so de-rank to the bottom of the
+		// needs_review band (walmart.com-from-a-Leica-query). The containment guard
+		// is what makes this arm mean disagreement rather than merely sparse
+		// overlap: a subset name is a less-specific spelling, not a contradiction,
+		// and falls through to unverified below (ENG-5172). A textual registrant
+		// mismatch is still not proof of non-ownership, so this is never dropped.
 		return confidenceDecision{Score: confReverseWhoisMismatch, Justification: justifyReverseWhoisMismatch}
 	default:
-		// Could not corroborate. Two shapes land here and they mean the same
-		// thing: a genuine partial overlap in [simMismatch, simCorroborate), and a
-		// similarity that cleared simCorroborate on a token count where the metric
-		// was incapable of expressing anything else (ENG-5374 — see
-		// corroborationHasResolution). Both reuse the SAME already-constructed
-		// PII-free unverified value, so no new justification wording is needed:
-		// "could not be verified" is accurate for both.
+		// Ambiguous partial overlap [simMismatch, simCorroborate), OR a sparse
+		// overlap that is pure containment — one name specializing the other is
+		// unverifiable, not a mismatch (ENG-5172).
 		return unverified
 	}
-}
-
-// corroborationHasResolution reports whether tokenSimilarity is capable of
-// expressing anything about this pair — that is, whether the pair carries enough
-// DISTINCT SHARED token evidence for the metric's value to mean something. It is
-// the precondition ENG-5374 added to the corroborate arm of decideConfidence —
-// and it is about the metric, not about the cutoff.
-//
-// tokenSimilarity (github_org.go) is the containment coefficient
-// m / min(kq,kc), so its denominator DISCARDS the longer side's unmatched
-// tokens and the value is invariant under adding disconfirming evidence:
-// "Apple" against "Apple Tree Landscaping", against "Apple Tree Landscaping Of
-// Tampa Bay", and against every longer superstring all score exactly 1.0. That
-// violates specificity monotonicity — a similarity feeding a threshold must be
-// non-increasing when unmatched tokens are added to either side — and
-// containment instead saturates at 1.0 forever.
-//
-// The consequence is total at k = min(kq,kc) = 1. Since sim is always m/k with
-// m in [0,k], the reachable value set at k=1 is exactly {0.0, 1.0}: the
-// ambiguous middle arm is UNREACHABLE, any shared token corroborates and none
-// mismatches — for every possible value of simCorroborate in (0,1]. That is why
-// the fix is not a new cutoff. Moving 0.60 to 0.7, 0.8 or 0.95 changes the
-// "Apple" verdict not at all; requiring exact equality is the only thing that
-// restores discriminating power there.
-//
-// The exact-equality exemption is load-bearing, and it compares the
-// normalizeOrg OUTPUT rather than the raw strings: normalizeOrg strips
-// legal-form suffixes, so the legitimate "Praetorian" vs "Praetorian Inc" and
-// "Acme" vs "Acme Corp" each reduce to a single IDENTICAL token. A bare
-// two-distinct-shared-token floor without the exemption would de-rank exactly the
-// matches this plugin exists to find.
-//
-// What stays OUT OF SCOPE is full containment where BOTH shared tokens are
-// genuinely distinct: "Acme Global" vs "Acme Global Widgets Holdings" shares two
-// distinct tokens, still scores 1.0, and still corroborates. That is deliberate —
-// two distinct shared tokens are real corroborating evidence, not a duplicate
-// artifact, and the cutoffs keep real discriminating power at that resolution
-// because the ambiguous arm is reachable there.
-//
-// An earlier revision of this comment justified a per-side floor by arguing that
-// "crossing simCorroborate at k >= 2 already requires m >= 2 shared normalized
-// tokens (m/k >= 0.6 with k >= 2 forces m >= 2)". That inference is FALSE and must
-// not be reinstated: under the multiset/set metric described below, m counts
-// matching OCCURRENCES, not distinct tokens, so m >= 2 does NOT force two distinct
-// shared tokens. This guard therefore enforces the shared-evidence property
-// DIRECTLY rather than assuming the metric implies it.
-//
-// Confined to the corroborate arm in both directions: a blanket "fewer than two
-// distinct shared tokens => unverified" rule would wrongly RESCUE a clean
-// mismatch, since "Apple" vs "Walmart" shares ZERO tokens (k=1, m=0) and must stay
-// de-ranked at the bottom of the band.
-//
-// The floor is counted in DISTINCT SHARED tokens — tokens present on BOTH sides,
-// each counted once — NEVER in raw token-slice length and NEVER in per-side
-// distinct cardinality. Both weaker counts reopen the exact ENG-5374 class this
-// guard exists to close, because per-side cardinality (however carefully deduped)
-// says nothing about shared evidence, and because tokenSimilarity compares a
-// multiset against a set: it walks the shorter side's token SLICE while testing
-// membership in a map built from the longer side, so one shared token repeated on
-// the shorter side scores a match on EVERY occurrence. normalizeOrg does not
-// dedupe either — it drops legal-form suffixes and rejoins whatever is left — so a
-// registrant reading as "<Name> Corp <Name> Inc" normalizes to two raw tokens
-// carrying one distinct token. Concretely:
-//
-//   - A RAW-LENGTH floor lets that pair clear k >= 2 and then score m/k = 2/2 =
-//     1.0 against a query org sharing only that one token.
-//   - A PER-SIDE DISTINCT floor still admits "Acme Acme Holdings" (query) vs
-//     "Acme Landscaping Tampa" (candidate): two distinct tokens on the query side
-//     and three on the candidate side clear a per-side floor of 2, while the pair
-//     shares exactly ONE distinct token — and the duplicated "acme" is credited
-//     twice, scoring 2/3 = 0.667 >= simCorroborate. ("holdings" is deliberately
-//     absent from orgLegalSuffixes, so the duplicate survives normalization.)
-//
-// Both are k=1 resolution wearing a k=2 disguise. Counting DISTINCT SHARED tokens
-// is what makes this floor mean "at least this many INDEPENDENT tokens of evidence
-// common to both sides", which is the property the out-of-scope argument above
-// silently assumes. The shared count is bounded above by each side's distinct
-// count, so this predicate STRICTLY SUBSUMES the per-side one — it is a single
-// floor, never an additional check alongside one.
-//
-// The multiset/set asymmetry inside tokenSimilarity is NOT fixed here.
-// tokenSimilarity is the metric github_org also scores against and its pinned
-// floor assertion forbids changing it — the same constraint that leaves the
-// two-distinct-token saturation alone. So this guard does not repair the metric;
-// it only keeps the metric's duplicate-counting from ever producing a
-// corroboration. The metric itself is tracked as ENG-5890.
-func corroborationHasResolution(nq, nc string) bool {
-	if nq == nc {
-		return true
-	}
-	return distinctSharedTokenCount(nq, nc) >= minCorroborateTokens
-}
-
-// distinctSharedTokenCount counts the DISTINCT tokens present on BOTH sides —
-// the resolution-bearing count for corroborationHasResolution, where a token
-// repeated on either side is one piece of shared evidence rather than several.
-//
-// The query side becomes a set, so its duplicates collapse by construction; the
-// candidate side is deduped before it is walked, so a token repeated THERE is
-// not double-counted either. Skipping that second dedupe would reproduce
-// tokenSimilarity's own multiset/set asymmetry — the very defect this floor
-// exists to neutralize. Sorting in place is safe because tokenize returns a
-// freshly allocated slice that nothing else holds.
-func distinctSharedTokenCount(nq, nc string) int {
-	queryTokens := tokenize(nq)
-	inQuery := make(map[string]struct{}, len(queryTokens))
-	for _, t := range queryTokens {
-		inQuery[t] = struct{}{}
-	}
-	candidateTokens := tokenize(nc)
-	slices.Sort(candidateTokens)
-	shared := 0
-	for _, t := range slices.Compact(candidateTokens) {
-		if _, ok := inQuery[t]; ok {
-			shared++
-		}
-	}
-	return shared
 }
 
 // verifyCandidates scores each candidate by resolving its own registrant and

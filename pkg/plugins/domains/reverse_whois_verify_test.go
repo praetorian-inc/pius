@@ -192,128 +192,91 @@ func TestNormalizeOrg(t *testing.T) {
 	}
 }
 
-// distinctPerSideCount counts the DISTINCT tokens in ONE string. It is the
-// measure corroborationHasResolution's floor was FIRST written in and no longer
-// uses (the production helper of this shape, distinctTokenCount, is deleted). It
-// survives here, in the test and implemented independently of production, purely
-// as the BASELINE the current rule has to beat: it lets each row of
-// TestDistinctSharedTokenCount state what the retired per-side floor would have
-// concluded, so the divergence is machine-checked instead of asserted in prose.
-func distinctPerSideCount(s string) int {
-	seen := make(map[string]bool)
-	for _, t := range tokenize(s) {
-		seen[t] = true
-	}
-	return len(seen)
-}
-
-// TestDistinctSharedTokenCount pins the measure corroborationHasResolution's
-// floor is taken in: DISTINCT SHARED tokens — tokens present on BOTH sides, each
-// counted once (ENG-5374, round 2 of the fix — PR #127 review, Codex).
-//
-// Round 1 counted distinct tokens PER SIDE and took a min over the two. That is
-// strictly weaker, because a per-side count says nothing about shared evidence,
-// so every row below records dq and dc alongside the shared count. Any row where
-// wantShared < min(dq, dc) is a pair the retired per-side floor ADMITTED and this
-// one refuses, and the loop asserts that refusal against PRODUCTION
-// (corroborationHasResolution) rather than re-deriving it from wantShared — so
-// reinstating the per-side form fails here, not only in the scoring tests.
-//
-// No empty-input row is asserted as a production contract: decideConfidence
-// reaches corroborationHasResolution only AFTER its `nq == "" || nc == ""` guard
-// has returned unverified. The empty rows are present only to record what the
-// helper in fact does at that unreachable input (tokenize returns no tokens, so
-// nothing can be shared and the count is 0) rather than to invent a contract.
-func TestDistinctSharedTokenCount(t *testing.T) {
+// TestTokenSetContained pins the predicate that separates UNDER-SPECIFICATION
+// from DISAGREEMENT for decideConfidence's de-rank arm (ENG-5172). Jaccard
+// scores both shapes low, so this is the only thing standing between "one org
+// name is a less-specific spelling of the other" and "these two names
+// contradict each other". It is deliberately tested on raw token slices rather
+// than through decideConfidence: the direction-symmetry and duplicate-collapse
+// behaviors below are unreachable from a scoring assertion alone.
+func TestTokenSetContained(t *testing.T) {
 	tests := []struct {
-		name       string
-		nq, nc     string
-		wantShared int
-		wantDq     int // distinct tokens on the query side
-		wantDc     int // distinct tokens on the candidate side
+		name string
+		a    []string
+		b    []string
+		want bool
 	}{
 		{
-			// The defect round 1 missed. dq=2 ("acme", "holdings") and dc=3 both
-			// clear a per-side floor of 2, yet the sides share only "acme".
-			// normalizeOrg does not dedupe and "holdings" is deliberately absent
-			// from orgLegalSuffixes, so the repeat survives normalization;
-			// tokenSimilarity then credits it twice for sim = 2/3 = 0.667, which is
-			// >= simCorroborate. Only the SHARED count refuses this pair.
-			name: "duplicate query token inflates both per-side counts past the floor",
-			nq:   "acme acme holdings", nc: "acme landscaping tampa",
-			wantShared: 1, wantDq: 2, wantDc: 3,
+			// The ENG-5172 shape itself: the query org's single token is a subset of
+			// the registrant's descriptor-laden set.
+			name: "smaller set contained in larger (first argument)",
+			a:    []string{"walmart"},
+			b:    []string{"walmart", "global", "enterprises"},
+			want: true,
 		},
 		{
-			// The same class against a differently-unrelated candidate, to show the
-			// first row is not an artifact of its particular filler tokens.
-			name: "duplicate query token with a different unrelated candidate",
-			nq:   "acme acme holdings", nc: "acme global widgets",
-			wantShared: 1, wantDq: 2, wantDc: 3,
+			// Symmetric — the predicate compares the smaller distinct set against the
+			// larger, so argument order must not change the answer.
+			name: "smaller set contained in larger (second argument)",
+			a:    []string{"walmart", "global", "enterprises"},
+			b:    []string{"walmart"},
+			want: true,
 		},
 		{
-			// The benign control: two genuinely distinct tokens are present on both
-			// sides, so this pair clears the shared floor exactly as it cleared the
-			// per-side one. The narrowing must not touch it — it is the shape this
-			// plugin exists to find.
-			name: "genuine two-token overlap still clears the floor",
-			nq:   "praetorian security", nc: "praetorian security group",
-			wantShared: 2, wantDq: 2, wantDc: 3,
+			// Equal sets are subsets of each other. Such a pair already corroborates
+			// on Jaccard 1.0 and never reaches the de-rank arm, but the predicate must
+			// still be total rather than accidentally excluding its own boundary.
+			name: "equal sets are contained",
+			a:    []string{"leica", "biosystems"},
+			b:    []string{"biosystems", "leica"},
+			want: true,
 		},
 		{
-			// The repeat is on the CANDIDATE side — the side
-			// distinctSharedTokenCount WALKS. This row is the regression guard for
-			// dropping the candidate-side dedupe: without slices.Compact the walk
-			// would credit "acme" once per occurrence and return 2, reproducing
-			// inside the floor the very multiset/set asymmetry the floor exists to
-			// neutralize.
-			name: "duplicate on the walked candidate side is not double-counted",
-			nq:   "acme tree services", nc: "acme acme",
-			wantShared: 1, wantDq: 3, wantDc: 1,
+			// The walmart.com-from-a-Leica-query false positive: zero shared tokens is
+			// genuine disagreement, so the de-rank arm must stay open.
+			name: "disjoint sets are not contained",
+			a:    []string{"leica", "biosystems"},
+			b:    []string{"walmart"},
+			want: false,
 		},
 		{
-			// No overlap at all. Distinguishing this from the rows above is what
-			// keeps the floor confined to the corroborate arm: a pair sharing zero
-			// tokens must stay a clear mismatch, never be rescued to unverified.
-			name: "no shared token",
-			nq:   "apple", nc: "walmart",
-			wantShared: 0, wantDq: 1, wantDc: 1,
+			// The distinction the whole predicate exists to draw: each side
+			// contributes a token the other lacks, so neither name is merely a
+			// less-specific spelling — this is disagreement, not under-specification.
+			name: "partial overlap with private tokens on both sides is not contained",
+			a:    []string{"alpha", "bravo", "charlie"},
+			b:    []string{"alpha", "bravo", "delta"},
+			want: false,
 		},
 		{
-			name: "empty candidate side (unreachable in production)",
-			nq:   "acme holdings", nc: "",
-			wantShared: 0, wantDq: 2, wantDc: 0,
+			// The empty set is vacuously a subset of anything; reading that as "one
+			// name specializes the other" would be meaningless, so it reports false in
+			// both argument positions.
+			name: "empty first side is not contained",
+			a:    nil,
+			b:    []string{"walmart"},
+			want: false,
 		},
 		{
-			name: "both sides empty (unreachable in production)",
-			nq:   "", nc: "",
-			wantShared: 0, wantDq: 0, wantDc: 0,
+			name: "empty second side is not contained",
+			a:    []string{"walmart"},
+			b:    nil,
+			want: false,
+		},
+		{
+			// Containment is over DISTINCT tokens: a repeated token must not inflate
+			// the apparent set size and flip which side is treated as the smaller one.
+			// By raw slice length {a,a,a} looks larger than {a,b}, and comparing the
+			// wrong direction would answer false.
+			name: "duplicate tokens collapse before comparison",
+			a:    []string{"acme", "acme", "acme"},
+			b:    []string{"acme", "widgets"},
+			want: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.wantShared, distinctSharedTokenCount(tt.nq, tt.nc),
-				"distinct shared tokens")
-			// Shared evidence is a property of the PAIR, so the count must not
-			// depend on which argument is which. Checked on every row, which covers
-			// the asymmetric ones (differing token counts, and the duplicate moving
-			// from the walked side to the mapped side) where the walk direction
-			// reverses and a one-sided dedupe would show up as a disagreement.
-			assert.Equal(t, tt.wantShared, distinctSharedTokenCount(tt.nc, tt.nq),
-				"distinct shared tokens must not depend on argument order")
-
-			assert.Equal(t, tt.wantDq, distinctPerSideCount(tt.nq), "distinct tokens on the query side")
-			assert.Equal(t, tt.wantDc, distinctPerSideCount(tt.nc), "distinct tokens on the candidate side")
-
-			perSideFloorMet := min(tt.wantDq, tt.wantDc) >= minCorroborateTokens
-			sharedFloorMet := tt.wantShared >= minCorroborateTokens
-			if perSideFloorMet && !sharedFloorMet {
-				assert.False(t, corroborationHasResolution(tt.nq, tt.nc),
-					"the retired per-side floor admitted this pair on %d/%d distinct tokens per side while only %d distinct token is actually shared; the shared floor must refuse it",
-					tt.wantDq, tt.wantDc, tt.wantShared)
-				return
-			}
-			assert.Equal(t, sharedFloorMet || tt.nq == tt.nc, corroborationHasResolution(tt.nq, tt.nc),
-				"corroboration must require the shared-token floor, with exact equality exempt")
+			assert.Equal(t, tt.want, tokenSetContained(tt.a, tt.b))
 		})
 	}
 }
@@ -334,114 +297,81 @@ func TestDecideConfidence(t *testing.T) {
 			wantScore: confReverseWhoisCorroborated,
 		},
 		{
-			// NOT a containment case, despite what this case used to be called
-			// (ENG-5374): normalizeOrg strips the legal-suffix token "corp", so both
-			// sides become the single token "acme" — an EXACT EQUALITY. It therefore
-			// corroborates through the exact-equality exemption, not through the k=1
-			// similarity value. The old name ("corroborated partial (shorter fully
-			// contained)") claimed coverage of non-exact single-token containment that
-			// this table never actually had, which is exactly the hole that let
-			// ENG-5374 survive. Expectation deliberately unchanged.
+			// After legal-suffix stripping BOTH sides normalize to the single token
+			// {acme} (normalizeOrg drops "corp"), so Jaccard is 1/1 = 1.0. This
+			// corroborates because the org names are equal, NOT because a shorter
+			// string is contained in a longer one — see the ENG-5172 cases below for
+			// the containment path that Jaccard deliberately no longer clears.
+			//
+			// Retitled because the pre-existing name was MISLABELED: "corroborated
+			// partial (shorter fully contained)" claimed this row covered non-exact
+			// single-token containment, which this table never actually had — the
+			// gap that let the over-corroboration defect survive review. The title
+			// now names the equality it really exercises. Metric-independent, and
+			// the expectation is deliberately unchanged.
 			name:      "corroborated exact equality after suffix stripping (acme == acme)",
 			queryOrg:  "Acme",
 			res:       org("Acme Corp"),
 			wantScore: confReverseWhoisCorroborated,
 		},
 		{
-			// ENG-5374. normalizeOrg gives "apple" vs "apple tree landscaping", so
-			// k = min(1,3) = 1 and tokenSimilarity divides by the SHORTER side: sim
-			// saturates at 1.0 and an unrelated landscaping company corroborates at the
-			// top of the band. At k=1 the metric has no resolution at all (the reachable
-			// set is {0.0, 1.0} for every possible cutoff), so corroboration there must
-			// require exact equality.
-			name:      "single shared token with unmatched remainder is not corroboration (ENG-5374)",
-			queryOrg:  "Apple",
-			res:       org("Apple Tree Landscaping"),
+			// ENG-5172: a single-token query org merely CONTAINED in a longer
+			// registrant no longer over-corroborates. {acme} vs {acme,
+			// enterprises} is Jaccard 1/2 = 0.5 (below simCorroborate), so it stays
+			// UNVERIFIED and needs review. The old containment metric divided by the
+			// shorter set and read this as a spurious 1.0 → 0.60 corroboration.
+			name:      "single-token query contained in longer registrant stays unverified (ENG-5172)",
+			queryOrg:  "Acme",
+			res:       org("Acme Enterprises LLC"),
 			wantScore: confReverseWhoisUnverified,
 		},
 		{
-			// Pins the exact-equality exemption the ENG-5374 guard carves out. Without
-			// this case a later refactor could delete the exemption and silently demote
-			// every legitimate single-token match ("Praetorian" vs "Praetorian Inc",
-			// where normalizeOrg strips "inc" so both sides become "praetorian") with
-			// nothing failing.
-			name:      "exact equality at k=1 still corroborates (exemption pin)",
+			// ENG-5172: a genuine single-token exact match (post legal-suffix
+			// stripping) MUST still corroborate. {praetorian} vs {praetorian} = 1.0.
+			name:      "single-token query exact match still corroborates (ENG-5172)",
 			queryOrg:  "Praetorian",
-			res:       org("Praetorian Inc"),
+			res:       org("Praetorian Inc."),
 			wantScore: confReverseWhoisCorroborated,
 		},
 		{
-			// A repeated token is ONE piece of evidence, not two (ENG-5374). The
-			// registrant normalizes to "acme acme" — normalizeOrg strips the legal
-			// forms "corp" and "inc" and rejoins whatever is left, deduping nothing —
-			// so it carries two RAW tokens but one DISTINCT token. tokenSimilarity
-			// walks the shorter side's token SLICE against a SET built from the longer
-			// side, so the repeat scores a match on every occurrence: sim = 2/2 = 1.0
-			// against a query org sharing only "acme". Counted in raw token-slice
-			// length the pair clears the k >= 2 floor and corroborates on a single
-			// shared token — k=1 resolution wearing a k=2 disguise. Counted in
-			// distinct SHARED tokens the pair carries exactly one ("acme"), and the
-			// corroborate arm is refused.
-			name:      "duplicate token is not two independent tokens (ENG-5374)",
-			queryOrg:  "Acme Tree Services",
-			res:       org("Acme Corp Acme Inc"),
+			// ENG-5172: another single-token containment case. {okta} vs {okta,
+			// security} is Jaccard 0.5 → unverified, not corroborated.
+			name:      "single-token query with extra registrant descriptor stays unverified (ENG-5172)",
+			queryOrg:  "Okta",
+			res:       org("Okta Security Inc."),
 			wantScore: confReverseWhoisUnverified,
 		},
 		{
-			// The same class with the duplicate on the QUERY side. The shared-token
-			// count is symmetric, so this is not a second half of the rule needing
-			// its own guard; the row is here because the duplicate-bearing side is
-			// also the SHORTER one, so it is the side tokenSimilarity iterates —
-			// both occurrences of "apple" match the candidate and sim saturates at
-			// 1.0 again, from the opposite direction.
-			name:      "duplicate token on the query side is not corroboration (ENG-5374)",
-			queryOrg:  "Apple Apple",
-			res:       org("Apple Tree Landscaping"),
+			// ENG-5172 OVER-CORRECTION regression (Codex P2, PR #122). Switching the
+			// metric to Jaccard fixed the spurious corroboration above but pushed the
+			// same containment shape off the OTHER end of the band: {walmart} vs
+			// {walmart, global, enterprises, holdings} is 1/4 = 0.25, BELOW
+			// simMismatch, so the bare threshold read a fully contained query org as
+			// a clear MISMATCH and de-ranked it to 0.40 — below a candidate whose
+			// WHOIS never resolved at all. The query's token set is a SUBSET of the
+			// registrant's, which is UNDER-SPECIFICATION (a plausible subsidiary or
+			// holding registration), not disagreement, so tokenSetContained gates the
+			// de-rank arm and this must stay UNVERIFIED.
+			name:      "sparse-overlap containment must not de-rank, query side (ENG-5172)",
+			queryOrg:  "Walmart",
+			res:       org("Walmart Global Enterprises Holdings LLC"),
 			wantScore: confReverseWhoisUnverified,
 		},
 		{
-			// The benign control for the two cases above: the distinct-shared-token
-			// floor narrows the CORROBORATE arm only, so a duplicate-bearing pair
-			// that shares nothing must still de-rank. A blanket "too few distinct
-			// shared tokens => unverified" rule would wrongly RESCUE this clean
-			// mismatch to mid-band.
-			name:      "duplicate token with zero overlap still de-ranks (ENG-5374)",
-			queryOrg:  "Walmart Walmart",
-			res:       org("Acme Tree Services"),
-			wantScore: confReverseWhoisMismatch,
-		},
-		{
-			// ENG-5374 round 2 (PR #127 review, Codex). The class the FIRST fix
-			// missed, because it counted distinct tokens PER SIDE and took a min:
-			// dq=2 ("acme", "holdings") and dc=3 ("acme", "landscaping", "tampa")
-			// both clear a floor of 2, so min(dq,dc)=2 ADMITTED a pair whose only
-			// shared token is "acme". Nothing about the metric changed —
-			// tokenSimilarity for this pair is still 0.667 >= simCorroborate, since
-			// it walks the shorter side's token SLICE and credits the repeated "acme"
-			// twice (2/3) — so this expectation is held up entirely by the
-			// distinct-SHARED-token floor. Weaken the guard back to any per-side
-			// count and this case fails; that is the whole value of it.
-			name:      "duplicate query token inflating a per-side count is not corroboration (ENG-5374 round 2)",
-			queryOrg:  "Acme Acme Holdings",
-			res:       org("Acme Landscaping Tampa"),
+			// The same containment, the other direction: the REGISTRANT is the
+			// less-specific name. tokenSetContained is symmetric (it compares the
+			// smaller distinct set against the larger), so a longer query org against
+			// a bare registrant — Jaccard 1/4 = 0.25 again — is equally
+			// under-specified and equally must not de-rank (ENG-5172).
+			name:      "sparse-overlap containment must not de-rank, registrant side (ENG-5172)",
+			queryOrg:  "Walmart Global Enterprises Holdings",
+			res:       org("Walmart Inc."),
 			wantScore: confReverseWhoisUnverified,
-		},
-		{
-			// The other benign control, and the one that bounds the round-2
-			// narrowing: genuine full containment on two distinct SHARED tokens is
-			// deliberately still corroboration, so the fix closes only the
-			// duplicate-artifact class. This is the case the ENG-5374 narrowing must
-			// NOT touch — "acme acme" and "praetorian security" both present two raw
-			// tokens to the metric, and only the shared-distinct count tells them
-			// apart.
-			name:      "full containment on two distinct shared tokens still corroborates",
-			queryOrg:  "Praetorian Security",
-			res:       org("Praetorian Security Group"),
-			wantScore: confReverseWhoisCorroborated,
 		},
 		{
 			// De-ranked to the bottom of the band, NOT dropped: a textual
 			// registrant mismatch is not proof of non-ownership (ENG-5123 #1).
+			// Zero shared tokens → Jaccard 0 → clear mismatch.
 			name:      "clear mismatch de-ranks (walmart from Leica)",
 			queryOrg:  "Leica Biosystems Richmond, Inc.",
 			res:       org("Walmart Inc."),
@@ -467,33 +397,39 @@ func TestDecideConfidence(t *testing.T) {
 			wantScore: confReverseWhoisUnverified,
 		},
 		{
+			// Genuine ambiguity in [simMismatch, simCorroborate): shares 2 of 4
+			// union tokens ({acme, global} of {acme, global, services, holdings}) =
+			// Jaccard 0.50. Enough overlap not to be a clear mismatch, not enough to
+			// corroborate → stays unverified.
 			name:      "ambiguous partial overlap stays unverified",
 			queryOrg:  "Acme Global Services",
-			res:       org("Acme Widgets Manufacturing Holdings"),
+			res:       org("Acme Global Holdings"),
 			wantScore: confReverseWhoisUnverified,
 		},
 		{
-			// 3 of 5 shared tokens = 0.60 == simCorroborate. Non-degenerate
-			// (both sides >1 token, partial overlap) so it exercises the real
-			// ratio, not a fully-contained shorter string.
+			// 3 shared of 5 union tokens = Jaccard 0.60 == simCorroborate.
+			// Non-degenerate (both sides >1 token, one distinguishing token each) so
+			// it exercises the real union ratio, not a fully-contained shorter string.
 			name:      "sim exactly at corroborate threshold corroborates",
-			queryOrg:  "Acme Global Data Cloud Services",
-			res:       org("Acme Global Data Widgets Holdings"),
+			queryOrg:  "Acme Global Data Cloud",
+			res:       org("Acme Global Data Widgets"),
 			wantScore: confReverseWhoisCorroborated,
 		},
 		{
-			// 3 of 10 shared tokens = 0.30 == simMismatch. The mismatch test is
-			// strictly-less-than, so the boundary stays unverified (not de-ranked).
+			// 3 shared of 10 union tokens = Jaccard 0.30 == simMismatch. The mismatch
+			// test is strictly-less-than, so the boundary stays unverified (not
+			// de-ranked). |A|=6, |B|=7, shared 3 → union 10.
 			name:      "sim exactly at mismatch threshold stays unverified (boundary)",
-			queryOrg:  "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
-			res:       org("alpha bravo charlie kilo lima mike november oscar papa quebec"),
+			queryOrg:  "alpha bravo charlie delta echo foxtrot",
+			res:       org("alpha bravo charlie golf hotel india juliet"),
 			wantScore: confReverseWhoisUnverified,
 		},
 		{
-			// 2 of 10 shared tokens = 0.20 < simMismatch → clear mismatch de-ranks.
+			// 2 shared of 9 union tokens = Jaccard 0.222 < simMismatch → clear
+			// mismatch de-ranks. |A|=5, |B|=6, shared 2 → union 9.
 			name:      "sim just below mismatch threshold de-ranks",
-			queryOrg:  "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
-			res:       org("alpha bravo kilo lima mike november oscar papa quebec romeo"),
+			queryOrg:  "alpha bravo charlie delta echo",
+			res:       org("alpha bravo foxtrot golf hotel india"),
 			wantScore: confReverseWhoisMismatch,
 		},
 		{
@@ -532,35 +468,6 @@ func TestDecideConfidence(t *testing.T) {
 				"reverse-whois must never drop below needs_review")
 		})
 	}
-}
-
-// TestDecideConfidence_DuplicateTokenPastAPerSideFloorStaysUnverified pins the
-// ENG-5374 round-2 regression at its FULL decision — score AND justification —
-// rather than only the arm the table above checks (PR #127 review, Codex).
-//
-// The pair is the one a per-side distinct floor admits: "acme acme holdings"
-// carries two distinct tokens, "acme landscaping tampa" three, so min(dq,dc)=2
-// clears a floor of 2 while the sides share exactly one distinct token. The
-// similarity value is asserted here too, and deliberately: it is STILL 0.667,
-// still at or above simCorroborate, so this test states in one place that the
-// metric did not change and the outcome is owed entirely to
-// corroborationHasResolution's distinct-shared-token floor. The benign control
-// that bounds the narrowing ("Praetorian Security" vs "Praetorian Security
-// Group", still corroborated) lives in the TestDecideConfidence table.
-func TestDecideConfidence_DuplicateTokenPastAPerSideFloorStaysUnverified(t *testing.T) {
-	const queryOrg = "Acme Acme Holdings"
-	registrant := "Acme Landscaping Tampa"
-
-	nq, nc := normalizeOrg(queryOrg), normalizeOrg(registrant)
-	require.Equal(t, "acme acme holdings", nq,
-		"the duplicate must survive normalizeOrg, or this test no longer covers the defect")
-	require.GreaterOrEqual(t, tokenSimilarity(nq, nc), simCorroborate,
-		"similarity must still reach the corroborate cutoff, or the guard is not what this test proves")
-
-	got := decideConfidence(queryOrg, newRegistrantResult(registrant), nil)
-	assert.Equal(t, confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisUnverified}, got,
-		"one shared token behind two per-side tokens is unverifiable, not corroboration")
-	assertInsideReviewBand(t, got, "ENG-5374 round 2 duplicate-token pair")
 }
 
 // TestDecideConfidence_RedactedRegistrantScoresUnverified proves the ENG-5404
