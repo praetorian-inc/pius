@@ -2,6 +2,7 @@ package domains
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -375,7 +376,7 @@ func queryWHOISResponse(ctx context.Context, domain string) (whoisResponse, erro
 }
 
 // whoisDialAddr normalizes a (possibly untrusted) referral server string into a
-// host:port dial target: it strips any URL scheme / trailing slash, DROPS any
+// host:port dial target: it strips any URL scheme and path, DROPS any
 // explicit port the referral carries, and always dials the standard WHOIS port.
 // WHOIS is tcp/43 by protocol, so a non-43 port in a referral is never
 // legitimate — honoring it would let a hostile WHOIS record steer the plugin
@@ -387,7 +388,21 @@ func queryWHOISResponse(ctx context.Context, domain string) (whoisResponse, erro
 func whoisDialAddr(server string) string {
 	server = strings.TrimPrefix(server, "http://")
 	server = strings.TrimPrefix(server, "https://")
-	server = strings.TrimSuffix(server, "/")
+	// Truncate at the first "/" so a URL-shaped referral contributes only its
+	// authority to the dial target. This SUBSUMES the trailing-slash trim it
+	// replaces — a trailing slash is just an empty path, so
+	// "https://whois.example.com/" still normalizes to "whois.example.com:43" —
+	// and both forms must not be applied together. Truncation runs AFTER
+	// scheme-stripping (so "https://" is already gone and its own slashes can't
+	// be mistaken for the path) and BEFORE SplitHostPort (so the port parse sees
+	// a bare authority). Previously only a trailing slash was trimmed, so a
+	// referral like "whois.example.com/path" kept its path: it carries no colon,
+	// SplitHostPort errors, and the else-branch below only strips IPv6 brackets,
+	// leaving the nonsense dial target "whois.example.com/path:43". That failed
+	// safe — it dies at DNS resolution — but silently, and post-ENG-5405 the
+	// dead hop surfaces as referral_failed, i.e. "the server refused us", when
+	// the truth is that pius built an unresolvable address (ENG-5464).
+	server, _, _ = strings.Cut(server, "/")
 	if host, _, err := net.SplitHostPort(server); err == nil {
 		server = host // drop the untrusted explicit port — WHOIS is tcp/43 only
 	} else {
@@ -402,6 +417,13 @@ func whoisDialAddr(server string) string {
 	return net.JoinHostPort(server, whoisPort)
 }
 
+// errWhoisDomainNewline is returned when a domain carries a CR or LF and so
+// cannot be written into a WHOIS request line. Callers match it with
+// errors.Is; the message is a compile-time constant and deliberately quotes
+// nothing from the offending domain, because that string is attacker-chosen
+// and errors get logged (ENG-5451, ENG-5464).
+var errWhoisDomainNewline = errors.New("whois: domain contains a newline")
+
 // whoisRawFn is indirected through a var so tests can drive whoisQuery's
 // referral/salvage state machine without real network I/O. Production code
 // leaves it as whoisRaw; only tests reassign it (restoring via defer).
@@ -409,6 +431,30 @@ var whoisRawFn = whoisRaw
 
 // whoisRaw sends a single WHOIS query to the given server and returns the raw response.
 func whoisRaw(ctx context.Context, domain, server string) (string, error) {
+	// Reject a domain carrying CR or LF before anything else happens. WHOIS
+	// (RFC 3912) is line-oriented: the request is exactly one CRLF-terminated
+	// line, so an embedded CRLF writes TWO request lines and hands whoever
+	// controls the domain string a second query on an already-established
+	// connection — whose response is concatenated into the same buffer
+	// extractReferral then parses. The string is genuinely untrusted: nothing
+	// in this package validates a domain, and reverse_whois_verify.go feeds
+	// whoisQuery candidate domains taken verbatim out of ViewDNS / Whoxy
+	// responses. Reject rather than strip: a domain with an embedded CRLF is
+	// not a domain, and post-ENG-5405 the refusal is observable rather than
+	// silently repaired (ENG-5464).
+	//
+	// Placement is load-bearing, twice over. It lives here at the write site in
+	// whoisRaw rather than at a caller so that every present and future caller
+	// inherits it. And it runs BEFORE whoisDialAddr and the dial because a
+	// post-dial check could never be reached by a hermetic test: the test's
+	// server is TEST-NET-1 (192.0.2.1), which ssrfSafeControl refuses, so the
+	// SSRF error would mask the guard. There is deliberately no dialer
+	// injection seam to work around that (ENG-5405 R6) — checking pre-dial is
+	// what makes this testable at all.
+	if strings.ContainsAny(domain, "\r\n") {
+		return "", errWhoisDomainNewline
+	}
+
 	addr := whoisDialAddr(server)
 
 	// SSRF guard: the reverse-whois verifier now follows WHOIS referrals for up to

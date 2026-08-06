@@ -326,6 +326,85 @@ func TestWhoisDialAddr(t *testing.T) {
 	assert.Equal(t, "[2001:db8::1]:43", whoisDialAddr("[2001:db8::1]"))
 }
 
+// TestWhoisDialAddr_TruncatesURLPath proves a referral carrying a URL PATH is
+// normalized to its host rather than smuggling the path into the dial target.
+// "whois.example.com/path" has no colon, so net.SplitHostPort errors and the
+// else-branch (which only trims IPv6 brackets) used to leave the path in place,
+// producing the nonsense target "whois.example.com/path:43". That failed safe —
+// it died at DNS resolution — but silently, and post-ENG-5405 the dead hop is
+// reported as referral_failed ("the server refused us") when the truth is that
+// pius built an unresolvable address (ENG-5464).
+func TestWhoisDialAddr_TruncatesURLPath(t *testing.T) {
+	assert.Equal(t, "whois.example.com:43", whoisDialAddr("whois.example.com/path"))
+	// Scheme + path + port together: scheme stripped, path truncated, and the
+	// untrusted explicit port still dropped in favour of tcp/43.
+	assert.Equal(t, "whois.example.com:43", whoisDialAddr("https://whois.example.com:8080/path/to/thing"))
+	// A query string or fragment lives after the path separator, so truncating at
+	// the first "/" removes it too.
+	assert.Equal(t, "whois.example.com:43", whoisDialAddr("http://whois.example.com/?q=example.com"))
+	// A bracketed IPv6 referral with a path normalizes the same way.
+	assert.Equal(t, "[2001:db8::1]:43", whoisDialAddr("https://[2001:db8::1]/path"))
+}
+
+// TestWhoisRaw_RejectsCRLFInDomain proves whoisRaw refuses a domain carrying a
+// bare CR, a bare LF, or a full CRLF instead of writing it to the wire.
+//
+// WHOIS (RFC 3912) is line-oriented: the request is ONE CRLF-terminated line, so
+// a domain containing "\r\n" writes TWO request lines and hands whoever controls
+// the domain string a second query on an already-established connection — whose
+// response is concatenated into the buffer extractReferral then reads, letting a
+// hostile record steer the referral chain. That string is genuinely untrusted:
+// there is no domain validation anywhere in this package, and
+// reverse_whois_verify.go feeds whoisQuery candidate domains taken verbatim from
+// ViewDNS / Whoxy responses (ENG-5464).
+//
+// The check is hermetic by construction — it runs BEFORE the dial, so no
+// dialerFn seam is needed (and per ENG-5405 R6 the absence of a dialer injection
+// point is itself a control). The unroutable TEST-NET-1 server proves the
+// ordering: ssrfSafeControl blocks 192.0.2.0/24 (see disallowedDialPrefixes and
+// TestSSRFSafeControl above), so a guard placed AFTER the dial would surface the
+// SSRF refusal instead and the ErrorIs below would fail. The rejection must
+// arrive with no network attempt at all.
+func TestWhoisRaw_RejectsCRLFInDomain(t *testing.T) {
+	for _, domain := range []string{
+		"example.com\r\nevil.com",
+		"example.com\nevil.com",
+		"example.com\revil.com",
+		"\r\n",
+		"example.com\r\n",
+	} {
+		_, err := whoisRaw(context.Background(), domain, "192.0.2.1")
+		require.Error(t, err, "domain %q must be rejected", domain)
+		require.ErrorIs(t, err, errWhoisDomainNewline)
+
+		// AC7 / ENG-5451: the rejection must not echo the attacker-chosen string
+		// back into an error that gets logged. The error carries no part of the
+		// domain — the message is a compile-time constant.
+		assert.NotContains(t, err.Error(), "evil.com")
+		assert.NotContains(t, err.Error(), "example.com")
+		assert.NotContains(t, err.Error(), "\n")
+		assert.NotContains(t, err.Error(), "\r")
+	}
+}
+
+// TestWhoisRaw_AcceptsDomainWithoutNewline proves the guard rejects ONLY on CR/LF
+// and does not become a general-purpose domain validator: a clean domain gets
+// past the check and fails later, at the dial, which is the pre-existing
+// behaviour. The server is TEST-NET-1 (192.0.2.0/24), which ssrfSafeControl
+// refuses outright (whoisclient.go's disallowedDialPrefixes lists it, and
+// TestSSRFSafeControl asserts it) — so the dial is rejected before any packet
+// leaves the process. The test stays hermetic while still proving the CR/LF
+// guard let the domain through to the dial: the error is a transport-layer
+// failure, not errWhoisDomainNewline.
+func TestWhoisRaw_AcceptsDomainWithoutNewline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := whoisRaw(ctx, "example.com", "192.0.2.1")
+	require.Error(t, err) // never reaches a real WHOIS server
+	assert.NotErrorIs(t, err, errWhoisDomainNewline)
+}
+
 func TestBoundedDeadline_UsesCtxDeadlineWhenSooner(t *testing.T) {
 	soon := time.Now().Add(50 * time.Millisecond)
 	ctx, cancel := context.WithDeadline(context.Background(), soon)
