@@ -70,52 +70,25 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 }
 
 // mergeResults combines the best fields from RDAP and TCP-43 results.
-// RDAP for structured metadata, TCP-43 for email and raw text.
+// RDAP wins for structured metadata; TCP-43 fills gaps (email, raw text).
 func mergeResults(domain string, rdapR Result, rdapErr error, tcp43R Result, tcp43Err error) Result {
 	if rdapErr != nil {
+		tcp43R.Sources = []string{"tcp43"}
 		return tcp43R
 	}
 	if tcp43Err != nil {
+		rdapR.Sources = []string{"rdap"}
 		return rdapR
 	}
 
-	r := Result{Domain: domain}
-
-	// Dates: prefer RDAP (RFC3339) over TCP-43 (variable formats).
-	r.Created = cmp.Or(rdapR.Created, tcp43R.Created)
-	r.Updated = cmp.Or(rdapR.Updated, tcp43R.Updated)
-	r.Expiration = cmp.Or(rdapR.Expiration, tcp43R.Expiration)
-	r.Registrar = cmp.Or(rdapR.Registrar, tcp43R.Registrar)
-	r.NameServers = rdapR.NameServers
-	if len(r.NameServers) == 0 {
-		r.NameServers = tcp43R.NameServers
-	}
-	r.Status = rdapR.Status
-	if len(r.Status) == 0 {
-		r.Status = tcp43R.Status
-	}
-
-	// Raw text: prefer TCP-43 (traditional format users expect).
-	r.Raw = cmp.Or(tcp43R.Raw, rdapR.Raw)
-
-	// Contacts: prefer RDAP org/name (structured), supplement email from TCP-43.
-	r.Registrant = mergeContact(rdapR.Registrant, tcp43R.Registrant)
-	r.Admin = mergeContact(rdapR.Admin, tcp43R.Admin)
-	r.Tech = mergeContact(rdapR.Tech, tcp43R.Tech)
-	r.Billing = mergeContact(rdapR.Billing, tcp43R.Billing)
-
-	return r
-}
-
-func mergeContact(rdap, tcp43 Contact) Contact {
-	return Contact{
-		Organization: cmp.Or(rdap.Organization, tcp43.Organization),
-		Name:         cmp.Or(rdap.Name, tcp43.Name),
-		Email:        cmp.Or(rdap.Email, tcp43.Email),
-		Country:      cmp.Or(rdap.Country, tcp43.Country),
-		Province:     cmp.Or(rdap.Province, tcp43.Province),
-		City:         cmp.Or(rdap.City, tcp43.City),
-	}
+	// RDAP is the base; TCP-43 fills gaps. Raw text prefers TCP-43 (the
+	// traditional format users expect), so swap it before merging.
+	rdapR.Raw = cmp.Or(tcp43R.Raw, rdapR.Raw)
+	rdapR.Sources = []string{"rdap"}
+	tcp43R.Sources = []string{"tcp43"}
+	rdapR.Merge(tcp43R)
+	rdapR.Domain = domain
+	return rdapR
 }
 
 // isDomainNotFound reports whether err definitively means the domain is not
