@@ -88,8 +88,8 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			Name:        f.Value,
 			Capability:  assetCapability,
 			Confidences: confidences,
-			Confidence:  &totalConfidence,
-			NeedsReview: &needsReview,
+			Confidence:  totalConfidence,
+			NeedsReview: needsReview,
 		})
 	case plugins.FindingCIDR:
 		return output.Emit(capmodel.Asset{
@@ -97,8 +97,8 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			Name:        f.Value,
 			Capability:  assetCapability,
 			Confidences: confidences,
-			Confidence:  &totalConfidence,
-			NeedsReview: &needsReview,
+			Confidence:  totalConfidence,
+			NeedsReview: needsReview,
 		})
 	case plugins.FindingPreseed:
 		preseedType, _ := f.Data["preseed_type"].(string)
@@ -112,8 +112,8 @@ func emitFinding(output capability.Emitter, f plugins.Finding) error {
 			Title:       title,
 			Capability:  preseedCapability,
 			Confidences: confidences,
-			Confidence:  &totalConfidence,
-			NeedsReview: &needsReview,
+			Confidence:  totalConfidence,
+			NeedsReview: needsReview,
 		})
 	default:
 		// Skip internal finding types (e.g., cidr-handle)
