@@ -16,6 +16,8 @@ func init() {
 	plugins.Register("whois", func() plugins.Plugin { return &WhoisPlugin{} })
 }
 
+const confWhoisServerRecord = 0.85
+
 // WhoisPlugin performs domain WHOIS lookups to extract registration information
 // (registrant organization, contact names, and emails) and emits them as preseed
 // findings for downstream discovery.
@@ -56,10 +58,11 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 		}
 	}()
 
-	raw, incomplete, err := whoisQuery(ctx, domain)
+	response, err := queryWHOISResponse(ctx, domain)
 	if err != nil {
 		return nil, fmt.Errorf("whois: lookup failed for %q: %w", domain, err)
 	}
+	raw, incomplete := response.raw, response.incomplete
 
 	// whoisQuery is shared with the reverse-whois verifier, where a caller
 	// cancellation deliberately salvages the last post-referral record
@@ -122,7 +125,7 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) (findings []
 		return nil, nil
 	}
 
-	return extractPreseeds(parsed), nil
+	return extractPreseeds(parsed, response.server), nil
 }
 
 // whoisParseFn is a seam over whoisparser.Parse so the panic-recover in
@@ -265,52 +268,64 @@ var whoisPrivacyMarkerPhrases = [][]string{
 }
 
 // extractPreseeds pulls registrant organization, name, and email from WHOIS contacts.
-func extractPreseeds(info whoisparser.WhoisInfo) []plugins.Finding {
-	type param struct {
-		name  string
-		value string
+func extractPreseeds(info whoisparser.WhoisInfo, server string) []plugins.Finding {
+	type contactWithRole struct {
+		role    string
+		contact *whoisparser.Contact
+	}
+	type candidate struct {
+		field     string
+		attribute string
+		value     string
 	}
 
-	seen := make(map[param]bool)
+	seen := make(map[candidate]bool)
 	var findings []plugins.Finding
 
-	contacts := []*whoisparser.Contact{
-		info.Registrant, info.Administrative, info.Billing, info.Technical,
+	contacts := []contactWithRole{
+		{role: "registrant", contact: info.Registrant},
+		{role: "administrative", contact: info.Administrative},
+		{role: "billing", contact: info.Billing},
+		{role: "technical", contact: info.Technical},
 	}
-	for _, c := range contacts {
-		if c == nil {
+	for _, contact := range contacts {
+		if contact.contact == nil {
 			continue
 		}
 
-		candidates := []param{
-			{"company", c.Organization},
-			{"name", c.Name},
-			{"email", c.Email},
+		candidates := []candidate{
+			{field: "company", attribute: "organization", value: contact.contact.Organization},
+			{field: "name", attribute: "name", value: contact.contact.Name},
+			{field: "email", attribute: "email", value: contact.contact.Email},
 		}
 
-		for _, p := range candidates {
-			if p.value == "" || seen[p] {
+		for _, candidate := range candidates {
+			if candidate.value == "" || seen[candidate] {
 				continue
 			}
-			if p.name == "email" && !isEmail(p.value) {
+			if candidate.field == "email" && !isEmail(candidate.value) {
 				continue
 			}
-			if p.name == "company" && whoisPrivacyGuards[strings.ToLower(p.value)] {
+			if candidate.field == "company" && whoisPrivacyGuards[strings.ToLower(candidate.value)] {
 				continue
 			}
-			if p.name == "name" && whoisPrivacyNames[strings.ToLower(p.value)] {
+			if candidate.field == "name" && whoisPrivacyNames[strings.ToLower(candidate.value)] {
 				continue
 			}
-			seen[p] = true
+			seen[candidate] = true
 
-			preseedType := "whois+" + p.name
 			findings = append(findings, plugins.Finding{
 				Type:   plugins.FindingPreseed,
-				Value:  p.value,
+				Value:  candidate.value,
 				Source: "whois",
+				Confidences: []plugins.Confidence{{
+					Score: confWhoisServerRecord,
+					Justification: fmt.Sprintf("WHOIS server %q records %q as the %s contact %s",
+						server, candidate.value, contact.role, candidate.attribute),
+				}},
 				Data: map[string]any{
-					"preseed_type":  preseedType,
-					"preseed_title": p.value,
+					"preseed_type":  "whois+" + candidate.field,
+					"preseed_title": candidate.value,
 				},
 			})
 		}

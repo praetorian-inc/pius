@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/twmb/murmur3"
@@ -15,6 +17,22 @@ import (
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
+
+const confFaviconScannerObservation = 0.50
+
+type faviconFindingKey struct {
+	findingType plugins.FindingType
+	value       string
+}
+
+type faviconFindingMap map[faviconFindingKey]plugins.Finding
+
+type faviconObservation struct {
+	scanner      string
+	findingType  plugins.FindingType
+	value        string
+	associatedIP string
+}
 
 func init() {
 	plugins.Register("favicon-hash", func() plugins.Plugin {
@@ -62,27 +80,20 @@ func (p *FaviconHashPlugin) Run(ctx context.Context, input plugins.Input) ([]plu
 	// Step 2: Base64-encode per RFC 2045 (76-char wrapped lines) and compute hash
 	hash := faviconHash(faviconBody)
 
-	// Step 3: Query Shodan and FOFA concurrently
-	var findings []plugins.Finding
+	// Step 3: Query Shodan and FOFA sequentially, aggregating their evidence.
+	findings := make(faviconFindingMap)
 
-	shodanFindings, err := p.queryShodan(ctx, hash, input)
-	if err != nil {
+	if err := p.queryShodan(ctx, hash, input, findings); err != nil {
 		slog.Warn("favicon-hash: Shodan query failed", "error", err)
-	} else {
-		findings = append(findings, shodanFindings...)
 	}
 
 	if os.Getenv("FOFA_API_KEY") != "" {
-		fofaFindings, err := p.queryFOFA(ctx, hash, input)
-		if err != nil {
+		if err := p.queryFOFA(ctx, hash, input, findings); err != nil {
 			slog.Warn("favicon-hash: FOFA query failed", "error", err)
-		} else {
-			findings = append(findings, fofaFindings...)
 		}
 	}
 
-	// Deduplicate findings by value
-	return deduplicateFindings(findings, p.Name()), nil
+	return sortedFaviconFindings(findings), nil
 }
 
 // fetchFavicon downloads the favicon from the target domain.
@@ -121,7 +132,12 @@ func base64RFC2045(data []byte) string {
 }
 
 // queryShodan queries Shodan for hosts matching the favicon hash.
-func (p *FaviconHashPlugin) queryShodan(ctx context.Context, hash int32, input plugins.Input) ([]plugins.Finding, error) {
+func (p *FaviconHashPlugin) queryShodan(
+	ctx context.Context,
+	hash int32,
+	input plugins.Input,
+	findings faviconFindingMap,
+) error {
 	apiKey := os.Getenv("SHODAN_API_KEY")
 	base := "https://api.shodan.io"
 	if p.shodanURL != "" {
@@ -134,10 +150,10 @@ func (p *FaviconHashPlugin) queryShodan(ctx context.Context, hash int32, input p
 
 	body, err := p.client.Get(ctx, reqURL)
 	if err != nil {
-		return nil, fmt.Errorf("shodan request: %w", err)
+		return fmt.Errorf("shodan request: %w", err)
 	}
 
-	return parseShodanResponse(body, hash, input)
+	return parseShodanResponse(body, hash, input, findings)
 }
 
 // shodanResponse mirrors the subset of the Shodan /shodan/host/search response we use.
@@ -150,50 +166,48 @@ type shodanMatch struct {
 	Hostnames []string `json:"hostnames"`
 }
 
-func parseShodanResponse(body []byte, hash int32, input plugins.Input) ([]plugins.Finding, error) {
+func parseShodanResponse(body []byte, hash int32, input plugins.Input, findings faviconFindingMap) error {
 	var resp shodanResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse shodan response: %w", err)
+		return fmt.Errorf("parse shodan response: %w", err)
 	}
 
-	var findings []plugins.Finding
+	observations := make([]faviconObservation, 0)
+	seen := make(map[faviconObservation]bool)
 	for _, match := range resp.Matches {
-		data := map[string]any{
-			"org":           input.OrgName,
-			"source_domain": input.Domain,
-			"favicon_hash":  hash,
-			"scanner":       "shodan",
-		}
+		ip := strings.TrimSpace(match.IPStr)
+		cidr, err := faviconHostCIDR(ip)
 
-		// Emit IP as CIDR (/32)
-		if match.IPStr != "" {
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingCIDR,
-				Value:  match.IPStr + "/32",
-				Source: "favicon-hash",
-				Data:   copyData(data),
+		if err != nil {
+			observations = appendUniqueFaviconObservation(observations, seen, faviconObservation{
+				scanner:      "shodan",
+				findingType:  plugins.FindingCIDR,
+				value:        cidr,
+				associatedIP: ip,
 			})
 		}
 
-		// Emit hostnames as domains
 		for _, hostname := range match.Hostnames {
-			hostname = normalizeFaviconHost(hostname)
-			if hostname == "" {
-				continue
-			}
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingDomain,
-				Value:  hostname,
-				Source: "favicon-hash",
-				Data:   copyData(data),
+			observations = appendUniqueFaviconObservation(observations, seen, faviconObservation{
+				scanner:      "shodan",
+				findingType:  plugins.FindingDomain,
+				value:        hostname,
+				associatedIP: ip,
 			})
 		}
 	}
-	return findings, nil
+
+	addFaviconObservations(findings, observations, hash, input)
+	return nil
 }
 
 // queryFOFA queries FOFA for hosts matching the favicon hash.
-func (p *FaviconHashPlugin) queryFOFA(ctx context.Context, hash int32, input plugins.Input) ([]plugins.Finding, error) {
+func (p *FaviconHashPlugin) queryFOFA(
+	ctx context.Context,
+	hash int32,
+	input plugins.Input,
+	findings faviconFindingMap,
+) error {
 	apiKey := os.Getenv("FOFA_API_KEY")
 	base := "https://fofa.info"
 	if p.fofaURL != "" {
@@ -209,10 +223,10 @@ func (p *FaviconHashPlugin) queryFOFA(ctx context.Context, hash int32, input plu
 
 	body, err := p.client.Get(ctx, reqURL)
 	if err != nil {
-		return nil, fmt.Errorf("fofa request: %w", err)
+		return fmt.Errorf("fofa request: %w", err)
 	}
 
-	return parseFOFAResponse(body, hash, input)
+	return parseFOFAResponse(body, hash, input, findings)
 }
 
 // fofaResponse mirrors the subset of the FOFA /api/v1/search/all response we use.
@@ -220,45 +234,41 @@ type fofaResponse struct {
 	Results [][]string `json:"results"` // each entry is [host, ip]
 }
 
-func parseFOFAResponse(body []byte, hash int32, input plugins.Input) ([]plugins.Finding, error) {
+func parseFOFAResponse(body []byte, hash int32, input plugins.Input, findings faviconFindingMap) error {
 	var resp fofaResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse fofa response: %w", err)
+		return fmt.Errorf("parse fofa response: %w", err)
 	}
 
-	var findings []plugins.Finding
+	observations := make([]faviconObservation, 0)
+	seen := make(map[faviconObservation]bool)
 	for _, result := range resp.Results {
 		if len(result) < 2 {
 			continue
 		}
-		host, ip := result[0], result[1]
-		data := map[string]any{
-			"org":           input.OrgName,
-			"source_domain": input.Domain,
-			"favicon_hash":  hash,
-			"scanner":       "fofa",
-		}
 
-		if ip != "" {
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingCIDR,
-				Value:  ip + "/32",
-				Source: "favicon-hash",
-				Data:   copyData(data),
+		host, ip := result[0], strings.TrimSpace(result[1])
+		cidr, err := faviconHostCIDR(ip)
+
+		if err != nil {
+			observations = appendUniqueFaviconObservation(observations, seen, faviconObservation{
+				scanner:      "fofa",
+				findingType:  plugins.FindingCIDR,
+				value:        cidr,
+				associatedIP: ip,
 			})
 		}
 
-		host = normalizeFaviconHost(host)
-		if host != "" {
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingDomain,
-				Value:  host,
-				Source: "favicon-hash",
-				Data:   copyData(data),
-			})
-		}
+		observations = appendUniqueFaviconObservation(observations, seen, faviconObservation{
+			scanner:      "fofa",
+			findingType:  plugins.FindingDomain,
+			value:        host,
+			associatedIP: ip,
+		})
 	}
-	return findings, nil
+
+	addFaviconObservations(findings, observations, hash, input)
+	return nil
 }
 
 // normalizeFaviconHost normalizes a hostname from scanner results:
@@ -270,29 +280,130 @@ func normalizeFaviconHost(d string) string {
 	return normalizeDomain(d)
 }
 
-// deduplicateFindings removes duplicate findings by type+value, keeping the first.
-func deduplicateFindings(findings []plugins.Finding, source string) []plugins.Finding {
-	type key struct {
-		typ   plugins.FindingType
-		value string
+func appendUniqueFaviconObservation(
+	observations []faviconObservation,
+	seen map[faviconObservation]bool,
+	observation faviconObservation,
+) []faviconObservation {
+	observation.value = normalizeFaviconFindingValue(observation.findingType, observation.value)
+	observation.associatedIP = strings.TrimSpace(observation.associatedIP)
+	if observation.value == "" || seen[observation] {
+		return observations
 	}
-	seen := make(map[key]bool, len(findings))
-	result := make([]plugins.Finding, 0, len(findings))
-	for _, f := range findings {
-		k := key{f.Type, f.Value}
-		if !seen[k] {
-			seen[k] = true
-			result = append(result, f)
-		}
-	}
-	return result
+	seen[observation] = true
+	return append(observations, observation)
 }
 
-// copyData creates a shallow copy of a data map for safe reuse.
-func copyData(d map[string]any) map[string]any {
-	cp := make(map[string]any, len(d))
-	for k, v := range d {
-		cp[k] = v
+func addFaviconObservations(
+	findings faviconFindingMap,
+	observations []faviconObservation,
+	hash int32,
+	input plugins.Input,
+) {
+	for _, observation := range observations {
+		addFaviconEvidence(findings, observation, hash, input)
 	}
-	return cp
+}
+
+func addFaviconEvidence(
+	findings faviconFindingMap,
+	observation faviconObservation,
+	hash int32,
+	input plugins.Input,
+) {
+	value := normalizeFaviconFindingValue(observation.findingType, observation.value)
+	if value == "" {
+		return
+	}
+
+	key := faviconFindingKey{findingType: observation.findingType, value: value}
+	finding, exists := findings[key]
+	if !exists {
+		finding = plugins.Finding{
+			Type:   observation.findingType,
+			Value:  value,
+			Source: "favicon-hash",
+			Data: map[string]any{
+				"org":           input.OrgName,
+				"source_domain": input.Domain,
+				"favicon_hash":  hash,
+				"scanners":      []string{},
+			},
+		}
+	}
+
+	finding.Data["scanners"] = appendFaviconScanner(finding.Data["scanners"], observation.scanner)
+	plugins.AddConfidence(&finding, confFaviconScannerObservation,
+		faviconJustification(observation, value, hash, input.Domain))
+	findings[key] = finding
+}
+
+func appendFaviconScanner(value any, scanner string) []string {
+	scanners, _ := value.([]string)
+	for _, existing := range scanners {
+		if existing == scanner {
+			return scanners
+		}
+	}
+	scanners = append(scanners, scanner)
+	sort.Strings(scanners)
+	return scanners
+}
+
+func faviconJustification(observation faviconObservation, value string, hash int32, sourceDomain string) string {
+	scanner := faviconScannerDisplayName(observation.scanner)
+	if observation.findingType == plugins.FindingCIDR {
+		return fmt.Sprintf(`%s observed favicon hash %d on IP %q, matching the favicon fetched from domain %q`,
+			scanner, hash, observation.associatedIP, sourceDomain)
+	}
+	if observation.associatedIP != "" {
+		return fmt.Sprintf(`%s associated hostname %q with IP %q, where it observed favicon hash %d matching the favicon fetched from domain %q`,
+			scanner, value, observation.associatedIP, hash, sourceDomain)
+	}
+	return fmt.Sprintf(`%s observed hostname %q with favicon hash %d matching the favicon fetched from domain %q`,
+		scanner, value, hash, sourceDomain)
+}
+
+func faviconScannerDisplayName(scanner string) string {
+	if scanner == "fofa" {
+		return "FOFA"
+	}
+	if scanner == "" {
+		return "Scanner"
+	}
+	return strings.ToUpper(scanner[:1]) + scanner[1:]
+}
+
+func faviconHostCIDR(ip string) (string, error) {
+	address, err := netip.ParseAddr(ip)
+	if err != nil {
+		return "", err
+	}
+	return netip.PrefixFrom(address, address.BitLen()).String(), nil
+}
+
+func normalizeFaviconFindingValue(findingType plugins.FindingType, value string) string {
+	if findingType == plugins.FindingDomain {
+		return normalizeFaviconHost(value)
+	}
+	value = strings.TrimSpace(value)
+	prefix, err := netip.ParsePrefix(value)
+	if err != nil {
+		return value
+	}
+	return prefix.Masked().String()
+}
+
+func sortedFaviconFindings(findings faviconFindingMap) []plugins.Finding {
+	result := make([]plugins.Finding, 0, len(findings))
+	for _, finding := range findings {
+		result = append(result, finding)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Type != result[j].Type {
+			return result[i].Type < result[j].Type
+		}
+		return result[i].Value < result[j].Value
+	})
+	return result
 }
