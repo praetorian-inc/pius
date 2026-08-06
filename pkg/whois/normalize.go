@@ -111,24 +111,48 @@ func normalizeOrg(s string) string {
 	return strings.Join(kept, " ")
 }
 
-// RootDomain extracts the registrable domain (eTLD+1) from a hostname using
-// the public suffix list. Falls back to last-two-labels for hostnames the PSL
-// doesn't cover.
 func RootDomain(hostname string) string {
-	hostname = strings.TrimSuffix(strings.TrimSpace(strings.ToLower(hostname)), ".")
-	if hostname == "" || net.ParseIP(hostname) != nil {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
 		return ""
 	}
-	etld1, err := publicsuffix.EffectiveTLDPlusOne(hostname)
-	if err != nil {
-		// Fallback for hostnames not in the PSL (e.g. internal TLDs).
-		parts := strings.Split(hostname, ".")
-		if len(parts) < 2 {
-			return ""
-		}
-		return strings.Join(parts[len(parts)-2:], ".")
+
+	// IPs are not domains.
+	if net.ParseIP(hostname) != nil {
+		return ""
 	}
-	return etld1
+
+	// Repeatedly compute eTLD+1 until the result sits under an ICANN-managed
+	// suffix. For normal domains this returns on the first iteration
+	// (e.g., app.praetorian.com → praetorian.com). For cloud infrastructure
+	// under private PSL suffixes it walks up via the suffix until it reaches
+	// the ICANN-level registrable domain (e.g., mybucket.s3.amazonaws.com →
+	// amazonaws.com, while d2xxx.cloudfront.net → cloudfront.net).
+	domain := hostname
+	for range strings.Count(hostname, ".") + 1 {
+		etld1, err := publicsuffix.EffectiveTLDPlusOne(domain)
+		if err != nil {
+			_, remainder, ok := strings.Cut(domain, ".")
+			if !ok {
+				return ""
+			}
+			if tld, icann := publicsuffix.PublicSuffix(remainder); icann && tld == remainder {
+				return domain
+			}
+			domain = remainder
+			continue
+		}
+
+		tld, icann := publicsuffix.PublicSuffix(etld1)
+		if icann {
+			return etld1
+		}
+		if tld == domain {
+			return domain
+		}
+		domain = tld
+	}
+	return ""
 }
 
 // IsPlausibleDomain filters garbage from reverse-whois results. Checks for
