@@ -30,3 +30,4 @@
 @contactprivacy.email
 @domainsbyproxy.com
 @privacy-protect.org
+@bluehostprivatename.com
