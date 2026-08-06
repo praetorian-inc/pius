@@ -3,6 +3,7 @@ package domains
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -119,41 +120,52 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 	return finding(d)
 }
 
-func extractPreseeds(r whois.Result) []plugins.Finding {
-	type param struct{ name, value string }
+const confWhoisServerRecord = 0.85
 
-	seen := map[param]bool{}
+func extractPreseeds(r whois.Result) []plugins.Finding {
+	type candidate struct {
+		field, role, value string
+	}
+
+	seen := map[candidate]bool{}
 	var findings []plugins.Finding
 
+	roles := [4]string{"registrant", "administrative", "technical", "billing"}
 	contacts := r.AllContacts()
 	for i, c := range contacts {
 		org := c.Organization
-		if i == 0 { // registrant
+		if i == 0 {
 			org = whois.RegistrantOrg(c, r.Domain)
 		}
 
-		for _, p := range []param{
-			{"company", org},
-			{"name", c.Name},
-			{"email", c.Email},
-		} {
-			if p.value == "" || seen[p] || whois.IsPrivacy(p.value) {
-				continue
-			}
-			if p.name == "email" && !whois.IsEmail(p.value) {
-				continue
-			}
-			seen[p] = true
+		candidates := []candidate{
+			{field: "company", role: roles[i], value: org},
+			{field: "name", role: roles[i], value: c.Name},
+			{field: "email", role: roles[i], value: c.Email},
+		}
 
-			findings = append(findings, plugins.Finding{
+		for _, cd := range candidates {
+			if cd.value == "" || seen[cd] || whois.IsPrivacy(cd.value) {
+				continue
+			}
+			if cd.field == "email" && !whois.IsEmail(cd.value) {
+				continue
+			}
+			seen[cd] = true
+
+			f := plugins.Finding{
 				Type:   plugins.FindingPreseed,
-				Value:  p.value,
+				Value:  cd.value,
 				Source: "whois",
 				Data: map[string]any{
-					"preseed_type":  "whois+" + p.name,
-					"preseed_title": p.value,
+					"preseed_type":  "whois+" + cd.field,
+					"preseed_title": cd.value,
 				},
-			})
+			}
+			plugins.AddConfidence(&f, confWhoisServerRecord,
+				fmt.Sprintf("WHOIS records %q as the %s contact %s",
+					cd.value, cd.role, cd.field))
+			findings = append(findings, f)
 		}
 	}
 	return findings

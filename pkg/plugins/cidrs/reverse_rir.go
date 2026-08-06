@@ -12,6 +12,8 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
+const confReverseRIRHandle = 0.60
+
 func init() {
 	plugins.Register("reverse-rir", func() plugins.Plugin {
 		return &ReverseRIRPlugin{client: client.New()}
@@ -22,14 +24,16 @@ func init() {
 // Queries ARIN, RIPE, APNIC, AFRINIC, and LACNIC WHOIS/RDAP APIs.
 // Phase 1 plugin: emits FindingCIDRHandle findings consumed by Phase 2.
 type ReverseRIRPlugin struct {
-	client *client.Client
+	client httpDoer
 }
 
-func (p *ReverseRIRPlugin) Name() string        { return "reverse-rir" }
-func (p *ReverseRIRPlugin) Description() string { return "Reverse RIR lookup: discovers org handles from company name via ARIN/RIPE/APNIC/AFRINIC/LACNIC" }
-func (p *ReverseRIRPlugin) Category() string    { return "cidr" }
-func (p *ReverseRIRPlugin) Phase() int          { return 1 }
-func (p *ReverseRIRPlugin) Mode() string        { return plugins.ModePassive }
+func (p *ReverseRIRPlugin) Name() string { return "reverse-rir" }
+func (p *ReverseRIRPlugin) Description() string {
+	return "Reverse RIR lookup: discovers org handles from company name via ARIN/RIPE/APNIC/AFRINIC/LACNIC"
+}
+func (p *ReverseRIRPlugin) Category() string { return "cidr" }
+func (p *ReverseRIRPlugin) Phase() int       { return 1 }
+func (p *ReverseRIRPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *ReverseRIRPlugin) Accepts(input plugins.Input) bool {
 	return input.OrgName != ""
@@ -150,18 +154,9 @@ func (p *ReverseRIRPlugin) queryArinEntity(ctx context.Context, entity, org stri
 		}
 	}
 
-	// Convert to findings
 	var findings []plugins.Finding
 	for _, handle := range handles {
-		findings = append(findings, plugins.Finding{
-			Type:   plugins.FindingCIDRHandle,
-			Value:  handle,
-			Source: "reverse-rir",
-			Data: map[string]any{
-				"registry": "arin",
-				"org":      org,
-			},
-		})
+		findings = append(findings, newReverseRIRFinding(handle, "arin", "ARIN "+entity+" database", org))
 	}
 
 	return findings
@@ -193,15 +188,7 @@ func (p *ReverseRIRPlugin) queryRIPE(ctx context.Context, org string) ([]plugins
 		value := obj.PrimaryKey.Attribute[0].Value
 
 		if name == "organisation" {
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingCIDRHandle,
-				Value:  value,
-				Source: "reverse-rir",
-				Data: map[string]any{
-					"registry": "ripe",
-					"org":      org,
-				},
-			})
+			findings = append(findings, newReverseRIRFinding(value, "ripe", "RIPE database", org))
 		}
 	}
 
@@ -232,15 +219,7 @@ func (p *ReverseRIRPlugin) queryAPNIC(ctx context.Context, org string) ([]plugin
 		if item.ObjectType != "organisation" || item.PrimaryKey == "" {
 			continue
 		}
-		findings = append(findings, plugins.Finding{
-			Type:   plugins.FindingCIDRHandle,
-			Value:  item.PrimaryKey,
-			Source: "reverse-rir",
-			Data: map[string]any{
-				"registry": "apnic",
-				"org":      org,
-			},
-		})
+		findings = append(findings, newReverseRIRFinding(item.PrimaryKey, "apnic", "APNIC WHOIS database", org))
 	}
 
 	return findings, nil
@@ -273,15 +252,7 @@ func (p *ReverseRIRPlugin) queryAFRINIC(ctx context.Context, org string) ([]plug
 		if handle == "" || !strings.HasPrefix(strings.ToUpper(handle), "ORG-") {
 			continue
 		}
-		findings = append(findings, plugins.Finding{
-			Type:   plugins.FindingCIDRHandle,
-			Value:  handle,
-			Source: "reverse-rir",
-			Data: map[string]any{
-				"registry": "afrinic",
-				"org":      org,
-			},
-		})
+		findings = append(findings, newReverseRIRFinding(handle, "afrinic", "AFRINIC RDAP database", org))
 	}
 
 	return findings, nil
@@ -312,18 +283,25 @@ func (p *ReverseRIRPlugin) queryLACNIC(ctx context.Context, org string) ([]plugi
 		if entity.Handle == "" {
 			continue
 		}
-		findings = append(findings, plugins.Finding{
-			Type:   plugins.FindingCIDRHandle,
-			Value:  entity.Handle,
-			Source: "reverse-rir",
-			Data: map[string]any{
-				"registry": "lacnic",
-				"org":      org,
-			},
-		})
+		findings = append(findings, newReverseRIRFinding(entity.Handle, "lacnic", "LACNIC RDAP database", org))
 	}
 
 	return findings, nil
+}
+
+func newReverseRIRFinding(handle, registry, database, org string) plugins.Finding {
+	finding := plugins.Finding{
+		Type:   plugins.FindingCIDRHandle,
+		Value:  handle,
+		Source: "reverse-rir",
+		Data: map[string]any{
+			"registry": registry,
+			"org":      org,
+		},
+	}
+	plugins.AddConfidence(&finding, confReverseRIRHandle, fmt.Sprintf(
+		"%s returned organization handle %q for organization search %q", database, handle, org))
+	return finding
 }
 
 // ── ARIN response types ───────────────────────────────────────────────────────

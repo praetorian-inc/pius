@@ -1,0 +1,41 @@
+{
+  "took": 18,
+  "timed_out": false,
+  "hits": {
+    "total": {
+      "value": 1,
+      "relation": "eq"
+    },
+    "max_score": 14.0254965,
+    "hits": [
+      {
+        "_index": "edgar_file",
+        "_id": "0001234567-24-001234:filing.htm",
+        "_score": 14.0254965,
+        "_source": {
+          "ciks": [
+            "0007654321",
+            "0001234567"
+          ],
+          "period_ending": "2024-02-10",
+          "file_num": [
+            "001-40764",
+            "001-40764"
+          ],
+          "display_names": [
+            "Acme Holdings, Inc.  (CIK 0007654321)",
+            "Acme Corp ACME-1  (CIK 0001234567)"
+          ],
+          "root_forms": [
+            "10-K"
+          ],
+          "file_date": "2024-02-14",
+          "form": "10-K",
+          "adsh": "0001234567-24-001234",
+          "file_type": "10-K",
+          "file_description": "ANNUAL REPORT"
+        }
+      }
+    ]
+  }
+}

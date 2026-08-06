@@ -153,6 +153,14 @@ func TestWaybackPlugin_ParsesWaybackDomains(t *testing.T) {
 	for _, f := range findings {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "wayback", f.Source)
+		require.Len(t, f.Confidences, 1)
+		assert.InDelta(t, confWaybackArchiveObservation, f.Confidences[0].Score, 0.001)
+		assert.NotEmpty(t, f.Confidences[0].Justification)
+		assert.Contains(t, f.Confidences[0].Justification, archiveSourceWayback)
+		assert.NotContains(t, f.Confidences[0].Justification, archiveSourceCommonCrawl)
+		assert.Contains(t, f.Confidences[0].Justification, f.Value)
+		assert.NotContains(t, f.Data, "confidence")
+		assert.NotContains(t, f.Data, "confidences")
 	}
 }
 
@@ -178,6 +186,13 @@ func TestWaybackPlugin_ParsesCommonCrawlDomains(t *testing.T) {
 	values := findingValues(findings)
 	assert.Contains(t, values, "cdn.example.com")
 	assert.Contains(t, values, "blog.example.com")
+	for _, f := range findings {
+		require.Len(t, f.Confidences, 1)
+		assert.InDelta(t, confWaybackArchiveObservation, f.Confidences[0].Score, 0.001)
+		assert.Contains(t, f.Confidences[0].Justification, archiveSourceCommonCrawl)
+		assert.NotContains(t, f.Confidences[0].Justification, archiveSourceWayback)
+		assert.Contains(t, f.Confidences[0].Justification, f.Value)
+	}
 }
 
 func TestWaybackPlugin_DeduplicatesAcrossSources(t *testing.T) {
@@ -203,9 +218,16 @@ func TestWaybackPlugin_DeduplicatesAcrossSources(t *testing.T) {
 	require.NoError(t, err)
 	count := 0
 	for _, f := range findings {
-		if f.Value == "api.example.com" {
-			count++
+		if f.Value != "api.example.com" {
+			continue
 		}
+		count++
+		require.Len(t, f.Confidences, 1, "both archives contribute one combined entry")
+		confidence := f.Confidences[0]
+		assert.InDelta(t, confWaybackArchiveObservation, confidence.Score, 0.001)
+		assert.Equal(t, `Archive evidence from Common Crawl and Wayback Machine records hostname "api.example.com" under base domain "example.com"`, confidence.Justification)
+		assert.NotContains(t, f.Data, "confidence")
+		assert.NotContains(t, f.Data, "confidences")
 	}
 	assert.Equal(t, 1, count, "api.example.com should appear exactly once")
 }

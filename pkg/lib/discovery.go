@@ -100,11 +100,11 @@ var matchedPreseedTypes = []string{
 	"edgar+company",
 }
 
-func (d *Discovery) Name() string        { return CapabilityName }
+func (d *Discovery) Name() string { return CapabilityName }
 func (d *Discovery) Description() string {
 	return "discovers domains and CIDRs for an organization using Pius multi-plugin pipeline"
 }
-func (d *Discovery) Input() any          { return capmodel.Preseed{} }
+func (d *Discovery) Input() any                         { return capmodel.Preseed{} }
 func (d *Discovery) Parameters() []capability.Parameter { return piusParams("passive") }
 
 func (d *Discovery) Match(_ capability.ExecutionContext, input capmodel.Preseed) error {
@@ -127,11 +127,11 @@ var _ capability.Capability[capmodel.Domain] = (*DomainDiscovery)(nil)
 // It registers under the SAME name "pius-discovery" as the preseed variant.
 type DomainDiscovery struct{}
 
-func (d *DomainDiscovery) Name() string        { return CapabilityName }
+func (d *DomainDiscovery) Name() string { return CapabilityName }
 func (d *DomainDiscovery) Description() string {
 	return "discovers domains and CIDRs for an organization using Pius multi-plugin pipeline"
 }
-func (d *DomainDiscovery) Input() any          { return capmodel.Domain{} }
+func (d *DomainDiscovery) Input() any                         { return capmodel.Domain{} }
 func (d *DomainDiscovery) Parameters() []capability.Parameter { return piusParams("all") }
 
 func (d *DomainDiscovery) Match(_ capability.ExecutionContext, input capmodel.Domain) error {
