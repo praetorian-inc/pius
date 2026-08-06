@@ -16,7 +16,7 @@ func init() {
 // WhoisPlugin performs domain WHOIS lookups via RDAP (primary) with TCP-43
 // fallback, emitting structured WHOIS result and preseed findings.
 type WhoisPlugin struct {
-	HTTPClient *http.Client // injectable for Guard's collector transport
+	HTTPClient *http.Client
 }
 
 // NewWhoisPlugin creates a WhoisPlugin with an injectable HTTP client.
@@ -78,41 +78,45 @@ func (d whoisResultData) toMap() map[string]any {
 }
 
 func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
-	var d whoisResultData
+	finding := func(d whoisResultData) plugins.Finding {
+		return plugins.Finding{
+			Type:   plugins.FindingWhoisResult,
+			Value:  r.Domain,
+			Source: "whois",
+			Data:   d.toMap(),
+		}
+	}
+
 	if r.Unregistered {
-		d.Unregistered = true
-	} else {
-		org := whois.RegistrantOrg(r.Registrant, r.Domain)
-		d.Registrant = whois.NormalizePrivacy(org)
-
-		email, sawProxy := whois.ContactEmail(r)
-		switch {
-		case email != "":
-			d.Email = email
-		case sawProxy || d.Registrant == whois.PrivacyRedaction:
-			d.Email = whois.PrivacyRedaction
-		}
-
-		d.Country = whois.NormalizePrivacy(r.Registrant.Country)
-		d.Province = whois.NormalizePrivacy(r.Registrant.Province)
-		d.City = whois.NormalizePrivacy(r.Registrant.City)
-		d.Registrar = whois.NormalizeRegistrar(r.Registrar)
-		d.Purchased = r.Created
-		d.Updated = r.Updated
-		d.Expiration = r.Expiration
-		d.Raw = r.Raw
-
-		if pivotOrg != "" {
-			d.Corroboration = whois.Corroborate(pivotOrg, org)
-		}
+		return finding(whoisResultData{Unregistered: true})
 	}
 
-	return plugins.Finding{
-		Type:   plugins.FindingWhoisResult,
-		Value:  r.Domain,
-		Source: "whois",
-		Data:   d.toMap(),
+	org := whois.RegistrantOrg(r.Registrant, r.Domain)
+	d := whoisResultData{
+		Registrant: whois.NormalizePrivacy(org),
+		Country:    whois.NormalizePrivacy(r.Registrant.Country),
+		Province:   whois.NormalizePrivacy(r.Registrant.Province),
+		City:       whois.NormalizePrivacy(r.Registrant.City),
+		Registrar:  whois.NormalizeRegistrar(r.Registrar),
+		Purchased:  r.Created,
+		Updated:    r.Updated,
+		Expiration: r.Expiration,
+		Raw:        r.Raw,
 	}
+
+	email, sawProxy := whois.ContactEmail(r)
+	switch {
+	case email != "":
+		d.Email = email
+	case sawProxy || d.Registrant == whois.PrivacyRedaction:
+		d.Email = whois.PrivacyRedaction
+	}
+
+	if pivotOrg != "" {
+		d.Corroboration = whois.Corroborate(pivotOrg, org)
+	}
+
+	return finding(d)
 }
 
 func extractPreseeds(r whois.Result) []plugins.Finding {

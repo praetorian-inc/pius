@@ -8,6 +8,9 @@ import (
 	"strings"
 
 	"golang.org/x/net/publicsuffix"
+
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
+	"github.com/praetorian-inc/pius/pkg/whois/data"
 )
 
 // RegistrantOrg resolves the organization identity from a registrant contact,
@@ -94,20 +97,14 @@ func Corroborate(pivotOrg, resolvedOrg string) string {
 
 // OrgSimilarity compares two organization names with legal-suffix stripping.
 func OrgSimilarity(a, b string) float64 {
-	return TokenSimilarity(normalizeOrg(a), normalizeOrg(b))
-}
-
-var legalSuffixes map[string]bool
-
-func init() {
-	legalSuffixes = loadDataFile("data/legal_suffixes.txt")
+	return strutil.TokenSimilarity(normalizeOrg(a), normalizeOrg(b))
 }
 
 func normalizeOrg(s string) string {
-	tokens := Tokenize(s)
+	tokens := strutil.Tokenize(s)
 	kept := make([]string, 0, len(tokens))
 	for _, t := range tokens {
-		if !legalSuffixes[t] {
+		if !data.LegalSuffixes[t] {
 			kept = append(kept, t)
 		}
 	}
@@ -156,7 +153,7 @@ func ContainsRedactionMarker(raw string) bool {
 		return false
 	}
 	lower := strings.ToLower(raw)
-	for _, marker := range redactionMarkers {
+	for _, marker := range data.RedactionMarkers {
 		if strings.Contains(lower, marker) {
 			return true
 		}
@@ -164,65 +161,89 @@ func ContainsRedactionMarker(raw string) bool {
 	return false
 }
 
-var redactionMarkers []string
+// --- ISOC-IL (.il) fallback ---
 
-func init() {
-	raw, err := dataFS.ReadFile("data/redaction_markers.txt")
-	if err != nil {
-		panic("whois: missing embedded data file: data/redaction_markers.txt")
+// applyISOCILFallback fills empty Registrant org/email for .il domains from
+// the raw RPSL descr/e-mail block, which likexian/whois-parser does not map
+// onto Registrant.
+func applyISOCILFallback(r *Result) {
+	dns := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(r.Domain), "."))
+	if !strings.HasSuffix(dns, ".il") {
+		return
 	}
-	for line := range strings.SplitSeq(string(raw), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			redactionMarkers = append(redactionMarkers, strings.ToLower(line))
+	if r.Registrant.Organization != "" && r.Registrant.Email != "" {
+		return
+	}
+
+	var holder map[string]string
+	for _, p := range parseRPSLParagraphs(r.Raw) {
+		if p["first_descr"] != "" {
+			holder = p
+			break
+		}
+	}
+	if holder == nil {
+		return
+	}
+
+	if r.Registrant.Organization == "" {
+		org := strings.TrimSpace(holder["first_descr"])
+		if runes := []rune(org); len(runes) > 255 {
+			org = strings.TrimSpace(string(runes[:255]))
+		}
+		r.Registrant.Organization = org
+	}
+
+	if r.Registrant.Email == "" {
+		deobfuscated := strings.ReplaceAll(holder["e-mail"], " AT ", "@")
+		if classifyEmail(deobfuscated) != "" {
+			r.Registrant.Email = deobfuscated
 		}
 	}
 }
 
-// --- Text utilities ---
+// parseRPSLParagraphs splits raw WHOIS/RPSL text into key:value paragraph
+// maps. Used for ISOC-IL fallback and IP WHOIS (future). No third-party
+// library exists for RPSL paragraph parsing — it's a niche wire format.
+func parseRPSLParagraphs(raw string) []map[string]string {
+	var paragraphs []map[string]string
+	current := map[string]string{}
 
-// Tokenize lowercases s and splits on non-alphanumeric characters.
-func Tokenize(s string) []string {
-	s = strings.ToLower(s)
-	var buf strings.Builder
-	for _, c := range s {
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
-			buf.WriteRune(c)
-		} else {
-			buf.WriteByte(' ')
+	for line := range strings.SplitSeq(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if len(current) > 0 {
+				paragraphs = append(paragraphs, current)
+				current = map[string]string{}
+			}
+			continue
 		}
-	}
-	return strings.Fields(buf.String())
-}
-
-// TokenSimilarity computes the ratio of shared tokens between two strings.
-// Uses the shorter set as the denominator so partial matches score well.
-func TokenSimilarity(a, b string) float64 {
-	aT := Tokenize(a)
-	bT := Tokenize(b)
-	if len(aT) == 0 || len(bT) == 0 {
-		return 0
-	}
-	shorter, longer := aT, bT
-	if len(aT) > len(bT) {
-		shorter, longer = bT, aT
-	}
-	inLonger := make(map[string]bool, len(longer))
-	for _, t := range longer {
-		inLonger[t] = true
-	}
-	matches := 0
-	for _, t := range shorter {
-		if inLonger[t] {
-			matches++
+		if strings.HasPrefix(line, "%") || strings.HasPrefix(line, "#") {
+			continue
 		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		value := strings.TrimSpace(parts[1])
+		if key == "descr" {
+			if _, seen := current["first_descr"]; !seen {
+				current["first_descr"] = value
+			}
+		}
+		current[key] = value
 	}
-	return float64(matches) / float64(len(shorter))
+	if len(current) > 0 {
+		paragraphs = append(paragraphs, current)
+	}
+	return paragraphs
 }
 
 // --- ccTLD and registry artifact rules ---
 
-// registrantNameCCTLDs are loaded from data/cctld_name_promotion.txt if we
-// ever need to externalize; for now the list is small and stable.
+// registrantNameCCTLDs lists ccTLDs where the holder org is placed in the
+// Name field instead of Organization.
 var registrantNameCCTLDs = []string{
 	".cn", ".hr", ".jp", ".kr",
 	".fr", ".re", ".pm", ".tf", ".wf", ".yt",
@@ -240,37 +261,12 @@ func holderInRegistrantName(dns string) bool {
 	return false
 }
 
-// registryOperatorArtifacts maps ccTLD → registry operator strings that the
-// parser mis-maps into Registrant.Organization. Loaded from embedded file.
-var registryOperatorArtifacts map[string][]string
-
 // registryHandleCCTLDs are ccTLDs where the parser mis-maps opaque NIC
 // handles or national tax IDs into Registrant.Organization (.se publishes
 // NIC handles like "DIDEP2435-002435", .ar publishes CUIT tax IDs).
 var registryHandleCCTLDs = []string{".se", ".ar"}
 
 var opaqueRegistrantHandle = regexp.MustCompile(`^([0-9]{6,}|[A-Za-z0-9]+-[0-9]+)$`)
-
-func init() {
-	registryOperatorArtifacts = make(map[string][]string)
-	raw, err := dataFS.ReadFile("data/registry_artifacts.txt")
-	if err != nil {
-		panic("whois: missing embedded data file: data/registry_artifacts.txt")
-	}
-	for line := range strings.SplitSeq(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		suffix := strings.TrimSpace(parts[0])
-		value := strings.ToLower(strings.TrimSpace(parts[1]))
-		registryOperatorArtifacts[suffix] = append(registryOperatorArtifacts[suffix], value)
-	}
-}
 
 func isRegistryArtifact(org, dns string) bool {
 	trimmedOrg := strings.TrimSpace(org)
@@ -279,7 +275,7 @@ func isRegistryArtifact(org, dns string) bool {
 	}
 	dns = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(dns), "."))
 	norm := strings.Join(strings.Fields(strings.ToLower(org)), " ")
-	for suffix, artifacts := range registryOperatorArtifacts {
+	for suffix, artifacts := range data.RegistryArtifacts {
 		if strings.HasSuffix(dns, suffix) {
 			if slices.Contains(artifacts, norm) {
 				return true

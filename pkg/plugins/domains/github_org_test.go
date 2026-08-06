@@ -10,6 +10,7 @@ import (
 
 	piuscache "github.com/praetorian-inc/pius/pkg/cache"
 	"github.com/praetorian-inc/pius/pkg/client"
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -122,7 +123,7 @@ func TestTokenSimilarity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.a+"_vs_"+tt.b, func(t *testing.T) {
-			got := tokenSimilarity(tt.a, tt.b)
+			got := strutil.TokenSimilarity(tt.a, tt.b)
 			assert.GreaterOrEqual(t, got, tt.min, "similarity %q vs %q", tt.a, tt.b)
 		})
 	}

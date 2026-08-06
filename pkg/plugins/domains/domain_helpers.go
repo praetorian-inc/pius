@@ -3,6 +3,7 @@ package domains
 import (
 	"strings"
 
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/praetorian-inc/pius/pkg/whois"
 )
@@ -11,19 +12,16 @@ import (
 // strings into plausible FindingDomain entries with the pivot org attached.
 // Shared by the reverse-whois plugins.
 func domainFindings(source, pivotOrg string, rawDomains []string) []plugins.Finding {
-	seen := make(map[string]struct{}, len(rawDomains))
-	var findings []plugins.Finding
-
+	normalized := make([]string, 0, len(rawDomains))
 	for _, raw := range rawDomains {
 		domain := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
-		if domain == "" || !whois.IsPlausibleDomain(domain) {
-			continue
+		if domain != "" && whois.IsPlausibleDomain(domain) {
+			normalized = append(normalized, domain)
 		}
-		if _, ok := seen[domain]; ok {
-			continue
-		}
-		seen[domain] = struct{}{}
+	}
 
+	var findings []plugins.Finding
+	for _, domain := range strutil.Unique(normalized) {
 		findings = append(findings, plugins.Finding{
 			Type:   plugins.FindingDomain,
 			Value:  domain,

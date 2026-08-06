@@ -1,48 +1,15 @@
 package whois
 
 import (
-	"embed"
 	"strings"
+
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
+	"github.com/praetorian-inc/pius/pkg/whois/data"
 )
 
 // PrivacyRedaction is the sentinel value persisted when WHOIS data is redacted
 // behind a privacy/proxy service rather than genuinely absent.
 const PrivacyRedaction = "Privacy Redaction"
-
-//go:embed data
-var dataFS embed.FS
-
-var (
-	noisyPrefixes map[string]bool
-	noisySuffixes map[string]bool
-	privacyOrgs   map[string]bool
-	privacyNames  map[string]bool
-)
-
-func init() {
-	noisyPrefixes = loadDataFile("data/prefixes.txt")
-	noisySuffixes = loadDataFile("data/suffixes.txt")
-	privacyOrgs = loadDataFile("data/privacy_orgs.txt")
-	privacyNames = loadDataFile("data/privacy_names.txt")
-}
-
-func loadDataFile(name string) map[string]bool {
-	raw, err := dataFS.ReadFile(name)
-	if err != nil {
-		panic("whois: missing embedded data file: " + name)
-	}
-	return loadLines(string(raw))
-}
-
-func loadLines(raw string) map[string]bool {
-	m := make(map[string]bool)
-	for line := range strings.SplitSeq(raw, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			m[strings.ToLower(line)] = true
-		}
-	}
-	return m
-}
 
 // IsPrivacy reports whether a value is a known WHOIS privacy/proxy string.
 // Works for org names, person names, and email addresses — it combines
@@ -60,13 +27,13 @@ func IsPrivacy(value string) bool {
 	}
 
 	// Tier 1: exact match against known org and name privacy strings.
-	if privacyOrgs[lower] || privacyNames[lower] {
+	if data.PrivacyOrgs[lower] || data.PrivacyNames[lower] {
 		return true
 	}
 
 	// Tier 2: substring containment against known org guard phrases.
 	// Privacy orgs often append per-customer suffixes like "(customer 12345)".
-	for phrase := range privacyOrgs {
+	for phrase := range data.PrivacyOrgs {
 		if len(phrase) >= substringMinLen && strings.Contains(lower, phrase) {
 			return true
 		}
@@ -90,8 +57,8 @@ func NormalizePrivacy(value string) string {
 }
 
 func matchesPrefix(lower string) bool {
-	for i := 1; i <= len(lower); i++ {
-		if noisyPrefixes[lower[:i]] {
+	for _, prefix := range data.NoisyPrefixes {
+		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
 	}
@@ -99,8 +66,8 @@ func matchesPrefix(lower string) bool {
 }
 
 func matchesSuffix(lower string) bool {
-	for i := len(lower) - 1; i >= 0; i-- {
-		if noisySuffixes[lower[i:]] {
+	for _, suffix := range data.NoisySuffixes {
+		if strings.HasSuffix(lower, suffix) {
 			return true
 		}
 	}
@@ -113,7 +80,7 @@ const substringMinLen = 8
 // tokenizes to ["redactron","systems"] — no token equals a marker, so it stays
 // unmasked. Only the action itself ("redacted", "masked", "withheld") qualifies.
 func hasMarkerToken(lower string) bool {
-	tokens := Tokenize(lower)
+	tokens := strutil.Tokenize(lower)
 	for _, t := range tokens {
 		if markerTokens[t] {
 			return true

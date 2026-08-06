@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	whoisparser "github.com/likexian/whois-parser"
@@ -148,83 +147,4 @@ func ParseExpiration(expirationDate string) (time.Duration, bool) {
 		}
 	}
 	return 0, false
-}
-
-// --- ISOC-IL (.il) fallback ---
-
-// applyISOCILFallback fills empty Registrant org/email for .il domains from
-// the raw RPSL descr/e-mail block, which likexian/whois-parser does not map
-// onto Registrant.
-func applyISOCILFallback(r *Result) {
-	dns := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(r.Domain), "."))
-	if !strings.HasSuffix(dns, ".il") {
-		return
-	}
-	if r.Registrant.Organization != "" && r.Registrant.Email != "" {
-		return
-	}
-
-	var holder map[string]string
-	for _, p := range parseRPSLParagraphs(r.Raw) {
-		if p["first_descr"] != "" {
-			holder = p
-			break
-		}
-	}
-	if holder == nil {
-		return
-	}
-
-	if r.Registrant.Organization == "" {
-		org := strings.TrimSpace(holder["first_descr"])
-		if runes := []rune(org); len(runes) > 255 {
-			org = strings.TrimSpace(string(runes[:255]))
-		}
-		r.Registrant.Organization = org
-	}
-
-	if r.Registrant.Email == "" {
-		deobfuscated := strings.ReplaceAll(holder["e-mail"], " AT ", "@")
-		if classifyEmail(deobfuscated) != "" {
-			r.Registrant.Email = deobfuscated
-		}
-	}
-}
-
-// parseRPSLParagraphs splits raw WHOIS/RPSL text into key:value paragraph
-// maps. Used for ISOC-IL fallback and IP WHOIS (future). No third-party
-// library exists for RPSL paragraph parsing — it's a niche wire format.
-func parseRPSLParagraphs(raw string) []map[string]string {
-	var paragraphs []map[string]string
-	current := map[string]string{}
-
-	for line := range strings.SplitSeq(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			if len(current) > 0 {
-				paragraphs = append(paragraphs, current)
-				current = map[string]string{}
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "%") || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(parts[0]))
-		value := strings.TrimSpace(parts[1])
-		if key == "descr" {
-			if _, seen := current["first_descr"]; !seen {
-				current["first_descr"] = value
-			}
-		}
-		current[key] = value
-	}
-	if len(current) > 0 {
-		paragraphs = append(paragraphs, current)
-	}
-	return paragraphs
 }
