@@ -93,10 +93,14 @@ const (
 	//     kq+kc >= 8, so the mismatch arm was in practice "no shared tokens".
 	//     Jaccard divides by the union, so that bound drops to kq+kc >= 5
 	//     ("Walmart" vs {walmart,global,enterprises,holdings} = 1/4 = 0.25) — and
-	//     34 of the 342 shapes below simMismatch are PURE CONTAINMENT. Making the
-	//     metric specificity-monotone is what put legitimate subsidiary names in
-	//     reach of the de-rank arm, which is exactly the hole tokenSetContained
-	//     fills.
+	//     the shapes it admits include an UNBOUNDED family of PURE CONTAINMENT: a
+	//     fully contained pair (m = kq) scores exactly kq/kc, so it sits below
+	//     simMismatch for every kc > 10*kq/3 — (1,4), (1,5), ... , (3,11), ...
+	//     without end. No finite count is quoted here deliberately: the family is
+	//     infinite, so any such figure would be an artifact of an arbitrary bound
+	//     on kc rather than a property of the metric. Making the metric
+	//     specificity-monotone is what put legitimate subsidiary names in reach of
+	//     the de-rank arm, which is exactly the hole tokenSetContained fills.
 	//
 	// NOT establishable hermetically: that 0.60/0.30 are the precision-optimal
 	// cutoffs. That is a claim about a decision boundary and needs candidates from
