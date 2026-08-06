@@ -82,20 +82,19 @@ func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 			}
 			if !seen[domain] {
 				seen[domain] = true
-				findings = append(findings, plugins.Finding{
+				finding := plugins.Finding{
 					Type:   plugins.FindingDomain,
 					Value:  domain,
 					Source: p.Name(),
-					Confidences: []plugins.Confidence{{
-						Score: confCRTShCertificateTransparencyObservation,
-						Justification: fmt.Sprintf("crt.sh returned domain %q from Certificate Transparency data for query %q; query results: %s",
-							domain, query, urlStr),
-					}},
 					Data: map[string]any{
 						"org":   input.OrgName,
 						"query": query,
 					},
-				})
+				}
+				plugins.AddConfidence(&finding, confCRTShCertificateTransparencyObservation,
+					fmt.Sprintf("crt.sh returned domain %q from Certificate Transparency data for query %q; query results: %s",
+						domain, query, urlStr))
+				findings = append(findings, finding)
 			}
 		}
 	}

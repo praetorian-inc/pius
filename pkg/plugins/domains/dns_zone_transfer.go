@@ -73,21 +73,20 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 			}
 			seen[hostname] = true
 
-			findings = append(findings, plugins.Finding{
+			finding := plugins.Finding{
 				Type:   plugins.FindingDomain,
 				Value:  hostname,
 				Source: "dns-zone-transfer",
-				Confidences: []plugins.Confidence{{
-					Score: confDNSZoneTransferAXFR,
-					Justification: fmt.Sprintf("Hostname %q was disclosed by authoritative nameserver %q in a successful AXFR for base domain %q",
-						hostname, ns, domain),
-				}},
 				Data: map[string]any{
 					"method":     "axfr",
 					"nameserver": ns,
 					"domain":     input.Domain,
 				},
-			})
+			}
+			plugins.AddConfidence(&finding, confDNSZoneTransferAXFR,
+				fmt.Sprintf("Hostname %q was disclosed by authoritative nameserver %q in response to an AXFR request for base domain %q",
+					hostname, ns, domain))
+			findings = append(findings, finding)
 		}
 	}
 

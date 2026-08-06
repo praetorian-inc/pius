@@ -126,19 +126,18 @@ func (p *URLScanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 				continue
 			}
 			seen[host] = true
-			findings = append(findings, plugins.Finding{
+			finding := plugins.Finding{
 				Type:   plugins.FindingDomain,
 				Value:  host,
 				Source: p.Name(),
-				Confidences: []plugins.Confidence{{
-					Score: confURLScanHistoryObservation,
-					Justification: fmt.Sprintf("URLScan scan history records hostname %q under queried base domain %q; query results: %s",
-						host, input.Domain, reqURL),
-				}},
 				Data: map[string]any{
 					"base_domain": input.Domain,
 				},
-			})
+			}
+			plugins.AddConfidence(&finding, confURLScanHistoryObservation,
+				fmt.Sprintf("URLScan scan history records hostname %q under queried base domain %q; query results: %s",
+					host, input.Domain, reqURL))
+			findings = append(findings, finding)
 		}
 	}
 

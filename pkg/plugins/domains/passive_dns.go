@@ -89,20 +89,19 @@ func (p *PassiveDNSPlugin) Run(ctx context.Context, input plugins.Input) ([]plug
 			continue
 		}
 		seen[domain] = true
-		findings = append(findings, plugins.Finding{
+		finding := plugins.Finding{
 			Type:   plugins.FindingDomain,
 			Value:  domain,
 			Source: p.Name(),
-			Confidences: []plugins.Confidence{{
-				Score: confPassiveDNSHistoricalObservation,
-				Justification: fmt.Sprintf("SecurityTrails historical/passive DNS data records subdomain %q for base domain %q; query results: %s",
-					domain, input.Domain, reqURL),
-			}},
 			Data: map[string]any{
 				"org":         input.OrgName,
 				"base_domain": input.Domain,
 			},
-		})
+		}
+		plugins.AddConfidence(&finding, confPassiveDNSHistoricalObservation,
+			fmt.Sprintf("SecurityTrails historical/passive DNS data records subdomain %q for base domain %q; query results: %s",
+				domain, input.Domain, reqURL))
+		findings = append(findings, finding)
 	}
 	return findings, nil
 }

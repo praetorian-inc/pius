@@ -105,19 +105,18 @@ func (p *WaybackPlugin) findingsFromArchiveObservations(observations []archiveOb
 	findings := make([]plugins.Finding, 0, len(hostnames))
 	for _, hostname := range hostnames {
 		sources := archiveSources(sourcesByHostname[hostname])
-		findings = append(findings, plugins.Finding{
+		finding := plugins.Finding{
 			Type:   plugins.FindingDomain,
 			Value:  hostname,
 			Source: p.Name(),
-			Confidences: []plugins.Confidence{{
-				Score: confWaybackArchiveObservation,
-				Justification: fmt.Sprintf("Archive evidence from %s records hostname %q under base domain %q",
-					strings.Join(sources, " and "), hostname, baseDomain),
-			}},
 			Data: map[string]any{
 				"base_domain": baseDomain,
 			},
-		})
+		}
+		plugins.AddConfidence(&finding, confWaybackArchiveObservation,
+			fmt.Sprintf("Archive evidence from %s records hostname %q under base domain %q",
+				strings.Join(sources, " and "), hostname, baseDomain))
+		findings = append(findings, finding)
 	}
 	return findings
 }

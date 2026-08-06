@@ -123,20 +123,19 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 					return
 				}
 				seen[fqdn] = true
-				findings = append(findings, plugins.Finding{
+				finding := plugins.Finding{
 					Type:   plugins.FindingDomain,
 					Value:  fqdn,
 					Source: p.Name(),
-					Confidences: []plugins.Confidence{{
-						Score: confDNSBruteResolved,
-						Justification: fmt.Sprintf("Discovered valid DNS subdomain record for %q (from base domain %q) via DNS brute force guessing",
-							fqdn, domain),
-					}},
 					Data: map[string]any{
 						"method": "dns-brute",
 						"domain": input.Domain,
 					},
-				})
+				}
+				plugins.AddConfidence(&finding, confDNSBruteResolved,
+					fmt.Sprintf("Discovered valid DNS subdomain record for %q (from base domain %q) via DNS brute force guessing",
+						fqdn, domain))
+				findings = append(findings, finding)
 			}
 		}(word)
 	}

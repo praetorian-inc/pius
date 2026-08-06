@@ -117,20 +117,18 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 				}
 
 				justification := dnsPermutationJustification(seeds, fqdn, ips)
-				mu.Lock()
-				findings = append(findings, plugins.Finding{
+				finding := plugins.Finding{
 					Type:   plugins.FindingDomain,
 					Value:  fqdn,
 					Source: "dns-permutation",
-					Confidences: []plugins.Confidence{{
-						Score:         confDNSPermutationResolved,
-						Justification: justification,
-					}},
 					Data: map[string]any{
 						"method": "dns-permutation",
 						"domain": base,
 					},
-				})
+				}
+				plugins.AddConfidence(&finding, confDNSPermutationResolved, justification)
+				mu.Lock()
+				findings = append(findings, finding)
 				mu.Unlock()
 			}(candidate, candidateSeeds)
 		}

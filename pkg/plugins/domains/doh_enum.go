@@ -211,20 +211,19 @@ func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, fqdn string, rotatio
 		exists, err := p.queryDoH(ctx, fqdn, ep)
 		if err == nil {
 			if exists {
-				return plugins.Finding{
+				finding := plugins.Finding{
 					Type:   plugins.FindingDomain,
 					Value:  fqdn,
 					Source: "doh-enum",
-					Confidences: []plugins.Confidence{{
-						Score: confDoHEnumResolved,
-						Justification: fmt.Sprintf("Wordlist candidate %q resolved through DNS-over-HTTPS endpoint %q",
-							fqdn, ep.URL),
-					}},
 					Data: map[string]any{
 						"method":   "doh-enum",
 						"resolver": ep.Name,
 					},
-				}, true
+				}
+				plugins.AddConfidence(&finding, confDoHEnumResolved,
+					fmt.Sprintf("Wordlist candidate %q resolved through DNS-over-HTTPS endpoint %q",
+						fqdn, ep.URL))
+				return finding, true
 			}
 			return plugins.Finding{}, false
 		}
