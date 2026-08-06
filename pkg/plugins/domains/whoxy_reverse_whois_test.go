@@ -69,7 +69,7 @@ func TestWhoxyReverseWhois_Run_EmitsFindings(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.URL.RawQuery, "reverse=whois")
-		assert.Contains(t, r.URL.RawQuery, "name=")
+		assert.Contains(t, r.URL.RawQuery, "company=")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(mockWhoxyPage([]string{"acme.com", "acme-corp.com"}, 1))
 	}))
@@ -175,7 +175,8 @@ func TestWhoxyReverseWhois_Run_EmailMode(t *testing.T) {
 		q := r.URL.Query()
 		assert.Equal(t, "whois", q.Get("reverse"))
 		assert.Equal(t, "admin@acme.com", q.Get("email"))
-		assert.Empty(t, q.Get("name"))
+		assert.Empty(t, q.Get("name"), "should not use name param for email queries")
+		assert.Empty(t, q.Get("company"), "should not use company param for email queries")
 		_, _ = w.Write(mockWhoxyPage([]string{"acme.com"}, 1))
 	}))
 	defer srv.Close()

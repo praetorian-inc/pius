@@ -1,6 +1,7 @@
 package domains
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/praetorian-inc/pius/pkg/client"
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
@@ -32,14 +34,16 @@ func NewWhoxyReverseWhoisPlugin(httpClient *client.Client) *WhoxyReverseWhoisPlu
 	return &WhoxyReverseWhoisPlugin{client: httpClient}
 }
 
-func (p *WhoxyReverseWhoisPlugin) Name() string        { return "whoxy-reverse-whois" }
-func (p *WhoxyReverseWhoisPlugin) Description() string { return "Reverse WHOIS via Whoxy API (requires WHOXY_API_KEY)" }
-func (p *WhoxyReverseWhoisPlugin) Category() string    { return "domain" }
-func (p *WhoxyReverseWhoisPlugin) Phase() int          { return 0 }
-func (p *WhoxyReverseWhoisPlugin) Mode() string        { return plugins.ModePassive }
+func (p *WhoxyReverseWhoisPlugin) Name() string { return "whoxy-reverse-whois" }
+func (p *WhoxyReverseWhoisPlugin) Description() string {
+	return "Reverse WHOIS via Whoxy API (requires WHOXY_API_KEY)"
+}
+func (p *WhoxyReverseWhoisPlugin) Category() string { return "domain" }
+func (p *WhoxyReverseWhoisPlugin) Phase() int       { return 0 }
+func (p *WhoxyReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *WhoxyReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("WHOXY_API_KEY") != "" && (input.OrgName != "" || input.Email != "")
+	return os.Getenv("WHOXY_API_KEY") != "" && (input.OrgName != "" || input.PersonName != "" || input.Email != "")
 }
 
 func (p *WhoxyReverseWhoisPlugin) apiBase() string {
@@ -59,21 +63,63 @@ type whoxySearchResult struct {
 	QueryTime  string `json:"query_time"`
 }
 
+// whoxyQuery pairs a Whoxy API parameter name with the search value.
+type whoxyQuery struct {
+	param string // "company", "name", or "email"
+	value string
+}
+
 func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("WHOXY_API_KEY")
 
-	query, byEmail := input.OrgName, false
-	if input.OrgName == "" && input.Email != "" {
-		query, byEmail = input.Email, true
+	// Build the set of queries from the input. Whoxy distinguishes company
+	// names (&company=) from person names (&name=) from email (&email=).
+	queries := buildWhoxyQueries(input)
+	if len(queries) == 0 {
+		return nil, nil
 	}
 
-	var rawDomains []string
+	pivotOrg := cmp.Or(input.OrgName, input.PersonName, input.Email)
+
+	var allDomains []string
+	for _, q := range queries {
+		domains, err := p.paginateQuery(ctx, apiKey, q)
+		if err != nil {
+			slog.Warn("whoxy-reverse-whois: query failed", "param", q.param, "value", q.value, "error", err)
+			continue
+		}
+		allDomains = append(allDomains, domains...)
+	}
+
+	return domainFindings(p.Name(), pivotOrg, allDomains), nil
+}
+
+// buildWhoxyQueries maps Input fields to the correct Whoxy API parameters.
+func buildWhoxyQueries(input plugins.Input) []whoxyQuery {
+	var queries []whoxyQuery
+	if input.OrgName != "" {
+		queries = append(queries, whoxyQuery{param: "company", value: input.OrgName})
+	}
+	if input.PersonName != "" {
+		queries = append(queries, whoxyQuery{param: "name", value: input.PersonName})
+	}
+	if input.Email != "" {
+		queries = append(queries, whoxyQuery{param: "email", value: input.Email})
+	}
+	return queries
+}
+
+func (p *WhoxyReverseWhoisPlugin) paginateQuery(ctx context.Context, apiKey string, q whoxyQuery) ([]string, error) {
+	var domains []string
 	page := 1
 	totalPages := 1
 
 	for {
-		resp, err := p.fetchPage(ctx, apiKey, query, byEmail, page)
+		resp, err := p.fetchPage(ctx, apiKey, q.param, q.value, page)
 		if err != nil {
+			if page == 1 {
+				return nil, err
+			}
 			slog.Warn("whoxy-reverse-whois: stopping pagination", "page", page, "error", err)
 			break
 		}
@@ -82,7 +128,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		}
 		for _, result := range resp.SearchResult {
 			if result.DomainName != "" && !whoxyRecordStale(result.QueryTime) {
-				rawDomains = append(rawDomains, result.DomainName)
+				domains = append(domains, result.DomainName)
 			}
 		}
 		if len(resp.SearchResult) == 0 || page >= totalPages || page >= maxWhoxyPages {
@@ -91,17 +137,13 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		page++
 	}
 
-	return domainFindings(p.Name(), query, rawDomains), nil
+	return strutil.Unique(domains), nil
 }
 
-func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, query string, byEmail bool, page int) (whoxyResponse, error) {
-	param := "name"
-	if byEmail {
-		param = "email"
-	}
+func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, param, value string, page int) (whoxyResponse, error) {
 	reqURL := fmt.Sprintf(
 		"%s/?key=%s&reverse=whois&%s=%s&mode=micro&page=%d",
-		p.apiBase(), url.QueryEscape(apiKey), param, url.QueryEscape(query), page,
+		p.apiBase(), url.QueryEscape(apiKey), param, url.QueryEscape(value), page,
 	)
 
 	body, err := p.client.Get(ctx, reqURL)

@@ -45,8 +45,13 @@ const (
 
 // Input is the discovery request passed to each plugin.
 type Input struct {
-	// OrgName is the primary organization name to search for. Required.
+	// OrgName is a company/organization name to search for.
 	OrgName string
+
+	// PersonName is a registrant person name to search for.
+	// Whoxy and similar APIs distinguish person names from company names;
+	// callers should populate the appropriate field based on the data source.
+	PersonName string
 
 	// Domain is an optional known domain associated with the org.
 	Domain string
