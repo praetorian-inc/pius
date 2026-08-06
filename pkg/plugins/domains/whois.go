@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/praetorian-inc/pius/pkg/whois"
 )
@@ -127,46 +128,52 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 		field, role, value string
 	}
 
-	seen := map[candidate]bool{}
-	var findings []plugins.Finding
-
 	roles := [4]string{"registrant", "administrative", "technical", "billing"}
 	contacts := r.AllContacts()
+
+	// Collect all valid candidates, then dedupe by {field, value}.
+	var all []candidate
 	for i, c := range contacts {
 		org := c.Organization
 		if i == 0 {
 			org = whois.RegistrantOrg(c, r.Domain)
 		}
-
-		candidates := []candidate{
-			{field: "company", role: roles[i], value: org},
-			{field: "name", role: roles[i], value: c.Name},
-			{field: "email", role: roles[i], value: c.Email},
-		}
-
-		for _, cd := range candidates {
-			if cd.value == "" || seen[cd] || whois.IsPrivacy(cd.value) {
+		for _, cd := range []candidate{
+			{"company", roles[i], org},
+			{"name", roles[i], c.Name},
+			{"email", roles[i], c.Email},
+		} {
+			if cd.value == "" || whois.IsPrivacy(cd.value) {
 				continue
 			}
 			if cd.field == "email" && !whois.IsEmail(cd.value) {
 				continue
 			}
-			seen[cd] = true
-
-			f := plugins.Finding{
-				Type:   plugins.FindingPreseed,
-				Value:  cd.value,
-				Source: "whois",
-				Data: map[string]any{
-					"preseed_type":  "whois+" + cd.field,
-					"preseed_title": cd.value,
-				},
-			}
-			plugins.AddConfidence(&f, confWhoisServerRecord,
-				fmt.Sprintf("WHOIS records %q as the %s contact %s",
-					cd.value, cd.role, cd.field))
-			findings = append(findings, f)
+			all = append(all, cd)
 		}
+	}
+
+	// Dedupe: keep first occurrence per {field, value} (preserves the
+	// highest-priority role since contacts are ordered registrant-first).
+	unique := strutil.UniqueFunc(all, func(c candidate) [2]string {
+		return [2]string{c.field, c.value}
+	})
+
+	var findings []plugins.Finding
+	for _, cd := range unique {
+		f := plugins.Finding{
+			Type:   plugins.FindingPreseed,
+			Value:  cd.value,
+			Source: "whois",
+			Data: map[string]any{
+				"preseed_type":  "whois+" + cd.field,
+				"preseed_title": cd.value,
+			},
+		}
+		plugins.AddConfidence(&f, confWhoisServerRecord,
+			fmt.Sprintf("WHOIS records %q as the %s contact %s",
+				cd.value, cd.role, cd.field))
+		findings = append(findings, f)
 	}
 	return findings
 }

@@ -41,17 +41,24 @@ func TokenSimilarity(a, b string) float64 {
 	return float64(matches) / float64(len(shorter))
 }
 
-// Unique returns a new slice containing only the first occurrence of each
-// element, preserving order.
-func Unique[T comparable](s []T) []T {
-	seen := make(map[T]struct{}, len(s))
+// UniqueFunc returns a new slice containing only the first occurrence of each
+// element as determined by the key function, preserving order.
+func UniqueFunc[T any, K comparable](s []T, key func(T) K) []T {
+	seen := make(map[K]struct{}, len(s))
 	out := make([]T, 0, len(s))
 	for _, v := range s {
-		if _, ok := seen[v]; ok {
+		k := key(v)
+		if _, ok := seen[k]; ok {
 			continue
 		}
-		seen[v] = struct{}{}
+		seen[k] = struct{}{}
 		out = append(out, v)
 	}
 	return out
+}
+
+// Unique returns a new slice containing only the first occurrence of each
+// element, preserving order.
+func Unique[T comparable](s []T) []T {
+	return UniqueFunc(s, func(v T) T { return v })
 }
