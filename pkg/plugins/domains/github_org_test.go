@@ -161,6 +161,26 @@ func TestTokenSimilarity_DuplicateTokens(t *testing.T) {
 		// shares exactly one of two tokens → 0.50, and the repeat must not
 		// move it.
 		{"Praetorian Praetorian Security", "Praetorian Inc", 0.50},
+		// The two cases below are the argument-order mirrors of the two defect
+		// cases above, because nothing makes a caller put the repeat in a
+		// rather than b: github_org.go passes the user-supplied input.OrgName
+		// as b, and reverse_whois_verify.go passes normalizeOrg output on both
+		// sides — and normalizeOrg, which drops legal-suffix tokens, can turn
+		// a distinct name into a repeat by itself. Collapsing only a would
+		// satisfy every case above (each of their b values is already
+		// duplicate-free), so these are what pin the collapse to both sides.
+		//
+		// Mirror of the first case. a has 3 distinct tokens and b's raw form
+		// is also 3 long, so leaving b uncollapsed ties the two and measures a
+		// instead: only "acme" is shared, 1/3 = 0.33. Collapsing b as well
+		// makes {acme, widgets} the shorter side, restoring the honest
+		// 1/2 = 0.50.
+		{"Acme Global Systems", "Acme Acme Widgets", 0.50},
+		// Mirror of the selection flip, driven from b. b says one distinct
+		// thing, {acme}, wholly contained in {acme, global}, so containment is
+		// 1/1 = 1.00. Sizing b by its three raw copies makes it the longer
+		// side and measures a's two tokens instead, deflating to 1/2 = 0.50.
+		{"Acme Global", "Acme Acme Acme", 1.00},
 	}
 	for _, tt := range tests {
 		t.Run(tt.a+"_vs_"+tt.b, func(t *testing.T) {
