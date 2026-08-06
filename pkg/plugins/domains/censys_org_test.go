@@ -691,13 +691,26 @@ func TestCensysOrgPlugin_Run_EmptyResponseNoFindings(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
+func TestCensysOrgPlugin_Run_GracefulOnHTTPError(t *testing.T) {
+	t.Setenv("CENSYS_API_TOKEN", "test-token")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	p := newTestCensysPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
 func TestCensysOrgPlugin_Run_GracefulOnNetworkError(t *testing.T) {
 	t.Setenv("CENSYS_API_TOKEN", "test-token")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
-
-	p := newTestCensysPlugin(t, srv.URL)
+	c, err := piuscache.NewAPI(t.TempDir(), "censys-org")
+	require.NoError(t, err)
+	p := &CensysOrgPlugin{client: client.NewNoRetry(), baseURL: "http://127.0.0.1:1", apiCache: c}
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
 	assert.NoError(t, err)
 	assert.Empty(t, findings)

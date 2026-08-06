@@ -214,15 +214,21 @@ func TestURLScanPlugin_Normalization(t *testing.T) {
 	assert.True(t, values["api.praetorian.com"], "API.PRAETORIAN.COM. should normalize to api.praetorian.com")
 }
 
-// TestURLScanPlugin_ErrorHandling verifies graceful behavior when the API is
-// unavailable.
-func TestURLScanPlugin_ErrorHandling(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close() // immediately close so requests fail
+func TestURLScanPlugin_GracefulOnHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
 
 	p := &URLScanPlugin{client: client.New(), baseURL: srv.URL}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "praetorian.com"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
 
+func TestURLScanPlugin_GracefulOnNetworkError(t *testing.T) {
+	p := &URLScanPlugin{client: client.NewNoRetry(), baseURL: "http://127.0.0.1:1"}
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "praetorian.com"})
 	assert.NoError(t, err)
 	assert.Empty(t, findings)
 }

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -15,7 +16,7 @@ import (
 )
 
 func newGoogleDorksPlugin(baseURL string) *GoogleDorksPlugin {
-	return &GoogleDorksPlugin{baseURL: baseURL, renderEnabled: false}
+	return &GoogleDorksPlugin{baseURL: baseURL, renderEnabled: false, queryDelay: time.Millisecond}
 }
 
 // carouselHTML returns HTML with <a data-entityname="Name"> elements for each name provided.
