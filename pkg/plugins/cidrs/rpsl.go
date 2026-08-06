@@ -77,21 +77,19 @@ func (p *rpslPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 					justification += fmt.Sprintf(" with netname %q", inetnum.netname)
 				}
 				justification += fmt.Sprintf("; the range contains CIDR %q", c)
-				findings = append(findings, plugins.Finding{
+				finding := plugins.Finding{
 					Type:   plugins.FindingCIDR,
 					Value:  c,
 					Source: p.Name(),
-					Confidences: []plugins.Confidence{{
-						Score:         confRPSLHandleInetnum,
-						Justification: justification,
-					}},
 					Data: map[string]any{
 						"handle":   handle,
 						"org":      input.OrgName,
 						"registry": p.cfg.registry,
 						"netname":  inetnum.netname,
 					},
-				})
+				}
+				plugins.AddConfidence(&finding, confRPSLHandleInetnum, justification)
+				findings = append(findings, finding)
 			}
 		}
 	}

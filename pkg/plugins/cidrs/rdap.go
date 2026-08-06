@@ -71,17 +71,20 @@ func (p *rdapPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 			continue
 		}
 		for _, result := range results {
-			findings = append(findings, plugins.Finding{
-				Type:        plugins.FindingCIDR,
-				Value:       result.value,
-				Source:      p.Name(),
-				Confidences: result.confidences,
+			finding := plugins.Finding{
+				Type:   plugins.FindingCIDR,
+				Value:  result.value,
+				Source: p.Name(),
 				Data: map[string]any{
 					"handle":   handle,
 					"org":      input.OrgName,
 					"registry": p.cfg.registry,
 				},
-			})
+			}
+			for _, confidence := range result.confidences {
+				plugins.AddConfidence(&finding, confidence.Score, confidence.Justification)
+			}
+			findings = append(findings, finding)
 		}
 	}
 	return findings, nil

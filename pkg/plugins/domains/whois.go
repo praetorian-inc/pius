@@ -314,20 +314,19 @@ func extractPreseeds(info whoisparser.WhoisInfo, server string) []plugins.Findin
 			}
 			seen[candidate] = true
 
-			findings = append(findings, plugins.Finding{
+			finding := plugins.Finding{
 				Type:   plugins.FindingPreseed,
 				Value:  candidate.value,
 				Source: "whois",
-				Confidences: []plugins.Confidence{{
-					Score: confWhoisServerRecord,
-					Justification: fmt.Sprintf("WHOIS server %q records %q as the %s contact %s",
-						server, candidate.value, contact.role, candidate.attribute),
-				}},
 				Data: map[string]any{
 					"preseed_type":  "whois+" + candidate.field,
 					"preseed_title": candidate.value,
 				},
-			})
+			}
+			plugins.AddConfidence(&finding, confWhoisServerRecord,
+				fmt.Sprintf("WHOIS server %q records %q as the %s contact %s",
+					server, candidate.value, contact.role, candidate.attribute))
+			findings = append(findings, finding)
 		}
 	}
 
