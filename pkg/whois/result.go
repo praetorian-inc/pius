@@ -24,7 +24,6 @@ type Result struct {
 	Status       []string `json:"status,omitempty"`
 	DNSSEC       string   `json:"dnssec,omitempty"`
 	WhoisServer  string   `json:"whois_server,omitempty"`
-	Raw          string   `json:"raw,omitempty"`
 	Sources      []string `json:"sources,omitempty"`
 	Unregistered bool     `json:"unregistered,omitempty"`
 }
@@ -67,7 +66,6 @@ func (r *Result) Merge(other Result) {
 	r.Expiration = cmp.Or(r.Expiration, other.Expiration)
 	r.DNSSEC = cmp.Or(r.DNSSEC, other.DNSSEC)
 	r.WhoisServer = cmp.Or(r.WhoisServer, other.WhoisServer)
-	r.Raw = cmp.Or(r.Raw, other.Raw)
 
 	if len(r.NameServers) == 0 {
 		r.NameServers = other.NameServers

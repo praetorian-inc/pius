@@ -1,7 +1,6 @@
 package whois
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -52,7 +51,7 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 		slog.Debug("RDAP lookup failed, will rely on TCP-43", "domain", domain, "error", rdapErr)
 	}
 
-	tcp43Result, tcp43Err := tcp43Lookup(ctx, domain)
+	tcp43Result, tcp43Raw, tcp43Err := tcp43Lookup(ctx, domain)
 	if tcp43Err != nil && isDomainNotFound(tcp43Err) {
 		return Result{Domain: domain, Unregistered: true}, nil
 	}
@@ -65,7 +64,7 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 	}
 
 	result := mergeResults(domain, rdapResult, rdapErr, tcp43Result, tcp43Err)
-	applyISOCILFallback(&result)
+	applyISOCILFallback(&result, tcp43Raw)
 	return result, nil
 }
 
@@ -81,9 +80,7 @@ func mergeResults(domain string, rdapR Result, rdapErr error, tcp43R Result, tcp
 		return rdapR
 	}
 
-	// RDAP is the base; TCP-43 fills gaps. Raw text prefers TCP-43 (the
-	// traditional format users expect), so swap it before merging.
-	rdapR.Raw = cmp.Or(tcp43R.Raw, rdapR.Raw)
+	// RDAP is the base; TCP-43 fills gaps.
 	rdapR.Sources = []string{"rdap"}
 	tcp43R.Sources = []string{"tcp43"}
 	rdapR.Merge(tcp43R)

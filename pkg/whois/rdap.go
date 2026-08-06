@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strings"
 
 	"github.com/openrdap/rdap"
 )
@@ -77,7 +76,6 @@ func mapRDAPToResult(domain string, resp *rdap.Domain) Result {
 	r.Tech = extractContact(resp.Entities, "technical")
 	r.Billing = extractContact(resp.Entities, "billing")
 
-	r.Raw = formatRDAPText(&r)
 	return r
 }
 
@@ -109,7 +107,6 @@ func enrichFromRegistrar(client *rdap.Client, result *Result, domainResp *rdap.D
 	registrant := extractContact(d.Entities, "registrant")
 	if !registrant.IsEmpty() {
 		result.Registrant = registrant
-		result.Raw = formatRDAPText(result)
 	}
 }
 
@@ -167,45 +164,3 @@ func extractAddressFromVCard(vcard *rdap.VCard) (country, province string) {
 	return country, province
 }
 
-func formatRDAPText(r *Result) string {
-	var sb strings.Builder
-	sb.WriteString("Domain Name: ")
-	sb.WriteString(r.Domain)
-	sb.WriteString("\n")
-
-	if r.Created != "" {
-		sb.WriteString("Creation Date: " + r.Created + "\n")
-	}
-	if r.Updated != "" {
-		sb.WriteString("Updated Date: " + r.Updated + "\n")
-	}
-	if r.Expiration != "" {
-		sb.WriteString("Expiration Date: " + r.Expiration + "\n")
-	}
-	if len(r.NameServers) > 0 {
-		sb.WriteString("\nName Servers:\n")
-		for _, ns := range r.NameServers {
-			sb.WriteString("   " + ns + "\n")
-		}
-	}
-	if r.Registrar != "" {
-		sb.WriteString("\nRegistrar: " + r.Registrar + "\n")
-	}
-	if !r.Registrant.IsEmpty() {
-		sb.WriteString("\nRegistrant:\n")
-		if r.Registrant.Organization != "" {
-			sb.WriteString("   Organization: " + r.Registrant.Organization + "\n")
-		}
-		if r.Registrant.Name != "" {
-			sb.WriteString("   Name: " + r.Registrant.Name + "\n")
-		}
-		if r.Registrant.Country != "" {
-			sb.WriteString("   Country: " + r.Registrant.Country + "\n")
-		}
-		if r.Registrant.Province != "" {
-			sb.WriteString("   State/Province: " + r.Registrant.Province + "\n")
-		}
-	}
-	sb.WriteString("\n>>> Data retrieved via RDAP\n")
-	return sb.String()
-}

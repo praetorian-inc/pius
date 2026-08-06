@@ -190,7 +190,7 @@ func ContainsRedactionMarker(raw string) bool {
 // applyISOCILFallback fills empty Registrant org/email for .il domains from
 // the raw RPSL descr/e-mail block, which likexian/whois-parser does not map
 // onto Registrant.
-func applyISOCILFallback(r *Result) {
+func applyISOCILFallback(r *Result, rawText string) {
 	dns := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(r.Domain), "."))
 	if !strings.HasSuffix(dns, ".il") {
 		return
@@ -200,7 +200,7 @@ func applyISOCILFallback(r *Result) {
 	}
 
 	var holder map[string]string
-	for _, p := range parseRPSLParagraphs(r.Raw) {
+	for _, p := range parseRPSLParagraphs(rawText) {
 		if p["first_descr"] != "" {
 			holder = p
 			break
