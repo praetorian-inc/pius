@@ -10,6 +10,8 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
+const confDNSZoneTransferAXFR = 0.90
+
 func init() {
 	plugins.Register("dns-zone-transfer", func() plugins.Plugin {
 		return &DNSZoneTransferPlugin{}
@@ -75,6 +77,11 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 				Type:   plugins.FindingDomain,
 				Value:  hostname,
 				Source: "dns-zone-transfer",
+				Confidences: []plugins.Confidence{{
+					Score: confDNSZoneTransferAXFR,
+					Justification: fmt.Sprintf("Hostname %q was disclosed by authoritative nameserver %q in a successful AXFR for base domain %q",
+						hostname, ns, domain),
+				}},
 				Data: map[string]any{
 					"method":     "axfr",
 					"nameserver": ns,

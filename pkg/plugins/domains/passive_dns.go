@@ -12,6 +12,8 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
+const confPassiveDNSHistoricalObservation = 0.60
+
 func init() {
 	plugins.Register("passive-dns", func() plugins.Plugin { return &PassiveDNSPlugin{client: client.New()} })
 }
@@ -73,6 +75,7 @@ func (p *PassiveDNSPlugin) Run(ctx context.Context, input plugins.Input) ([]plug
 		return nil, fmt.Errorf("passive-dns: parse response: %w", err)
 	}
 
+	seen := make(map[string]bool)
 	findings := make([]plugins.Finding, 0, len(response.Subdomains))
 	for _, sub := range response.Subdomains {
 		if sub == "" {
@@ -82,10 +85,19 @@ func (p *PassiveDNSPlugin) Run(ctx context.Context, input plugins.Input) ([]plug
 		domain = strings.ToLower(domain)
 		domain = strings.TrimSpace(domain)
 		domain = strings.TrimSuffix(domain, ".")
+		if seen[domain] {
+			continue
+		}
+		seen[domain] = true
 		findings = append(findings, plugins.Finding{
 			Type:   plugins.FindingDomain,
 			Value:  domain,
 			Source: p.Name(),
+			Confidences: []plugins.Confidence{{
+				Score: confPassiveDNSHistoricalObservation,
+				Justification: fmt.Sprintf("SecurityTrails historical/passive DNS data records subdomain %q for base domain %q; query results: %s",
+					domain, input.Domain, reqURL),
+			}},
 			Data: map[string]any{
 				"org":         input.OrgName,
 				"base_domain": input.Domain,
