@@ -550,15 +550,35 @@ func TestFaviconHashPlugin_Run_IPv6ScannerResultsUseHostPrefixes(t *testing.T) {
 	require.Len(t, ipv6Finding.Confidences, 2)
 }
 
-func TestFaviconHashPlugin_Run_GracefulOnFaviconFetchError(t *testing.T) {
+func TestFaviconHashPlugin_Run_GracefulOnFaviconHTTPError(t *testing.T) {
+	t.Setenv("SHODAN_API_KEY", "test-key")
+	t.Setenv("FOFA_API_KEY", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	p := newFaviconTestPlugin(srv, nil, nil)
+	p.faviconURL = srv.URL
+	findings, err := p.Run(context.Background(), plugins.Input{
+		OrgName: "Acme",
+		Domain:  "example.com",
+	})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
+func TestFaviconHashPlugin_Run_GracefulOnFaviconNetworkError(t *testing.T) {
 	t.Setenv("SHODAN_API_KEY", "test-key")
 	t.Setenv("FOFA_API_KEY", "")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close() // close immediately to trigger error
+	defer srv.Close()
 
 	p := newFaviconTestPlugin(srv, nil, nil)
-	p.faviconURL = srv.URL
+	p.client = client.NewNoRetry()
+	p.faviconURL = "http://127.0.0.1:1" // connection refused
 	findings, err := p.Run(context.Background(), plugins.Input{
 		OrgName: "Acme",
 		Domain:  "example.com",

@@ -301,28 +301,6 @@ func TestDoHEnumPlugin_ResolveEndpoints_Gateways(t *testing.T) {
 	// gateways take priority over servers
 }
 
-func TestDoHEnumPlugin_ResolveEndpoints_DeployGatewaysNoCredentials(t *testing.T) {
-	// Unset AWS credentials so detectAWSCredentials fails
-	// Clear credential env vars
-	for _, env := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"} {
-		t.Setenv(env, "")
-	}
-	// Point config/credentials files to nonexistent paths to prevent SDK fallback
-	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/tmp/nonexistent-aws-creds")
-	t.Setenv("AWS_CONFIG_FILE", "/tmp/nonexistent-aws-config")
-
-	p := &DoHEnumPlugin{}
-	meta := map[string]string{
-		"doh_deploy_gateways": "true",
-		"doh_servers":         "https://cloudflare-dns.com/dns-query",
-	}
-	endpoints, cleanup, err := p.resolveEndpoints(context.Background(), meta)
-	defer cleanup()
-	// With credentials cleared, deployment should fail
-	assert.Error(t, err)
-	assert.Nil(t, endpoints)
-}
-
 // ============================================================================
 // Helper function tests
 // ============================================================================

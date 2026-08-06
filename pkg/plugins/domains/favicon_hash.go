@@ -176,14 +176,17 @@ func parseShodanResponse(body []byte, hash int32, input plugins.Input, findings 
 	seen := make(map[faviconObservation]bool)
 	for _, match := range resp.Matches {
 		ip := strings.TrimSpace(match.IPStr)
-		if ip != "" {
+		cidr, err := faviconHostCIDR(ip)
+
+		if err != nil {
 			observations = appendUniqueFaviconObservation(observations, seen, faviconObservation{
 				scanner:      "shodan",
 				findingType:  plugins.FindingCIDR,
-				value:        faviconHostCIDR(ip),
+				value:        cidr,
 				associatedIP: ip,
 			})
 		}
+
 		for _, hostname := range match.Hostnames {
 			observations = appendUniqueFaviconObservation(observations, seen, faviconObservation{
 				scanner:      "shodan",
@@ -243,15 +246,19 @@ func parseFOFAResponse(body []byte, hash int32, input plugins.Input, findings fa
 		if len(result) < 2 {
 			continue
 		}
+
 		host, ip := result[0], strings.TrimSpace(result[1])
-		if ip != "" {
+		cidr, err := faviconHostCIDR(ip)
+
+		if err != nil {
 			observations = appendUniqueFaviconObservation(observations, seen, faviconObservation{
 				scanner:      "fofa",
 				findingType:  plugins.FindingCIDR,
-				value:        faviconHostCIDR(ip),
+				value:        cidr,
 				associatedIP: ip,
 			})
 		}
+
 		observations = appendUniqueFaviconObservation(observations, seen, faviconObservation{
 			scanner:      "fofa",
 			findingType:  plugins.FindingDomain,
@@ -367,12 +374,12 @@ func faviconScannerDisplayName(scanner string) string {
 	return strings.ToUpper(scanner[:1]) + scanner[1:]
 }
 
-func faviconHostCIDR(ip string) string {
+func faviconHostCIDR(ip string) (string, error) {
 	address, err := netip.ParseAddr(ip)
 	if err != nil {
-		return ip + "/32"
+		return "", err
 	}
-	return netip.PrefixFrom(address, address.BitLen()).String()
+	return netip.PrefixFrom(address, address.BitLen()).String(), nil
 }
 
 func normalizeFaviconFindingValue(findingType plugins.FindingType, value string) string {
