@@ -82,6 +82,38 @@ func (r *Result) Merge(other Result) {
 	r.Sources = append(r.Sources, other.Sources...)
 }
 
+// clearIfPrivacy returns "" if the value is a known WHOIS privacy placeholder.
+func clearIfPrivacy(v string) string {
+	if IsPrivacy(v) {
+		return ""
+	}
+	return v
+}
+
+// Scrub clears privacy/redaction placeholder values from all fields,
+// leaving only real data. Returns the scrubbed contact.
+func (c Contact) Scrub() Contact {
+	return Contact{
+		Organization: clearIfPrivacy(c.Organization),
+		Name:         clearIfPrivacy(c.Name),
+		Email:        clearIfPrivacy(c.Email),
+		Country:      clearIfPrivacy(c.Country),
+		Province:     clearIfPrivacy(c.Province),
+		City:         clearIfPrivacy(c.City),
+		Street:       clearIfPrivacy(c.Street),
+		PostalCode:   clearIfPrivacy(c.PostalCode),
+		Phone:        clearIfPrivacy(c.Phone),
+	}
+}
+
+// ScrubContacts scrubs all four contact roles on a Result.
+func (r *Result) ScrubContacts() {
+	r.Registrant = r.Registrant.Scrub()
+	r.Admin = r.Admin.Scrub()
+	r.Tech = r.Tech.Scrub()
+	r.Billing = r.Billing.Scrub()
+}
+
 func mergeContact(base, other Contact) Contact {
 	return Contact{
 		Organization: cmp.Or(base.Organization, other.Organization),

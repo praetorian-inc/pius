@@ -65,6 +65,7 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 
 	result := mergeResults(domain, rdapResult, rdapErr, tcp43Result, tcp43Err)
 	applyISOCILFallback(&result, tcp43Raw)
+	result.ScrubContacts()
 	return result, nil
 }
 
