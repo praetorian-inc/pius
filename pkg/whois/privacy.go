@@ -10,6 +10,22 @@ import (
 // PrivacyRedaction is the sentinel value persisted when WHOIS data is redacted
 // behind a privacy/proxy service rather than genuinely absent.
 const PrivacyRedaction = "Privacy Redaction"
+const substringMinLen = 8
+
+// markerTokens are single tokens whose presence as a whole token indicates
+// redaction. Only the action itself qualifies — "privacy" is excluded because
+// legitimate orgs carry it ("Privacy International").
+var markerTokens = map[string]bool{
+	"redacted": true, "redaction": true, "redact": true,
+	"withheld": true, "masked": true, "masking": true,
+}
+
+// markerPhrases are consecutive token runs that indicate redaction when the
+// individual words are too generic to match alone.
+var markerPhrases = [][]string{
+	{"data", "protected"},
+	{"not", "disclosed"},
+}
 
 // IsPrivacy reports whether a value is a known WHOIS privacy/proxy string.
 // Works for org names, person names, and email addresses — it combines
@@ -74,11 +90,6 @@ func matchesSuffix(lower string) bool {
 	return false
 }
 
-const substringMinLen = 8
-
-// hasMarkerToken checks for whole redaction-action tokens. "Redactron Systems"
-// tokenizes to ["redactron","systems"] — no token equals a marker, so it stays
-// unmasked. Only the action itself ("redacted", "masked", "withheld") qualifies.
 func hasMarkerToken(lower string) bool {
 	tokens := strutil.Tokenize(lower)
 	for _, t := range tokens {
@@ -86,44 +97,11 @@ func hasMarkerToken(lower string) bool {
 			return true
 		}
 	}
+	joined := strings.Join(tokens, " ")
 	for _, phrase := range markerPhrases {
-		if containsTokenRun(tokens, phrase) {
+		if strings.Contains(joined, strings.Join(phrase, " ")) {
 			return true
 		}
 	}
 	return false
-}
-
-func containsTokenRun(tokens, run []string) bool {
-	if len(run) > len(tokens) {
-		return false
-	}
-	for i := 0; i <= len(tokens)-len(run); i++ {
-		match := true
-		for j, t := range run {
-			if tokens[i+j] != t {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
-}
-
-// markerTokens are single tokens whose presence as a whole token indicates
-// redaction. Only the action itself qualifies — "privacy" is excluded because
-// legitimate orgs carry it ("Privacy International").
-var markerTokens = map[string]bool{
-	"redacted": true, "redaction": true, "redact": true,
-	"withheld": true, "masked": true, "masking": true,
-}
-
-// markerPhrases are consecutive token runs that indicate redaction when the
-// individual words are too generic to match alone.
-var markerPhrases = [][]string{
-	{"data", "protected"},
-	{"not", "disclosed"},
 }
