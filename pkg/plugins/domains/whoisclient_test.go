@@ -326,24 +326,45 @@ func TestWhoisDialAddr(t *testing.T) {
 	assert.Equal(t, "[2001:db8::1]:43", whoisDialAddr("[2001:db8::1]"))
 }
 
-// TestWhoisDialAddr_TruncatesURLPath proves a referral carrying a URL PATH is
-// normalized to its host rather than smuggling the path into the dial target.
-// "whois.example.com/path" has no colon, so net.SplitHostPort errors and the
-// else-branch (which only trims IPv6 brackets) used to leave the path in place,
-// producing the nonsense target "whois.example.com/path:43". That failed safe —
-// it died at DNS resolution — but silently, and post-ENG-5405 the dead hop is
+// TestWhoisDialAddr_TruncatesPastAuthority proves a referral contributes only
+// its AUTHORITY to the dial target — everything from the first "/", "?" or "#"
+// onward is dropped rather than smuggled into the address. RFC 3986 §3.2
+// terminates the authority at any of those three, and a URL may carry a query or
+// fragment with NO path slash at all, so cutting at "/" alone leaves
+// "whois.example.com?x=1" whole (CodeRabbit, PR #135). Whatever survives has no
+// colon net.SplitHostPort will accept, so SplitHostPort errors and the
+// else-branch — which only trims IPv6 brackets — passes the remainder straight
+// through, producing nonsense targets like "whois.example.com/path:43" or
+// "whois.example.com?x=1:43". A bracketed IPv6 literal breaks a SECOND, distinct
+// way: with a query or fragment attached it no longer ENDS in "]", so that
+// branch's TrimSuffix strips nothing, and JoinHostPort — seeing a colon —
+// re-brackets the already-bracketed remainder into "[2001:db8::1]?x=1]:43",
+// mangling an address that was well-formed on arrival. All of these fail safe —
+// they die at DNS resolution — but silently, and post-ENG-5405 the dead hop is
 // reported as referral_failed ("the server refused us") when the truth is that
 // pius built an unresolvable address (ENG-5464).
-func TestWhoisDialAddr_TruncatesURLPath(t *testing.T) {
+func TestWhoisDialAddr_TruncatesPastAuthority(t *testing.T) {
 	assert.Equal(t, "whois.example.com:43", whoisDialAddr("whois.example.com/path"))
 	// Scheme + path + port together: scheme stripped, path truncated, and the
-	// untrusted explicit port still dropped in favour of tcp/43.
+	// untrusted explicit port still dropped in favour of tcp/43. Knowingly
+	// non-discriminating on truncation — net.SplitHostPort splits at the LAST
+	// colon and never validates the port, so this already yielded the right host
+	// with no truncation at all; kept as a composition guard over the three
+	// normalization steps, not as evidence that truncation happens.
 	assert.Equal(t, "whois.example.com:43", whoisDialAddr("https://whois.example.com:8080/path/to/thing"))
-	// A query string or fragment lives after the path separator, so truncating at
-	// the first "/" removes it too.
+	// A query that FOLLOWS a path is already gone with the path.
 	assert.Equal(t, "whois.example.com:43", whoisDialAddr("http://whois.example.com/?q=example.com"))
+	// ...but a query or a fragment can open the remainder itself, with no path
+	// slash anywhere. Only the "?" and "#" terminators reach these two.
+	assert.Equal(t, "whois.example.com:43", whoisDialAddr("https://whois.example.com?x=1"))
+	assert.Equal(t, "whois.example.com:43", whoisDialAddr("https://whois.example.com#fragment"))
 	// A bracketed IPv6 referral with a path normalizes the same way.
 	assert.Equal(t, "[2001:db8::1]:43", whoisDialAddr("https://[2001:db8::1]/path"))
+	// The bracket-mangling mode above, and the reason this row is not a repeat of
+	// the plain-host query case: untruncated, "[2001:db8::1]?x=1" loses its
+	// leading "[" to TrimPrefix but keeps its interior "]", and JoinHostPort
+	// re-wraps the result into "[2001:db8::1]?x=1]:43".
+	assert.Equal(t, "[2001:db8::1]:43", whoisDialAddr("https://[2001:db8::1]?x=1"))
 }
 
 // TestWhoisRaw_RejectsCRLFInDomain proves whoisRaw refuses a domain carrying a

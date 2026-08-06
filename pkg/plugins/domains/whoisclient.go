@@ -376,8 +376,9 @@ func queryWHOISResponse(ctx context.Context, domain string) (whoisResponse, erro
 }
 
 // whoisDialAddr normalizes a (possibly untrusted) referral server string into a
-// host:port dial target: it strips any URL scheme and path, DROPS any
-// explicit port the referral carries, and always dials the standard WHOIS port.
+// host:port dial target: it strips any URL scheme and everything past the
+// authority (path, query, or fragment), DROPS any explicit port the referral
+// carries, and always dials the standard WHOIS port.
 // WHOIS is tcp/43 by protocol, so a non-43 port in a referral is never
 // legitimate — honoring it would let a hostile WHOIS record steer the plugin
 // into probing arbitrary public host:port pairs (the SSRF guard blocks
@@ -388,21 +389,25 @@ func queryWHOISResponse(ctx context.Context, domain string) (whoisResponse, erro
 func whoisDialAddr(server string) string {
 	server = strings.TrimPrefix(server, "http://")
 	server = strings.TrimPrefix(server, "https://")
-	// Truncate at the first "/" so a URL-shaped referral contributes only its
-	// authority to the dial target. This SUBSUMES the trailing-slash trim it
-	// replaces — a trailing slash is just an empty path, so
-	// "https://whois.example.com/" still normalizes to "whois.example.com:43" —
-	// and both forms must not be applied together. Truncation runs AFTER
-	// scheme-stripping (so "https://" is already gone and its own slashes can't
-	// be mistaken for the path) and BEFORE SplitHostPort (so the port parse sees
-	// a bare authority). Previously only a trailing slash was trimmed, so a
-	// referral like "whois.example.com/path" kept its path: it carries no colon,
-	// SplitHostPort errors, and the else-branch below only strips IPv6 brackets,
-	// leaving the nonsense dial target "whois.example.com/path:43". That failed
-	// safe — it dies at DNS resolution — but silently, and post-ENG-5405 the
-	// dead hop surfaces as referral_failed, i.e. "the server refused us", when
-	// the truth is that pius built an unresolvable address (ENG-5464).
-	server, _, _ = strings.Cut(server, "/")
+	// Truncate at the authority terminator — the first "/", "?" or "#" (RFC 3986
+	// §3.2; a URL may carry a query or fragment with no path slash at all) — so a
+	// URL-shaped referral contributes only its authority to the dial target. This
+	// SUBSUMES the trailing-slash trim it replaces (a trailing slash is just an
+	// empty path, so "https://whois.example.com/" still normalizes to
+	// "whois.example.com:43"), and both forms must not be applied together.
+	// Truncation runs AFTER scheme-stripping (so "https://" is already gone and
+	// its own slashes can't be mistaken for the path) and BEFORE SplitHostPort (so
+	// the port parse sees a bare authority). Untruncated, "whois.example.com/path"
+	// carries no colon, SplitHostPort errors, and the else-branch below only
+	// strips IPv6 brackets, leaving the nonsense target "whois.example.com/path:43"
+	// — and a bracketed literal like "[2001:db8::1]?x=1" no longer ENDS in "]", so
+	// that same strip mangles it further into "[2001:db8::1]?x=1]:43". Both fail
+	// safe (they die at DNS resolution) but silently, and post-ENG-5405 the dead
+	// hop surfaces as referral_failed, i.e. "the server refused us", when the
+	// truth is that pius built an unresolvable address (ENG-5464).
+	if cut := strings.IndexAny(server, "/?#"); cut >= 0 {
+		server = server[:cut]
+	}
 	if host, _, err := net.SplitHostPort(server); err == nil {
 		server = host // drop the untrusted explicit port — WHOIS is tcp/43 only
 	} else {
