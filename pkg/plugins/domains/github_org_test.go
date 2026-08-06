@@ -128,6 +128,48 @@ func TestTokenSimilarity(t *testing.T) {
 	}
 }
 
+// TestTokenSimilarity_DuplicateTokens pins tokenSimilarity's treatment of a
+// token that repeats on one side. Similarity is a comparison of token *sets*:
+// "Acme" said twice is the same claim said twice, not two pieces of evidence.
+//
+// These cases assert an EXACT value rather than a floor, because the defect
+// this pins INFLATES the score — a floor assertion (as used by TestTokenSimilarity
+// above, which encodes deliberate containment behavior for the github-org caller)
+// passes happily on an inflated result and can never detect it.
+func TestTokenSimilarity_DuplicateTokens(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want float64
+	}{
+		// Duplicate on the shorter side inflates the numerator: the distinct
+		// tokens of a are {acme, widgets} and only "acme" is shared, so the
+		// honest score is 1/2 = 0.50. Counting "acme" once per occurrence
+		// scores it twice over a 3-token denominator instead.
+		{"Acme Acme Widgets", "Acme Global Systems", 0.50},
+		// Duplicates also distort which side is treated as "shorter": a says
+		// one distinct thing, {acme}, and it is wholly contained in
+		// {acme, global}, so containment is 1/1 = 1.00. Selecting the shorter
+		// side by raw token count makes the 3-copy string the longer one and
+		// measures the wrong direction.
+		{"Acme Acme Acme", "Acme Global", 1.00},
+		// Regression pin, not a defect case: after duplicates collapse, {acme}
+		// is still wholly contained in {acme, global, systems}, so pure
+		// containment must remain 1.00 and not be deflated by the fix.
+		{"acme acme", "acme global systems", 1.00},
+		// Real-world shape of the same input: a repeated org token beside a
+		// distinguishing one. {praetorian, security} vs {praetorian, inc}
+		// shares exactly one of two tokens → 0.50, and the repeat must not
+		// move it.
+		{"Praetorian Praetorian Security", "Praetorian Inc", 0.50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.a+"_vs_"+tt.b, func(t *testing.T) {
+			got := tokenSimilarity(tt.a, tt.b)
+			assert.InDelta(t, tt.want, got, 0.001, "similarity %q vs %q", tt.a, tt.b)
+		})
+	}
+}
+
 // ── score ─────────────────────────────────────────────────────────────────────
 
 func TestGitHubOrgPlugin_Score_HighConfidenceWithDomain(t *testing.T) {

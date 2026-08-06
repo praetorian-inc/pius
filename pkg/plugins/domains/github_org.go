@@ -296,11 +296,35 @@ func domainContains(rawURL, domain string) bool {
 
 // tokenSimilarity computes the ratio of shared tokens between two strings.
 // Uses the shorter string as the denominator so partial matches score well.
+//
+// Tokens are compared as SETS: a token repeated on one side is one piece of
+// evidence, not N. Both sides are deduped first, the shorter side is then
+// chosen by DISTINCT token count, and the result is the containment ratio
+// |distinct(shorter) ∩ distinct(longer)| / |distinct(shorter)|.
+//
+// Deduping happens here rather than in tokenize because tokenize has a third
+// caller — isMaskedOrg in reverse_whois_verify.go, which feeds hasPrivacyMarker
+// → containsTokenRun. That matches a run of CONSECUTIVE tokens, so collapsing
+// repeats inside tokenize would corrupt phrase matching.
+//
 // "Praetorian" vs "Praetorian Security" → 1/1 = 1.0 (shorter has 1 token, matches)
 // "Praetorian Security" vs "Praetorian Landscaping" → 1/2 = 0.5
+// "Acme Acme Widgets" vs "Acme Global Systems" → 1/2 = 0.50 (was 2/3 = 0.667:
+// "acme" was counted once per occurrence, inflating the score against tokens
+// the two strings do not actually share)
+//
+// Decision (ENG-5890): a shorter side that reduces to a SINGLE distinct token
+// fully contained in the longer side still scores 1.0 — normalized "acme acme"
+// vs "acme global systems" is 1/1 = 1.0. After dedupe that side no longer
+// repeats anything; it is one distinct token, structurally identical to the
+// deliberately pinned "Praetorian" vs "Praetorian Security" → 1.0 case above.
+// Scoring it below 1.0 would mean abandoning the containment denominator for a
+// Jaccard ratio, which is ENG-5172's change, not this one. The inflation this
+// function does remove is the real one: a repeated token counted N times
+// against UNSHARED tokens.
 func tokenSimilarity(a, b string) float64 {
-	aT := tokenize(a)
-	bT := tokenize(b)
+	aT := distinctTokens(a)
+	bT := distinctTokens(b)
 	if len(aT) == 0 || len(bT) == 0 {
 		return 0
 	}
@@ -308,17 +332,24 @@ func tokenSimilarity(a, b string) float64 {
 	if len(aT) > len(bT) {
 		shorter, longer = bT, aT
 	}
-	inLonger := make(map[string]bool, len(longer))
-	for _, t := range longer {
-		inLonger[t] = true
-	}
 	matches := 0
-	for _, t := range shorter {
-		if inLonger[t] {
+	for t := range shorter {
+		if longer[t] {
 			matches++
 		}
 	}
 	return float64(matches) / float64(len(shorter))
+}
+
+// distinctTokens returns the set of tokens in s. See tokenSimilarity for why
+// the dedupe lives here and not in tokenize.
+func distinctTokens(s string) map[string]bool {
+	tokens := tokenize(s)
+	set := make(map[string]bool, len(tokens))
+	for _, t := range tokens {
+		set[t] = true
+	}
+	return set
 }
 
 // tokenize lowercases s and splits on non-alphanumeric characters.
