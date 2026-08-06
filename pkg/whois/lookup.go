@@ -72,7 +72,7 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 // RDAP wins for structured metadata; TCP-43 fills gaps (email, raw text).
 func mergeResults(domain string, rdapR Result, rdapErr error, tcp43R Result, tcp43Err error) Result {
 	if rdapErr != nil {
-		tcp43R.Sources = []string{"tcp43"}
+		tcp43R.Sources = []string{"whois"}
 		return tcp43R
 	}
 	if tcp43Err != nil {
@@ -82,7 +82,7 @@ func mergeResults(domain string, rdapR Result, rdapErr error, tcp43R Result, tcp
 
 	// RDAP is the base; TCP-43 fills gaps.
 	rdapR.Sources = []string{"rdap"}
-	tcp43R.Sources = []string{"tcp43"}
+	tcp43R.Sources = []string{"whois"}
 	rdapR.Merge(tcp43R)
 	rdapR.Domain = domain
 	return rdapR
