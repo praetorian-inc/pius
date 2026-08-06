@@ -2,6 +2,7 @@ package domains
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -23,12 +24,12 @@ func NewWhoisPlugin(httpClient *http.Client) *WhoisPlugin {
 	return &WhoisPlugin{HTTPClient: httpClient}
 }
 
-func (p *WhoisPlugin) Name() string                       { return "whois" }
-func (p *WhoisPlugin) Description() string                { return "Domain WHOIS via RDAP and TCP 43" }
-func (p *WhoisPlugin) Category() string                   { return "domain" }
-func (p *WhoisPlugin) Phase() int                         { return 0 }
-func (p *WhoisPlugin) Mode() string                       { return plugins.ModePassive }
-func (p *WhoisPlugin) Accepts(input plugins.Input) bool   { return input.Domain != "" }
+func (p *WhoisPlugin) Name() string                     { return "whois" }
+func (p *WhoisPlugin) Description() string              { return "Domain WHOIS via RDAP and TCP 43" }
+func (p *WhoisPlugin) Category() string                 { return "domain" }
+func (p *WhoisPlugin) Phase() int                       { return 0 }
+func (p *WhoisPlugin) Mode() string                     { return plugins.ModePassive }
+func (p *WhoisPlugin) Accepts(input plugins.Input) bool { return input.Domain != "" }
 
 func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	var opts []whois.Option
@@ -42,52 +43,67 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	}
 
 	var findings []plugins.Finding
-
-	// Emit structured WHOIS result (metadata, raw text, corroboration).
 	findings = append(findings, buildWhoisResultFinding(result, input.OrgName))
-
-	// Emit preseeds (company, email, name) — only for registered domains.
 	if !result.Unregistered {
 		findings = append(findings, extractPreseeds(result)...)
 	}
-
 	return findings, nil
 }
 
-// buildWhoisResultFinding converts a whois.Result into a FindingWhoisResult.
-func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
-	data := map[string]any{}
+// whoisResultData is the structured payload for FindingWhoisResult.
+// Using a struct instead of a hand-built map makes this testable and
+// keeps the keys in sync between producer and consumer.
+type whoisResultData struct {
+	Registrant    string `json:"registrant,omitempty"`
+	Email         string `json:"email,omitempty"`
+	Registrar     string `json:"registrar,omitempty"`
+	Country       string `json:"country,omitempty"`
+	Province      string `json:"province,omitempty"`
+	City          string `json:"city,omitempty"`
+	Purchased     string `json:"purchased,omitempty"`
+	Updated       string `json:"updated,omitempty"`
+	Expiration    string `json:"expiration,omitempty"`
+	Raw           string `json:"raw,omitempty"`
+	Corroboration string `json:"corroboration,omitempty"`
+	Unregistered  bool   `json:"unregistered,omitempty"`
+}
 
+// toMap round-trips the struct through JSON into map[string]any. This keeps
+// Finding.Data generic while letting us define the schema as a struct.
+func (d whoisResultData) toMap() map[string]any {
+	b, _ := json.Marshal(d)
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	return m
+}
+
+func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
+	var d whoisResultData
 	if r.Unregistered {
-		data["unregistered"] = true
+		d.Unregistered = true
 	} else {
 		org := whois.RegistrantOrg(r.Registrant, r.Domain)
-		normalizedOrg := whois.NormalizePrivacy(org)
+		d.Registrant = whois.NormalizePrivacy(org)
 
 		email, sawProxy := whois.ContactEmail(r)
-		registrantRedacted := normalizedOrg == whois.PrivacyRedaction
-
-		if normalizedOrg != "" {
-			data["registrant"] = normalizedOrg
-		}
 		switch {
 		case email != "":
-			data["email"] = email
-		case sawProxy || registrantRedacted:
-			data["email"] = whois.PrivacyRedaction
+			d.Email = email
+		case sawProxy || d.Registrant == whois.PrivacyRedaction:
+			d.Email = whois.PrivacyRedaction
 		}
 
-		data["country"] = whois.NormalizePrivacy(r.Registrant.Country)
-		data["province"] = whois.NormalizePrivacy(r.Registrant.Province)
-		data["city"] = whois.NormalizePrivacy(r.Registrant.City)
-		data["registrar"] = whois.NormalizeRegistrar(r.Registrar)
-		data["purchased"] = r.Created
-		data["updated"] = r.Updated
-		data["expiration"] = r.Expiration
-		data["raw"] = r.Raw
+		d.Country = whois.NormalizePrivacy(r.Registrant.Country)
+		d.Province = whois.NormalizePrivacy(r.Registrant.Province)
+		d.City = whois.NormalizePrivacy(r.Registrant.City)
+		d.Registrar = whois.NormalizeRegistrar(r.Registrar)
+		d.Purchased = r.Created
+		d.Updated = r.Updated
+		d.Expiration = r.Expiration
+		d.Raw = r.Raw
 
 		if pivotOrg != "" {
-			data["corroboration"] = whois.Corroborate(pivotOrg, org)
+			d.Corroboration = whois.Corroborate(pivotOrg, org)
 		}
 	}
 
@@ -95,12 +111,10 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 		Type:   plugins.FindingWhoisResult,
 		Value:  r.Domain,
 		Source: "whois",
-		Data:   data,
+		Data:   d.toMap(),
 	}
 }
 
-// extractPreseeds pulls registrant organization, name, and email from WHOIS
-// contacts, filtering out privacy/proxy noise.
 func extractPreseeds(r whois.Result) []plugins.Finding {
 	type param struct{ name, value string }
 
@@ -109,25 +123,17 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 
 	contacts := r.AllContacts()
 	for i, c := range contacts {
-		// For registrant, use RegistrantOrg (handles ccTLD promotion and
-		// registry artifact filtering). For other contacts, use org directly
-		// but still filter registry artifacts.
 		org := c.Organization
 		if i == 0 { // registrant
 			org = whois.RegistrantOrg(c, r.Domain)
 		}
 
-		candidates := []param{
+		for _, p := range []param{
 			{"company", org},
 			{"name", c.Name},
 			{"email", c.Email},
-		}
-
-		for _, p := range candidates {
-			if p.value == "" || seen[p] {
-				continue
-			}
-			if whois.IsPrivacy(p.value) {
+		} {
+			if p.value == "" || seen[p] || whois.IsPrivacy(p.value) {
 				continue
 			}
 			if p.name == "email" && !whois.IsEmail(p.value) {
@@ -146,6 +152,5 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 			})
 		}
 	}
-
 	return findings
 }

@@ -1,6 +1,7 @@
 package whois
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -30,9 +31,9 @@ func WithHTTPClient(c *http.Client) Option {
 // merging the best fields from each source.
 //
 // Both sources are always attempted unless one definitively says the domain is
-// unregistered. This is intentional: RDAP provides clean metadata but rarely
-// has email (GDPR), while TCP-43 has email but fragile referral chains. The
-// merge gives callers the best of both.
+// unregistered. RDAP provides clean metadata but rarely has email (GDPR),
+// while TCP-43 has email but fragile referral chains. The merge gives callers
+// the best of both.
 func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) {
 	cfg := config{}
 	for _, o := range opts {
@@ -44,7 +45,6 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 		return Result{}, fmt.Errorf("whois: no registrable domain")
 	}
 
-	// Try RDAP — structured data, standardized dates.
 	rdapResult, rdapErr := rdapLookup(cfg.httpClient, domain)
 	if rdapErr != nil && isDomainNotFound(rdapErr) {
 		return Result{Domain: domain, Unregistered: true}, nil
@@ -53,7 +53,6 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 		slog.Debug("RDAP lookup failed, will rely on TCP-43", "domain", domain, "error", rdapErr)
 	}
 
-	// Try TCP-43 — broader email coverage, raw WHOIS text.
 	tcp43Result, tcp43Err := tcp43Lookup(ctx, domain)
 	if tcp43Err != nil && isDomainNotFound(tcp43Err) {
 		return Result{Domain: domain, Unregistered: true}, nil
@@ -62,77 +61,62 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 		slog.Debug("TCP-43 lookup failed", "domain", domain, "error", tcp43Err)
 	}
 
-	// Both failed entirely.
 	if rdapErr != nil && tcp43Err != nil {
 		return Result{}, fmt.Errorf("whois: all methods failed for %s", domain)
 	}
 
-	return merge(domain, rdapResult, rdapErr, tcp43Result, tcp43Err), nil
+	result := mergeResults(domain, rdapResult, rdapErr, tcp43Result, tcp43Err)
+	applyISOCILFallback(&result)
+	return result, nil
 }
 
-// merge combines the best fields from RDAP and TCP-43 results. Strategy:
-//   - RDAP for structured metadata (dates, country, registrar) — more reliable
-//   - TCP-43 for email and raw text — broader coverage
-//   - Registrant org from whichever source has it
-//   - If both have registrant org, prefer RDAP (more structured)
-func merge(domain string, rdap Result, rdapErr error, tcp43 Result, tcp43Err error) Result {
-	// Only one source available — return it.
+// mergeResults combines the best fields from RDAP and TCP-43 results.
+// RDAP for structured metadata, TCP-43 for email and raw text.
+func mergeResults(domain string, rdapR Result, rdapErr error, tcp43R Result, tcp43Err error) Result {
 	if rdapErr != nil {
-		return tcp43
+		return tcp43R
 	}
 	if tcp43Err != nil {
-		return rdap
+		return rdapR
 	}
 
-	// Both available — merge.
 	r := Result{Domain: domain}
 
-	// Dates: prefer RDAP (RFC3339 format) over TCP-43 (variable formats).
-	r.Created = coalesce(rdap.Created, tcp43.Created)
-	r.Updated = coalesce(rdap.Updated, tcp43.Updated)
-	r.Expiration = coalesce(rdap.Expiration, tcp43.Expiration)
-	r.Registrar = coalesce(rdap.Registrar, tcp43.Registrar)
-	r.NameServers = rdap.NameServers
+	// Dates: prefer RDAP (RFC3339) over TCP-43 (variable formats).
+	r.Created = cmp.Or(rdapR.Created, tcp43R.Created)
+	r.Updated = cmp.Or(rdapR.Updated, tcp43R.Updated)
+	r.Expiration = cmp.Or(rdapR.Expiration, tcp43R.Expiration)
+	r.Registrar = cmp.Or(rdapR.Registrar, tcp43R.Registrar)
+	r.NameServers = rdapR.NameServers
 	if len(r.NameServers) == 0 {
-		r.NameServers = tcp43.NameServers
+		r.NameServers = tcp43R.NameServers
 	}
-	r.Status = rdap.Status
+	r.Status = rdapR.Status
 	if len(r.Status) == 0 {
-		r.Status = tcp43.Status
+		r.Status = tcp43R.Status
 	}
 
 	// Raw text: prefer TCP-43 (traditional format users expect).
-	r.Raw = coalesce(tcp43.Raw, rdap.Raw)
+	r.Raw = cmp.Or(tcp43R.Raw, rdapR.Raw)
 
-	// Contacts: merge per-role — prefer RDAP org/name (structured), supplement
-	// email from TCP-43 (RDAP almost never has email due to GDPR).
-	r.Registrant = mergeContact(rdap.Registrant, tcp43.Registrant)
-	r.Admin = mergeContact(rdap.Admin, tcp43.Admin)
-	r.Tech = mergeContact(rdap.Tech, tcp43.Tech)
-	r.Billing = mergeContact(rdap.Billing, tcp43.Billing)
+	// Contacts: prefer RDAP org/name (structured), supplement email from TCP-43.
+	r.Registrant = mergeContact(rdapR.Registrant, tcp43R.Registrant)
+	r.Admin = mergeContact(rdapR.Admin, tcp43R.Admin)
+	r.Tech = mergeContact(rdapR.Tech, tcp43R.Tech)
+	r.Billing = mergeContact(rdapR.Billing, tcp43R.Billing)
 
 	return r
 }
 
-// mergeContact takes the best fields from two contacts. RDAP provides better
-// org/name/country (structured VCard), TCP-43 provides email.
 func mergeContact(rdap, tcp43 Contact) Contact {
-	c := Contact{
-		Organization: coalesce(rdap.Organization, tcp43.Organization),
-		Name:         coalesce(rdap.Name, tcp43.Name),
-		Email:        coalesce(rdap.Email, tcp43.Email),
-		Country:      coalesce(rdap.Country, tcp43.Country),
-		Province:     coalesce(rdap.Province, tcp43.Province),
-		City:         coalesce(rdap.City, tcp43.City),
+	return Contact{
+		Organization: cmp.Or(rdap.Organization, tcp43.Organization),
+		Name:         cmp.Or(rdap.Name, tcp43.Name),
+		Email:        cmp.Or(rdap.Email, tcp43.Email),
+		Country:      cmp.Or(rdap.Country, tcp43.Country),
+		Province:     cmp.Or(rdap.Province, tcp43.Province),
+		City:         cmp.Or(rdap.City, tcp43.City),
 	}
-	return c
-}
-
-func coalesce(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }
 
 // isDomainNotFound reports whether err definitively means the domain is not
@@ -166,18 +150,11 @@ func ParseExpiration(expirationDate string) (time.Duration, bool) {
 	return 0, false
 }
 
-// RedactionMarkers are high-precision substrings indicating a registry
-// deliberately redacted contact data.
-func containsRedactionMarkerInRaw(raw string) bool {
-	return ContainsRedactionMarker(raw)
-}
-
 // --- ISOC-IL (.il) fallback ---
 
-// applyISOCILFallback fills empty Registrant org/email for ISOC-IL (.il)
-// domains from the raw RPSL descr/e-mail block, which likexian/whois-parser
-// does not map onto Registrant. No-op for non-.il domains and for fields
-// the parser already populated.
+// applyISOCILFallback fills empty Registrant org/email for .il domains from
+// the raw RPSL descr/e-mail block, which likexian/whois-parser does not map
+// onto Registrant.
 func applyISOCILFallback(r *Result) {
 	dns := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(r.Domain), "."))
 	if !strings.HasSuffix(dns, ".il") {
@@ -187,7 +164,6 @@ func applyISOCILFallback(r *Result) {
 		return
 	}
 
-	// Find first paragraph with a descr: line — that's the holder block.
 	var holder map[string]string
 	for _, p := range parseRPSLParagraphs(r.Raw) {
 		if p["first_descr"] != "" {
@@ -215,12 +191,14 @@ func applyISOCILFallback(r *Result) {
 	}
 }
 
-// parseRPSLParagraphs splits raw WHOIS text into key:value paragraph maps.
+// parseRPSLParagraphs splits raw WHOIS/RPSL text into key:value paragraph
+// maps. Used for ISOC-IL fallback and IP WHOIS (future). No third-party
+// library exists for RPSL paragraph parsing — it's a niche wire format.
 func parseRPSLParagraphs(raw string) []map[string]string {
 	var paragraphs []map[string]string
 	current := map[string]string{}
 
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			if len(current) > 0 {

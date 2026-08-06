@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
-	"github.com/praetorian-inc/pius/pkg/whois"
 )
 
 func init() {
@@ -47,6 +45,14 @@ func (p *ReverseWhoisPlugin) Accepts(input plugins.Input) bool {
 	return os.Getenv("VIEWDNS_API_KEY") != "" && (input.OrgName != "" || input.Email != "")
 }
 
+type viewDNSResponse struct {
+	Response struct {
+		Matches []struct {
+			Domain string `json:"domain"`
+		} `json:"matches"`
+	} `json:"response"`
+}
+
 func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("VIEWDNS_API_KEY")
 
@@ -57,9 +63,7 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 
 	reqURL := fmt.Sprintf(
 		"%s/reversewhois/?q=%s&apikey=%s&output=json",
-		p.apiBase(),
-		url.QueryEscape(query),
-		apiKey,
+		p.apiBase(), url.QueryEscape(query), apiKey,
 	)
 
 	body, err := p.client.Get(ctx, reqURL)
@@ -67,40 +71,15 @@ func (p *ReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]pl
 		return nil, fmt.Errorf("reverse-whois: request failed")
 	}
 
-	var response struct {
-		Response struct {
-			Matches []struct {
-				Domain string `json:"domain"`
-			} `json:"matches"`
-		} `json:"response"`
-	}
+	var response viewDNSResponse
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("reverse-whois: parse response: %w", err)
 	}
 
-	seen := make(map[string]struct{})
-	var findings []plugins.Finding
-
+	var rawDomains []string
 	for _, d := range response.Response.Matches {
-		if d.Domain == "" {
-			continue
-		}
-		domain := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(d.Domain)), ".")
-		if domain == "" || !whois.IsPlausibleDomain(domain) {
-			continue
-		}
-		if _, ok := seen[domain]; ok {
-			continue
-		}
-		seen[domain] = struct{}{}
-
-		findings = append(findings, plugins.Finding{
-			Type:   plugins.FindingDomain,
-			Value:  domain,
-			Source: p.Name(),
-			Data:   map[string]any{"pivot_org": query},
-		})
+		rawDomains = append(rawDomains, d.Domain)
 	}
 
-	return findings, nil
+	return domainFindings(p.Name(), query, rawDomains), nil
 }

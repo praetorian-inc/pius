@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/openrdap/rdap"
@@ -114,10 +115,8 @@ func enrichFromRegistrar(client *rdap.Client, result *Result, domainResp *rdap.D
 
 func extractEntity(entities []rdap.Entity, role string) *rdap.Entity {
 	for i := range entities {
-		for _, r := range entities[i].Roles {
-			if r == role {
-				return &entities[i]
-			}
+		if slices.Contains(entities[i].Roles, role) {
+			return &entities[i]
 		}
 	}
 	return nil
@@ -157,7 +156,7 @@ func extractAddressFromVCard(vcard *rdap.VCard) (country, province string) {
 			country = cc[0]
 		}
 	}
-	if addrSlice, ok := adrProps[0].Value.([]interface{}); ok && len(addrSlice) > 4 {
+	if addrSlice, ok := adrProps[0].Value.([]any); ok && len(addrSlice) > 4 {
 		if region, ok := addrSlice[4].(string); ok {
 			province = region
 		}

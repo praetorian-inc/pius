@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	whoisPort            = "43"
-	defaultServer        = "whois.iana.org"
-	dialTimeout          = 10 * time.Second
-	maxReferrals         = 5
-	maxResponseBytes     = 1 << 20 // 1 MiB
+	whoisPort        = "43"
+	defaultServer    = "whois.iana.org"
+	dialTimeout      = 10 * time.Second
+	maxReferrals     = 5
+	maxResponseBytes = 1 << 20 // 1 MiB
 )
 
 // tcp43Lookup performs a raw TCP port-43 WHOIS lookup with referral following,
@@ -86,7 +86,7 @@ func tcp43Raw(ctx context.Context, domain string) (string, error) {
 	server := defaultServer
 	var lastRaw string
 
-	for i := 0; i < maxReferrals; i++ {
+	for range maxReferrals {
 		if err := ctx.Err(); err != nil {
 			if lastRaw != "" {
 				return lastRaw, nil // salvage partial chain
@@ -122,6 +122,10 @@ func tcp43Raw(ctx context.Context, domain string) (string, error) {
 	return lastRaw, nil
 }
 
+// tcp43RawDial sends a single WHOIS query over a raw TCP socket on port 43.
+// WHOIS (RFC 3912) is a line-oriented text protocol over raw TCP — there is no
+// higher-level abstraction (no HTTP, no TLS). The SSRF guard on the dialer
+// prevents untrusted referral servers from directing us to internal networks.
 func tcp43RawDial(ctx context.Context, domain, server string) (string, error) {
 	addr := dialAddr(server)
 	dialer := net.Dialer{Timeout: dialTimeout, Control: ssrfSafeControl}
@@ -152,8 +156,12 @@ func tcp43RawDial(ctx context.Context, domain, server string) (string, error) {
 	return string(resp), nil
 }
 
-// dialAddr normalizes a referral server string into host:43, stripping any
-// URL scheme or explicit port (WHOIS is always tcp/43).
+// dialAddr normalizes a WHOIS referral server string into host:43.
+//
+// We don't use url.Parse here because WHOIS referral values are bare hostnames
+// (e.g. "whois.nic.uk"), not URLs. url.Parse("whois.nic.uk") misparses the
+// hostname as a path. Some referrals carry a scheme prefix ("http://...") or
+// an explicit port — we strip both since WHOIS is always tcp/43.
 func dialAddr(server string) string {
 	server = strings.TrimPrefix(server, "http://")
 	server = strings.TrimPrefix(server, "https://")
@@ -167,7 +175,7 @@ func dialAddr(server string) string {
 }
 
 func extractReferral(raw string) string {
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		line = strings.TrimSpace(line)
 		lower := strings.ToLower(line)
 		var value string
@@ -202,7 +210,7 @@ func ssrfSafeControl(_, address string, _ syscall.RawConn) error {
 	if ip == nil {
 		return fmt.Errorf("ssrf guard: non-IP address %q", host)
 	}
-	if isDisallowedIP(ip) {
+	if IsDisallowedIP(ip) {
 		return fmt.Errorf("ssrf guard: refusing non-public address %s", ip)
 	}
 	return nil
@@ -230,7 +238,11 @@ var disallowedPrefixes = func() []netip.Prefix {
 	return prefixes
 }()
 
-func isDisallowedIP(ip net.IP) bool {
+// IsDisallowedIP reports whether ip is non-public (loopback, private, CGNAT,
+// link-local, etc.) and must not be dialed when following an untrusted referral.
+// Exported so other packages that follow untrusted network references can reuse
+// the same guard.
+func IsDisallowedIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}

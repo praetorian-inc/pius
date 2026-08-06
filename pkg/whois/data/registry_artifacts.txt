@@ -1,0 +1,7 @@
+.uk	nominet uk
+.es	red.es
+.ch	switch the swiss education & research network
+.cl	nic chile (university of chile)
+.za	za domain name authority
+.ph	ph domain foundation
+.vn	viet nam internet network information center (vnnic)

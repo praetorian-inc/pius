@@ -1,10 +1,13 @@
 package whois
 
 import (
+	"net"
 	"net/mail"
 	"regexp"
 	"slices"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 // RegistrantOrg resolves the organization identity from a registrant contact,
@@ -21,9 +24,7 @@ func RegistrantOrg(c Contact, domain string) string {
 }
 
 // ContactEmail finds the best non-privacy email across a result's contacts.
-// Prefers registrant, then admin, tech, billing. Returns the email and whether
-// a privacy-proxy address was seen anywhere (so callers can distinguish
-// redacted from genuinely absent).
+// Prefers registrant, then admin, tech, billing.
 func ContactEmail(r Result) (email string, sawProxy bool) {
 	for _, c := range r.AllContacts() {
 		classified := classifyEmail(c.Email)
@@ -96,8 +97,12 @@ func OrgSimilarity(a, b string) float64 {
 	return TokenSimilarity(normalizeOrg(a), normalizeOrg(b))
 }
 
-// normalizeOrg lowercases, tokenizes, and strips legal-suffix tokens so
-// "Walmart Inc." and "Walmart" compare equal.
+var legalSuffixes map[string]bool
+
+func init() {
+	legalSuffixes = loadDataFile("data/legal_suffixes.txt")
+}
+
 func normalizeOrg(s string) string {
 	tokens := Tokenize(s)
 	kept := make([]string, 0, len(tokens))
@@ -109,43 +114,39 @@ func normalizeOrg(s string) string {
 	return strings.Join(kept, " ")
 }
 
-var legalSuffixes = map[string]bool{
-	"inc": true, "llc": true, "ltd": true, "corp": true, "gmbh": true,
-	"sas": true, "co": true, "plc": true, "bv": true, "nv": true,
-	"pty": true, "oy": true, "ab": true, "as": true, "kk": true,
-	"pte": true, "sa": true, "srl": true, "spa": true, "ag": true,
-	"kg": true, "aps": true, "oyj": true,
-	"corporation": true, "incorporated": true, "company": true, "limited": true,
-}
-
-// RootDomain extracts the registrable domain (e.g., "example.com" from
-// "sub.example.com"). Simple heuristic: take the last two labels.
-func RootDomain(domain string) string {
-	domain = strings.TrimSuffix(strings.TrimSpace(strings.ToLower(domain)), ".")
-	parts := strings.Split(domain, ".")
-	if len(parts) < 2 {
+// RootDomain extracts the registrable domain (eTLD+1) from a hostname using
+// the public suffix list. Falls back to last-two-labels for hostnames the PSL
+// doesn't cover.
+func RootDomain(hostname string) string {
+	hostname = strings.TrimSuffix(strings.TrimSpace(strings.ToLower(hostname)), ".")
+	if hostname == "" || net.ParseIP(hostname) != nil {
 		return ""
 	}
-	if len(parts) == 2 {
-		return domain
+	etld1, err := publicsuffix.EffectiveTLDPlusOne(hostname)
+	if err != nil {
+		// Fallback for hostnames not in the PSL (e.g. internal TLDs).
+		parts := strings.Split(hostname, ".")
+		if len(parts) < 2 {
+			return ""
+		}
+		return strings.Join(parts[len(parts)-2:], ".")
 	}
-	return strings.Join(parts[len(parts)-2:], ".")
+	return etld1
 }
 
-// IsPlausibleDomain filters garbage from reverse-whois results.
+// IsPlausibleDomain filters garbage from reverse-whois results. Checks for
+// a syntactically valid hostname with at least one dot, no URL/authority
+// punctuation, and within DNS length limits.
 func IsPlausibleDomain(domain string) bool {
-	if domain == "" || len(domain) > 253 {
+	if domain == "" || len(domain) > 253 || !strings.Contains(domain, ".") {
 		return false
 	}
 	for _, r := range domain {
-		switch {
-		case r <= ' ' || r == 0x7f:
-			return false
-		case r == '/' || r == ':' || r == '@' || r == '?' || r == '#':
+		if r <= ' ' || r == 0x7f || r == '/' || r == ':' || r == '@' || r == '?' || r == '#' {
 			return false
 		}
 	}
-	return strings.Contains(domain, ".")
+	return true
 }
 
 // ContainsRedactionMarker reports whether raw WHOIS text carries an explicit
@@ -163,10 +164,18 @@ func ContainsRedactionMarker(raw string) bool {
 	return false
 }
 
-var redactionMarkers = []string{
-	"redacted for privacy",
-	"redacted for gdpr",
-	"statutory masking",
+var redactionMarkers []string
+
+func init() {
+	raw, err := dataFS.ReadFile("data/redaction_markers.txt")
+	if err != nil {
+		panic("whois: missing embedded data file: data/redaction_markers.txt")
+	}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			redactionMarkers = append(redactionMarkers, strings.ToLower(line))
+		}
+	}
 }
 
 // --- Text utilities ---
@@ -186,7 +195,7 @@ func Tokenize(s string) []string {
 }
 
 // TokenSimilarity computes the ratio of shared tokens between two strings.
-// Uses the shorter string as the denominator so partial matches score well.
+// Uses the shorter set as the denominator so partial matches score well.
 func TokenSimilarity(a, b string) float64 {
 	aT := Tokenize(a)
 	bT := Tokenize(b)
@@ -212,14 +221,13 @@ func TokenSimilarity(a, b string) float64 {
 
 // --- ccTLD and registry artifact rules ---
 
-// registrantNameCCTLDs are ccTLDs whose registries publish the domain holder
-// in the registrant NAME field with no distinct Organization field.
+// registrantNameCCTLDs are loaded from data/cctld_name_promotion.txt if we
+// ever need to externalize; for now the list is small and stable.
 var registrantNameCCTLDs = []string{
 	".cn", ".hr", ".jp", ".kr",
 	".fr", ".re", ".pm", ".tf", ".wf", ".yt",
 	".ca", ".dk", ".ee", ".fi", ".gg",
-	".xn--fiqs8s",
-	".cl",
+	".xn--fiqs8s", ".cl",
 }
 
 func holderInRegistrantName(dns string) bool {
@@ -233,20 +241,36 @@ func holderInRegistrantName(dns string) bool {
 }
 
 // registryOperatorArtifacts maps ccTLD → registry operator strings that the
-// parser mis-maps into Registrant.Organization. These are NOT domain holders.
-var registryOperatorArtifacts = map[string][]string{
-	".uk": {"nominet uk"},
-	".es": {"red.es"},
-	".ch": {"switch the swiss education & research network"},
-	".cl": {"nic chile (university of chile)"},
-	".za": {"za domain name authority"},
-	".ph": {"ph domain foundation"},
-	".vn": {"viet nam internet network information center (vnnic)"},
-}
+// parser mis-maps into Registrant.Organization. Loaded from embedded file.
+var registryOperatorArtifacts map[string][]string
 
+// registryHandleCCTLDs are ccTLDs where the parser mis-maps opaque NIC
+// handles or national tax IDs into Registrant.Organization (.se publishes
+// NIC handles like "DIDEP2435-002435", .ar publishes CUIT tax IDs).
 var registryHandleCCTLDs = []string{".se", ".ar"}
 
 var opaqueRegistrantHandle = regexp.MustCompile(`^([0-9]{6,}|[A-Za-z0-9]+-[0-9]+)$`)
+
+func init() {
+	registryOperatorArtifacts = make(map[string][]string)
+	raw, err := dataFS.ReadFile("data/registry_artifacts.txt")
+	if err != nil {
+		panic("whois: missing embedded data file: data/registry_artifacts.txt")
+	}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		suffix := strings.TrimSpace(parts[0])
+		value := strings.ToLower(strings.TrimSpace(parts[1]))
+		registryOperatorArtifacts[suffix] = append(registryOperatorArtifacts[suffix], value)
+	}
+}
 
 func isRegistryArtifact(org, dns string) bool {
 	trimmedOrg := strings.TrimSpace(org)
@@ -256,8 +280,10 @@ func isRegistryArtifact(org, dns string) bool {
 	dns = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(dns), "."))
 	norm := strings.Join(strings.Fields(strings.ToLower(org)), " ")
 	for suffix, artifacts := range registryOperatorArtifacts {
-		if strings.HasSuffix(dns, suffix) && slices.Contains(artifacts, norm) {
-			return true
+		if strings.HasSuffix(dns, suffix) {
+			if slices.Contains(artifacts, norm) {
+				return true
+			}
 		}
 	}
 	for _, suffix := range registryHandleCCTLDs {
