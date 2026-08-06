@@ -83,6 +83,9 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 
 	var allDomains []string
 	for _, q := range queries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		domains, err := p.paginateQuery(ctx, apiKey, q)
 		if err != nil {
 			slog.Warn("whoxy-reverse-whois: query failed", "param", q.param, "value", q.value, "error", err)

@@ -1,6 +1,7 @@
 package whois
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,7 +13,7 @@ import (
 
 // rdapLookup performs an RDAP domain lookup, following registrar "related"
 // links when the registry response lacks registrant data (common under GDPR).
-func rdapLookup(httpClient *http.Client, domain string) (Result, error) {
+func rdapLookup(ctx context.Context, httpClient *http.Client, domain string) (Result, error) {
 	client := &rdap.Client{}
 	if httpClient != nil {
 		client.HTTP = httpClient
@@ -23,6 +24,7 @@ func rdapLookup(httpClient *http.Client, domain string) (Result, error) {
 		Query:      domain,
 		FetchRoles: []string{"all"},
 	}
+	req = req.WithContext(ctx)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -37,7 +39,7 @@ func rdapLookup(httpClient *http.Client, domain string) (Result, error) {
 
 	// Follow registrar link if registrant data is missing.
 	if result.Registrant.IsEmpty() {
-		enrichFromRegistrar(client, &result, domainResp)
+		enrichFromRegistrar(ctx, client, &result, domainResp)
 	}
 
 	return result, nil
@@ -81,7 +83,7 @@ func mapRDAPToResult(domain string, resp *rdap.Domain) Result {
 	return r
 }
 
-func enrichFromRegistrar(client *rdap.Client, result *Result, domainResp *rdap.Domain) {
+func enrichFromRegistrar(ctx context.Context, client *rdap.Client, result *Result, domainResp *rdap.Domain) {
 	var registrarURL string
 	for _, link := range domainResp.Links {
 		if link.Rel == "related" && link.Type == "application/rdap+json" {
@@ -97,7 +99,10 @@ func enrichFromRegistrar(client *rdap.Client, result *Result, domainResp *rdap.D
 		return
 	}
 
-	resp, err := client.Do(&rdap.Request{Type: rdap.RawRequest, Server: parsed})
+	req := &rdap.Request{Type: rdap.RawRequest, Server: parsed}
+	req = req.WithContext(ctx)
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return
 	}
@@ -131,7 +136,7 @@ func extractContact(entities []rdap.Entity, role string) Contact {
 		Name:         e.VCard.Name(),
 		Organization: extractOrgFromVCard(e.VCard),
 	}
-	c.Country, c.Province = extractAddressFromVCard(e.VCard)
+	c.Country, c.Province, c.City = extractAddressFromVCard(e.VCard)
 	return c
 }
 
@@ -146,25 +151,33 @@ func extractOrgFromVCard(vcard *rdap.VCard) string {
 	return ""
 }
 
-func extractAddressFromVCard(vcard *rdap.VCard) (country, province string) {
+func extractAddressFromVCard(vcard *rdap.VCard) (country, province, city string) {
 	adrProps := vcard.Get("adr")
 	if len(adrProps) == 0 {
-		return vcard.Country(), ""
+		return vcard.Country(), "", ""
 	}
 	if params := adrProps[0].Parameters; params != nil {
 		if cc, ok := params["cc"]; ok && len(cc) > 0 {
 			country = cc[0]
 		}
 	}
-	if addrSlice, ok := adrProps[0].Value.([]any); ok && len(addrSlice) > 4 {
-		if region, ok := addrSlice[4].(string); ok {
-			province = region
+	// RFC 6350 adr structured value: [pobox, ext, street, locality, region, postal, country]
+	if addrSlice, ok := adrProps[0].Value.([]any); ok {
+		if len(addrSlice) > 3 {
+			if v, ok := addrSlice[3].(string); ok {
+				city = v
+			}
+		}
+		if len(addrSlice) > 4 {
+			if v, ok := addrSlice[4].(string); ok {
+				province = v
+			}
 		}
 	}
 	if country == "" {
 		country = vcard.Country()
 	}
-	return country, province
+	return country, province, city
 }
 
 func formatRDAPText(r *Result) string {

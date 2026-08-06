@@ -44,7 +44,7 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 		return Result{}, fmt.Errorf("whois: no registrable domain")
 	}
 
-	rdapResult, rdapErr := rdapLookup(cfg.httpClient, domain)
+	rdapResult, rdapErr := rdapLookup(ctx, cfg.httpClient, domain)
 	if rdapErr != nil && isDomainNotFound(rdapErr) {
 		return Result{Domain: domain, Unregistered: true}, nil
 	}
