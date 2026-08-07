@@ -44,9 +44,16 @@ const (
 	// candidate's own registrant org corroborates the query org. Still < 0.65,
 	// so it ranks above unverified matches without reading as clean.
 	confReverseWhoisCorroborated = 0.60
-	// confReverseWhoisUnverified is the mid-band score for matches we could not
-	// corroborate (lookup failed/timed out, masked registrant, empty org, or an
-	// ambiguous partial-token overlap).
+	// confReverseWhoisUnverified is the mid-band score for every match that is
+	// neither corroborated nor a clear mismatch. Several distinct routes land here
+	// — a lookup that failed, was cut short, or was never attempted; a masked or
+	// absent registrant; an org that reduces to no comparable tokens; an indecisive
+	// partial-token overlap — and the list is deliberately NOT enumerated here: the
+	// authoritative, exhaustive-by-construction enumeration is the set of
+	// justifyReverseWhois* constants below, which is what a reviewer actually reads.
+	// Each of those distinguishes its route in WORDING only; every one of them keeps
+	// this score, so the band a candidate lands in is independent of which route it
+	// took (ENG-5889).
 	confReverseWhoisUnverified = 0.50
 	// confReverseWhoisMismatch is the bottom-of-band score for a present,
 	// unmasked registrant org that clearly disagrees with the query org. It sits
@@ -314,12 +321,21 @@ func isPlausibleDomain(d string) bool {
 // confidenceDecision is one verification outcome: the score it earns and the
 // explanation a reviewer sees.
 //
-// It is a SINGLE entry, deliberately — unlike the additive plugins, the three
-// outcomes here are mutually exclusive classifications of one verification
-// operation, not independent signals that could co-occur. Emitting them as
-// separate additive entries would let a candidate accumulate contradictory
-// evidence and climb out of the needs_review band, breaking the invariant that
-// every reverse-WHOIS finding stays below ConfidenceHigh.
+// It is a SINGLE entry, deliberately — unlike the additive plugins, an outcome
+// here is one mutually exclusive CLASSIFICATION of one verification operation,
+// not an independent signal that could co-occur with another. What makes it
+// exclusive is that a candidate is verified exactly once, so exactly one
+// classification is true of it; it is NOT a count. Counting proves nothing here
+// and an earlier version of this comment ("the three outcomes") invited the
+// reader to check the wrong thing: the scores number three while the
+// justifyReverseWhois* wordings number more, and both sets grow whenever a route
+// earns its own explanation (ENG-5889).
+//
+// Emitting outcomes as separate additive entries would let a candidate
+// accumulate contradictory evidence and climb out of the needs_review band,
+// breaking the invariant that every reverse-WHOIS finding stays below
+// ConfidenceHigh. That single-entry rule is load-bearing and holds however many
+// wordings exist.
 type confidenceDecision struct {
 	Score         float64
 	Justification string
@@ -334,13 +350,68 @@ const (
 	justifyReverseWhoisCorroborated = "The candidate domain's own registrant organization corroborates the queried organization"
 	justifyReverseWhoisUnverified   = "The candidate domain's registrant organization could not be verified (masked, absent, or unresolvable)"
 	justifyReverseWhoisMismatch     = "The candidate domain's registrant organization differs from the queried organization; retained for review because a textual mismatch is not proof of non-ownership"
+
+	// The three below split routes that all used to emit
+	// justifyReverseWhoisUnverified — "could not be verified (masked, absent, or
+	// unresolvable)" — even though none of them describes what actually happened
+	// on that route. All three keep confReverseWhoisUnverified: ENG-5889 is a
+	// wording defect, not a scoring change, so the band each candidate lands in
+	// is byte-identical to before.
+	justifyReverseWhoisAmbiguous   = "The candidate domain's registrant organization neither corroborates nor clearly differs from the queried organization; retained for review because a partial name overlap is evidence of neither ownership nor its absence"
+	justifyReverseWhoisNoQueryOrg  = "The candidate domain's registrant organization was not compared: this pivot supplied no queried organization"
+	justifyReverseWhoisNotLookedUp = "The candidate domain's registrant organization was not looked up: the per-pass resolver cap was reached before this candidate"
+
+	// The two below split the LAST route still emitting the unverifiable wording
+	// falsely: the no-comparable-tokens guard in decideConfidence. By the time it
+	// runs, the lookup has already succeeded, the registrant is unmasked and
+	// non-empty — so every clause of "masked, absent, or unresolvable" is false, the
+	// same construction the AMBIGUOUS split below already rejected for reporting a
+	// lookup problem that never occurred (ENG-5889).
+	//
+	// They are split by SIDE because the two sides are not the same fact and are not
+	// even about the same organization. The queried org is pass-wide (input.OrgName),
+	// so its wording must never blame the candidate's registrant: doing so
+	// mis-attributes the failure to the wrong side AND repeats that mis-attribution
+	// for every candidate in the pass, reading as a systemic WHOIS outage when the
+	// real cause is one un-comparable seed. Neither is justifyReverseWhoisNoQueryOrg:
+	// that reports NO queried organization at all (email-mode), whereas here one was
+	// supplied but normalized away to nothing.
+	// Both keep confReverseWhoisUnverified — wording, not scoring.
+	//
+	// Both name the normalization OUTCOME ("normalizes to no comparable tokens")
+	// rather than a single cause, and give legal-form stripping as an EXAMPLE. There
+	// are two routes to empty and stripping is only one of them: normalizeOrg
+	// tokenizes first and drops legal suffixes second, and tokenize keeps only ASCII
+	// letters and digits — so a name like "!!!" clears the TrimSpace fast path in
+	// verifyCandidates, reaches here, and normalizes to "" with nothing stripped at
+	// all. Blaming legal-form stripping there would report an event that never
+	// occurred, which is the very defect class ENG-5889 exists to fix.
+	justifyReverseWhoisQueryOrgNotComparable   = "The candidate domain's registrant organization was resolved but not compared: the queried organization normalizes to no comparable tokens (e.g. a name made up only of legal-form words, or one carrying no ASCII letters or digits), so no comparison was possible"
+	justifyReverseWhoisRegistrantNotComparable = "The candidate domain's registrant organization was resolved but normalizes to no comparable tokens (e.g. a name made up only of legal-form words, or one carrying no ASCII letters or digits), so it could not be compared to the queried organization"
 )
 
 // decideConfidence maps a candidate's resolved registrant against the query org
-// to a needs-review decision. A lookup error means "unverifiable", NOT
-// "mismatch": it is scored mid-band. Nothing here ever drops a candidate — a
-// clear mismatch is de-ranked to the bottom of the band, and every return scores
-// < ConfidenceHigh.
+// to a needs-review decision. THREE distinct classes share the mid-band score and
+// must NOT share wording (ENG-5889), because each reports a different fact to the
+// reviewer who reads it. Classes, not routes: NOT COMPARABLE splits by SIDE below,
+// so the three classes are reached by four mid-band returns.
+//
+//   - UNVERIFIABLE — a lookup error, or a masked or absent registrant. The
+//     registrant itself never arrived, so there was nothing to compare.
+//   - NOT COMPARABLE — the registrant arrived clean (lookup succeeded, unmasked,
+//     non-empty) but one side normalizes to no comparable tokens — an all-suffix org
+//     like "Co., Ltd." whose tokens are all stripped, or a name like "!!!" that
+//     carries no ASCII letters or digits to tokenize. Nothing failed and
+//     nothing is hidden; there is simply no token to compare. This is its own class,
+//     NOT a sub-case of UNVERIFIABLE: the behavior that shipped before ENG-5889
+//     folded it in, and that is the ruling ENG-5889 overturns. It splits further by
+//     SIDE, since the queried org and the candidate's registrant are different
+//     organizations.
+//   - AMBIGUOUS — the registrant WAS compared and the comparison was indecisive.
+//
+// None of the three classes is a "mismatch". Nothing here ever drops a
+// candidate — a clear mismatch is de-ranked to the bottom of the band, and
+// every return scores < ConfidenceHigh.
 func decideConfidence(queryOrg string, res registrantResult, lookupErr error) confidenceDecision {
 	unverified := confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisUnverified}
 
@@ -348,11 +419,25 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 		return unverified
 	}
 	nq, nc := normalizeOrg(queryOrg), normalizeOrg(res.Org)
-	if nq == "" || nc == "" {
-		// One side has no comparable tokens after legal-suffix stripping (e.g. an
-		// all-suffix org like "Co., Ltd."). Token similarity is undefined here, so
-		// the candidate is UNVERIFIABLE, not a mismatch — score mid-band.
-		return unverified
+	// Past the guard above, the lookup SUCCEEDED and the registrant is unmasked and
+	// non-empty, so "masked, absent, or unresolvable" is false in all three clauses
+	// and the unverifiable wording would report a lookup problem that never occurred
+	// (ENG-5889) — the same defect the AMBIGUOUS default arm below already fixed, one
+	// arm further up. Token similarity is undefined when either side has no
+	// comparable tokens, so this stays mid-band and is never a mismatch; only the
+	// wording changes.
+	//
+	// The queried side is tested FIRST, which also decides the both-empty case in its
+	// favour. Either verdict would be defensible there, but the queried org is
+	// pass-wide (input.OrgName), so it is the cause that explains every candidate in
+	// the pass at once and the only one a reviewer can act on — re-seed the pivot.
+	// Reporting the per-candidate side instead would bury that under one identical
+	// line per candidate.
+	if nq == "" {
+		return confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisQueryOrgNotComparable}
+	}
+	if nc == "" {
+		return confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisRegistrantNotComparable}
 	}
 	sim := tokenSimilarity(nq, nc)
 	switch {
@@ -364,8 +449,14 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 		// mismatch is not proof of non-ownership, so this is never dropped.
 		return confidenceDecision{Score: confReverseWhoisMismatch, Justification: justifyReverseWhoisMismatch}
 	default:
-		// Ambiguous partial overlap [simMismatch, simCorroborate).
-		return unverified
+		// Partial overlap [simMismatch, simCorroborate). Same mid-band score as every
+		// other return above bar the two banded ones, but deliberately NOT their
+		// wording — and note "unverifiable" now names only the FIRST of those returns,
+		// not the not-comparable pair (ENG-5889): here the
+		// registrant WAS resolved, unmasked, non-empty and comparable — the
+		// comparison simply came out indecisive. Saying "could not be verified"
+		// would report a lookup problem that never occurred (ENG-5889).
+		return confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisAmbiguous}
 	}
 }
 
@@ -376,13 +467,16 @@ func decideConfidence(queryOrg string, res registrantResult, lookupErr error) co
 // candidate is emitted (in needs_review).
 //
 // At most maxReverseWhoisCandidates candidates are resolved, to bound lookup
-// cost; any beyond that cap are still emitted at the unverified mid-band score
-// WITHOUT a lookup, so a large result set is ranked-where-possible but never
-// truncated (ENG-5123 #3 — the cap limits resolver calls, not recall).
+// cost; any beyond that cap are still emitted at the same mid-band score
+// (confReverseWhoisUnverified) WITHOUT a lookup, so a large result set is
+// ranked-where-possible but never truncated (ENG-5123 #3 — the cap limits
+// resolver calls, not recall). They read justifyReverseWhoisNotLookedUp, not
+// the unverifiable wording: no lookup was attempted (ENG-5889).
 //
 // When queryOrg is empty (email-mode seed) there is nothing to corroborate
-// against, so every candidate short-circuits to the unverified mid-band score
-// with no resolver calls.
+// against, so every candidate short-circuits to that same mid-band score with
+// no resolver calls, reading justifyReverseWhoisNoQueryOrg — nothing failed,
+// there was simply no org to compare against (ENG-5889).
 func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string, cands []candidate) ([]plugins.Finding, error) {
 	// A caller that already cancelled before we start must abort here, not emit a
 	// result set. The post-g.Wait check below covers cancellation DURING parallel
@@ -413,7 +507,10 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 		findings := make([]plugins.Finding, 0, len(cands))
 		for _, c := range cands {
 			f := c.finding
-			plugins.AddConfidence(&f, confReverseWhoisUnverified, justifyReverseWhoisUnverified)
+			// Mid-band score, but NOT the unverifiable wording: no lookup was
+			// attempted and nothing failed — this pivot simply supplied no org to
+			// compare against (ENG-5889).
+			plugins.AddConfidence(&f, confReverseWhoisUnverified, justifyReverseWhoisNoQueryOrg)
 			findings = append(findings, f)
 		}
 		// Re-check before returning: the plausibility filter and the scoring loop
@@ -437,22 +534,45 @@ func verifyCandidates(ctx context.Context, r registrantResolver, queryOrg string
 
 	// Pre-fill EVERY candidate with the unverified mid-band score up front, not
 	// just the un-resolved overflow (indices >= resolveCount): a resolve worker
-	// that panics (recovered below) or never runs must still leave a score inside
+	// whose panic is recovered below must still leave a score inside
 	// the needs_review band [0.35,0.65). The make() zero value 0.0 falls under the
 	// discard floor and would silently drop the candidate — violating
 	// de-rank-never-drop (Gemini review, ENG-5123). Successful workers overwrite
 	// their index with the decided band.
+	//
+	// The SCORE is identical for both halves, for exactly that reason; only the
+	// JUSTIFICATION splits at resolveCount, because the two halves are different
+	// facts (ENG-5889).
+	//
+	// Below the cap this pre-fill is a fallback that only ever SURVIVES when the
+	// worker's deferred recover fires: a recovered panic skips the
+	// `decisions[i] = decideConfidence(...)` assignment, so the pre-filled entry is
+	// what gets emitted. Every other outcome overwrites it, a cancelled gctx
+	// included — that surfaces as a resolveRegistrant error and routes through
+	// decideConfidence's lookupErr branch, which reaches the same score by its own
+	// path rather than by inheriting this one. A recovered panic is the ONLY way the
+	// pre-fill survives below the cap: errgroup runs every func handed to g.Go (only
+	// TryGo may decline), so every submitted lookup starts and there is no never-run
+	// worker to cover. And a recovered panic IS genuinely "could not be verified" —
+	// the lookup started and its result was destroyed.
+	//
+	// At or above the cap the candidate was never looked up at all: the pass-wide
+	// resolver cap ran out first, so reporting a failed verification would send a
+	// reviewer hunting a WHOIS problem that never happened.
 	decisions := make([]confidenceDecision, len(cands))
 	for i := range decisions {
-		decisions[i] = confidenceDecision{Score: confReverseWhoisUnverified, Justification: justifyReverseWhoisUnverified}
+		justification := justifyReverseWhoisUnverified
+		if i >= resolveCount {
+			justification = justifyReverseWhoisNotLookedUp
+		}
+		decisions[i] = confidenceDecision{Score: confReverseWhoisUnverified, Justification: justification}
 	}
 
 	// Per-candidate observability, sized len(cands) — NOT resolveCount — so it
 	// indexes identically to decisions and a stray index can never be out of range.
 	// Unlike scores this needs no pre-fill loop: the zero candidateOutcome
 	// (whoisComplete, not failed, not panicked) is already the correct reading for
-	// the overflow indices >= resolveCount, which were never looked up, and for any
-	// worker that never ran (ENG-5405).
+	// the overflow indices >= resolveCount, which were never looked up (ENG-5405).
 	outcomes := make([]candidateOutcome, len(cands))
 
 	// Bound the whole pass, not just each lookup: a candidate can cost up to two

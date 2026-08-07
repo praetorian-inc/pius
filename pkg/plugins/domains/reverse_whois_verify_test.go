@@ -167,6 +167,18 @@ func (s *stubResolver) queried(domain string) bool {
 
 func org(v string) registrantResult { return newRegistrantResult(v) }
 
+// soleJustification returns the justification of a finding's ONE confidence
+// entry. Every reverse-whois finding carries exactly one by design — the
+// outcomes are mutually exclusive classifications of a single verification, not
+// additive signals — so any other count is itself the defect and fails here
+// rather than being silently indexed past. TotalConfidence would hide that: it
+// sums, so two contradictory 0.25 entries read as one clean 0.50.
+func soleJustification(t *testing.T, f plugins.Finding) string {
+	t.Helper()
+	require.Len(t, f.Confidences, 1, "a reverse-whois finding carries exactly one confidence entry")
+	return f.Confidences[0].Justification
+}
+
 func TestNormalizeOrg(t *testing.T) {
 	tests := []struct {
 		name string
@@ -192,99 +204,180 @@ func TestNormalizeOrg(t *testing.T) {
 	}
 }
 
+// TestDecideConfidence pins BOTH halves of every decision: the score band AND
+// the justification a reviewer reads. The two are independent, and ENG-5889 was
+// a defect in only the second: several routes shared confReverseWhoisUnverified
+// (correct — the band is deliberately the same) and were therefore also handed
+// one justification (wrong), telling a reviewer the registrant "could not be
+// verified (masked, absent, or unresolvable)" on routes where it had in fact
+// been resolved cleanly. The suite stayed green through that entire defect
+// because the only justification assertion was NotEmpty, which any string
+// satisfies — a confidently false one included.
+//
+// wantJustification is what closes that hole. Score alone cannot tell these
+// routes apart, so the justification is the only thing that says WHICH one
+// fired; collapsing any two of them back together now fails here.
+//
+// Justifications are referenced by CONSTANT, never by copied literal. The
+// wording is prose and gets reworded (twice in one week, so far); a table of
+// literals would break on every such edit while pinning nothing about the
+// routing. What must not change is WHICH constant a given
+// (queryOrg, res, lookupErr) triple selects.
 func TestDecideConfidence(t *testing.T) {
 	lookupErr := errors.New("boom")
 	tests := []struct {
-		name      string
-		queryOrg  string
-		res       registrantResult
-		lookupErr error
-		wantScore float64
+		name              string
+		queryOrg          string
+		res               registrantResult
+		lookupErr         error
+		wantScore         float64
+		wantJustification string
 	}{
 		{
-			name:      "corroborated exact",
-			queryOrg:  "Leica Biosystems",
-			res:       org("Leica Biosystems Inc."),
-			wantScore: confReverseWhoisCorroborated,
+			name:              "corroborated exact",
+			queryOrg:          "Leica Biosystems",
+			res:               org("Leica Biosystems Inc."),
+			wantScore:         confReverseWhoisCorroborated,
+			wantJustification: justifyReverseWhoisCorroborated,
 		},
 		{
-			name:      "corroborated partial (shorter fully contained)",
-			queryOrg:  "Acme",
-			res:       org("Acme Corp"),
-			wantScore: confReverseWhoisCorroborated,
+			name:              "corroborated partial (shorter fully contained)",
+			queryOrg:          "Acme",
+			res:               org("Acme Corp"),
+			wantScore:         confReverseWhoisCorroborated,
+			wantJustification: justifyReverseWhoisCorroborated,
 		},
 		{
 			// De-ranked to the bottom of the band, NOT dropped: a textual
 			// registrant mismatch is not proof of non-ownership (ENG-5123 #1).
-			name:      "clear mismatch de-ranks (walmart from Leica)",
-			queryOrg:  "Leica Biosystems Richmond, Inc.",
-			res:       org("Walmart Inc."),
-			wantScore: confReverseWhoisMismatch,
+			name:              "clear mismatch de-ranks (walmart from Leica)",
+			queryOrg:          "Leica Biosystems Richmond, Inc.",
+			res:               org("Walmart Inc."),
+			wantScore:         confReverseWhoisMismatch,
+			wantJustification: justifyReverseWhoisMismatch,
 		},
 		{
-			name:      "masked registrant stays unverified",
-			queryOrg:  "Leica Biosystems",
-			res:       org("Domains By Proxy, LLC"),
-			wantScore: confReverseWhoisUnverified,
+			// UNVERIFIABLE proper: the registrant never arrived, so every clause of
+			// "masked, absent, or unresolvable" is literally true. This is one of the
+			// routes ENG-5889 deliberately LEFT on the original wording.
+			name:              "masked registrant is UNVERIFIABLE",
+			queryOrg:          "Leica Biosystems",
+			res:               org("Domains By Proxy, LLC"),
+			wantScore:         confReverseWhoisUnverified,
+			wantJustification: justifyReverseWhoisUnverified,
 		},
 		{
-			name:      "empty registrant stays unverified",
-			queryOrg:  "Leica Biosystems",
-			res:       registrantResult{},
-			wantScore: confReverseWhoisUnverified,
+			name:              "absent registrant is UNVERIFIABLE",
+			queryOrg:          "Leica Biosystems",
+			res:               registrantResult{},
+			wantScore:         confReverseWhoisUnverified,
+			wantJustification: justifyReverseWhoisUnverified,
 		},
 		{
-			name:      "lookup error stays unverified (not mismatch)",
-			queryOrg:  "Leica Biosystems",
-			res:       registrantResult{},
-			lookupErr: lookupErr,
-			wantScore: confReverseWhoisUnverified,
+			name:              "lookup error is UNVERIFIABLE (not mismatch)",
+			queryOrg:          "Leica Biosystems",
+			res:               registrantResult{},
+			lookupErr:         lookupErr,
+			wantScore:         confReverseWhoisUnverified,
+			wantJustification: justifyReverseWhoisUnverified,
 		},
 		{
-			name:      "ambiguous partial overlap stays unverified",
-			queryOrg:  "Acme Global Services",
-			res:       org("Acme Widgets Manufacturing Holdings"),
-			wantScore: confReverseWhoisUnverified,
+			// AMBIGUOUS, not unverifiable: the registrant WAS resolved, unmasked and
+			// comparable — the comparison merely came out indecisive. "Could not be
+			// verified" here reports a lookup problem that never occurred (ENG-5889).
+			name:              "ambiguous partial overlap is AMBIGUOUS",
+			queryOrg:          "Acme Global Services",
+			res:               org("Acme Widgets Manufacturing Holdings"),
+			wantScore:         confReverseWhoisUnverified,
+			wantJustification: justifyReverseWhoisAmbiguous,
 		},
 		{
 			// 3 of 5 shared tokens = 0.60 == simCorroborate. Non-degenerate
 			// (both sides >1 token, partial overlap) so it exercises the real
 			// ratio, not a fully-contained shorter string.
-			name:      "sim exactly at corroborate threshold corroborates",
-			queryOrg:  "Acme Global Data Cloud Services",
-			res:       org("Acme Global Data Widgets Holdings"),
-			wantScore: confReverseWhoisCorroborated,
+			name:              "sim exactly at corroborate threshold corroborates",
+			queryOrg:          "Acme Global Data Cloud Services",
+			res:               org("Acme Global Data Widgets Holdings"),
+			wantScore:         confReverseWhoisCorroborated,
+			wantJustification: justifyReverseWhoisCorroborated,
 		},
 		{
 			// 3 of 10 shared tokens = 0.30 == simMismatch. The mismatch test is
-			// strictly-less-than, so the boundary stays unverified (not de-ranked).
-			name:      "sim exactly at mismatch threshold stays unverified (boundary)",
-			queryOrg:  "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
-			res:       org("alpha bravo charlie kilo lima mike november oscar papa quebec"),
-			wantScore: confReverseWhoisUnverified,
+			// strictly-less-than, so the boundary falls through to the AMBIGUOUS
+			// default arm: same mid-band score as an unverifiable lookup, but a
+			// comparison that RAN and was indecisive, not one that never happened.
+			name:              "sim exactly at mismatch threshold is AMBIGUOUS, not a mismatch (boundary)",
+			queryOrg:          "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
+			res:               org("alpha bravo charlie kilo lima mike november oscar papa quebec"),
+			wantScore:         confReverseWhoisUnverified,
+			wantJustification: justifyReverseWhoisAmbiguous,
 		},
 		{
 			// 2 of 10 shared tokens = 0.20 < simMismatch → clear mismatch de-ranks.
-			name:      "sim just below mismatch threshold de-ranks",
-			queryOrg:  "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
-			res:       org("alpha bravo kilo lima mike november oscar papa quebec romeo"),
-			wantScore: confReverseWhoisMismatch,
+			name:              "sim just below mismatch threshold de-ranks",
+			queryOrg:          "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
+			res:               org("alpha bravo kilo lima mike november oscar papa quebec romeo"),
+			wantScore:         confReverseWhoisMismatch,
+			wantJustification: justifyReverseWhoisMismatch,
 		},
 		{
 			// queryOrg normalizes to "" (all legal-suffix tokens) → similarity is
-			// undefined → unverifiable, never a mismatch (ENG-5123 S1).
-			name:      "query normalizes empty stays unverified",
-			queryOrg:  "Co., Ltd.",
-			res:       org("Walmart Inc."),
-			wantScore: confReverseWhoisUnverified,
+			// undefined → mid-band, never a mismatch (ENG-5123 S1). That SCORE ruling
+			// is untouched; the CLASS is not UNVERIFIABLE but NOT COMPARABLE — the
+			// lookup succeeded and the registrant is unmasked and present, so nothing
+			// failed and nothing is hidden. There is simply no token to compare
+			// (ENG-5889).
+			name:              "query org normalizes empty is NOT COMPARABLE on the queried side",
+			queryOrg:          "Co., Ltd.",
+			res:               org("Walmart Inc."),
+			wantScore:         confReverseWhoisUnverified,
+			wantJustification: justifyReverseWhoisQueryOrgNotComparable,
 		},
 		{
-			// candidate registrant normalizes to "" → same guard, from the other
-			// side (ENG-5123 S1).
-			name:      "candidate registrant normalizes empty stays unverified",
-			queryOrg:  "Walmart",
-			res:       org("Co., Ltd."),
-			wantScore: confReverseWhoisUnverified,
+			// Same NOT COMPARABLE class, reached from the other side. The two sides
+			// are different organizations, so they must not share wording: blaming the
+			// candidate's registrant for a pass-wide seed problem (or the reverse)
+			// sends the reviewer to the wrong place (ENG-5889).
+			name:              "registrant normalizes empty is NOT COMPARABLE on the registrant side",
+			queryOrg:          "Walmart",
+			res:               org("Co., Ltd."),
+			wantScore:         confReverseWhoisUnverified,
+			wantJustification: justifyReverseWhoisRegistrantNotComparable,
+		},
+		{
+			// BOTH sides normalize away. The QUERIED side is reported, deliberately:
+			// it is pass-wide (input.OrgName), so it is the one cause that explains
+			// every candidate at once and the only one an operator can act on —
+			// re-seed the pivot. Reporting the per-candidate side instead would bury
+			// that under one identical line per candidate. A refactor that flips the
+			// two guards' order is silent on score and must fail HERE.
+			name:              "both sides normalize empty reports the QUERIED side (tie-break)",
+			queryOrg:          "Co., Ltd.",
+			res:               org("Ltd."),
+			wantScore:         confReverseWhoisUnverified,
+			wantJustification: justifyReverseWhoisQueryOrgNotComparable,
+		},
+		{
+			// normalizeOrg reaches "" by TWO routes and legal-form stripping is only
+			// one of them: it tokenizes FIRST and strips suffixes second, and tokenize
+			// (github_org.go) keeps only ASCII letters and digits — so a name carrying
+			// none tokenizes to nothing with no suffix stripped at all. "!!!" is
+			// non-blank, so it clears verifyCandidates' strings.TrimSpace fast path and
+			// genuinely reaches decideConfidence. Both sub-cases must select the same
+			// side-specific constant as the all-suffix sub-case above: the wording names
+			// the normalization OUTCOME ("no comparable tokens"), never one cause.
+			name:              "query org with no alphanumeric tokens is NOT COMPARABLE on the queried side",
+			queryOrg:          "!!!",
+			res:               org("Walmart Inc."),
+			wantScore:         confReverseWhoisUnverified,
+			wantJustification: justifyReverseWhoisQueryOrgNotComparable,
+		},
+		{
+			name:              "registrant with no alphanumeric tokens is NOT COMPARABLE on the registrant side",
+			queryOrg:          "Walmart",
+			res:               org("!!!"),
+			wantScore:         confReverseWhoisUnverified,
+			wantJustification: justifyReverseWhoisRegistrantNotComparable,
 		},
 	}
 	for _, tt := range tests {
@@ -292,6 +385,12 @@ func TestDecideConfidence(t *testing.T) {
 			got := decideConfidence(tt.queryOrg, tt.res, tt.lookupErr)
 			assert.InDelta(t, tt.wantScore, got.Score, 0.001, "score")
 			assert.NotEmpty(t, got.Justification, "every decision explains itself")
+			// NotEmpty above is the assertion ENG-5889 slipped through: it accepts a
+			// string that is confidently WRONG. Four of these routes share one score
+			// by design, so the justification is the only signal that says which one
+			// fired — pin it per route, against the constant rather than a literal.
+			assert.Equal(t, tt.wantJustification, got.Justification,
+				"this route must select its own justification, not another route's")
 			// The justification must never leak the resolved registrant, which is
 			// exactly the third-party WHOIS PII this plugin declines to log.
 			if tt.res.Org != "" {
@@ -494,6 +593,13 @@ func TestVerifyCandidates_EmailModeShortCircuits(t *testing.T) {
 	for _, f := range findings {
 		assert.InDelta(t, confReverseWhoisUnverified, plugins.TotalConfidence(f), 0.001)
 		assert.True(t, plugins.NeedsReview(f))
+		// The score is the same mid-band value a failed lookup earns, so it cannot
+		// say WHY. Nothing failed here: no resolver call was made at all (asserted
+		// above) because this pivot supplied no org to compare against. Reporting
+		// "could not be verified (masked, absent, or unresolvable)" would send a
+		// reviewer hunting a WHOIS problem that never happened (ENG-5889).
+		assert.Equal(t, justifyReverseWhoisNoQueryOrg, soleJustification(t, f),
+			"email-mode must report the absent query org, not a failed verification")
 	}
 }
 
@@ -550,6 +656,15 @@ func TestVerifyCandidates_ResolverPanicScoresUnverified(t *testing.T) {
 	// the needs_review band rather than the 0.0 discard floor.
 	assert.InDelta(t, confReverseWhoisUnverified, plugins.TotalConfidence(findings[1]), 0.001)
 	assert.True(t, plugins.NeedsReview(findings[1]))
+	// A recovered panic is the ONLY way the BELOW-cap pre-fill survives to be
+	// emitted (every other outcome overwrites its index), and it is genuinely
+	// unverifiable: the lookup started and its result was destroyed. So this is
+	// the one pre-fill route ENG-5889 deliberately left on the unverifiable
+	// wording — which also pins the pre-fill's split at resolveCount from below.
+	// A refactor that made the pre-fill uniformly justifyReverseWhoisNotLookedUp
+	// is silent on score and fails HERE; the cap test pins the other half.
+	assert.Equal(t, justifyReverseWhoisUnverified, soleJustification(t, findings[1]),
+		"a recovered panic ran a lookup and lost its result: unverifiable, not never-looked-up")
 	// A clean sibling still scores corroborated — the recover() is scoped per
 	// worker and does not poison the rest of the pass.
 	assert.InDelta(t, confReverseWhoisCorroborated, plugins.TotalConfidence(findings[0]), 0.001)
@@ -978,10 +1093,23 @@ func TestVerifyCandidates_CapLimitsCallsNotRecall(t *testing.T) {
 	assert.InDelta(t, confReverseWhoisUnverified, plugins.TotalConfidence(overflow), 0.001,
 		"a candidate beyond the cap is emitted unverified WITHOUT a lookup")
 	assert.False(t, stub.queried(overflow.Value), "the overflow candidate must not be resolved")
+	// Same mid-band score as a failed lookup, so the justification is the only
+	// thing that distinguishes them — and this candidate was never looked up at
+	// all (asserted on the line above). Saying it "could not be verified" would
+	// point a reviewer at WHOIS when the real cause is the resolver cap, which is
+	// an operator-actionable knob (ENG-5889).
+	assert.Equal(t, justifyReverseWhoisNotLookedUp, soleJustification(t, overflow),
+		"a candidate past the cap was never looked up, not unverifiable")
 
 	// A resolved candidate below the cap corroborates (0.60), proving resolution
 	// did happen up to the boundary — the cap is where calls stop, not recall.
 	assert.InDelta(t, confReverseWhoisCorroborated, plugins.TotalConfidence(findings[0]), 0.001)
+	// ...and carries the DECIDED justification, not the pre-fill's. This is the
+	// other half of the split at resolveCount: below the cap the pre-fill is
+	// overwritten, above it survives. A pre-fill applied uniformly (either
+	// constant) fails on one side or the other.
+	assert.Equal(t, justifyReverseWhoisCorroborated, soleJustification(t, findings[0]),
+		"below the cap the decided justification overwrites the pre-fill")
 }
 
 // TestVerifyCandidates_CapTruncationDegradesThePass covers ENG-5405 fix A2 and
