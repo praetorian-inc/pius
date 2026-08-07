@@ -60,6 +60,18 @@ func TestCorroborate(t *testing.T) {
 		{"empty pivot", "", "Acme Corp", ""},
 		{"unrelated orgs", "Alpha Holdings AG", "Beta Systems AG", "mismatch"},
 		{"same name different suffix", "Acme LLC", "Acme", "match"},
+
+		// Dotted legal suffixes used to survive tokenization as single-letter
+		// tokens, which both hid the suffix from data.LegalSuffixes and padded
+		// the denominator of strutil.TokenSimilarity. These three scored 0.25,
+		// 0.50 and 0.33 respectively, landing them in the mismatch and
+		// unverifiable bands.
+		{"dotted suffix against longer org", "Acme L.L.C.", "Acme Holdings Group Division", "match"},
+		{"dotted country prefix", "U.S. Steel Corp.", "US Steel", "match"},
+		{"dotted two-letter suffix against longer org", "Globex S.A.", "Globex Worldwide Trading Group", "match"},
+		// Control: scored 1.00 before the fix too. Pins that collapsing dotted
+		// runs did not disturb the cases that already corroborated.
+		{"dotted suffix against bare name", "Acme L.L.C.", "Acme", "match"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -74,6 +86,64 @@ func TestOrgSimilarity(t *testing.T) {
 	assert.InDelta(t, 1.0, OrgSimilarity("Acme LLC", "Acme"), 0.01)
 	assert.InDelta(t, 0.0, OrgSimilarity("Alpha", "Beta"), 0.01)
 	assert.InDelta(t, 0.0, OrgSimilarity("", "Alpha"), 0.01)
+
+	// Dotted acronym runs collapse before tokenizing, so the legal suffix is
+	// recognized and stops diluting the score.
+	assert.InDelta(t, 1.0, OrgSimilarity("Acme L.L.C.", "Acme Holdings Group Division"), 0.01)
+	assert.InDelta(t, 1.0, OrgSimilarity("U.S. Steel Corp.", "US Steel"), 0.01)
+}
+
+func TestNormalizeOrg(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		// A dotted run collapses to bare letters, so the legal suffix reaches
+		// data.LegalSuffixes as one token ("llc", "sa") instead of arriving as
+		// single letters that never match and then pad the token count.
+		{"dotted legal suffix", "Acme L.L.C.", "acme"},
+		{"undotted legal suffix", "Acme LLC", "acme"},
+		// "us" is not a legal suffix, so it survives as a content token — which
+		// is what lets this match a plain "US Steel".
+		{"dotted country prefix kept as content", "U.S. Steel Corp.", "us steel"},
+		{"dotted two-letter suffix", "Globex S.A.", "globex"},
+		{"undotted legal suffix without run", "Acme Inc.", "acme"},
+		{"dotted acronym that is not a suffix", "A.B.C. Holdings", "abc holdings"},
+
+		// Regression rows. The rule is restricted to runs of two or more
+		// letter-period pairs; a blanket period strip would break each of these.
+		// Keep them if the regex is ever "simplified".
+
+		// Loosened to a blanket strip this merges across the period into the
+		// single token "acmecorp", so "corp" never reaches the suffix list.
+		{"period separating two words", "Acme.Corp", "acme"},
+		// Same failure mode: a blanket strip yields "acmecom" rather than two
+		// tokens, turning a match into a mismatch.
+		{"domain-shaped org", "acme.com", "acme com"},
+		// Pins the {2,} quantifier. "J." is a single letter-period pair followed
+		// immediately by a letter, so relaxing {2,} to {1,} merges the initial
+		// into the next word and collapses this to the one token "jcrew".
+		{"single letter joined to a word", "J.Crew", "j crew"},
+		// A lone initial is left alone and keeps its own "q" token. This is a
+		// specification row, not a quantifier guard: Tokenize splits on the period
+		// regardless, so deleting one only changes the result where it sits between
+		// two alphanumerics. The J.Crew row above is what pins {2,}.
+		{"single initial left intact", "John Q. Public", "john q public"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, normalizeOrg(tt.input))
+		})
+	}
+
+	// The headline acceptance criterion: the dotted and undotted spellings must
+	// not merely each be correct, they must collapse to the same string.
+	t.Run("dotted and undotted spellings are equivalent", func(t *testing.T) {
+		dotted := normalizeOrg("Acme L.L.C.")
+		assert.Equal(t, normalizeOrg("Acme LLC"), dotted)
+		assert.Equal(t, "acme", dotted)
+	})
 }
 
 func TestRegistrantOrg(t *testing.T) {

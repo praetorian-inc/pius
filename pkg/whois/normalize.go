@@ -101,6 +101,9 @@ func OrgSimilarity(a, b string) float64 {
 }
 
 func normalizeOrg(s string) string {
+	s = dottedAcronymPattern.ReplaceAllStringFunc(s, func(run string) string {
+		return strings.ReplaceAll(run, ".", "")
+	})
 	tokens := strutil.Tokenize(s)
 	kept := make([]string, 0, len(tokens))
 	for _, t := range tokens {
@@ -110,6 +113,29 @@ func normalizeOrg(s string) string {
 	}
 	return strings.Join(kept, " ")
 }
+
+// dottedAcronymPattern matches a run of two or more single-letter-plus-period
+// sequences (L.L.C., S.A., U.S.), which normalizeOrg collapses to the bare
+// letters before tokenizing.
+//
+// The collapse must happen before tokenization because strutil.Tokenize splits
+// on every non-alphanumeric character: "L.L.C." reaches the legal-suffix lookup
+// as ["l","l","c"], never matching the "llc" entry, and the three retained
+// single-letter tokens then dilute strutil.TokenSimilarity — which is what made
+// "Acme L.L.C." score 0.25 against "Acme Holdings Group Division" and corroborate
+// as a mismatch. Collapsing first lets "llc"/"sa" reach the lookup as one token.
+//
+// The rule is deliberately restricted to multi-letter dotted runs rather than
+// stripping every period. A blanket strip merges tokens across a period that was
+// acting as a separator: "Acme.Corp" would normalize to "acmecorp" and "acme.com"
+// to "acmecom", turning both from match into mismatch. Requiring two or more
+// letter-period pairs also leaves a single initial alone, so "John Q. Public"
+// keeps its "q" token.
+//
+// "U.S." → "us" is an intended and beneficial side-effect: "us" is not in
+// legal_suffixes.txt, so it survives as a content token rather than being
+// stripped, which is precisely what lets "U.S. Steel Corp." match "US Steel".
+var dottedAcronymPattern = regexp.MustCompile(`(?i)\b(?:[a-z]\.){2,}`)
 
 func RootDomain(hostname string) string {
 	hostname = strings.TrimSpace(hostname)
