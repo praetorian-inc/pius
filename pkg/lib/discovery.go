@@ -16,7 +16,7 @@ const CapabilityName = "pius-discovery"
 // automatically once they register via init().
 var pluginNames = []string{
 	// Domain plugins (passive)
-	"crt-sh", "apollo", "github-org", "gleif", "passive-dns", "reverse-whois", "whois",
+	"crt-sh", "apollo", "github-org", "gleif", "passive-dns", "viewdns-reverse-whois", "whois",
 	"urlscan",        // LAB-1339
 	"wayback",        // LAB-1341
 	"wikidata",       // LAB-1346
