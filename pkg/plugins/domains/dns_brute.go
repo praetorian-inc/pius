@@ -51,6 +51,22 @@ type Resolver interface {
 	Resolve(host string) []string
 }
 
+// CNAMEResolver is an OPTIONAL capability a Resolver may also implement: it
+// reports a name's CNAME target, or "" when there is none.
+//
+// It is deliberately a second interface rather than a method added to Resolver.
+// Resolver's shape is depended on by dns-brute and by the Guard reverse-ip
+// caller, and widening it would break every existing implementation at once for
+// a capability only crt-sh needs. Callers that want it type-assert:
+//
+//	if cr, ok := lookup.(CNAMEResolver); ok { ... }
+//
+// A Resolver that does not implement it simply yields no CNAME evidence, which
+// degrades to the previous address-only behaviour rather than failing.
+type CNAMEResolver interface {
+	ResolveCNAME(host string) string
+}
+
 // NewDNSBrutePlugin builds the plugin around a caller-supplied resolver. A nil
 // lookup keeps the default DNS client, which is only appropriate when the caller
 // does not need interception.
