@@ -3,6 +3,7 @@ package domains
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -291,7 +292,10 @@ func TestCRTShPlugin_ConfidenceBanding(t *testing.T) {
 	assert.InDelta(t, 0.80, totals["resolves.example.com"], 0.001, "in-zone + resolves")
 	assert.InDelta(t, 0.60, totals["dead.example.com"], 0.001, "in-zone + dead")
 	assert.InDelta(t, 0.50, totals["resolves.other.org"], 0.001, "out-of-zone + resolves")
-	assert.InDelta(t, 0.30, totals["dead.other.org"], 0.001, "out-of-zone + dead")
+	// out-of-zone + dead totals 0.30, below ConfidenceLow (0.35), so Run drops
+	// it at the noise floor rather than emitting it scored at 0.30.
+	assert.NotContains(t, totals, "dead.other.org",
+		"out-of-zone + dead is below the noise floor and must be dropped, not scored 0.30")
 }
 
 // TestCRTShPlugin_MetaOwnedDomainsWidensScope is the most important new
@@ -320,19 +324,31 @@ func TestCRTShPlugin_MetaOwnedDomainsWidensScope(t *testing.T) {
 // TestCRTShPlugin_MetaOwnedDomainsFallbackToQueryZone is the other half of the
 // widen-scope behavior: absent any Meta, scope falls back to the queried
 // domain's own registrable zone, so the identical name scores out-of-zone.
+//
+// The name is given a live address (rather than deadResolver's no-DNS
+// default) so this lands at 0.50 (out-of-zone + live), not 0.30. Pairing
+// "out-of-zone" with "dead" would total 0.30, which Run now drops at the
+// noise floor — that would make this test assert on an absent finding and
+// conflate the floor behavior (covered elsewhere) with the scope decision
+// this test exists to guard. Its sibling,
+// TestCRTShPlugin_MetaOwnedDomainsWidensScope, still lands at 0.60 (in-zone +
+// dead), so the two totals remain distinguishable and each isolates exactly
+// one variable: Meta widening the zone, here; DNS liveness, there.
 func TestCRTShPlugin_MetaOwnedDomainsFallbackToQueryZone(t *testing.T) {
 	srv := mockCRTShServer([]map[string]string{
 		{"name_value": "brand.otherbrand.com"},
 	})
 	defer srv.Close()
 
-	p := &CRTShPlugin{client: client.New(), baseURL: srv.URL, lookup: deadResolver()}
+	fake := &fakeResolver{fn: func(string) []string { return []string{"1.2.3.4"} }}
+	p := &CRTShPlugin{client: client.New(), baseURL: srv.URL, lookup: fake}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
 
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
-	assert.InDelta(t, 0.30, plugins.TotalConfidence(findings[0]), 0.001,
-		"without Meta, otherbrand.com is out-of-zone and dead")
+	assert.InDelta(t, 0.50, plugins.TotalConfidence(findings[0]), 0.001,
+		"without Meta, otherbrand.com is out-of-zone; a live address keeps it "+
+			"above the noise floor so this isolates the scope decision")
 }
 
 // TestCRTShPlugin_EntropyJunkGating pins the conjunction dropDeadJunk depends
@@ -419,8 +435,12 @@ func TestCRTShPlugin_ResolveAll_RespectsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
+	// t.Errorf, not t.Fatalf: this callback runs on a worker goroutine spawned
+	// by resolveAll, and t.Fatalf calls runtime.Goexit on the calling
+	// goroutine — it would kill the worker rather than fail the test, and the
+	// failure is not guaranteed to be reported.
 	fake := &fakeResolver{fn: func(host string) []string {
-		t.Fatalf("resolver must not be called once ctx is cancelled (host=%s)", host)
+		t.Errorf("resolver must not be called once ctx is cancelled (host=%s)", host)
 		return nil
 	}}
 	p := &CRTShPlugin{client: client.New(), lookup: fake}
@@ -583,4 +603,87 @@ func TestCRTShPlugin_ResolverWithoutCNAMESupport_DegradesToAddressOnly(t *testin
 	require.Len(t, findings, 1)
 	assert.InDelta(t, 0.60, plugins.TotalConfidence(findings[0]), 0.001,
 		"a resolver without CNAMEResolver must degrade to address-only semantics: in-zone + dead")
+}
+
+// TestCRTShPlugin_Run_CancelledMidResolution_ReturnsErrorNotMisscoredFindings
+// guards the failure mode Run's post-resolveAll cancellation check exists to
+// prevent: silently mis-scored output, not a crash. resolveAll leaves a
+// zero-value dnsPresence for every name it never reached once ctx is done,
+// which reads identically to "no DNS record" — so without this check, a
+// cancellation mid-resolution would fall straight through dropDeadJunk and
+// scoring, quietly deleting unreached high-entropy names as dead and
+// dropping every surviving unreached name a confidence band, all while
+// returning (nil error). The crt.sh fetch itself must succeed so the ctx
+// cancellation — not a failed HTTP call — is what triggers the path: the
+// fake resolver cancels ctx from inside resolveAll's worker goroutine, after
+// the HTTP round-trip has already completed.
+func TestCRTShPlugin_Run_CancelledMidResolution_ReturnsErrorNotMisscoredFindings(t *testing.T) {
+	srv := mockCRTShServer([]map[string]string{
+		{"name_value": "api.example.com"},
+	})
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake := &fakeResolver{fn: func(string) []string {
+		cancel() // simulate the RunTimeout (or caller cancellation) firing mid-resolution
+		return nil
+	}}
+
+	p := &CRTShPlugin{client: client.New(), baseURL: srv.URL, lookup: fake}
+	findings, err := p.Run(ctx, plugins.Input{Domain: "example.com"})
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.Canceled),
+		"Run must surface the cancellation itself, not swallow it")
+	assert.Nil(t, findings,
+		"a cancelled resolution pass must withhold ALL findings, not return partial/mis-scored results")
+}
+
+// TestCRTShPlugin_ConfidenceFloor_DropsBelowKeepsAtOrAbove is the direct
+// regression guard for the floor comparison Change B added
+// (TotalConfidence(finding) < ConfidenceLow): a below-floor finding must
+// never reach the findings slice, and a finding at-or-above the floor must
+// always survive. This is deliberately narrower than
+// TestCRTShPlugin_ConfidenceBanding, which exercises all four scoring bands
+// together — this test isolates the floor decision on its own so a
+// regression there (e.g. widening "<" to "<=") is caught by a test whose
+// only job is the boundary, not one carrying three other assertions.
+//
+// crt-sh's confidence entries are fixed additive constants (0.30 observation,
+// +0.30 owned zone, +0.20 live DNS), so the only totals this plugin's real
+// scoring can ever produce are 0.30, 0.50, 0.60, and 0.80 — there is no
+// combination that lands on ConfidenceLow (0.35) exactly. 0.50 is the lowest
+// total the plugin can produce above the floor, so it stands in for "at or
+// just above" here; see the test-implementation report for why an exact-0.35
+// case is unreachable through Run().
+func TestCRTShPlugin_ConfidenceFloor_DropsBelowKeepsAtOrAbove(t *testing.T) {
+	srv := mockCRTShServer([]map[string]string{
+		{"name_value": "below.other.org"},
+		{"name_value": "atorabove.other.org"},
+	})
+	defer srv.Close()
+
+	resolving := map[string]bool{"atorabove.other.org": true}
+	fake := &fakeResolver{fn: func(host string) []string {
+		if resolving[host] {
+			return []string{"1.2.3.4"}
+		}
+		return nil
+	}}
+
+	p := &CRTShPlugin{client: client.New(), baseURL: srv.URL, lookup: fake}
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+	require.NoError(t, err)
+
+	totals := make(map[string]float64, len(findings))
+	for _, f := range findings {
+		totals[f.Value] = plugins.TotalConfidence(f)
+	}
+
+	assert.NotContains(t, totals, "below.other.org",
+		"0.30 is below ConfidenceLow (0.35) and must be dropped")
+	require.Contains(t, totals, "atorabove.other.org",
+		"0.50 is above ConfidenceLow (0.35) and must be kept")
+	assert.InDelta(t, 0.50, totals["atorabove.other.org"], 0.001)
 }

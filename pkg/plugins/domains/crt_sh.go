@@ -45,10 +45,12 @@ import (
 //	                                              discovery case, real but
 //	                                              unattributed
 //	out-of-zone + dead     0.30           = 0.30  below the ConfidenceLow noise
-//	                                              floor
+//	                                              floor — discarded in Run
 //
-// The 0.30 case is de-ranked, not dropped: this plugin emits every surviving
-// name scored and lets the framework's thresholds act on it.
+// The 0.30 case is the one band this plugin does not emit. Nothing downstream
+// enforces ConfidenceLow, so Run drops it there; see the floor check for why
+// that is not the de-rank-never-drop rule bending. Every other band is emitted
+// scored, and the framework's thresholds act on it.
 const (
 	confCRTShObservation = 0.30
 	confCRTShOwnedZone   = 0.30
@@ -146,6 +148,27 @@ func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	// entropy heuristic after it. See dropOOBNames and dropDeadJunk.
 	names, oobDropped := dropOOBNames(names)
 	presence := p.resolveAll(ctx, names)
+
+	// A cancelled resolution pass is the one failure this plugin deliberately
+	// does NOT degrade gracefully from. resolveAll stops issuing lookups once
+	// ctx is done and leaves a zero dnsPresence for every name it never reached,
+	// which is indistinguishable downstream from "DNS has nothing for this
+	// name": dropDeadJunk would delete unreached high-entropy names as dead, and
+	// every surviving unreached name would silently lose confCRTShLiveDNS and
+	// drop a band. A RunTimeout expiring mid-resolution would therefore produce
+	// quietly wrong scores instead of an error.
+	//
+	// Contrast the (nil, nil) returns above: a failed fetch or an unparseable
+	// body yields no data at all, and returning nothing is an honest report of
+	// that. A cancelled resolution yields data that is wrong in a way the caller
+	// cannot detect, so the whole batch is withheld — there is no partial
+	// salvage to attempt, because the scores of everything not yet resolved are
+	// simply not trustworthy. pkg/runner/run.go logs a plugin error and drops
+	// that plugin's findings, which is exactly the intended outcome here.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	names, junkDropped := dropDeadJunk(names, presence)
 
 	addressed, danglingCNAME := 0, 0
@@ -157,12 +180,10 @@ func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 			danglingCNAME++
 		}
 	}
-	slog.Info("crt-sh: junk filtering complete",
-		"query", query, "oob_dropped", oobDropped, "entropy_dropped", junkDropped,
-		"kept", len(names), "addressed", addressed, "cname_only", danglingCNAME)
 
 	zones := OwnedZones(input.Meta, query)
 
+	floorDropped := 0
 	findings := make([]plugins.Finding, 0, len(names))
 	for _, name := range names {
 		finding := plugins.Finding{
@@ -199,8 +220,43 @@ func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 					name, d.CNAME))
 		}
 
+		// Below the noise floor: the name is outside every owned zone AND has no
+		// DNS presence at all, so confCRTShObservation (0.30) is the only entry
+		// that fired and the total sits under ConfidenceLow (0.35). Nothing
+		// downstream enforces that floor — pkg/lib/invoke.go and
+		// pkg/runner/run.go both pass findings through unfiltered — so a plugin
+		// that wants the floor honoured has to apply it itself, as
+		// github_org.go does.
+		//
+		// This does not contradict the de-rank-never-drop rule. That rule (the
+		// reverse-whois section of CLAUDE.md) is about keeping ambiguous
+		// candidates inside the review band [0.35, 0.65) rather than deleting
+		// them; ConfidenceLow exists precisely to discard what falls beneath it,
+		// and this band is the historical unrelated-third-party noise this work
+		// exists to remove.
+		//
+		// It couples to the owned-domains fallback, so the two must be read
+		// together: with no Input.Meta["owned_domains"], OwnedZones falls back
+		// to the queried zone alone, so a dead name on the org's OTHER brand
+		// scores 0.30 and is dropped here. Once a caller populates
+		// owned_domains, that same name earns confCRTShOwnedZone and totals
+		// 0.60 — needing review, but safely above the floor.
+		if plugins.TotalConfidence(finding) < plugins.ConfidenceLow {
+			floorDropped++
+			continue // below noise floor — discard
+		}
+
 		findings = append(findings, finding)
 	}
+
+	// One record per pass, emitted after scoring so the volume discarded at the
+	// noise floor is observable alongside the junk arms rather than invisible.
+	// "kept" counts names that survived junk filtering; emitted findings are
+	// kept minus floor_dropped.
+	slog.Info("crt-sh: junk filtering complete",
+		"query", query, "oob_dropped", oobDropped, "entropy_dropped", junkDropped,
+		"kept", len(names), "addressed", addressed, "cname_only", danglingCNAME,
+		"floor_dropped", floorDropped)
 
 	return findings, nil
 }
