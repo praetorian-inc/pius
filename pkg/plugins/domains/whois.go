@@ -52,73 +52,60 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	return findings, nil
 }
 
-// whoisResultData is the structured payload for FindingWhoisResult.
-// Using a struct instead of a hand-built map makes this testable and
-// keeps the keys in sync between producer and consumer.
-type whoisResultData struct {
-	Registrant    string `json:"registrant,omitempty"`
-	Email         string `json:"email,omitempty"`
-	Registrar     string `json:"registrar,omitempty"`
-	Country       string `json:"country,omitempty"`
-	Province      string `json:"province,omitempty"`
-	City          string `json:"city,omitempty"`
-	Purchased     string `json:"purchased,omitempty"`
-	Updated       string `json:"updated,omitempty"`
-	Expiration    string `json:"expiration,omitempty"`
-	Raw           string `json:"raw,omitempty"`
-	Corroboration string `json:"corroboration,omitempty"`
-	Unregistered  bool   `json:"unregistered,omitempty"`
-}
-
-// toMap round-trips the struct through JSON into map[string]any. This keeps
+// toMap round-trips a struct through JSON into map[string]any. This keeps
 // Finding.Data generic while letting us define the schema as a struct.
-func (d whoisResultData) toMap() map[string]any {
-	b, _ := json.Marshal(d)
+func toMap(v any) map[string]any {
+	b, _ := json.Marshal(v)
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
 	return m
 }
 
+// whoisFindingData wraps a whois.Result with corroboration metadata for the
+// Finding payload.
+type whoisFindingData struct {
+	whois.Result
+	Corroboration string `json:"corroboration,omitempty"`
+}
+
 func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
-	finding := func(d whoisResultData) plugins.Finding {
+	if r.Unregistered {
 		return plugins.Finding{
 			Type:   plugins.FindingWhoisResult,
 			Value:  r.Domain,
 			Source: "whois",
-			Data:   d.toMap(),
+			Data:   toMap(whois.Result{Domain: r.Domain, Unregistered: true}),
 		}
 	}
 
-	if r.Unregistered {
-		return finding(whoisResultData{Unregistered: true})
-	}
-
+	// Normalize privacy on the registrant fields before emitting.
 	org := whois.RegistrantOrg(r.Registrant, r.Domain)
-	d := whoisResultData{
-		Registrant: whois.NormalizePrivacy(org),
-		Country:    whois.NormalizePrivacy(r.Registrant.Country),
-		Province:   whois.NormalizePrivacy(r.Registrant.Province),
-		City:       whois.NormalizePrivacy(r.Registrant.City),
-		Registrar:  whois.NormalizeRegistrar(r.Registrar),
-		Purchased:  r.Created,
-		Updated:    r.Updated,
-		Expiration: r.Expiration,
-		Raw:        r.Raw,
-	}
+	r.Registrant.Organization = whois.NormalizePrivacy(org)
+	r.Registrant.Country = whois.NormalizePrivacy(r.Registrant.Country)
+	r.Registrant.Province = whois.NormalizePrivacy(r.Registrant.Province)
+	r.Registrant.City = whois.NormalizePrivacy(r.Registrant.City)
+	r.Registrar = whois.NormalizeRegistrar(r.Registrar)
 
+	// Find the best non-privacy email across all contacts.
 	email, sawProxy := whois.ContactEmail(r)
 	switch {
 	case email != "":
-		d.Email = email
-	case sawProxy || d.Registrant == whois.PrivacyRedaction:
-		d.Email = whois.PrivacyRedaction
+		r.Registrant.Email = email
+	case sawProxy || r.Registrant.Organization == whois.PrivacyRedaction:
+		r.Registrant.Email = whois.PrivacyRedaction
 	}
 
+	fd := whoisFindingData{Result: r}
 	if pivotOrg != "" {
-		d.Corroboration = whois.Corroborate(pivotOrg, org)
+		fd.Corroboration = whois.Corroborate(pivotOrg, org)
 	}
 
-	return finding(d)
+	return plugins.Finding{
+		Type:   plugins.FindingWhoisResult,
+		Value:  r.Domain,
+		Source: "whois",
+		Data:   toMap(fd),
+	}
 }
 
 const confWhoisServerRecord = 0.85

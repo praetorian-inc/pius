@@ -24,25 +24,27 @@ const (
 
 // tcp43Lookup performs a raw TCP port-43 WHOIS lookup with referral following,
 // then parses the result into a Result.
-func tcp43Lookup(ctx context.Context, domain string) (Result, error) {
+// tcp43Lookup returns both the parsed Result and the raw WHOIS text. The raw
+// text is needed for ISOC-IL fallback parsing but is not persisted on Result.
+func tcp43Lookup(ctx context.Context, domain string) (Result, string, error) {
 	raw, err := tcp43Raw(ctx, domain)
 	if err != nil {
-		return Result{}, err
+		return Result{}, "", err
 	}
 	if err := ctx.Err(); err != nil {
-		return Result{}, err
+		return Result{}, "", err
 	}
 
 	parsed, err := whoisparser.Parse(raw)
 	if err != nil {
-		return Result{}, fmt.Errorf("whois parse failed for %s: %w", domain, err)
+		return Result{}, "", fmt.Errorf("whois parse failed for %s: %w", domain, err)
 	}
 
-	return mapParsedToResult(domain, parsed, raw), nil
+	return mapParsedToResult(domain, parsed, raw), raw, nil
 }
 
 func mapParsedToResult(domain string, info whoisparser.WhoisInfo, raw string) Result {
-	r := Result{Domain: domain, Raw: raw}
+	r := Result{Domain: domain}
 
 	if info.Domain != nil {
 		r.Created = info.Domain.CreatedDate
