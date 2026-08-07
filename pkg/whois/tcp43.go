@@ -136,7 +136,7 @@ func tcp43RawDial(ctx context.Context, domain, server string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	deadline := time.Now().Add(dialTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
