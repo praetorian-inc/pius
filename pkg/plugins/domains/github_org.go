@@ -206,7 +206,16 @@ func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input 
 			fmt.Sprintf("GitHub organization blog URL matches the known domain %q", input.Domain))
 	}
 
-	// Name similarity: token overlap between org display name and OrgName
+	// Name similarity: token overlap between org display name and OrgName.
+	//
+	// This deliberately uses TokenSimilarity (containment) rather than whois's
+	// OrgSimilarity (Jaccard + legal-suffix stripping), which ENG-5172 moved off
+	// containment. The two callers score differently on purpose: whois compares
+	// the value against corroboration THRESHOLDS, where a contained name scoring
+	// 1.0 is a false positive, whereas here the value is a WEIGHT on a weak hint
+	// worth at most 0.25. A GitHub org display name that contains the target org
+	// name is genuinely the signal we want to reward at full weight, and Jaccard
+	// would penalize it for length asymmetry alone.
 	if similarity := strutil.TokenSimilarity(org.Name, input.OrgName); similarity > 0 {
 		plugins.AddConfidence(finding, 0.25*similarity,
 			fmt.Sprintf("GitHub organization name %q matches the target organization %q with %.0f%% token similarity",

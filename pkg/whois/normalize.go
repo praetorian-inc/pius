@@ -85,22 +85,47 @@ func Corroborate(pivotOrg, resolvedOrg string) string {
 	if resolvedOrg == "" || IsPrivacy(resolvedOrg) {
 		return "unverifiable"
 	}
-	sim := OrgSimilarity(pivotOrg, resolvedOrg)
-	if sim >= 0.60 {
+	pivotTokens, resolvedTokens := normalizeOrgTokens(pivotOrg), normalizeOrgTokens(resolvedOrg)
+	if len(pivotTokens) == 0 || len(resolvedTokens) == 0 {
+		// One side has no comparable tokens after legal-suffix stripping (e.g. an
+		// all-suffix org like "Co., Ltd."). Similarity is undefined here, so the
+		// candidate is unverifiable rather than a mismatch.
+		return "unverifiable"
+	}
+	sim := strutil.JaccardTokenSets(pivotTokens, resolvedTokens)
+	switch {
+	case sim >= 0.60:
 		return "match"
-	}
-	if sim < 0.30 {
+	case sim < 0.30 && !strutil.TokenSetContained(pivotTokens, resolvedTokens):
+		// The two names genuinely DISAGREE — each side contributes tokens the
+		// other lacks. The containment guard is what makes this arm mean
+		// disagreement rather than merely sparse overlap: a subset name is a
+		// less-specific spelling, not a contradiction, and falls through to
+		// unverifiable below (ENG-5172).
 		return "mismatch"
+	default:
+		// Ambiguous partial overlap in [0.30, 0.60), OR a sparse overlap that is
+		// pure containment — one name specializing the other is unverifiable, not
+		// a mismatch (ENG-5172).
+		return "unverifiable"
 	}
-	return "unverifiable"
 }
 
-// OrgSimilarity compares two organization names with legal-suffix stripping.
+// OrgSimilarity compares two organization names with legal-suffix stripping,
+// using Jaccard over the distinct token sets so that BOTH sides' distinguishing
+// tokens count against the score. Containment does not imply similarity here:
+// "Acme" vs "Acme Enterprises" is 0.5, not 1.0 (ENG-5172).
 func OrgSimilarity(a, b string) float64 {
-	return strutil.TokenSimilarity(normalizeOrg(a), normalizeOrg(b))
+	return strutil.JaccardTokenSets(normalizeOrgTokens(a), normalizeOrgTokens(b))
 }
 
-func normalizeOrg(s string) string {
+// normalizeOrgTokens lowercases, tokenizes, and strips legal-suffix tokens so
+// that "Acme Inc." and "Acme" compare equal while disambiguating tokens are
+// preserved. Without suffix stripping, "Acme Inc." vs a "…, Inc." query would
+// share the "inc" token and inflate the score on a legally meaningless match.
+// It returns the kept tokens directly so callers can feed them to
+// JaccardTokenSets and TokenSetContained without re-tokenizing.
+func normalizeOrgTokens(s string) []string {
 	tokens := strutil.Tokenize(s)
 	kept := make([]string, 0, len(tokens))
 	for _, t := range tokens {
@@ -108,7 +133,7 @@ func normalizeOrg(s string) string {
 			kept = append(kept, t)
 		}
 	}
-	return strings.Join(kept, " ")
+	return kept
 }
 
 func RootDomain(hostname string) string {
