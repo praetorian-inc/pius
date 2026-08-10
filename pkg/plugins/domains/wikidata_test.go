@@ -456,7 +456,9 @@ func TestWikidataPlugin_Run_EndedRelationshipConfidence(t *testing.T) {
 	require.Len(t, findings[0].Confidences, 1)
 	assert.Equal(t, confWikidataEnded, plugins.TotalConfidence(findings[0]))
 	assert.True(t, plugins.NeedsReview(findings[0]))
-	assert.Contains(t, findings[0].Confidences[0].Justification, "ended or deprecated")
+	assert.Equal(t,
+		`Wikidata lists "https://www.kavo.com" as the official website of "KaVo Dental", but says its relationship to the target (subsidiary (P749)) is ended or deprecated`,
+		findings[0].Confidences[0].Justification)
 	assert.Equal(t, "ended_or_deprecated", findings[0].Data["relationship_status"])
 }
 

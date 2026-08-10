@@ -143,7 +143,7 @@ Most domain plugins run in Phase 0 (independent, concurrent). Late-stage plugins
 | `dns-permutation` | Discovered subdomains (Phase 0) | None | **Active** | Phase 3; altdns-style permutations; wildcard filtering |
 | `google-dorks` | Google Knowledge Graph | None | Passive | Carousel scraping for subsidiary companies |
 | `reverse-ip` | PTR records, HackerTarget, ViewDNS | `VIEWDNS_API_KEY` (optional) | Passive | Phase 3; consumes CIDRs from Phase 2 |
-| `wikidata` | Wikidata SPARQL | None | Passive | P749/P355/P127 corporate relationships; 24h cache |
+| `wikidata` | Wikidata SPARQL | None | Passive | P749/P355 corporate relationships with rank/end-time verification; 24h cache |
 | `censys-org` | Censys Platform API v3 | `CENSYS_API_TOKEN`, `CENSYS_ORG_ID` | **Active** | Searches host/cert data by org; emits domains + CIDRs; requires Starter+ plan; caches 24h |
 
 ### CIDR Plugins

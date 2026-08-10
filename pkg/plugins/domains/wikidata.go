@@ -43,8 +43,8 @@ var wikidataConfidenceScenarios = map[string]wikidataConfidenceScenario{
 	},
 	wikidataRelationshipEnded: {
 		score: confWikidataEnded,
-		justification: func(subsidiary, _, relation string) string {
-			return fmt.Sprintf("Wikidata says %q was related to the target (%s), but the relationship is ended or deprecated", subsidiary, relation)
+		justification: func(subsidiary, website, relation string) string {
+			return fmt.Sprintf("Wikidata lists %q as the official website of %q, but says its relationship to the target (%s) is ended or deprecated", website, subsidiary, relation)
 		},
 	},
 	wikidataRelationshipUnverified: {
