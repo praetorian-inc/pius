@@ -177,18 +177,13 @@ func TestFinding_JSONIncludesConfidences(t *testing.T) {
 	assert.Contains(t, string(encoded), `"justification"`)
 }
 
-// TestNeedsReview_ToleratesFloatAccumulationAtThreshold pins the epsilon: a
-// decomposition whose entries are meant to reach exactly ConfidenceHigh must
-// read as clean, even though summing them in float64 lands a hair below.
-func TestNeedsReview_ToleratesFloatAccumulationAtThreshold(t *testing.T) {
+func TestTotalConfidence_NormalizesFloatAccumulation(t *testing.T) {
 	var f Finding
 	AddConfidence(&f, 0.30, "relationship evidence")
 	AddConfidence(&f, 0.35, "website evidence")
 
-	assert.Less(t, TotalConfidence(f), ConfidenceHigh,
-		"the raw sum really is below the bar — that is the condition being tolerated")
-	assert.False(t, NeedsReview(f),
-		"whether a finding reads as clean must not depend on how its score was spelled")
+	assert.Equal(t, ConfidenceHigh, TotalConfidence(f))
+	assert.False(t, NeedsReview(f))
 }
 
 // TestNeedsReview_EpsilonDoesNotSwallowRealShortfalls keeps the tolerance from
