@@ -148,23 +148,45 @@ var markerPhrases = [][]string{
 // "データ保護のため非公開" is a single token to any whitespace-based tokenizer, so
 // requiring a whole-token match would never fire.
 //
-// Containment is safe here ONLY because these entries contain no Latin letters:
-// a CJK sequence cannot occur inside a Latin trading name, so the substring pass
-// cannot reproduce the "Redactron Systems" false positive that whole-token
-// matching exists to prevent. That property is not incidental — it is enforced
-// by TestMarkerSubstringsCarryNoLatin, which fails if a Latin-script entry is
-// added here instead of to markerTokens or markerPhrases.
+// Containment bypasses the whole-token rule that keeps "Redactron Systems" from
+// matching "redact", so it is constrained three ways. The first two are enforced
+// by test, the third by review:
+//
+//  1. No Latin letters (TestMarkerSubstringsCarryNoLatin) — a CJK sequence
+//     cannot occur inside a Latin trading name, so Latin org names are immune.
+//  2. A CJK company-form guard (hasCJKCorporateForm) — the no-Latin rule says
+//     nothing about CJK org names, which collide just as readily. "非公開会社" is
+//     the Japanese legal term for a close corporation.
+//  3. Entries name a STATE ("not public", "already hidden"), never a SERVICE
+//     ("data protection", "privacy protection"). This is the CJK form of the
+//     rule that excludes bare "privacy" from markerTokens because "Privacy
+//     International" exists: a service noun is what a privacy company calls
+//     itself. "データ保護" and "隐私保护" were dropped for exactly that reason —
+//     "データ保護株式会社" is an unremarkable company name. Their real-world uses
+//     still reach a state term ("データ保護のため非公開" matches 非公開).
 var markerSubstrings = []string{
 	// Japanese.
-	"データ保護", // data protection
 	"非公開",   // not public
 	"情報非開示", // information not disclosed
 
 	// Chinese (Simplified).
-	"隐私保护", // privacy protection
-	"已隐藏",  // already hidden
-	"不公开",  // not public
+	"已隐藏", // already hidden
+	"不公开", // not public
 
 	// Korean.
 	"비공개", // not public
+}
+
+// cjkCorporateForms are legal-entity and company-form terms that mark a value as
+// a trading name, suppressing the markerSubstrings containment pass. See
+// hasCJKCorporateForm for the precision/recall trade-off. The terms are
+// deliberately broad — bare 会社 rather than only 株式会社 — because the collision
+// this guards against ("非公開会社") uses the short form.
+var cjkCorporateForms = []string{
+	// Japanese.
+	"会社", "法人", "組合", "商店",
+	// Chinese.
+	"公司", "集团", "企业", "工厂",
+	// Korean.
+	"회사", "법인", "그룹",
 }

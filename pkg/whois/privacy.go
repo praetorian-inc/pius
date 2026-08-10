@@ -1,6 +1,7 @@
 package whois
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/whois/data"
@@ -87,17 +88,68 @@ func hasMarkerToken(lower string) bool {
 		}
 	}
 
-	joined := strings.Join(tokens, " ")
 	for _, phrase := range markerPhrases {
-		if strings.Contains(joined, strings.Join(phrase, " ")) {
+		if containsTokenRun(tokens, phrase) {
 			return true
 		}
 	}
 
-	// Scripts without word separators, matched by containment. Safe only
-	// because every entry is non-Latin; see markerSubstrings.
-	for _, sub := range markerSubstrings {
-		if strings.Contains(joined, sub) {
+	// Scripts without word separators, matched by containment because a
+	// whole-token match could never fire. See markerSubstrings for why
+	// containment is safe here, and cjkCorporateForms for the guard.
+	joined := strings.Join(tokens, " ")
+	if !hasCJKCorporateForm(joined) {
+		for _, sub := range markerSubstrings {
+			if strings.Contains(joined, sub) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsTokenRun reports whether phrase appears in tokens as a run of
+// complete, consecutive tokens.
+//
+// This is deliberately not strings.Contains over the joined token stream, which
+// anchors neither end of the run: "Data ProtectedX" tokenizes to
+// [data, protectedx], joins to "data protectedx", and matches the
+// {"data", "protected"} phrase on a prefix of its final token. Whole-token
+// matching is the property that keeps "Redactron Systems" from matching
+// "redact", and phrases must honour it too or the vocabulary's safest entries
+// become its leakiest.
+func containsTokenRun(tokens, phrase []string) bool {
+	if len(phrase) == 0 || len(phrase) > len(tokens) {
+		return false
+	}
+	for start := 0; start+len(phrase) <= len(tokens); start++ {
+		if slices.Equal(tokens[start:start+len(phrase)], phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasCJKCorporateForm reports whether a value carries a CJK legal-entity or
+// company-form term, marking it a trading name rather than a redaction
+// placeholder.
+//
+// markerSubstrings matches by containment, which cannot distinguish a registry
+// placeholder from a company that happens to be named after the same concept.
+// The no-Latin invariant bounds that risk for Latin trading names but says
+// nothing about CJK ones, and the collision is real in both directions:
+// "非公開会社" is the Japanese legal term for a close corporation, and
+// "…隐私保护科技有限公司" is an ordinary name for a Chinese privacy-tech firm.
+//
+// Suppressing the containment pass on these values trades recall for precision
+// deliberately. A registry that emits a placeholder alongside a company form
+// ("データ保護のため非公開 — 株式会社X") is missed, which costs a de-ranked candidate;
+// a false positive rewrites a real registrant to PrivacyRedaction, which
+// destroys information. The company-form terms are broad (会社/公司/회사 rather
+// than only 株式会社/有限公司) for the same reason.
+func hasCJKCorporateForm(value string) bool {
+	for _, form := range cjkCorporateForms {
+		if strings.Contains(value, form) {
 			return true
 		}
 	}
