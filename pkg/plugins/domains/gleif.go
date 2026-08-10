@@ -8,6 +8,7 @@ import (
 	"net/url"
 
 	"github.com/praetorian-inc/pius/pkg/client"
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
@@ -35,10 +36,9 @@ type GLEIFPlugin struct {
 	baseURL string // override for testing; default "https://api.gleif.org/api/v1"
 
 	// Per-run enrichment state, set in Run().
-	orgName             string
-	primaryName         string
-	primaryJurisdiction string
-	candidateRank       int
+	orgName       string
+	primaryName   string
+	candidateRank int
 }
 
 var gleifHeaders = map[string]string{
@@ -82,29 +82,28 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 
 	p.orgName = input.OrgName
 	p.primaryName = primary.Attributes.Entity.LegalName.Name
-	p.primaryJurisdiction = primary.Attributes.Entity.Jurisdiction
 	p.candidateRank = candidateRank
 
-	fs := plugins.NewFindingSet()
+	var findings []plugins.Finding
 
-	parentLEIs := p.enrichParents(ctx, primary, fs)
+	parentLEIs := p.enrichParents(ctx, primary, &findings)
 
-	if err := p.enrichChildren(ctx, primary.ID, "", "subsidiary", fs); err != nil {
-		return fs.Findings, err
+	if err := p.enrichChildren(ctx, primary.ID, "", "subsidiary", &findings); err != nil {
+		return uniqueFindings(findings), err
 	}
 	for _, parentLEI := range parentLEIs {
-		if err := p.enrichChildren(ctx, parentLEI, primary.ID, "sibling", fs); err != nil {
-			return fs.Findings, err
+		if err := p.enrichChildren(ctx, parentLEI, primary.ID, "sibling", &findings); err != nil {
+			return uniqueFindings(findings), err
 		}
 	}
 
-	return fs.Findings, nil
+	return uniqueFindings(findings), nil
 }
 
 // enrichParents fetches direct and ultimate parent entities, emits findings for
 // each, and returns their LEIs for sibling discovery. Best-effort: errors log
 // and continue.
-func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, fs *plugins.FindingSet) []string {
+func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, findings *[]plugins.Finding) []string {
 	if !hasParent(primary) {
 		return nil
 	}
@@ -119,32 +118,35 @@ func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, fs 
 	}
 
 	parentLEIs := []string{directLEI}
-	p.emitRelated(ctx, directLEI, "direct-parent", fs)
+	p.emitRelated(ctx, directLEI, "direct-parent", findings)
 
 	ultimateLEI, err := p.getUltimateParent(ctx, primary.ID)
 	if err != nil {
 		log.Printf("[gleif] ultimate parent failed for %s: %v", primary.ID, err)
 	} else if ultimateLEI != "" && ultimateLEI != directLEI {
 		parentLEIs = append(parentLEIs, ultimateLEI)
-		p.emitRelated(ctx, ultimateLEI, "ultimate-parent", fs)
+		p.emitRelated(ctx, ultimateLEI, "ultimate-parent", findings)
 	}
 
 	return parentLEIs
 }
 
 // emitRelated fetches a single LEI record and emits a preseed finding.
-func (p *GLEIFPlugin) emitRelated(ctx context.Context, lei, relation string, fs *plugins.FindingSet) {
+func (p *GLEIFPlugin) emitRelated(ctx context.Context, lei, relation string, findings *[]plugins.Finding) {
 	record, err := p.getRecord(ctx, lei)
 	if err != nil {
 		log.Printf("[gleif] %s record failed for %s: %v", relation, lei, err)
 		return
 	}
-	fs.Add(p.recordToPreseed(*record, relation))
+	finding := p.recordToPreseed(*record, relation)
+	if finding.Value != "" {
+		*findings = append(*findings, finding)
+	}
 }
 
 // enrichChildren fetches children of lei, emits findings for each (skipping
 // excludeLEI), and returns a context error if the context is cancelled.
-func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relation string, fs *plugins.FindingSet) error {
+func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relation string, findings *[]plugins.Finding) error {
 	children, err := p.getChildren(ctx, lei)
 	if err != nil && ctx.Err() != nil {
 		return ctx.Err()
@@ -153,9 +155,15 @@ func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relat
 		if child.ID == excludeLEI || child.Attributes.Entity.LegalName.Name == "" {
 			continue
 		}
-		fs.Add(p.recordToPreseed(child, relation))
+		*findings = append(*findings, p.recordToPreseed(child, relation))
 	}
 	return nil
+}
+
+func uniqueFindings(findings []plugins.Finding) []plugins.Finding {
+	return strutil.UniqueFunc(findings, func(f plugins.Finding) [2]string {
+		return [2]string{string(f.Type), f.Value}
+	})
 }
 
 // resolveEntity resolves a company name to a GLEIF entity with corporate
@@ -175,15 +183,12 @@ func (p *GLEIFPlugin) resolveEntity(ctx context.Context, name string) (*leiRecor
 			log.Printf("[gleif] candidate %s failed: %v", lei, err)
 			continue
 		}
+		if record.Attributes.Entity.Status != "ACTIVE" {
+			continue
+		}
 		if hasParent(record) || p.hasChildren(ctx, lei) {
 			return record, i, nil
 		}
-	}
-
-	// No candidate had hierarchy; return the first if any.
-	if len(leis) > 0 {
-		record, err := p.getRecord(ctx, leis[0])
-		return record, 0, err
 	}
 	return nil, 0, nil
 }
@@ -218,16 +223,13 @@ func (p *GLEIFPlugin) fuzzyResolve(ctx context.Context, name string) ([]string, 
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("gleif: fuzzy resolve parse: %w", err)
 	}
-	seen := make(map[string]bool, len(resp.Data))
 	var leis []string
 	for _, d := range resp.Data {
-		lei := d.Relationships.LEIRecords.Data.ID
-		if lei != "" && !seen[lei] {
-			seen[lei] = true
+		if lei := d.Relationships.LEIRecords.Data.ID; lei != "" {
 			leis = append(leis, lei)
 		}
 	}
-	return leis, nil
+	return strutil.Unique(leis), nil
 }
 
 func (p *GLEIFPlugin) getRecord(ctx context.Context, lei string) (*leiRecord, error) {
@@ -333,33 +335,22 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins
 				p.orgName, p.primaryName, p.candidateRank+1, p.candidateRank))
 	}
 
-	// Signal 2: Relationship provenance.
+	// Signal 2: Relationship provenance. A top-ranked resolution plus a
+	// registered direct relationship reaches the high-confidence threshold;
+	// indirect siblings and later resolution candidates remain reviewable.
 	switch relation {
 	case "direct-parent":
-		plugins.AddConfidence(&f, 0.35,
+		plugins.AddConfidence(&f, 0.50,
 			fmt.Sprintf("LEI registry lists %q as direct parent of %q", name, p.primaryName))
 	case "ultimate-parent":
-		plugins.AddConfidence(&f, 0.35,
+		plugins.AddConfidence(&f, 0.50,
 			fmt.Sprintf("LEI registry lists %q as ultimate parent of %q", name, p.primaryName))
 	case "subsidiary":
-		plugins.AddConfidence(&f, 0.30,
+		plugins.AddConfidence(&f, 0.50,
 			fmt.Sprintf("LEI registry lists %q as direct subsidiary of %q", name, p.primaryName))
 	case "sibling":
-		plugins.AddConfidence(&f, 0.20,
+		plugins.AddConfidence(&f, 0.30,
 			fmt.Sprintf("Shares corporate parent with %q (discovered via LEI hierarchy)", p.primaryName))
-	}
-
-	// Signal 3: Entity status — active registration is stronger evidence.
-	if record.Attributes.Entity.Status == "ACTIVE" {
-		plugins.AddConfidence(&f, 0.10,
-			fmt.Sprintf("Entity %q has active LEI registration", name))
-	}
-
-	// Signal 4: Jurisdiction proximity — same jurisdiction as primary entity.
-	if p.primaryJurisdiction != "" && record.Attributes.Entity.Jurisdiction != "" &&
-		record.Attributes.Entity.Jurisdiction == p.primaryJurisdiction {
-		plugins.AddConfidence(&f, 0.05,
-			fmt.Sprintf("Shares jurisdiction %q with the primary entity", record.Attributes.Entity.Jurisdiction))
 	}
 
 	return f
