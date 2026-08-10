@@ -283,9 +283,31 @@ func containsOOBPattern(fqdn string) bool {
 	return false
 }
 
+// junkLabel returns the first label of d below its base domain that looks like
+// a random token, and whether one was found.
+//
+// This is the entropy half of FilterJunkDomains, split out so callers that must
+// gate it on other evidence (crt.sh gates it on DNS state) run the identical
+// check rather than a second copy that drifts.
+func junkLabel(d string) (string, bool) {
+	base := guessBaseDomain(d)
+	for _, label := range extractLabels(d, base) {
+		if isJunkLabel(label) {
+			return label, true
+		}
+	}
+	return "", false
+}
+
 // FilterJunkDomains removes domains that contain high-entropy labels or known
 // OOB/canary patterns. This prevents permutation of random tokens and interaction
 // server domains that would generate thousands of bogus assets.
+//
+// Both arms drop unconditionally, which is right for the permutation seed paths
+// that call this: permuting a name is expensive and speculative, so a
+// false-positive drop costs one seed. It is NOT right for a source deciding
+// whether an already-observed name is a real asset — see crt_sh.go, which uses
+// containsOOBPattern and junkLabel separately under different conditions.
 func FilterJunkDomains(domains []string) []string {
 	result := make([]string, 0, len(domains))
 	for _, d := range domains {
@@ -294,19 +316,11 @@ func FilterJunkDomains(domains []string) []string {
 			slog.Info("filtered OOB/canary domain", "domain", d)
 			continue
 		}
-		base := guessBaseDomain(d)
-		labels := extractLabels(d, base)
-		junk := false
-		for _, label := range labels {
-			if isJunkLabel(label) {
-				slog.Info("filtered high-entropy domain", "domain", d, "label", label)
-				junk = true
-				break
-			}
+		if label, ok := junkLabel(d); ok {
+			slog.Info("filtered high-entropy domain", "domain", d, "label", label)
+			continue
 		}
-		if !junk {
-			result = append(result, d)
-		}
+		result = append(result, d)
 	}
 	return result
 }
