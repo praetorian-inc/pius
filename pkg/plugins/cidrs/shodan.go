@@ -12,6 +12,13 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
+const confShodanSearchResult = 0.85
+
+type shodanQueryResult struct {
+	queryURL string
+	matches  []ShodanMatch
+}
+
 func init() {
 	plugins.Register("shodan", func() plugins.Plugin {
 		return &ShodanPlugin{client: client.New()}
@@ -76,17 +83,17 @@ func (p *ShodanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 		return nil, nil
 	}
 
-	// Run separate queries and merge results (Shodan uses AND for combined filters)
-	var allMatches []ShodanMatch
+	// Run separate queries since Shodan combines filters with AND.
+	var queryResults []shodanQueryResult
 	for _, query := range queries {
-		results, err := p.search(ctx, apiKey, query)
+		results, displayURL, err := p.search(ctx, apiKey, query)
 		if err != nil {
 			continue // Graceful degradation on API errors
 		}
-		allMatches = append(allMatches, results.Matches...)
+		queryResults = append(queryResults, shodanQueryResult{queryURL: displayURL, matches: results.Matches})
 	}
 
-	return p.processResults(&ShodanSearchResponse{Matches: allMatches}, input), nil
+	return p.processResults(queryResults, input), nil
 }
 
 // buildQueries constructs individual Shodan search queries from input
@@ -122,54 +129,57 @@ func (p *ShodanPlugin) buildQueries(input plugins.Input) []string {
 }
 
 // search performs the Shodan API search
-func (p *ShodanPlugin) search(ctx context.Context, apiKey, query string) (*ShodanSearchResponse, error) {
-	searchURL := fmt.Sprintf("%s/shodan/host/search?key=%s&query=%s",
-		p.shodanBase(), apiKey, url.QueryEscape(query))
-
+func (p *ShodanPlugin) search(ctx context.Context, apiKey, query string) (*ShodanSearchResponse, string, error) {
+	searchURL := p.shodanSearchURL(apiKey, query)
 	body, err := p.client.Get(ctx, searchURL)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	var resp ShodanSearchResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return &resp, nil
+	return &resp, p.shodanSearchURL("REDACTED", query), nil
 }
 
-// processResults converts Shodan results to findings
-func (p *ShodanPlugin) processResults(resp *ShodanSearchResponse, input plugins.Input) []plugins.Finding {
+func (p *ShodanPlugin) shodanSearchURL(apiKey, query string) string {
+	parameters := url.Values{"key": {apiKey}, "query": {query}}
+	return fmt.Sprintf("%s/shodan/host/search?%s", p.shodanBase(), parameters.Encode())
+}
+
+// processResults converts Shodan results to findings while retaining query provenance.
+func (p *ShodanPlugin) processResults(results []shodanQueryResult, input plugins.Input) []plugins.Finding {
 	var findings []plugins.Finding
-	seenIPs := make(map[string]bool)
-	seenDomains := make(map[string]bool)
+	findingIndexes := make(map[string]int)
+	evidenceURLs := make(map[string]map[string]bool)
 
-	for _, match := range resp.Matches {
-		// Emit IP as CIDR /32
-		if match.IPStr != "" && !seenIPs[match.IPStr] {
-			seenIPs[match.IPStr] = true
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingCIDR,
-				Value:  match.IPStr + "/32",
-				Source: p.Name(),
-				Data: map[string]any{
-					"org":   input.OrgName,
-					"port":  match.Port,
-					"asn":   match.ASN,
-					"isp":   match.ISP,
-					"os":    match.OS,
-					"cloud": match.Cloud,
-				},
-			})
-		}
+	for _, result := range results {
+		for _, match := range result.matches {
+			if match.IPStr != "" {
+				cidr := match.IPStr + "/32"
+				p.addResultEvidence(&findings, findingIndexes, evidenceURLs, plugins.Finding{
+					Type:   plugins.FindingCIDR,
+					Value:  cidr,
+					Source: p.Name(),
+					Data: map[string]any{
+						"org":   input.OrgName,
+						"port":  match.Port,
+						"asn":   match.ASN,
+						"isp":   match.ISP,
+						"os":    match.OS,
+						"cloud": match.Cloud,
+					},
+				}, result.queryURL, "CIDR")
+			}
 
-		// Emit hostnames as domains
-		for _, hostname := range match.Hostnames {
-			hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
-			if hostname != "" && !seenDomains[hostname] {
-				seenDomains[hostname] = true
-				findings = append(findings, plugins.Finding{
+			for _, hostname := range match.Hostnames {
+				hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
+				if hostname == "" {
+					continue
+				}
+				p.addResultEvidence(&findings, findingIndexes, evidenceURLs, plugins.Finding{
 					Type:   plugins.FindingDomain,
 					Value:  hostname,
 					Source: p.Name(),
@@ -179,12 +189,30 @@ func (p *ShodanPlugin) processResults(resp *ShodanSearchResponse, input plugins.
 						"port":   match.Port,
 						"source": "shodan_hostname",
 					},
-				})
+				}, result.queryURL, "domain")
 			}
 		}
 	}
 
 	return findings
+}
+
+func (p *ShodanPlugin) addResultEvidence(findings *[]plugins.Finding, indexes map[string]int, evidenceURLs map[string]map[string]bool, finding plugins.Finding, queryURL, itemType string) {
+	key := string(finding.Type) + ":" + finding.Value
+	index, exists := indexes[key]
+	if !exists {
+		index = len(*findings)
+		indexes[key] = index
+		evidenceURLs[key] = make(map[string]bool)
+		*findings = append(*findings, finding)
+	}
+	if evidenceURLs[key][queryURL] {
+		return
+	}
+
+	evidenceURLs[key][queryURL] = true
+	plugins.AddConfidence(&(*findings)[index], confShodanSearchResult, fmt.Sprintf(
+		"Shodan returned %s %q from query %s", itemType, finding.Value, queryURL))
 }
 
 // ShodanSearchResponse represents the Shodan search API response

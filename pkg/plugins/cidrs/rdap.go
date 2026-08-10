@@ -17,6 +17,13 @@ type httpDoer interface {
 	GetWithHeaders(ctx context.Context, url string, headers map[string]string) ([]byte, error)
 }
 
+const confRDAPHandleNetwork = 0.85
+
+type rdapCIDR struct {
+	value       string
+	confidences []plugins.Confidence
+}
+
 // rdapConfig holds per-registry configuration for RDAP plugins.
 type rdapConfig struct {
 	name        string // "arin" or "ripe"
@@ -58,28 +65,32 @@ func (p *rdapPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 			return findings, ctx.Err()
 		default:
 		}
-		cidrs, err := p.fetchCIDRs(ctx, handle)
+		results, err := p.fetchCIDRs(ctx, handle)
 		if err != nil {
 			// Log but don't fail all handles
 			continue
 		}
-		for _, cidr := range cidrs {
-			findings = append(findings, plugins.Finding{
+		for _, result := range results {
+			finding := plugins.Finding{
 				Type:   plugins.FindingCIDR,
-				Value:  cidr,
+				Value:  result.value,
 				Source: p.Name(),
 				Data: map[string]any{
 					"handle":   handle,
 					"org":      input.OrgName,
 					"registry": p.cfg.registry,
 				},
-			})
+			}
+			for _, confidence := range result.confidences {
+				plugins.AddConfidence(&finding, confidence.Score, confidence.Justification)
+			}
+			findings = append(findings, finding)
 		}
 	}
 	return findings, nil
 }
 
-func (p *rdapPlugin) fetchCIDRs(ctx context.Context, handle string) ([]string, error) {
+func (p *rdapPlugin) fetchCIDRs(ctx context.Context, handle string) ([]rdapCIDR, error) {
 	reqURL := fmt.Sprintf("%s/%s", p.cfg.baseURL, url.PathEscape(handle))
 	body, err := p.doer.GetWithHeaders(ctx, reqURL, map[string]string{
 		"Accept": "application/rdap+json",
@@ -93,18 +104,29 @@ func (p *rdapPlugin) fetchCIDRs(ctx context.Context, handle string) ([]string, e
 		return nil, fmt.Errorf("%s: parse response: %w", p.cfg.name, err)
 	}
 
-	var cidrs []string
+	var cidrs []rdapCIDR
 	for _, network := range resp.Networks {
 		for _, cidr0 := range network.Cidr0Cidrs {
 			if cidr0.V4Prefix != "" && cidr0.Length > 0 {
-				cidrs = append(cidrs, fmt.Sprintf("%s/%d", cidr0.V4Prefix, cidr0.Length))
+				cidrs = append(cidrs, p.newRDAPCIDR(handle, fmt.Sprintf("%s/%d", cidr0.V4Prefix, cidr0.Length)))
 			}
 			if cidr0.V6Prefix != "" && cidr0.Length > 0 {
-				cidrs = append(cidrs, fmt.Sprintf("%s/%d", cidr0.V6Prefix, cidr0.Length))
+				cidrs = append(cidrs, p.newRDAPCIDR(handle, fmt.Sprintf("%s/%d", cidr0.V6Prefix, cidr0.Length)))
 			}
 		}
 	}
 	return cidrs, nil
+}
+
+func (p *rdapPlugin) newRDAPCIDR(handle, value string) rdapCIDR {
+	return rdapCIDR{
+		value: value,
+		confidences: []plugins.Confidence{{
+			Score: confRDAPHandleNetwork,
+			Justification: fmt.Sprintf("%s RDAP records CIDR %q under organization handle %q",
+				strings.ToUpper(p.Name()), value, handle),
+		}},
+	}
 }
 
 // splitHandles splits a comma-separated handle string, trims whitespace,

@@ -201,6 +201,14 @@ func TestShodanPlugin_Run(t *testing.T) {
 	domains := []string{domainFindings[0].Value, domainFindings[1].Value}
 	assert.Contains(t, domains, "www.example.com")
 	assert.Contains(t, domains, "api.example.com")
+
+	for _, finding := range findings {
+		require.Len(t, finding.Confidences, 2)
+		for _, confidence := range finding.Confidences {
+			assert.Contains(t, confidence.Justification, "key=REDACTED")
+			assert.NotContains(t, confidence.Justification, "test-key")
+		}
+	}
 }
 
 func TestShodanPlugin_Run_NoAPIKey(t *testing.T) {
@@ -232,6 +240,44 @@ func TestShodanPlugin_Run_APIError(t *testing.T) {
 	// Should gracefully degrade
 	assert.NoError(t, err)
 	assert.Nil(t, findings)
+}
+
+func TestShodanPlugin_ProcessResultsRetainsDistinctQueryEvidence(t *testing.T) {
+	plugin := &ShodanPlugin{}
+	match := ShodanMatch{IPStr: "192.0.2.1", Hostnames: []string{"WWW.Example.com.", "www.example.com"}}
+	firstURL := `https://api.shodan.io/shodan/host/search?key=REDACTED&query=org%3A%22Acme+Corp%22`
+	secondURL := `https://api.shodan.io/shodan/host/search?key=REDACTED&query=hostname%3Aexample.com`
+
+	findings := plugin.processResults([]shodanQueryResult{
+		{queryURL: firstURL, matches: []ShodanMatch{match, match}},
+		{queryURL: secondURL, matches: []ShodanMatch{match}},
+	}, plugins.Input{OrgName: "Acme Corp"})
+
+	require.Len(t, findings, 2)
+	cidr := filterFindings(findings, plugins.FindingCIDR)[0]
+	domain := filterFindings(findings, plugins.FindingDomain)[0]
+	for _, finding := range []plugins.Finding{cidr, domain} {
+		require.Len(t, finding.Confidences, 2, "one finding with one evidence entry per distinct query")
+		assert.InDelta(t, confShodanSearchResult, finding.Confidences[0].Score, 0.001)
+		assert.Contains(t, finding.Confidences[0].Justification, firstURL)
+		assert.Contains(t, finding.Confidences[1].Justification, secondURL)
+		assert.NotContains(t, finding.Data, "confidence")
+		assert.NotContains(t, finding.Data, "confidences")
+	}
+	assert.Equal(t, `Shodan returned CIDR "192.0.2.1/32" from query `+firstURL, cidr.Confidences[0].Justification)
+	assert.Equal(t, `Shodan returned domain "www.example.com" from query `+firstURL, domain.Confidences[0].Justification)
+}
+
+func TestShodanPlugin_SearchURLIsEncodedAndRedactedForDisplay(t *testing.T) {
+	plugin := &ShodanPlugin{}
+	query := `org:"Acme & Sons"`
+
+	requestURL := plugin.shodanSearchURL("secret-key", query)
+	displayURL := plugin.shodanSearchURL("REDACTED", query)
+
+	assert.Equal(t, `https://api.shodan.io/shodan/host/search?key=secret-key&query=org%3A%22Acme+%26+Sons%22`, requestURL)
+	assert.Equal(t, `https://api.shodan.io/shodan/host/search?key=REDACTED&query=org%3A%22Acme+%26+Sons%22`, displayURL)
+	assert.NotContains(t, displayURL, "secret-key")
 }
 
 func filterFindings(findings []plugins.Finding, ft plugins.FindingType) []plugins.Finding {

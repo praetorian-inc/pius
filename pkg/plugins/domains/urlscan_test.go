@@ -95,6 +95,15 @@ func TestURLScanPlugin_BasicSubdomainDiscovery(t *testing.T) {
 	for _, f := range findings {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "urlscan", f.Source)
+		require.Len(t, f.Confidences, 1)
+		assert.InDelta(t, confURLScanHistoryObservation, f.Confidences[0].Score, 0.001)
+		assert.Contains(t, f.Confidences[0].Justification, f.Value)
+		assert.Contains(t, f.Confidences[0].Justification, "praetorian.com")
+		assert.Contains(t, f.Confidences[0].Justification, "URLScan scan history")
+		assert.Contains(t, f.Confidences[0].Justification,
+			srv.URL+"/api/v1/search/?q=page.apexDomain:praetorian.com&size=100")
+		assert.NotContains(t, f.Data, "confidence")
+		assert.NotContains(t, f.Data, "confidences")
 		values[f.Value] = true
 	}
 
@@ -135,6 +144,7 @@ func TestURLScanPlugin_Deduplication(t *testing.T) {
 	for _, f := range findings {
 		if f.Value == "www.praetorian.com" {
 			count++
+			require.Len(t, f.Confidences, 1, "page/task duplicates must not add evidence")
 		}
 	}
 	assert.Equal(t, 1, count, "www.praetorian.com should appear exactly once after dedup")
@@ -214,15 +224,21 @@ func TestURLScanPlugin_Normalization(t *testing.T) {
 	assert.True(t, values["api.praetorian.com"], "API.PRAETORIAN.COM. should normalize to api.praetorian.com")
 }
 
-// TestURLScanPlugin_ErrorHandling verifies graceful behavior when the API is
-// unavailable.
-func TestURLScanPlugin_ErrorHandling(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close() // immediately close so requests fail
+func TestURLScanPlugin_GracefulOnHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
 
 	p := &URLScanPlugin{client: client.New(), baseURL: srv.URL}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "praetorian.com"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
 
+func TestURLScanPlugin_GracefulOnNetworkError(t *testing.T) {
+	p := &URLScanPlugin{client: client.NewNoRetry(), baseURL: "http://127.0.0.1:1"}
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "praetorian.com"})
 	assert.NoError(t, err)
 	assert.Empty(t, findings)
 }

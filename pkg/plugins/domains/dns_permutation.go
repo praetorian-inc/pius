@@ -3,7 +3,10 @@ package domains
 import (
 	"context"
 	_ "embed"
+	"fmt"
 	"log/slog"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -14,7 +17,8 @@ import (
 var defaultPermutationWordlist string
 
 const (
-	permutationConcurrency = 50
+	permutationConcurrency     = 50
+	confDNSPermutationResolved = 0.70
 )
 
 func init() {
@@ -79,32 +83,22 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 		// Generate all permutation candidates for this base domain.
 		candidates := p.generateCandidates(subs, base)
 
-		// Deduplicate candidates and exclude seeds.
-		seedSet := make(map[string]bool, len(subs))
-		for _, s := range subs {
-			seedSet[normalizeDomain(s)] = true
-		}
-
-		seen := make(map[string]bool, len(candidates))
-		var unique []string
-		for _, c := range candidates {
-			c = normalizeDomain(c)
-			if !seen[c] && !seedSet[c] {
-				seen[c] = true
-				unique = append(unique, c)
-			}
+		// Exclude existing seed domains. generateCandidates already deduplicates
+		// candidates while retaining every seed that produced each one.
+		for _, seed := range subs {
+			delete(candidates, normalizeDomain(seed))
 		}
 
 		// Resolve each candidate concurrently.
 		var wg sync.WaitGroup
-		for _, candidate := range unique {
+		for candidate, candidateSeeds := range candidates {
 			if ctx.Err() != nil {
 				break
 			}
 
 			wg.Add(1)
 			sem <- struct{}{}
-			go func(fqdn string) {
+			go func(fqdn string, seeds []string) {
 				defer wg.Done()
 				defer func() { <-sem }()
 
@@ -122,8 +116,8 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 					return
 				}
 
-				mu.Lock()
-				findings = append(findings, plugins.Finding{
+				justification := dnsPermutationJustification(seeds, fqdn, ips)
+				finding := plugins.Finding{
 					Type:   plugins.FindingDomain,
 					Value:  fqdn,
 					Source: "dns-permutation",
@@ -131,9 +125,12 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 						"method": "dns-permutation",
 						"domain": base,
 					},
-				})
+				}
+				plugins.AddConfidence(&finding, confDNSPermutationResolved, justification)
+				mu.Lock()
+				findings = append(findings, finding)
 				mu.Unlock()
-			}(candidate)
+			}(candidate, candidateSeeds)
 		}
 		wg.Wait()
 	}
@@ -141,23 +138,63 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 	return findings, nil
 }
 
-// generateCandidates produces all permutation candidates for a set of subdomains
-// sharing the same base domain. Implements four altdns-style strategies.
-func (p *DNSPermutationPlugin) generateCandidates(seeds []string, base string) []string {
-	var candidates []string
+func dnsPermutationJustification(seeds []string, candidate string, ips []string) string {
+	quotedSeeds := make([]string, len(seeds))
+	for i, seed := range seeds {
+		quotedSeeds[i] = fmt.Sprintf("%q", seed)
+	}
+
+	sortedIPs := append([]string(nil), ips...)
+	sort.Strings(sortedIPs)
+	displayedIPs := sortedIPs
+	if len(sortedIPs) > 3 {
+		displayedIPs = append(append([]string(nil), sortedIPs[:3]...), "...")
+	}
+
+	addressNoun := "IP addresses"
+	if len(sortedIPs) == 1 {
+		addressNoun = "IP address"
+	}
+
+	if len(seeds) == 1 {
+		return fmt.Sprintf("Starting with discovered domain %s, DNS permutation generated variant domain %q, which resolved to %d %s (%s)",
+			quotedSeeds[0], candidate, len(sortedIPs), addressNoun, strings.Join(displayedIPs, ", "))
+	}
+	return fmt.Sprintf("Starting with discovered domains %s, DNS permutation generated variant domain %q, which resolved to %d %s (%s)",
+		strings.Join(quotedSeeds, ", "), candidate, len(sortedIPs), addressNoun, strings.Join(displayedIPs, ", "))
+}
+
+// generateCandidates produces permutation candidates keyed by domain, with the
+// discovered seed domains that generated each candidate. It implements four
+// altdns-style strategies and deduplicates repeated candidate/seed pairs.
+func (p *DNSPermutationPlugin) generateCandidates(seeds []string, base string) map[string][]string {
+	candidates := make(map[string][]string)
 
 	for _, seed := range seeds {
-		labels := extractLabels(seed, base)
+		normalizedSeed := normalizeDomain(seed)
+		labels := extractLabels(normalizedSeed, base)
 		if len(labels) == 0 {
 			continue
 		}
 
-		candidates = append(candidates, p.dashConcat(labels, base)...)
-		candidates = append(candidates, p.directConcat(labels, base)...)
-		candidates = append(candidates, p.insertWord(labels, base)...)
-		candidates = append(candidates, numberSuffix(labels, base)...)
+		var generated []string
+		generated = append(generated, p.dashConcat(labels, base)...)
+		generated = append(generated, p.directConcat(labels, base)...)
+		generated = append(generated, p.insertWord(labels, base)...)
+		generated = append(generated, numberSuffix(labels, base)...)
+
+		for _, candidate := range generated {
+			candidate = normalizeDomain(candidate)
+			if candidate != "" {
+				candidates[candidate] = append(candidates[candidate], normalizedSeed)
+			}
+		}
 	}
 
+	for candidate, candidateSeeds := range candidates {
+		slices.Sort(candidateSeeds)
+		candidates[candidate] = slices.Compact(candidateSeeds)
+	}
 	return candidates
 }
 
@@ -321,5 +358,3 @@ func splitDomains(csv string) []string {
 	}
 	return result
 }
-
-

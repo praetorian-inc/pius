@@ -72,8 +72,17 @@ func TestRDAPPlugin_FetchCIDRs_IPv4(t *testing.T) {
 
 	cidrs, err := p.fetchCIDRs(context.Background(), "ACME-1")
 	require.NoError(t, err)
-	assert.Contains(t, cidrs, "192.168.1.0/24")
-	assert.Contains(t, cidrs, "10.0.0.0/16")
+	require.Len(t, cidrs, 2)
+	assert.Equal(t, "192.168.1.0/24", cidrs[0].value)
+	assert.Equal(t, "10.0.0.0/16", cidrs[1].value)
+	for _, result := range cidrs {
+		require.Len(t, result.confidences, 1)
+		assert.InDelta(t, confRDAPHandleNetwork, result.confidences[0].Score, 0.001)
+		assert.NotEmpty(t, result.confidences[0].Justification)
+		assert.Contains(t, result.confidences[0].Justification, "ARIN")
+		assert.Contains(t, result.confidences[0].Justification, "ACME-1")
+		assert.Contains(t, result.confidences[0].Justification, result.value)
+	}
 }
 
 func TestRDAPPlugin_FetchCIDRs_IPv6(t *testing.T) {
@@ -97,7 +106,8 @@ func TestRDAPPlugin_FetchCIDRs_IPv6(t *testing.T) {
 
 	cidrs, err := p.fetchCIDRs(context.Background(), "ACME-1")
 	require.NoError(t, err)
-	assert.Contains(t, cidrs, "2001:db8::/32")
+	require.Len(t, cidrs, 1)
+	assert.Equal(t, "2001:db8::/32", cidrs[0].value)
 }
 
 func TestRDAPPlugin_Run_EmitsFindingCIDR(t *testing.T) {
@@ -122,6 +132,11 @@ func TestRDAPPlugin_Run_EmitsFindingCIDR(t *testing.T) {
 	assert.Equal(t, "203.0.113.0/24", findings[0].Value)
 	assert.Equal(t, "arin", findings[0].Source)
 	assert.Equal(t, "ACME-1", findings[0].Data["handle"])
+	require.Len(t, findings[0].Confidences, 1)
+	assert.InDelta(t, confRDAPHandleNetwork, findings[0].Confidences[0].Score, 0.001)
+	assert.Equal(t, `ARIN RDAP records CIDR "203.0.113.0/24" under organization handle "ACME-1"`, findings[0].Confidences[0].Justification)
+	assert.NotContains(t, findings[0].Data, "confidence")
+	assert.NotContains(t, findings[0].Data, "confidences")
 }
 
 func TestRDAPPlugin_Run_MultipleHandles(t *testing.T) {

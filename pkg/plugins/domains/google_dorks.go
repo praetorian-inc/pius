@@ -42,8 +42,9 @@ func NewGoogleDorksPlugin() *GoogleDorksPlugin {
 // Phase 0 (independent): requires only Domain.
 // Confidence ~0.55: between ConfidenceLow and ConfidenceHigh — marks findings needs_review.
 type GoogleDorksPlugin struct {
-	baseURL       string // override for testing; default "https://www.google.com"
-	renderEnabled bool   // false for testing, true for production
+	baseURL       string        // override for testing; default "https://www.google.com"
+	renderEnabled bool          // false for testing, true for production
+	queryDelay    time.Duration // delay between subsidiary lookups; 0 uses random 1-3s
 }
 
 // The two evidence entries sum to googleDorksConfidence, which sits between
@@ -169,8 +170,11 @@ func (p *GoogleDorksPlugin) Run(ctx context.Context, input plugins.Input) ([]plu
 			break
 		}
 
-		// Human-like delay between queries to avoid rate limiting.
-		delay := time.Duration(1000+rand.IntN(2000)) * time.Millisecond
+		// Delay between queries to avoid rate limiting.
+		delay := p.queryDelay
+		if delay == 0 {
+			delay = time.Duration(1000+rand.IntN(2000)) * time.Millisecond
+		}
 		t := time.NewTimer(delay)
 		select {
 		case <-t.C:

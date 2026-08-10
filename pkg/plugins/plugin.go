@@ -1,6 +1,9 @@
 package plugins
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // FindingType categorizes what was discovered
 type FindingType string
@@ -20,6 +23,15 @@ const (
 	// Data["preseed_type"] carries the preseed classification (e.g., "whois+company").
 	// Data["preseed_title"] carries a human-readable label (often the same as Value).
 	FindingPreseed FindingType = "preseed"
+
+	// FindingWhoisResult carries structured WHOIS/RDAP registration data for a domain.
+	// Value is the domain name. Data carries:
+	//   registrant, email, registrar, country, province, city (strings)
+	//   purchased, updated, expiration (RFC3339 timestamps)
+	//   raw (raw WHOIS text for archival)
+	//   unregistered (bool, true if domain is not registered)
+	//   corroboration ("match", "mismatch", "unverifiable", "" if no pivot org)
+	FindingWhoisResult FindingType = "whois-result"
 )
 
 // Mode constants for plugin classification.
@@ -33,8 +45,13 @@ const (
 
 // Input is the discovery request passed to each plugin.
 type Input struct {
-	// OrgName is the primary organization name to search for. Required.
+	// OrgName is a company/organization name to search for.
 	OrgName string
+
+	// PersonName is a registrant person name to search for.
+	// Whoxy and similar APIs distinguish person names from company names;
+	// callers should populate the appropriate field based on the data source.
+	PersonName string
 
 	// Domain is an optional known domain associated with the org.
 	Domain string
@@ -87,6 +104,31 @@ type Finding struct {
 	// Data contains source-specific metadata. It must never carry confidence
 	// state — that lives in Confidences.
 	Data map[string]any
+}
+
+// findingFields aliases Finding so MarshalJSON can encode the plain struct
+// without re-entering itself. A defined type does not inherit Finding's
+// methods, which is exactly what breaks the recursion.
+type findingFields Finding
+
+// MarshalJSON emits a Finding's stored fields plus its two derived confidence
+// values, so a reader of `--output json` or `--output ndjson` can see the
+// aggregate and the review verdict without summing the entries by hand.
+//
+// TotalConfidence and NeedsReview are output-only: Confidences remains the sole
+// source of truth, so both are recomputed on demand and simply ignored when
+// findings are read back (the plugin caches round-trip through this encoding).
+// Nothing should ever populate them as stored state.
+func (f Finding) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		findingFields
+		TotalConfidence float64
+		NeedsReview     bool
+	}{
+		findingFields:   findingFields(f),
+		TotalConfidence: TotalConfidence(f),
+		NeedsReview:     NeedsReview(f),
+	})
 }
 
 // Descriptor identifies and describes a plugin.

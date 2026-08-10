@@ -14,8 +14,13 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-// confBuiltWithSharedAnalytics is the evidence contributed by one analytics
-// identifier shared between a discovered domain and the target.
+// confBuiltWithSharedAnalytics is the evidence contributed by a discovered
+// domain sharing analytics identifiers with the target.
+//
+// It is one entry regardless of how many identifiers matched, and the
+// identifiers are listed in its justification. Scoring per identifier instead
+// would mean two matching trackers summed to 1.20 and capped at 1.0 — full
+// certainty from a shared tracker, which is not what a tracker match proves.
 const confBuiltWithSharedAnalytics = 0.60
 
 func init() {
@@ -100,17 +105,30 @@ func (p *BuiltWithPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 				"org": input.OrgName,
 			},
 		}
-		// Each distinct identifier is an independent link between the domain and
-		// the target, so each gets its own entry and several of them aggregate
-		// toward the cap. The nested set deduplicates repeated domain/identifier
-		// pairs across lookups.
-		for _, id := range slices.Sorted(maps.Keys(analyticsIDs)) {
-			plugins.AddConfidence(&f, confBuiltWithSharedAnalytics,
-				fmt.Sprintf("Domain shares analytics identifier %q with the target", id))
-		}
+		// One entry naming every identifier that reached this domain. The nested
+		// set deduplicates repeated domain/identifier pairs across lookups, and
+		// sorting keeps the justification stable rather than map-order dependent.
+		plugins.AddConfidence(&f, confBuiltWithSharedAnalytics,
+			builtWithJustification(slices.Sorted(maps.Keys(analyticsIDs))))
 		findings = append(findings, f)
 	}
 	return findings, nil
+}
+
+// builtWithJustification names every analytics identifier that linked a domain
+// to the target. ids must already be deduplicated and sorted.
+func builtWithJustification(ids []string) string {
+	quoted := make([]string, len(ids))
+	for i, id := range ids {
+		quoted[i] = fmt.Sprintf("%q", id)
+	}
+
+	noun := "identifier"
+	if len(ids) > 1 {
+		noun = "identifiers"
+	}
+	return fmt.Sprintf("Domain shares analytics %s %s with the target",
+		noun, strings.Join(quoted, ", "))
 }
 
 func (p *BuiltWithPlugin) lookup(ctx context.Context, apiKey, analyticsID string) ([]string, error) {

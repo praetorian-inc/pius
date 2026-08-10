@@ -409,13 +409,14 @@ func scoreReverseIP(f *plugins.Finding, hostname, baseDomain, orgName, ip string
 			fmt.Sprintf("IP %s is not associated with a known CDN, so the hostname is unlikely to be shared infrastructure", ip))
 	}
 
-	switch {
-	case baseDomain != "" && (hostname == baseDomain || strings.HasSuffix(hostname, "."+baseDomain)):
+	normalizedOrg := strings.ReplaceAll(orgName, " ", "")
+
+	if baseDomain != "" && (hostname == baseDomain || strings.HasSuffix(hostname, "."+baseDomain)) {
 		plugins.AddConfidence(f, confReverseIPKnownDomain,
 			fmt.Sprintf("Hostname %q matches the known target domain %q", hostname, baseDomain))
-	case orgName != "" && strings.Contains(hostname, strings.ReplaceAll(orgName, " ", "")):
+	} else if normalizedOrg != "" && strings.Contains(hostname, normalizedOrg) {
 		plugins.AddConfidence(f, confReverseIPOrgName,
-			fmt.Sprintf("Hostname %q contains the normalized organization name %q", hostname, strings.ReplaceAll(orgName, " ", "")))
+			fmt.Sprintf("Hostname %q contains the normalized organization name %q", hostname, normalizedOrg))
 	}
 }
 

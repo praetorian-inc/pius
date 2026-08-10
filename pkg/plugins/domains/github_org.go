@@ -11,6 +11,7 @@ import (
 
 	piuscache "github.com/praetorian-inc/pius/pkg/cache"
 	"github.com/praetorian-inc/pius/pkg/client"
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
@@ -205,8 +206,17 @@ func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input 
 			fmt.Sprintf("GitHub organization blog URL matches the known domain %q", input.Domain))
 	}
 
-	// Name similarity: token overlap between org display name and OrgName
-	if similarity := tokenSimilarity(org.Name, input.OrgName); similarity > 0 {
+	// Name similarity: token overlap between org display name and OrgName.
+	//
+	// This deliberately uses TokenSimilarity (containment) rather than whois's
+	// OrgSimilarity (Jaccard + legal-suffix stripping), which ENG-5172 moved off
+	// containment. The two callers score differently on purpose: whois compares
+	// the value against corroboration THRESHOLDS, where a contained name scoring
+	// 1.0 is a false positive, whereas here the value is a WEIGHT on a weak hint
+	// worth at most 0.25. A GitHub org display name that contains the target org
+	// name is genuinely the signal we want to reward at full weight, and Jaccard
+	// would penalize it for length asymmetry alone.
+	if similarity := strutil.TokenSimilarity(org.Name, input.OrgName); similarity > 0 {
 		plugins.AddConfidence(finding, 0.25*similarity,
 			fmt.Sprintf("GitHub organization name %q matches the target organization %q with %.0f%% token similarity",
 				org.Name, input.OrgName, similarity*100))
@@ -294,43 +304,3 @@ func domainContains(rawURL, domain string) bool {
 	return host == domain || strings.HasSuffix(host, "."+domain)
 }
 
-// tokenSimilarity computes the ratio of shared tokens between two strings.
-// Uses the shorter string as the denominator so partial matches score well.
-// "Praetorian" vs "Praetorian Security" → 1/1 = 1.0 (shorter has 1 token, matches)
-// "Praetorian Security" vs "Praetorian Landscaping" → 1/2 = 0.5
-func tokenSimilarity(a, b string) float64 {
-	aT := tokenize(a)
-	bT := tokenize(b)
-	if len(aT) == 0 || len(bT) == 0 {
-		return 0
-	}
-	shorter, longer := aT, bT
-	if len(aT) > len(bT) {
-		shorter, longer = bT, aT
-	}
-	inLonger := make(map[string]bool, len(longer))
-	for _, t := range longer {
-		inLonger[t] = true
-	}
-	matches := 0
-	for _, t := range shorter {
-		if inLonger[t] {
-			matches++
-		}
-	}
-	return float64(matches) / float64(len(shorter))
-}
-
-// tokenize lowercases s and splits on non-alphanumeric characters.
-func tokenize(s string) []string {
-	s = strings.ToLower(s)
-	var buf strings.Builder
-	for _, c := range s {
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
-			buf.WriteRune(c)
-		} else {
-			buf.WriteByte(' ')
-		}
-	}
-	return strings.Fields(buf.String())
-}

@@ -37,6 +37,14 @@ func TestCRTShPlugin_ParsesDomains(t *testing.T) {
 	for _, f := range findings {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "crt-sh", f.Source)
+		require.Len(t, f.Confidences, 1)
+		assert.InDelta(t, confCRTShCertificateTransparencyObservation, f.Confidences[0].Score, 0.001)
+		assert.Contains(t, f.Confidences[0].Justification, f.Value)
+		assert.Contains(t, f.Confidences[0].Justification, "example.com")
+		assert.Contains(t, f.Confidences[0].Justification, "Certificate Transparency")
+		assert.Contains(t, f.Confidences[0].Justification, srv.URL+"/?q=example.com&output=json")
+		assert.NotContains(t, f.Data, "confidence")
+		assert.NotContains(t, f.Data, "confidences")
 		values = append(values, f.Value)
 	}
 	assert.Contains(t, values, "api.example.com")
@@ -136,11 +144,20 @@ func TestCRTShPlugin_PrefersDomainOverOrgName(t *testing.T) {
 	assert.Equal(t, "acme.com", receivedQuery, "domain should be used over org name")
 }
 
-func TestCRTShPlugin_GracefulOnNetworkError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
+func TestCRTShPlugin_GracefulOnHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
 
 	p := &CRTShPlugin{client: client.New(), baseURL: srv.URL}
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
+func TestCRTShPlugin_GracefulOnNetworkError(t *testing.T) {
+	p := &CRTShPlugin{client: client.NewNoRetry(), baseURL: "http://127.0.0.1:1"}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
 	assert.NoError(t, err)
 	assert.Empty(t, findings)
