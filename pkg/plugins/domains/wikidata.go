@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/praetorian-inc/pius/pkg/cache"
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -197,14 +198,16 @@ func cachedWikidataFindings(c *cache.APICache, cacheKey string) ([]plugins.Findi
 }
 
 func (p *WikidataPlugin) websiteFindings(orgName string, results []sparqlBinding, statuses map[string]string) []plugins.Finding {
-	fs := plugins.NewFindingSet()
+	findings := make([]plugins.Finding, 0, len(results))
 	for _, r := range results {
 		status := statuses[extractEntityID(r.Entity.Value)]
 		if f := p.websiteFinding(orgName, r, status); f.Value != "" {
-			fs.Add(f)
+			findings = append(findings, f)
 		}
 	}
-	return fs.Findings
+	return strutil.UniqueFunc(findings, func(f plugins.Finding) [2]string {
+		return [2]string{string(f.Type), f.Value}
+	})
 }
 
 func (p *WikidataPlugin) websiteFinding(orgName string, r sparqlBinding, status string) plugins.Finding {
