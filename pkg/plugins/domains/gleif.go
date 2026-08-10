@@ -223,16 +223,13 @@ func (p *GLEIFPlugin) fuzzyResolve(ctx context.Context, name string) ([]string, 
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("gleif: fuzzy resolve parse: %w", err)
 	}
-	seen := make(map[string]bool, len(resp.Data))
 	var leis []string
 	for _, d := range resp.Data {
-		lei := d.Relationships.LEIRecords.Data.ID
-		if lei != "" && !seen[lei] {
-			seen[lei] = true
+		if lei := d.Relationships.LEIRecords.Data.ID; lei != "" {
 			leis = append(leis, lei)
 		}
 	}
-	return leis, nil
+	return strutil.Unique(leis), nil
 }
 
 func (p *GLEIFPlugin) getRecord(ctx context.Context, lei string) (*leiRecord, error) {
