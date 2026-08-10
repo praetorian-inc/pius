@@ -8,6 +8,7 @@ import (
 	"net/url"
 
 	"github.com/praetorian-inc/pius/pkg/client"
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
@@ -83,26 +84,26 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	p.primaryName = primary.Attributes.Entity.LegalName.Name
 	p.candidateRank = candidateRank
 
-	fs := plugins.NewFindingSet()
+	var findings []plugins.Finding
 
-	parentLEIs := p.enrichParents(ctx, primary, fs)
+	parentLEIs := p.enrichParents(ctx, primary, &findings)
 
-	if err := p.enrichChildren(ctx, primary.ID, "", "subsidiary", fs); err != nil {
-		return fs.Findings, err
+	if err := p.enrichChildren(ctx, primary.ID, "", "subsidiary", &findings); err != nil {
+		return uniqueFindings(findings), err
 	}
 	for _, parentLEI := range parentLEIs {
-		if err := p.enrichChildren(ctx, parentLEI, primary.ID, "sibling", fs); err != nil {
-			return fs.Findings, err
+		if err := p.enrichChildren(ctx, parentLEI, primary.ID, "sibling", &findings); err != nil {
+			return uniqueFindings(findings), err
 		}
 	}
 
-	return fs.Findings, nil
+	return uniqueFindings(findings), nil
 }
 
 // enrichParents fetches direct and ultimate parent entities, emits findings for
 // each, and returns their LEIs for sibling discovery. Best-effort: errors log
 // and continue.
-func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, fs *plugins.FindingSet) []string {
+func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, findings *[]plugins.Finding) []string {
 	if !hasParent(primary) {
 		return nil
 	}
@@ -117,32 +118,35 @@ func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, fs 
 	}
 
 	parentLEIs := []string{directLEI}
-	p.emitRelated(ctx, directLEI, "direct-parent", fs)
+	p.emitRelated(ctx, directLEI, "direct-parent", findings)
 
 	ultimateLEI, err := p.getUltimateParent(ctx, primary.ID)
 	if err != nil {
 		log.Printf("[gleif] ultimate parent failed for %s: %v", primary.ID, err)
 	} else if ultimateLEI != "" && ultimateLEI != directLEI {
 		parentLEIs = append(parentLEIs, ultimateLEI)
-		p.emitRelated(ctx, ultimateLEI, "ultimate-parent", fs)
+		p.emitRelated(ctx, ultimateLEI, "ultimate-parent", findings)
 	}
 
 	return parentLEIs
 }
 
 // emitRelated fetches a single LEI record and emits a preseed finding.
-func (p *GLEIFPlugin) emitRelated(ctx context.Context, lei, relation string, fs *plugins.FindingSet) {
+func (p *GLEIFPlugin) emitRelated(ctx context.Context, lei, relation string, findings *[]plugins.Finding) {
 	record, err := p.getRecord(ctx, lei)
 	if err != nil {
 		log.Printf("[gleif] %s record failed for %s: %v", relation, lei, err)
 		return
 	}
-	fs.Add(p.recordToPreseed(*record, relation))
+	finding := p.recordToPreseed(*record, relation)
+	if finding.Value != "" {
+		*findings = append(*findings, finding)
+	}
 }
 
 // enrichChildren fetches children of lei, emits findings for each (skipping
 // excludeLEI), and returns a context error if the context is cancelled.
-func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relation string, fs *plugins.FindingSet) error {
+func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relation string, findings *[]plugins.Finding) error {
 	children, err := p.getChildren(ctx, lei)
 	if err != nil && ctx.Err() != nil {
 		return ctx.Err()
@@ -151,9 +155,15 @@ func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relat
 		if child.ID == excludeLEI || child.Attributes.Entity.LegalName.Name == "" {
 			continue
 		}
-		fs.Add(p.recordToPreseed(child, relation))
+		*findings = append(*findings, p.recordToPreseed(child, relation))
 	}
 	return nil
+}
+
+func uniqueFindings(findings []plugins.Finding) []plugins.Finding {
+	return strutil.UniqueFunc(findings, func(f plugins.Finding) [2]string {
+		return [2]string{string(f.Type), f.Value}
+	})
 }
 
 // resolveEntity resolves a company name to a GLEIF entity with corporate
