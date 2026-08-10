@@ -94,19 +94,11 @@ func Corroborate(pivotOrg, resolvedOrg string) string {
 	}
 	sim := strutil.JaccardTokenSets(pivotTokens, resolvedTokens)
 	switch {
-	case sim >= 0.60:
+	case sim >= 0.60: // high similarity
 		return "match"
-	case sim < 0.30 && !strutil.TokenSetContained(pivotTokens, resolvedTokens):
-		// The two names genuinely DISAGREE — each side contributes tokens the
-		// other lacks. The containment guard is what makes this arm mean
-		// disagreement rather than merely sparse overlap: a subset name is a
-		// less-specific spelling, not a contradiction, and falls through to
-		// unverifiable below (ENG-5172).
+	case sim < 0.30 && !strutil.TokenSetContained(pivotTokens, resolvedTokens): // low similarity AND one set of tokens is not a subset of the other
 		return "mismatch"
 	default:
-		// Ambiguous partial overlap in [0.30, 0.60), OR a sparse overlap that is
-		// pure containment — one name specializing the other is unverifiable, not
-		// a mismatch (ENG-5172).
 		return "unverifiable"
 	}
 }
