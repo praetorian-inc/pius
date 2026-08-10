@@ -35,10 +35,9 @@ type GLEIFPlugin struct {
 	baseURL string // override for testing; default "https://api.gleif.org/api/v1"
 
 	// Per-run enrichment state, set in Run().
-	orgName             string
-	primaryName         string
-	primaryJurisdiction string
-	candidateRank       int
+	orgName       string
+	primaryName   string
+	candidateRank int
 }
 
 var gleifHeaders = map[string]string{
@@ -82,7 +81,6 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 
 	p.orgName = input.OrgName
 	p.primaryName = primary.Attributes.Entity.LegalName.Name
-	p.primaryJurisdiction = primary.Attributes.Entity.Jurisdiction
 	p.candidateRank = candidateRank
 
 	fs := plugins.NewFindingSet()
@@ -330,33 +328,22 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins
 				p.orgName, p.primaryName, p.candidateRank+1, p.candidateRank))
 	}
 
-	// Signal 2: Relationship provenance.
+	// Signal 2: Relationship provenance. A top-ranked resolution plus a
+	// registered direct relationship reaches the high-confidence threshold;
+	// indirect siblings and later resolution candidates remain reviewable.
 	switch relation {
 	case "direct-parent":
-		plugins.AddConfidence(&f, 0.35,
+		plugins.AddConfidence(&f, 0.50,
 			fmt.Sprintf("LEI registry lists %q as direct parent of %q", name, p.primaryName))
 	case "ultimate-parent":
-		plugins.AddConfidence(&f, 0.35,
+		plugins.AddConfidence(&f, 0.50,
 			fmt.Sprintf("LEI registry lists %q as ultimate parent of %q", name, p.primaryName))
 	case "subsidiary":
-		plugins.AddConfidence(&f, 0.30,
+		plugins.AddConfidence(&f, 0.50,
 			fmt.Sprintf("LEI registry lists %q as direct subsidiary of %q", name, p.primaryName))
 	case "sibling":
-		plugins.AddConfidence(&f, 0.20,
+		plugins.AddConfidence(&f, 0.30,
 			fmt.Sprintf("Shares corporate parent with %q (discovered via LEI hierarchy)", p.primaryName))
-	}
-
-	// Signal 3: Entity status — active registration is stronger evidence.
-	if record.Attributes.Entity.Status == "ACTIVE" {
-		plugins.AddConfidence(&f, 0.10,
-			fmt.Sprintf("Entity %q has active LEI registration", name))
-	}
-
-	// Signal 4: Jurisdiction proximity — same jurisdiction as primary entity.
-	if p.primaryJurisdiction != "" && record.Attributes.Entity.Jurisdiction != "" &&
-		record.Attributes.Entity.Jurisdiction == p.primaryJurisdiction {
-		plugins.AddConfidence(&f, 0.05,
-			fmt.Sprintf("Shares jurisdiction %q with the primary entity", record.Attributes.Entity.Jurisdiction))
 	}
 
 	return f

@@ -170,10 +170,9 @@ func TestGLEIFPlugin_Run_TopLevelWithSubsidiaries(t *testing.T) {
 		assert.Equal(t, plugins.FindingPreseed, f.Type)
 		assert.Equal(t, "gleif", f.Source)
 		assert.Equal(t, "subsidiary", f.Data["corporate_relationship"])
-		// name-resolution(0.15) + subsidiary(0.30) + active(0.10) = 0.55
-		// Sub A shares jurisdiction US (+0.05=0.60), Sub B is GB (no jurisdiction bonus)
-		assert.InDelta(t, 0.55, plugins.TotalConfidence(f), 0.06)
-		assert.True(t, len(f.Confidences) >= 3, "expected at least 3 confidence signals")
+		assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(f), 0.001)
+		require.Len(t, f.Confidences, 2, "resolution and registered relationship are the independent signals")
+		assert.False(t, plugins.NeedsReview(f))
 	}
 	names := []string{findings[0].Value, findings[1].Value}
 	assert.Contains(t, names, "Acme Subsidiary A")
@@ -434,28 +433,14 @@ func TestGLEIFPlugin_Run_ConfidenceSignals_Parent(t *testing.T) {
 	require.Len(t, findings, 1)
 
 	f := findings[0]
-	require.Len(t, f.Confidences, 4, "expected 4 signals: resolution + parent + active + jurisdiction")
-
-	// Signal 1: name resolution (top candidate)
+	require.Len(t, f.Confidences, 2)
 	assert.InDelta(t, 0.15, f.Confidences[0].Score, 0.001)
 	assert.Contains(t, f.Confidences[0].Justification, "top candidate")
 	assert.Contains(t, f.Confidences[0].Justification, "Acme Corp")
-
-	// Signal 2: relationship
-	assert.InDelta(t, 0.35, f.Confidences[1].Score, 0.001)
+	assert.InDelta(t, 0.50, f.Confidences[1].Score, 0.001)
 	assert.Contains(t, f.Confidences[1].Justification, "direct parent")
-
-	// Signal 3: active status
-	assert.InDelta(t, 0.10, f.Confidences[2].Score, 0.001)
-	assert.Contains(t, f.Confidences[2].Justification, "active LEI")
-
-	// Signal 4: shared jurisdiction
-	assert.InDelta(t, 0.05, f.Confidences[3].Score, 0.001)
-	assert.Contains(t, f.Confidences[3].Justification, "US")
-
-	// Total: 0.15 + 0.35 + 0.10 + 0.05 = 0.65
-	assert.InDelta(t, 0.65, plugins.TotalConfidence(f), 0.001)
-	assert.False(t, plugins.NeedsReview(f), "parent with all signals should not need review")
+	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(f), 0.001)
+	assert.False(t, plugins.NeedsReview(f), "a registered parent of the top candidate should not need review")
 }
 
 func TestGLEIFPlugin_Run_ConfidenceSignals_Sibling_DifferentJurisdiction(t *testing.T) {
@@ -499,9 +484,9 @@ func TestGLEIFPlugin_Run_ConfidenceSignals_Sibling_DifferentJurisdiction(t *test
 	}
 	require.NotNil(t, sib)
 
-	// Sibling with different jurisdiction: resolution(0.15) + sibling(0.20) + active(0.10) = 0.45
-	// No jurisdiction bonus (JP != US).
-	require.Len(t, sib.Confidences, 3)
+	require.Len(t, sib.Confidences, 2)
+	assert.InDelta(t, 0.15, sib.Confidences[0].Score, 0.001)
+	assert.InDelta(t, 0.30, sib.Confidences[1].Score, 0.001)
 	assert.InDelta(t, 0.45, plugins.TotalConfidence(*sib), 0.001)
 	assert.True(t, plugins.NeedsReview(*sib), "sibling in different jurisdiction should need review")
 }
