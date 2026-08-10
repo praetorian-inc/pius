@@ -43,9 +43,12 @@ func AddConfidence(f *Finding, score int, justification string) {
 func TotalConfidence(f Finding) int {
 	total := 0
 	for _, confidence := range f.Confidences {
-		total += confidence.Score
+		total += max(0, min(confidence.Score, 100))
+		if total >= 100 {
+			return 100
+		}
 	}
-	return max(0, min(total, 100))
+	return total
 }
 
 // NeedsReview reports whether a finding falls short of ConfidenceHigh, which

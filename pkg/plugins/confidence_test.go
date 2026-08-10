@@ -112,6 +112,30 @@ func TestTotalConfidence_CapsAtHundred(t *testing.T) {
 	assert.Equal(t, 100, TotalConfidence(f), "125 of evidence caps at 100")
 }
 
+func TestTotalConfidence_ClampsDirectEntries(t *testing.T) {
+	tests := []struct {
+		name        string
+		confidences []Confidence
+		want        int
+	}{
+		{name: "below range", confidences: []Confidence{{Score: -10}, {Score: 50}}, want: 50},
+		{name: "above range", confidences: []Confidence{{Score: 150}, {Score: -100}}, want: 100},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, TotalConfidence(Finding{Confidences: tt.confidences}))
+		})
+	}
+}
+
+func TestTotalConfidence_ClampsJSONEntries(t *testing.T) {
+	var finding Finding
+	require.NoError(t, json.Unmarshal([]byte(`{"Confidences":[{"score":-10},{"score":50}]}`), &finding))
+
+	assert.Equal(t, 50, TotalConfidence(finding))
+}
+
 func TestNeedsReview_TrueForEmptyEvidence(t *testing.T) {
 	assert.True(t, NeedsReview(Finding{}),
 		"nothing has vouched for an unscored finding, and it totals 0")
