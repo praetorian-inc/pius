@@ -1,5 +1,7 @@
 package plugins
 
+import "math"
+
 // Confidence thresholds used by name-to-identifier resolution plugins.
 // Plugins that map an org name to a third-party identifier (GitHub org,
 // domain registrant, etc.) attach scored, justified evidence to their findings
@@ -55,7 +57,7 @@ func TotalConfidence(f Finding) float64 {
 	for _, confidence := range f.Confidences {
 		total += confidence.Score
 	}
-	return min(total, 1.0)
+	return math.Round(min(total, 1.0)*1e12) / 1e12
 }
 
 // NeedsReview reports whether a finding falls short of ConfidenceHigh, which
