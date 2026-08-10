@@ -3,7 +3,6 @@ package whois
 import (
 	"strings"
 
-	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/whois/data"
 )
 
@@ -11,21 +10,6 @@ import (
 // behind a privacy/proxy service rather than genuinely absent.
 const PrivacyRedaction = "Privacy Redaction"
 const substringMinLen = 8
-
-// markerTokens are single tokens whose presence as a whole token indicates
-// redaction. Only the action itself qualifies — "privacy" is excluded because
-// legitimate orgs carry it ("Privacy International").
-var markerTokens = map[string]bool{
-	"redacted": true, "redaction": true, "redact": true,
-	"withheld": true, "masked": true, "masking": true,
-}
-
-// markerPhrases are consecutive token runs that indicate redaction when the
-// individual words are too generic to match alone.
-var markerPhrases = [][]string{
-	{"data", "protected"},
-	{"not", "disclosed"},
-}
 
 // IsPrivacy reports whether a value is a known WHOIS privacy/proxy string.
 // Works for org names, person names, and email addresses — it combines
@@ -90,16 +74,30 @@ func matchesSuffix(lower string) bool {
 	return false
 }
 
+// hasMarkerToken reports whether a value carries redaction-placeholder
+// vocabulary. It tokenizes with markerTokenize rather than strutil.Tokenize so
+// that non-ASCII wordings survive to be compared against the vocabulary at all
+// — see marker_normalize.go for why the two tokenizers are deliberately
+// separate, and marker_vocabulary.go for the vocabulary itself (ENG-5420).
 func hasMarkerToken(lower string) bool {
-	tokens := strutil.Tokenize(lower)
+	tokens := markerTokenize(lower)
 	for _, t := range tokens {
 		if markerTokens[t] {
 			return true
 		}
 	}
+
 	joined := strings.Join(tokens, " ")
 	for _, phrase := range markerPhrases {
 		if strings.Contains(joined, strings.Join(phrase, " ")) {
+			return true
+		}
+	}
+
+	// Scripts without word separators, matched by containment. Safe only
+	// because every entry is non-Latin; see markerSubstrings.
+	for _, sub := range markerSubstrings {
+		if strings.Contains(joined, sub) {
 			return true
 		}
 	}
