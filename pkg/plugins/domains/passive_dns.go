@@ -12,7 +12,7 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confPassiveDNSHistoricalObservation = 0.60
+const confPassiveDNSHistoricalObservation = 60
 
 func init() {
 	plugins.Register("passive-dns", func() plugins.Plugin { return &PassiveDNSPlugin{client: client.New()} })

@@ -422,7 +422,7 @@ func TestApolloPlugin_Run_DomainQueryJustification(t *testing.T) {
 
 	for _, f := range findings {
 		require.Len(t, f.Confidences, 1, "one query, one piece of evidence")
-		assert.InDelta(t, 0.85, f.Confidences[0].Score, 0.001)
+		assert.Equal(t, 85, f.Confidences[0].Score)
 		assert.Contains(t, f.Confidences[0].Justification, "known domain")
 		assert.Contains(t, f.Confidences[0].Justification, "acme.com")
 		assert.False(t, plugins.NeedsReview(f))
@@ -444,7 +444,7 @@ func TestApolloPlugin_Run_OrgNameQueryJustification(t *testing.T) {
 
 	for _, f := range findings {
 		require.Len(t, f.Confidences, 1)
-		assert.InDelta(t, 0.70, f.Confidences[0].Score, 0.001)
+		assert.Equal(t, 70, f.Confidences[0].Score)
 		assert.Contains(t, f.Confidences[0].Justification, "organization-name query")
 		assert.Contains(t, f.Confidences[0].Justification, "Acme Corp")
 		// 0.70 still clears ConfidenceHigh — the org-name query is de-ranked

@@ -154,7 +154,7 @@ func TestWaybackPlugin_ParsesWaybackDomains(t *testing.T) {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "wayback", f.Source)
 		require.Len(t, f.Confidences, 1)
-		assert.InDelta(t, confWaybackArchiveObservation, f.Confidences[0].Score, 0.001)
+		assert.Equal(t, confWaybackArchiveObservation, f.Confidences[0].Score)
 		assert.NotEmpty(t, f.Confidences[0].Justification)
 		assert.Contains(t, f.Confidences[0].Justification, archiveSourceWayback)
 		assert.NotContains(t, f.Confidences[0].Justification, archiveSourceCommonCrawl)
@@ -188,7 +188,7 @@ func TestWaybackPlugin_ParsesCommonCrawlDomains(t *testing.T) {
 	assert.Contains(t, values, "blog.example.com")
 	for _, f := range findings {
 		require.Len(t, f.Confidences, 1)
-		assert.InDelta(t, confWaybackArchiveObservation, f.Confidences[0].Score, 0.001)
+		assert.Equal(t, confWaybackArchiveObservation, f.Confidences[0].Score)
 		assert.Contains(t, f.Confidences[0].Justification, archiveSourceCommonCrawl)
 		assert.NotContains(t, f.Confidences[0].Justification, archiveSourceWayback)
 		assert.Contains(t, f.Confidences[0].Justification, f.Value)
@@ -224,7 +224,7 @@ func TestWaybackPlugin_DeduplicatesAcrossSources(t *testing.T) {
 		count++
 		require.Len(t, f.Confidences, 1, "both archives contribute one combined entry")
 		confidence := f.Confidences[0]
-		assert.InDelta(t, confWaybackArchiveObservation, confidence.Score, 0.001)
+		assert.Equal(t, confWaybackArchiveObservation, confidence.Score)
 		assert.Equal(t, `Archive evidence from Common Crawl and Wayback Machine records hostname "api.example.com" under base domain "example.com"`, confidence.Justification)
 		assert.NotContains(t, f.Data, "confidence")
 		assert.NotContains(t, f.Data, "confidences")

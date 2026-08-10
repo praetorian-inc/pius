@@ -10,7 +10,7 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confASNBGPAnnouncedPrefix = 0.85
+const confASNBGPAnnouncedPrefix = 85
 
 type ripeRISPrefix struct {
 	cidr     string

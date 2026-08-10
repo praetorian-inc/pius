@@ -96,7 +96,7 @@ func TestURLScanPlugin_BasicSubdomainDiscovery(t *testing.T) {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "urlscan", f.Source)
 		require.Len(t, f.Confidences, 1)
-		assert.InDelta(t, confURLScanHistoryObservation, f.Confidences[0].Score, 0.001)
+		assert.Equal(t, confURLScanHistoryObservation, f.Confidences[0].Score)
 		assert.Contains(t, f.Confidences[0].Justification, f.Value)
 		assert.Contains(t, f.Confidences[0].Justification, "praetorian.com")
 		assert.Contains(t, f.Confidences[0].Justification, "URLScan scan history")

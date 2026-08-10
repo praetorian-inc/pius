@@ -157,10 +157,10 @@ func (p *ApolloPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 	// may return data for a similarly-named company. One query resolved the
 	// whole response, so every finding carries the same single entry — there is
 	// no second, independent signal here to decompose into.
-	score := 0.85
+	score := 85
 	justification := fmt.Sprintf("Apollo resolved the organization through the known domain %q", input.Domain)
 	if input.Domain == "" {
-		score = 0.70
+		score = 70
 		justification = fmt.Sprintf("Apollo resolved the organization through an organization-name query for %q, which can match a similarly-named company", input.OrgName)
 	}
 

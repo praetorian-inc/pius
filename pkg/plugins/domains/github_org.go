@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"os"
 	"strings"
@@ -27,14 +28,14 @@ func init() {
 //  1. Search GitHub for orgs matching the name (top 5 results)
 //  2. Fetch full org details for each candidate
 //  3. Score each candidate (domain cross-reference + name similarity + activity)
-//  4. Emit high-confidence matches (≥0.65) as FindingDomain for blog URL
-//  5. Emit borderline matches (0.35–0.64), which NeedsReview flags for future agent review
+//  4. Emit high-confidence matches (≥65) as FindingDomain for blog URL
+//  5. Emit borderline matches (35–64), which NeedsReview flags for future agent review
 //
 // Scoring — each signal is a separate, separately justified evidence entry:
-//   - 0.60: blog URL contains input domain (strongest signal)
-//   - 0.25: name token similarity with input OrgName
-//   - 0.10: org login contains first word of OrgName
-//   - 0.05: org has >5 public repos (active, not squatter)
+//   - 60: blog URL contains input domain (strongest signal)
+//   - 25: name token similarity with input OrgName
+//   - 10: org login contains first word of OrgName
+//   - 5: org has >5 public repos (active, not squatter)
 //
 // Phase 0 (independent): requires only OrgName.
 // GITHUB_TOKEN env var is optional — improves rate limit from 60 to 5000 req/hr.
@@ -64,9 +65,9 @@ func (p *GitHubOrgPlugin) key() string {
 }
 
 const (
-	githubEmitThreshold   = 0.65 // emit FindingDomain
-	githubReviewThreshold = 0.35 // emit, flagged by plugins.NeedsReview
-	githubMaxCandidates   = 5    // max orgs to fetch full details for
+	githubEmitThreshold   = 65 // emit FindingDomain
+	githubReviewThreshold = 35 // emit, flagged by plugins.NeedsReview
+	githubMaxCandidates   = 5  // max orgs to fetch full details for
 )
 
 func (p *GitHubOrgPlugin) Name() string { return "github-org" }
@@ -202,7 +203,7 @@ func (p *GitHubOrgPlugin) fetchOrg(ctx context.Context, login string, headers ma
 func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input plugins.Input) {
 	// Domain cross-reference: blog URL contains the known domain (strongest signal)
 	if input.Domain != "" && domainContains(org.Blog, input.Domain) {
-		plugins.AddConfidence(finding, 0.60,
+		plugins.AddConfidence(finding, 60,
 			fmt.Sprintf("GitHub organization blog URL matches the known domain %q", input.Domain))
 	}
 
@@ -213,11 +214,11 @@ func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input 
 	// containment. The two callers score differently on purpose: whois compares
 	// the value against corroboration THRESHOLDS, where a contained name scoring
 	// 1.0 is a false positive, whereas here the value is a WEIGHT on a weak hint
-	// worth at most 0.25. A GitHub org display name that contains the target org
+	// worth at most 25. A GitHub org display name that contains the target org
 	// name is genuinely the signal we want to reward at full weight, and Jaccard
 	// would penalize it for length asymmetry alone.
 	if similarity := strutil.TokenSimilarity(org.Name, input.OrgName); similarity > 0 {
-		plugins.AddConfidence(finding, 0.25*similarity,
+		plugins.AddConfidence(finding, int(math.Round(25*similarity)),
 			fmt.Sprintf("GitHub organization name %q matches the target organization %q with %.0f%% token similarity",
 				org.Name, input.OrgName, similarity*100))
 	}
@@ -226,7 +227,7 @@ func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input 
 	if fields := strings.Fields(input.OrgName); len(fields) > 0 {
 		firstWord := strings.ToLower(fields[0])
 		if strings.Contains(strings.ToLower(org.Login), firstWord) {
-			plugins.AddConfidence(finding, 0.10,
+			plugins.AddConfidence(finding, 10,
 				fmt.Sprintf("GitHub organization login %q contains target organization token %q",
 					org.Login, firstWord))
 		}
@@ -234,7 +235,7 @@ func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input 
 
 	// Activity signal: active org (not a squatter or placeholder)
 	if org.PublicRepos > 5 {
-		plugins.AddConfidence(finding, 0.05,
+		plugins.AddConfidence(finding, 5,
 			fmt.Sprintf("GitHub organization has %d public repositories, indicating an active organization",
 				org.PublicRepos))
 	}
@@ -303,4 +304,3 @@ func domainContains(rawURL, domain string) bool {
 	host = strings.TrimPrefix(host, "www.")
 	return host == domain || strings.HasSuffix(host, "."+domain)
 }
-

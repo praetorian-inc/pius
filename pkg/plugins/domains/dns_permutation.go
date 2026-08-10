@@ -18,7 +18,7 @@ var defaultPermutationWordlist string
 
 const (
 	permutationConcurrency     = 50
-	confDNSPermutationResolved = 0.70
+	confDNSPermutationResolved = 70
 )
 
 func init() {

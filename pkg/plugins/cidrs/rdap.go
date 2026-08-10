@@ -17,7 +17,7 @@ type httpDoer interface {
 	GetWithHeaders(ctx context.Context, url string, headers map[string]string) ([]byte, error)
 }
 
-const confRDAPHandleNetwork = 0.85
+const confRDAPHandleNetwork = 85
 
 type rdapCIDR struct {
 	value       string

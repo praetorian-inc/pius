@@ -12,7 +12,7 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confReverseRIRHandle = 0.60
+const confReverseRIRHandle = 60
 
 func init() {
 	plugins.Register("reverse-rir", func() plugins.Plugin {

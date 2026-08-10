@@ -37,7 +37,7 @@ func TestPassiveDNSPlugin_Run_Confidence(t *testing.T) {
 
 	for _, finding := range findings {
 		require.Len(t, finding.Confidences, 1)
-		assert.InDelta(t, confPassiveDNSHistoricalObservation, finding.Confidences[0].Score, 0.001)
+		assert.Equal(t, confPassiveDNSHistoricalObservation, finding.Confidences[0].Score)
 		assert.Contains(t, finding.Confidences[0].Justification, finding.Value)
 		assert.Contains(t, finding.Confidences[0].Justification, "example.com")
 		assert.Contains(t, finding.Confidences[0].Justification, "SecurityTrails")

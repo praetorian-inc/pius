@@ -11,7 +11,7 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confURLScanHistoryObservation = 0.60
+const confURLScanHistoryObservation = 60
 
 func init() {
 	plugins.Register("urlscan", func() plugins.Plugin { return &URLScanPlugin{client: client.New()} })
