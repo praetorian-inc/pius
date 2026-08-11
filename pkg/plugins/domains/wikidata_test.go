@@ -295,6 +295,7 @@ func TestWikidataPlugin_Run_WithSubsidiariesAndWebsites(t *testing.T) {
 			assert.NotContains(t, query, "P127")
 			assert.Contains(t, query, "SELECT DISTINCT ?entity ?relation")
 			assert.Contains(t, query, "OPTIONAL { ?entity wdt:P856 ?website }")
+			assert.Contains(t, query, `wikibase:language "en,mul"`)
 			_, _ = w.Write(wikidataSubsidiaryResponse(
 				struct{ id, label, website, relation string }{"Q18593264", "LinkedIn", "https://www.linkedin.com", "subsidiary (P749)"},
 				struct{ id, label, website, relation string }{"Q42904", "GitHub", "https://github.com", "subsidiary (P749)"},
@@ -432,7 +433,7 @@ func TestWikidataPlugin_Run_ConfidenceScoring(t *testing.T) {
 	require.Len(t, findings[0].Confidences, 1)
 	assert.Equal(t, confWikidataCurrent, plugins.TotalConfidence(findings[0]))
 	assert.True(t, plugins.NeedsReview(findings[0]))
-	assert.Contains(t, findings[0].Confidences[0].Justification, "currently identifies")
+	assert.Contains(t, findings[0].Confidences[0].Justification, `currently identifies "GitHub" as related to "Microsoft"`)
 	assert.Equal(t, "current", findings[0].Data["relationship_status"])
 }
 
@@ -470,7 +471,7 @@ func TestWikidataPlugin_Run_EndedRelationshipConfidence(t *testing.T) {
 	assert.Equal(t, confWikidataEnded, plugins.TotalConfidence(findings[0]))
 	assert.True(t, plugins.NeedsReview(findings[0]))
 	assert.Equal(t,
-		`Wikidata lists "https://www.kavo.com" as the official website of "KaVo Dental", but says its relationship to the target (subsidiary (P749)) is ended or deprecated`,
+		`Wikidata lists "https://www.kavo.com" as the official website of "KaVo Dental", but says its relationship to "Danaher" (subsidiary (P749)) is ended or deprecated`,
 		findings[0].Confidences[0].Justification)
 	assert.Equal(t, "ended_or_deprecated", findings[0].Data["relationship_status"])
 }

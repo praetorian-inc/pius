@@ -28,7 +28,7 @@ const (
 
 type wikidataConfidenceScenario struct {
 	score         int
-	justification func(subsidiary, website, relation string) string
+	justification func(target, subsidiary, website, relation string) string
 }
 
 const (
@@ -40,20 +40,20 @@ const (
 var wikidataConfidenceScenarios = map[string]wikidataConfidenceScenario{
 	wikidataRelationshipCurrent: {
 		score: confWikidataCurrent,
-		justification: func(subsidiary, website, relation string) string {
-			return fmt.Sprintf("Wikidata currently identifies %q as related to the target (%s) and lists %q as its official website", subsidiary, relation, website)
+		justification: func(target, subsidiary, website, relation string) string {
+			return fmt.Sprintf("Wikidata currently identifies %q as related to %q (%s) and lists %q as its official website", subsidiary, target, relation, website)
 		},
 	},
 	wikidataRelationshipEnded: {
 		score: confWikidataEnded,
-		justification: func(subsidiary, website, relation string) string {
-			return fmt.Sprintf("Wikidata lists %q as the official website of %q, but says its relationship to the target (%s) is ended or deprecated", website, subsidiary, relation)
+		justification: func(target, subsidiary, website, relation string) string {
+			return fmt.Sprintf("Wikidata lists %q as the official website of %q, but says its relationship to %q (%s) is ended or deprecated", website, subsidiary, target, relation)
 		},
 	},
 	wikidataRelationshipUnverified: {
 		score: confWikidataUnverified,
-		justification: func(subsidiary, website, relation string) string {
-			return fmt.Sprintf("Wikidata identifies %q as related to the target (%s) and lists %q as its official website, but relationship qualifiers were not verified", subsidiary, relation, website)
+		justification: func(target, subsidiary, website, relation string) string {
+			return fmt.Sprintf("Wikidata identifies %q as related to %q (%s) and lists %q as its official website, but relationship qualifiers were not verified", subsidiary, target, relation, website)
 		},
 	},
 }
@@ -235,7 +235,7 @@ func (p *WikidataPlugin) websiteFinding(orgName string, r sparqlBinding, status 
 			"method":              "wikidata-sparql",
 		},
 	}
-	plugins.AddConfidence(&f, wikidataConfidence(status), wikidataConfidenceJustification(r, status))
+	plugins.AddConfidence(&f, wikidataConfidence(status), wikidataConfidenceJustification(orgName, r, status))
 	return f
 }
 
@@ -258,8 +258,8 @@ func wikidataConfidence(status string) int {
 	return wikidataScenario(status).score
 }
 
-func wikidataConfidenceJustification(r sparqlBinding, status string) string {
-	return wikidataScenario(status).justification(r.EntityLabel.Value, r.Website.Value, r.Relation.Value)
+func wikidataConfidenceJustification(target string, r sparqlBinding, status string) string {
+	return wikidataScenario(status).justification(target, r.EntityLabel.Value, r.Website.Value, r.Relation.Value)
 }
 
 func wikidataScenario(status string) wikidataConfidenceScenario {
@@ -359,7 +359,7 @@ SELECT DISTINCT ?entity ?entityLabel ?website ?relation WHERE {
     LIMIT 500
   }
   OPTIONAL { ?entity wdt:P856 ?website }
-  SERVICE wikibase:label { bd:serviceParam wikibase:language "en" }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "en,mul" }
 }
 `, companyID, companyID)
 
