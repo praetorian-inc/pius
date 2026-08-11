@@ -1,11 +1,21 @@
 package netutil
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"syscall"
 )
+
+// ErrSSRFRefused marks an error as a refusal by the SSRF guard. Callers that
+// follow untrusted referrals match it with errors.Is to tell "the guard stopped
+// a probe at a non-public address" apart from an ordinary unreachable-server
+// error: every other transport failure has a benign explanation, a refusal does
+// not. Matching structurally rather than on message text keeps that
+// classification intact if the wrapping message is ever reworded, and survives
+// the *net.OpError the net package wraps a Control hook's error in.
+var ErrSSRFRefused = errors.New("ssrf guard: refused non-public address")
 
 // SSRFSafeControl is a net.Dialer.Control hook that rejects connections to
 // non-public addresses, preventing untrusted referrals from probing internal
@@ -19,8 +29,15 @@ func SSRFSafeControl(_, address string, _ syscall.RawConn) error {
 	if ip == nil {
 		return fmt.Errorf("ssrf guard: non-IP address %q", host)
 	}
+	// Only this branch wraps ErrSSRFRefused. The two above are parse failures,
+	// not evidence of an SSRF attempt — a hostile referral never fails to parse,
+	// it names a disallowed IP — and reporting them as refusals would tell
+	// operators an attack was attempted when none was.
+	//
+	// The sentinel leads so its text supplies the whole prefix and the refused
+	// address is appended, rather than re-prefixing an already-prefixed message.
 	if IsDisallowedIP(ip) {
-		return fmt.Errorf("ssrf guard: refusing non-public address %s", ip)
+		return fmt.Errorf("%w %s", ErrSSRFRefused, ip)
 	}
 	return nil
 }
