@@ -98,14 +98,14 @@ func relationshipConflicts(
 	otherParents := currentAffiliationNames(
 		entity.affiliations,
 		targetID,
-		wikidataPropertyParent,
+		wdPropertyParent,
 		now,
 	)
 	if len(otherParents) > 0 {
 		conflicts = append(conflicts,
 			fmt.Sprintf("Wikidata also lists %s as a parent organization.", quotedList(otherParents)))
 	}
-	otherOwners := currentAffiliationNames(entity.affiliations, targetID, "P127", now)
+	otherOwners := currentAffiliationNames(entity.affiliations, targetID, wdPropertyOwner, now)
 	if len(otherOwners) > 0 {
 		conflicts = append(conflicts,
 			fmt.Sprintf("Wikidata also lists %s as an owner.", quotedList(otherOwners)))
@@ -162,10 +162,10 @@ func relationshipDetails(claims []relationshipClaim) []string {
 	details := make([]string, 0, len(claims))
 	for _, claim := range claims {
 		switch claim.property {
-		case wikidataPropertySubsidiary:
-			details = append(details, "subsidiary (P355)")
-		case wikidataPropertyParent:
-			details = append(details, "parent organization (P749)")
+		case wdPropertySubsidiary:
+			details = append(details, fmt.Sprintf("subsidiary (%s)", wdPropertySubsidiary))
+		case wdPropertyParent:
+			details = append(details, fmt.Sprintf("parent organization (%s)", wdPropertyParent))
 		}
 	}
 	slices.Sort(details)
@@ -180,10 +180,10 @@ func hasReferencedRelationship(claims []relationshipClaim) bool {
 
 func hasReciprocalRelationship(claims []relationshipClaim) bool {
 	hasSubsidiary := slices.ContainsFunc(claims, func(claim relationshipClaim) bool {
-		return claim.property == wikidataPropertySubsidiary
+		return claim.property == wdPropertySubsidiary
 	})
 	hasParent := slices.ContainsFunc(claims, func(claim relationshipClaim) bool {
-		return claim.property == wikidataPropertyParent
+		return claim.property == wdPropertyParent
 	})
 	return hasSubsidiary && hasParent
 }

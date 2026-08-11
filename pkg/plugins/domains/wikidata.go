@@ -35,8 +35,15 @@ const (
 )
 
 const (
-	wikidataPropertySubsidiary = "P355"
-	wikidataPropertyParent     = "P749"
+	wdPropertyStatedIn        = "P248"
+	wdPropertyOwner           = "P127"
+	wdPropertyOfficialName    = "P1448"
+	wdPropertyStartTime       = "P580"
+	wdPropertyEndTime         = "P582"
+	wdPropertyReferenceURL    = "P854"
+	wdPropertyOfficialWebsite = "P856"
+	wdPropertySubsidiary      = "P355"
+	wdPropertyParent          = "P749"
 )
 
 type WikidataPlugin struct {

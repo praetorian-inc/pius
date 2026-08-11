@@ -3,6 +3,7 @@ package domains
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -55,11 +56,11 @@ func newWikidataPlugin(t *testing.T, responses wikidataTestResponses) (*Wikidata
 		switch {
 		case strings.Contains(query, "?matchKind"):
 			writeWikidataResponse(t, w, responses.companies)
-		case strings.Contains(query, "?claimType") && strings.Contains(query, "p:P856"):
+		case strings.Contains(query, "?claimType") && strings.Contains(query, "p:"+wdPropertyOfficialWebsite):
 			writeWikidataResponse(t, w, contextClaimResults(responses.claims))
-		case strings.Contains(query, "ps:P355"):
+		case strings.Contains(query, "ps:"+wdPropertySubsidiary):
 			writeWikidataResponse(t, w, claimResultsByType(responses.claims, wikidataClaimSubsidiary))
-		case strings.Contains(query, "ps:P749"):
+		case strings.Contains(query, "ps:"+wdPropertyParent):
 			writeWikidataResponse(t, w, targetParentClaimResults(responses.claims))
 		default:
 			writeWikidataResponse(t, w, responses.relationships)
@@ -141,7 +142,7 @@ func writeEntityDocuments(
 		}
 		if website := bindingValue(company, "website"); website != "" {
 			document.Claims = map[string][]entityStatement{
-				"P856": {{MainSnak: entitySnak{DataValue: entityDataValue{Value: mustJSON(t, website)}}}},
+				wdPropertyOfficialWebsite: {{MainSnak: entitySnak{DataValue: entityDataValue{Value: mustJSON(t, website)}}}},
 			}
 		}
 		documents[entityID] = document
@@ -155,13 +156,13 @@ func writeEntityDocuments(
 		claimOwnerID := entityID
 		switch claimType {
 		case wikidataClaimWebsite:
-			property = "P856"
+			property = wdPropertyOfficialWebsite
 		case wikidataClaimParent:
-			property = wikidataPropertyParent
+			property = wdPropertyParent
 			parentID := bindingEntityID(binding, "value")
 			ensureTestDocument(documents, parentID, bindingValue(binding, "valueLabel"))
 		case wikidataClaimSubsidiary:
-			property = wikidataPropertySubsidiary
+			property = wdPropertySubsidiary
 			claimOwnerID = "Q1"
 		}
 		if property == "" {
@@ -220,18 +221,18 @@ func testEntityStatement(t *testing.T, binding map[string]any, claimType string)
 		statement.MainSnak.DataValue.Value = mustJSON(t, entityIDValue{ID: value})
 	}
 	if start := bindingValue(binding, "start"); start != "" {
-		statement.Qualifiers["P580"] = []entitySnak{{
+		statement.Qualifiers[wdPropertyStartTime] = []entitySnak{{
 			DataValue: entityDataValue{Value: mustJSON(t, entityTimeValue{Time: start})},
 		}}
 	}
 	if end := bindingValue(binding, "end"); end != "" {
-		statement.Qualifiers["P582"] = []entitySnak{{
+		statement.Qualifiers[wdPropertyEndTime] = []entitySnak{{
 			DataValue: entityDataValue{Value: mustJSON(t, entityTimeValue{Time: end})},
 		}}
 	}
 	if bindingValue(binding, "reference") != "" {
 		statement.References = []entityReference{{
-			Snaks: map[string][]entitySnak{"P854": {{}}},
+			Snaks: map[string][]entitySnak{wdPropertyReferenceURL: {{}}},
 		}}
 	}
 	return statement
@@ -411,7 +412,7 @@ func basicWikidataResponses() wikidataTestResponses {
 			companyResult("Q1", wikidataMatchLabel, "https://acme.example"),
 		},
 		relationships: []map[string]any{
-			relationshipResult("Q2", "Acme Widgets", "S1", wikidataPropertySubsidiary, "", "", false),
+			relationshipResult("Q2", "Acme Widgets", "S1", wdPropertySubsidiary, "", "", false),
 		},
 		claims: []map[string]any{
 			websiteResult("Q2", "W1", "https://www.acmewidgets.com/about", false),
@@ -437,7 +438,10 @@ func TestWikidataPlugin_Run_EmitsPlainLanguageEvidence(t *testing.T) {
 	assert.Equal(t, "open_ended", finding.Data["relationship_status"])
 	require.Len(t, finding.Confidences, 1)
 	assert.Equal(t,
-		`Wikidata lists "Acme Widgets" as a subsidiary of "ACME HOLDINGS INC" and lists "https://www.acmewidgets.com/about" as its official website (subsidiary (P355); Wikidata items Q1 and Q2). Wikidata does not provide an end date for the relationship.`,
+		fmt.Sprintf(
+			`Wikidata lists "Acme Widgets" as a subsidiary of "ACME HOLDINGS INC" and lists "https://www.acmewidgets.com/about" as its official website (subsidiary (%s); Wikidata items Q1 and Q2). Wikidata does not provide an end date for the relationship.`,
+			wdPropertySubsidiary,
+		),
 		finding.Confidences[0].Justification)
 	assert.Equal(t, 5, *requestCount)
 }
@@ -457,8 +461,8 @@ func TestWikidataPlugin_Run_ScoresReciprocalReferencedEvidence(t *testing.T) {
 
 	assert.Equal(t, wikidataMaxScore, plugins.TotalConfidence(findings[0]))
 	justification := findings[0].Confidences[0].Justification
-	assert.Contains(t, justification, "subsidiary (P355)")
-	assert.Contains(t, justification, "parent organization (P749)")
+	assert.Contains(t, justification, fmt.Sprintf("subsidiary (%s)", wdPropertySubsidiary))
+	assert.Contains(t, justification, fmt.Sprintf("parent organization (%s)", wdPropertyParent))
 	assert.Contains(t, justification, "both organizations' Wikidata records")
 	assert.Contains(t, justification, "source references for both")
 }
@@ -601,8 +605,8 @@ func TestWikidataPlugin_Run_CachesCompleteResults(t *testing.T) {
 func TestWikidataPlugin_Run_DeduplicatesDomainUsingStrongestEvidence(t *testing.T) {
 	responses := basicWikidataResponses()
 	responses.relationships = append(responses.relationships,
-		relationshipResult("Q3", "Better Widgets", "S3", wikidataPropertySubsidiary, "", "", true),
-		relationshipResult("Q3", "Better Widgets", "S4", wikidataPropertyParent, "", "", true),
+		relationshipResult("Q3", "Better Widgets", "S3", wdPropertySubsidiary, "", "", true),
+		relationshipResult("Q3", "Better Widgets", "S4", wdPropertyParent, "", "", true),
 	)
 	responses.claims = append(responses.claims,
 		websiteResult("Q3", "W3", "https://acmewidgets.com", true),
@@ -636,7 +640,7 @@ func TestSelectCompany(t *testing.T) {
 			ID:      "Q1",
 			Aliases: map[string][]entityLabel{"en": {{Value: "Acme Holdings"}}},
 			Claims: map[string][]entityStatement{
-				"P856": {{MainSnak: entitySnak{DataValue: entityDataValue{Value: json.RawMessage(`"https://acme.example"`)}}}},
+				wdPropertyOfficialWebsite: {{MainSnak: entitySnak{DataValue: entityDataValue{Value: json.RawMessage(`"https://acme.example"`)}}}},
 			},
 		},
 		"Q2": {
@@ -657,8 +661,8 @@ func TestSelectCompany(t *testing.T) {
 }
 
 func TestDiscoveryQuery_RejectsInvalidEntityID(t *testing.T) {
-	assert.Empty(t, discoveryQuery("Q1 } UNION { ?entity ?p ?o", wikidataPropertyParent))
-	assert.NotEmpty(t, discoveryQuery("Q248", wikidataPropertyParent))
+	assert.Empty(t, discoveryQuery("Q1 } UNION { ?entity ?p ?o", wdPropertyParent))
+	assert.NotEmpty(t, discoveryQuery("Q248", wdPropertyParent))
 }
 
 func TestClassifyClaim(t *testing.T) {

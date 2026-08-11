@@ -126,7 +126,7 @@ func scoreCompanyDocument(
 		candidate.matchKind = wikidataMatchLabel
 		candidate.matchScore += 3
 	}
-	if officialNamesMatch(document.Claims["P1448"], variants) {
+	if officialNamesMatch(document.Claims[wdPropertyOfficialName], variants) {
 		if candidate.matchKind == "" {
 			candidate.matchKind = wikidataMatchOfficialName
 		}
@@ -138,7 +138,7 @@ func scoreCompanyDocument(
 		}
 		candidate.matchScore++
 	}
-	matchesSite := slices.ContainsFunc(document.Claims["P856"], func(statement entityStatement) bool {
+	matchesSite := slices.ContainsFunc(document.Claims[wdPropertyOfficialWebsite], func(statement entityStatement) bool {
 		return websiteMatchesDomain(statementStringValue(statement), knownDomain)
 	})
 	if matchesSite {
@@ -196,7 +196,7 @@ func (p *WikidataPlugin) discoverEntityIDs(
 ) ([]string, error) {
 	entityIDs := []string{}
 	failedQueries := 0
-	for _, property := range []string{wikidataPropertySubsidiary, wikidataPropertyParent} {
+	for _, property := range []string{wdPropertySubsidiary, wdPropertyParent} {
 		query := discoveryQuery(targetID, property)
 		if query == "" {
 			return nil, fmt.Errorf("invalid Wikidata entity ID %q", targetID)
@@ -220,20 +220,20 @@ func discoveryQuery(targetID, property string) string {
 	if !isWikidataEntityID(targetID) {
 		return ""
 	}
-	if property == wikidataPropertyParent {
+	if property == wdPropertyParent {
 		return fmt.Sprintf(`
 SELECT DISTINCT ?entity WHERE {
-  ?entity wdt:P749 wd:%s .
+  ?entity wdt:%s wd:%s .
 }
 LIMIT %d
-`, targetID, wikidataMaxCandidates)
+`, wdPropertyParent, targetID, wikidataMaxCandidates)
 	}
 	return fmt.Sprintf(`
 SELECT DISTINCT ?entity WHERE {
-  wd:%s wdt:P355 ?entity .
+  wd:%s wdt:%s ?entity .
 }
 LIMIT %d
-`, targetID, wikidataMaxCandidates)
+`, targetID, wdPropertySubsidiary, wikidataMaxCandidates)
 }
 
 func discoveredEntityIDs(bindings []discoveryBinding) []string {
@@ -296,7 +296,7 @@ func relatedEntityIDs(
 		if !ok {
 			continue
 		}
-		for _, property := range []string{wikidataPropertyParent, "P127"} {
+		for _, property := range []string{wdPropertyParent, wdPropertyOwner} {
 			for _, statement := range document.Claims[property] {
 				entityID := statementEntityID(statement)
 				if entityID != "" && entityID != targetID {
@@ -333,12 +333,12 @@ func buildEntityEvidence(
 		}
 	}
 
-	for _, statement := range documents[targetID].Claims[wikidataPropertySubsidiary] {
+	for _, statement := range documents[targetID].Claims[wdPropertySubsidiary] {
 		candidateID := statementEntityID(statement)
 		if entity := entities[candidateID]; entity != nil {
 			entity.relationships = append(entity.relationships, relationshipClaim{
 				datedClaim: datedClaimFromStatement(statement),
-				property:   wikidataPropertySubsidiary,
+				property:   wdPropertySubsidiary,
 			})
 		}
 	}
@@ -360,11 +360,11 @@ func addCandidateClaims(
 	documents map[string]entityDocument,
 ) {
 	document := documents[entity.id]
-	for _, statement := range document.Claims[wikidataPropertyParent] {
+	for _, statement := range document.Claims[wdPropertyParent] {
 		parentID := statementEntityID(statement)
 		claim := affiliationClaim{
 			datedClaim: datedClaimFromStatement(statement),
-			property:   wikidataPropertyParent,
+			property:   wdPropertyParent,
 			entityID:   parentID,
 			name:       entityName(documents[parentID], parentID),
 		}
@@ -372,22 +372,22 @@ func addCandidateClaims(
 		if parentID == targetID {
 			entity.relationships = append(entity.relationships, relationshipClaim{
 				datedClaim: claim.datedClaim,
-				property:   wikidataPropertyParent,
+				property:   wdPropertyParent,
 			})
 		}
 	}
 
-	for _, statement := range document.Claims["P127"] {
+	for _, statement := range document.Claims[wdPropertyOwner] {
 		ownerID := statementEntityID(statement)
 		entity.affiliations = append(entity.affiliations, affiliationClaim{
 			datedClaim: datedClaimFromStatement(statement),
-			property:   "P127",
+			property:   wdPropertyOwner,
 			entityID:   ownerID,
 			name:       entityName(documents[ownerID], ownerID),
 		})
 	}
 
-	for _, statement := range document.Claims["P856"] {
+	for _, statement := range document.Claims[wdPropertyOfficialWebsite] {
 		website := statementStringValue(statement)
 		if domain := extractDomainFromURL(website); domain != "" {
 			entity.websites = append(entity.websites, websiteClaim{
@@ -403,15 +403,16 @@ func datedClaimFromStatement(statement entityStatement) datedClaim {
 	return datedClaim{
 		statement:  statement.ID,
 		rank:       statement.Rank,
-		start:      statementQualifierTime(statement, "P580"),
-		end:        statementQualifierTime(statement, "P582"),
+		start:      statementQualifierTime(statement, wdPropertyStartTime),
+		end:        statementQualifierTime(statement, wdPropertyEndTime),
 		referenced: hasSourceReference(statement.References),
 	}
 }
 
 func hasSourceReference(references []entityReference) bool {
 	return slices.ContainsFunc(references, func(reference entityReference) bool {
-		return len(reference.Snaks["P854"]) > 0 || len(reference.Snaks["P248"]) > 0
+		return len(reference.Snaks[wdPropertyReferenceURL]) > 0 ||
+			len(reference.Snaks[wdPropertyStatedIn]) > 0
 	})
 }
 
