@@ -16,7 +16,7 @@ const confReverseRIRHandle = 60
 
 func init() {
 	plugins.Register("reverse-rir", func() plugins.Plugin {
-		return &ReverseRIRPlugin{client: client.New()}
+		return NewReverseRIRPlugin(client.New())
 	})
 }
 
@@ -25,6 +25,13 @@ func init() {
 // Phase 1 plugin: emits FindingCIDRHandle findings consumed by Phase 2.
 type ReverseRIRPlugin struct {
 	client httpDoer
+}
+
+// NewReverseRIRPlugin builds the reverse-RIR plugin over an injected HTTP
+// client, so callers outside this repo can supply their own transport. A nil
+// client falls back to the package default — see doerOrDefault for the rule.
+func NewReverseRIRPlugin(c *client.Client) *ReverseRIRPlugin {
+	return &ReverseRIRPlugin{client: doerOrDefault(c)}
 }
 
 func (p *ReverseRIRPlugin) Name() string { return "reverse-rir" }

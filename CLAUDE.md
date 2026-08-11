@@ -72,7 +72,18 @@ The runner (`pkg/runner/run.go`) executes plugins in phases:
 
 **RDAP plugins** (`pkg/plugins/cidrs/rdap.go`): Use `httpDoer` interface for testability. Phase 2 plugins that query RIR RDAP APIs.
 
-**RPSL plugins** (`pkg/plugins/cidrs/rpsl_plugin.go`): Download and parse RIR RPSL databases. Use the cache system (`pkg/cache/`) with 24-hour TTL.
+**RPSL plugins** (`pkg/plugins/cidrs/rpsl.go`): Download and parse RIR RPSL databases via the cache system (`pkg/cache/`, 24-hour TTL). One `RPSLPlugin` type serves every RPSL registry; per-registry differences live entirely in an `rpslConfig`, built by a `<registry>Config()` helper that both `init()` and the exported constructor read so the registered plugin and an injected one cannot drift apart.
+
+`RPSLPlugin` handles two record kinds from the same parse:
+
+- **`inetnum:`** carries a start-end range, expanded to one finding per covering IPv4 CIDR by `cidr.ConvertIPv4RangeToCIDR`.
+- **`inet6num:`** carries a prefix directly, so the prefix **is** the finding value — emitted exactly as the registry published it. `netip.ParsePrefix` is a validity gate only; its parsed value is discarded, and a prefix it rejects is skipped rather than aborting the file. There is deliberately no IPv6 range-to-CIDR converter to route through.
+
+Both kinds share one finding builder and one justification renderer, so `Data` keys (`handle`, `org`, `registry`, `netname` — always set, empty string included) and the `confRPSLHandleInetnum` score cannot diverge between them. The justification says `range` for an inetnum and `prefix` for an inet6num; only the range form appends the `; the range contains CIDR %q` tail, because an inet6num record has no range and claiming one would be false.
+
+Registries differ in how they ship v6, which `rpslConfig.cacheURL6` encodes: AFRINIC's combined dump already contains its inet6num records (`cacheURL6` empty, one download), while APNIC splits them into a second file. That **secondary fetch is best-effort** — losing it costs IPv6 recall and logs a warning, but must not discard the IPv4 records already in hand. The **primary fetch is not**: its failure returns an error, because an empty result would otherwise read as "this org owns no space in this registry".
+
+`Run` guards a nil cache before any cache dereference. The `Accepts()`-based self-disable is not sufficient on its own: an embedder whose runner interface exposes only `Run` never calls `Accepts()`, and a cache that failed to construct would nil-dereference inside `GetOrDownload`.
 
 **Domain plugins** (`pkg/plugins/domains/`): Independent (Phase 0) plugins querying various sources (crt.sh, passive DNS, etc.).
 
@@ -92,6 +103,17 @@ Use `pkg/client.Client` for HTTP requests. Provides:
 - Files stored in `~/.pius/cache/`
 - 24-hour TTL, atomic writes
 - Falls back to stale cache on download failure
+
+`cache.New()` uses the shared package-level `downloadClient`. `cache.NewWithHTTPClient(hc)` takes an embedder's own client instead; **a nil `hc` is valid** and falls back to that same shared client. The fallback is resolved lazily, at download time rather than at construction, so it stays a live reference to `downloadClient` rather than a snapshot of it — a test that swaps the package client's transport still affects a cache built before the swap. The cache directory needs no parameter: it derives from `os.UserHomeDir()`, so `t.Setenv("HOME", t.TempDir())` is already the directory seam.
+
+### Dependency Injection Seams
+
+Embedders (notably the Guard capability adapters) construct plugins directly rather than through the registry, so each CIDR plugin exposes a constructor taking the transport it should use. `init()` registration routes through the same constructor, which is what keeps the two paths from drifting.
+
+- `NewReverseRIRPlugin(*client.Client)`, `NewARINPlugin`, `NewRIPEPlugin`, `NewLACNICPlugin` — take a `*client.Client`; a nil argument falls back to a fresh `client.New()` via `doerOrDefault`.
+- `NewAPNICPlugin(*http.Client)`, `NewAFRINICPlugin(*http.Client)` — take a raw `*http.Client` because their dependency is the cache, not the retrying API client, and return `(*RPSLPlugin, error)`: a cache that cannot be created is reported rather than swallowed into a plugin that silently self-disables.
+
+When adding a plugin with an outbound dependency, expose the seam the same way — constructor-injected, nil-tolerant, and read by `init()` — rather than reaching for a package-level singleton at call time.
 
 ### Confidence Scoring
 

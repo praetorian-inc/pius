@@ -13,12 +13,13 @@ import (
 )
 
 const (
-	APNICOrgURL          = "https://ftp.apnic.net/apnic/whois/apnic.db.organisation.gz"
-	APNICInetURL         = "https://ftp.apnic.net/apnic/whois/apnic.db.inetnum.gz"
-	AFRINICAllURL        = "https://ftp.afrinic.net/dbase/afrinic.db.gz"
-	DefaultTTL           = 24 * time.Hour
-	CacheDirName         = ".pius/cache"
-	maxDecompressedSize  = 2 << 30 // 2GB
+	APNICOrgURL         = "https://ftp.apnic.net/apnic/whois/apnic.db.organisation.gz"
+	APNICInetURL        = "https://ftp.apnic.net/apnic/whois/apnic.db.inetnum.gz"
+	APNICInet6URL       = "https://ftp.apnic.net/apnic/whois/apnic.db.inet6num.gz"
+	AFRINICAllURL       = "https://ftp.afrinic.net/dbase/afrinic.db.gz"
+	DefaultTTL          = 24 * time.Hour
+	CacheDirName        = ".pius/cache"
+	maxDecompressedSize = 2 << 30 // 2GB
 )
 
 var downloadClient = &http.Client{
@@ -27,12 +28,21 @@ var downloadClient = &http.Client{
 
 // Cache manages locally-cached RPSL database files with TTL.
 type Cache struct {
-	dir string
-	ttl time.Duration
+	dir    string
+	ttl    time.Duration
+	client *http.Client
 }
 
-// New creates a Cache storing files in $HOME/.pius/cache/.
+// New creates a Cache storing files in $HOME/.pius/cache/, downloading through
+// the shared package-level HTTP client.
 func New() (*Cache, error) {
+	return NewWithHTTPClient(nil)
+}
+
+// NewWithHTTPClient creates a Cache storing files in $HOME/.pius/cache/ that
+// downloads through hc. A nil hc is valid and falls back to the shared
+// package-level client at download time.
+func NewWithHTTPClient(hc *http.Client) (*Cache, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("get home dir: %w", err)
@@ -41,7 +51,7 @@ func New() (*Cache, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create cache dir: %w", err)
 	}
-	return &Cache{dir: dir, ttl: DefaultTTL}, nil
+	return &Cache{dir: dir, ttl: DefaultTTL, client: hc}, nil
 }
 
 // GetOrDownload returns the path to a locally cached (and decompressed) RPSL file.
@@ -82,7 +92,7 @@ func (c *Cache) download(ctx context.Context, url, localPath string) error {
 	}
 	req.Header.Set("User-Agent", "pius/1.0")
 
-	resp, err := downloadClient.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return err
 	}
@@ -124,6 +134,17 @@ func (c *Cache) download(ctx context.Context, url, localPath string) error {
 	}
 
 	return os.Rename(tmp, localPath)
+}
+
+// httpClient returns the client downloads go through: the per-Cache client when
+// one was injected, otherwise the shared package-level client. Resolving the
+// fallback here rather than at construction keeps it a live reference to
+// downloadClient instead of a snapshot of it.
+func (c *Cache) httpClient() *http.Client {
+	if c.client != nil {
+		return c.client
+	}
+	return downloadClient
 }
 
 // cacheFilename computes a stable local filename from a URL.

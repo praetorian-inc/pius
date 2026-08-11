@@ -65,7 +65,7 @@ func TestRDAPPlugin_FetchCIDRs_IPv4(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &rdapPlugin{
+	p := &RDAPPlugin{
 		cfg:  rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
 		doer: &mockHTTPDoer{server: srv},
 	}
@@ -99,7 +99,7 @@ func TestRDAPPlugin_FetchCIDRs_IPv6(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &rdapPlugin{
+	p := &RDAPPlugin{
 		cfg:  rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
 		doer: &mockHTTPDoer{server: srv},
 	}
@@ -116,7 +116,7 @@ func TestRDAPPlugin_Run_EmitsFindingCIDR(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &rdapPlugin{
+	p := &RDAPPlugin{
 		cfg:  rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
 		doer: &mockHTTPDoer{server: srv},
 	}
@@ -147,7 +147,7 @@ func TestRDAPPlugin_Run_MultipleHandles(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &rdapPlugin{
+	p := &RDAPPlugin{
 		cfg:  rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
 		doer: &mockHTTPDoer{server: srv},
 	}
@@ -173,7 +173,7 @@ func TestRDAPPlugin_Run_ContinuesOnFailedHandle(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &rdapPlugin{
+	p := &RDAPPlugin{
 		cfg:  rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
 		doer: &mockHTTPDoer{server: srv},
 	}
