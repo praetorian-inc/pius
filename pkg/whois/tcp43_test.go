@@ -58,7 +58,7 @@ func TestTCP43Raw_BootstrapTrailingDotReferralNotSalvaged(t *testing.T) {
 			}
 			stubTCP43RawFn(t, responses)
 
-			record, err := tcp43Raw(context.Background(), "example.com")
+			record, _, err := tcp43Raw(context.Background(), "example.com")
 
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "no record beyond bootstrap")
@@ -82,7 +82,7 @@ func TestTCP43Raw_SelfReferralTrailingDotNoExtraHop(t *testing.T) {
 	}
 	dialed := stubTCP43RawFn(t, responses)
 
-	record, err := tcp43Raw(context.Background(), "example.com")
+	record, _, err := tcp43Raw(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	assert.Contains(t, record, "Example Inc")
@@ -103,10 +103,65 @@ func TestTCP43Raw_RegressionOrdinaryChainUnaffected(t *testing.T) {
 	}
 	dialed := stubTCP43RawFn(t, responses)
 
-	record, err := tcp43Raw(context.Background(), "example.com")
+	record, server, err := tcp43Raw(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	assert.Contains(t, record, "Example Inc")
 	assert.NotContains(t, record, "IANA Registry Operator")
 	assert.Equal(t, []string{defaultServer, registrar}, *dialed)
+	assert.Equal(t, registrar, server)
+}
+
+// The returned server must be the one that answered the returned record — the
+// deepest server reached, not the bootstrap server the chain started from and
+// not the referral target that was never successfully queried.
+func TestTCP43Raw_ReportsAnsweringServer(t *testing.T) {
+	const registry = "whois.nic.example"
+	const registrar = "whois.registrar.example"
+
+	t.Run("deepest server in the chain", func(t *testing.T) {
+		responses := map[string]string{
+			defaultServer: "refer: " + registry + "\n",
+			registry:      "Registrar WHOIS Server: " + registrar + "\n",
+			registrar:     "Registrant Organization: Example Inc\n",
+		}
+		stubTCP43RawFn(t, responses)
+
+		record, server, err := tcp43Raw(context.Background(), "example.com")
+
+		require.NoError(t, err)
+		assert.Contains(t, record, "Example Inc")
+		assert.Equal(t, registrar, server)
+	})
+
+	// When a hop fails the last good record is salvaged; the reported server
+	// must be the one that produced that record, not the hop that failed.
+	t.Run("salvaged record reports the server that produced it", func(t *testing.T) {
+		responses := map[string]string{
+			defaultServer: "refer: " + registry + "\n",
+			registry:      "Registrant Organization: Example Inc\nRegistrar WHOIS Server: " + registrar + "\n",
+			// registrar absent: the stub errors on it.
+		}
+		stubTCP43RawFn(t, responses)
+
+		record, server, err := tcp43Raw(context.Background(), "example.com")
+
+		require.NoError(t, err)
+		assert.Contains(t, record, "Example Inc")
+		assert.Equal(t, registry, server)
+	})
+
+	// A record obtained only from the bootstrap server is never salvaged, so
+	// there is no answering server to report either.
+	t.Run("bootstrap-only chain reports nothing", func(t *testing.T) {
+		stubTCP43RawFn(t, map[string]string{
+			defaultServer: "organisation: IANA Registry Operator\n",
+		})
+
+		record, server, err := tcp43Raw(context.Background(), "example.com")
+
+		require.Error(t, err)
+		assert.Empty(t, record)
+		assert.Empty(t, server)
+	})
 }
