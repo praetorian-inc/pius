@@ -40,7 +40,7 @@ func NewGoogleDorksPlugin() *GoogleDorksPlugin {
 //  4. Emit those domains as FindingDomain findings
 //
 // Phase 0 (independent): requires only Domain.
-// Confidence ~0.55: between ConfidenceLow and ConfidenceHigh — marks findings needs_review.
+// Confidence ~55: between ConfidenceLow and ConfidenceHigh — marks findings needs_review.
 type GoogleDorksPlugin struct {
 	baseURL       string        // override for testing; default "https://www.google.com"
 	renderEnabled bool          // false for testing, true for production
@@ -52,10 +52,10 @@ type GoogleDorksPlugin struct {
 const (
 	// confGoogleDorksSubsidiary credits the Knowledge Graph naming the company
 	// as a subsidiary of the target.
-	confGoogleDorksSubsidiary = 0.30
+	confGoogleDorksSubsidiary = 30
 	// confGoogleDorksDomain credits the follow-up search resolving that
 	// subsidiary name to the emitted domain.
-	confGoogleDorksDomain = 0.25
+	confGoogleDorksDomain = 25
 
 	googleDorksConfidence = confGoogleDorksSubsidiary + confGoogleDorksDomain
 )

@@ -26,7 +26,7 @@ const (
 	dohEnumConcurrency    = 50
 	dohEnumChannelBufSize = 1000
 	dohEnumMaxRetries     = 3
-	confDoHEnumResolved   = 0.70
+	confDoHEnumResolved   = 70
 )
 
 // dohHTTPDoer abstracts HTTP operations for DoH queries (testability).

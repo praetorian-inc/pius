@@ -220,7 +220,7 @@ func TestDNSBrutePlugin_Run(t *testing.T) {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "dns-brute", f.Source)
 		require.Len(t, f.Confidences, 1)
-		assert.InDelta(t, confDNSBruteResolved, f.Confidences[0].Score, 0.001)
+		assert.Equal(t, confDNSBruteResolved, f.Confidences[0].Score)
 		assert.Contains(t, f.Confidences[0].Justification, f.Value)
 		assert.Contains(t, f.Confidences[0].Justification, "example.com")
 		assert.NotContains(t, f.Data, "confidence")

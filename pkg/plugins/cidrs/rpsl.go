@@ -12,7 +12,7 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confRPSLHandleInetnum = 0.85
+const confRPSLHandleInetnum = 85
 
 // rpslConfig holds per-registry configuration for RPSL plugins.
 type rpslConfig struct {

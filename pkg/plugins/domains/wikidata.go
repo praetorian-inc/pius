@@ -19,13 +19,13 @@ import (
 )
 
 const (
-	confWikidataCurrent    = 0.50
-	confWikidataUnverified = 0.30
-	confWikidataEnded      = 0.00
+	confWikidataCurrent    = 50
+	confWikidataUnverified = 30
+	confWikidataEnded      = 0
 )
 
 type wikidataConfidenceScenario struct {
-	score         float64
+	score         int
 	justification func(subsidiary, website, relation string) string
 }
 
@@ -194,7 +194,10 @@ func cachedWikidataFindings(c *cache.APICache, cacheKey string) ([]plugins.Findi
 		return nil, false
 	}
 	var cached []plugins.Finding
-	return cached, c.Get(cacheKey, &cached)
+	if !c.Get(cacheKey, &cached) {
+		return nil, false
+	}
+	return cached, true
 }
 
 func (p *WikidataPlugin) websiteFindings(orgName string, results []sparqlBinding, statuses map[string]string) []plugins.Finding {
@@ -249,7 +252,7 @@ func (p *WikidataPlugin) findCompanyEntity(ctx context.Context, orgName string) 
 	return "", nil
 }
 
-func wikidataConfidence(status string) float64 {
+func wikidataConfidence(status string) int {
 	return wikidataScenario(status).score
 }
 
@@ -451,12 +454,13 @@ SELECT ?entity ?rank ?endTime WHERE {
 }
 
 func mergeRelationshipStatus(statuses map[string]string, id string, binding sparqlBinding) {
-	if binding.EndTime.Value != "" || strings.HasSuffix(binding.Rank.Value, "DeprecatedRank") {
-		statuses[id] = wikidataRelationshipEnded
+	isEnded := binding.EndTime.Value != "" || strings.HasSuffix(binding.Rank.Value, "DeprecatedRank")
+	if !isEnded {
+		statuses[id] = wikidataRelationshipCurrent
 		return
 	}
 	if statuses[id] == "" {
-		statuses[id] = wikidataRelationshipCurrent
+		statuses[id] = wikidataRelationshipEnded
 	}
 }
 
@@ -507,10 +511,6 @@ func extractEntityID(uri string) string {
 func extractDomainFromURL(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return ""
-	}
-
-	if parsed.RawQuery != "" {
 		return ""
 	}
 

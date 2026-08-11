@@ -13,7 +13,7 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confEDGARApparentHandle = 0.55
+const confEDGARApparentHandle = 55
 
 var (
 	// handlePattern matches potential RIR org handles in SEC EDGAR entity names.

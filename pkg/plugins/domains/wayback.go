@@ -20,7 +20,7 @@ func init() {
 	plugins.Register("wayback", func() plugins.Plugin { return &WaybackPlugin{client: client.New()} })
 }
 
-const confWaybackArchiveObservation = 0.60
+const confWaybackArchiveObservation = 60
 
 const (
 	archiveSourceWayback     = "Wayback Machine"

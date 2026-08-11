@@ -146,7 +146,7 @@ func TestParseShodanResponse_ExtractsIPsAndHostnames(t *testing.T) {
 		assert.NotContains(t, f.Data, "confidence")
 		assert.NotContains(t, f.Data, "confidences")
 		require.Len(t, f.Confidences, 1)
-		assert.InDelta(t, confFaviconScannerObservation, f.Confidences[0].Score, 0.001)
+		assert.Equal(t, confFaviconScannerObservation, f.Confidences[0].Score)
 		assert.NotEmpty(t, f.Confidences[0].Justification)
 		assert.Contains(t, f.Confidences[0].Justification, f.Value[:strings.Index(f.Value+"/", "/")])
 	}
@@ -208,7 +208,7 @@ func TestParseFOFAResponse_ExtractsHostsAndIPs(t *testing.T) {
 		assert.NotContains(t, f.Data, "confidence")
 		assert.NotContains(t, f.Data, "confidences")
 		require.Len(t, f.Confidences, 1)
-		assert.InDelta(t, confFaviconScannerObservation, f.Confidences[0].Score, 0.001)
+		assert.Equal(t, confFaviconScannerObservation, f.Confidences[0].Score)
 		assert.NotEmpty(t, f.Confidences[0].Justification)
 		assert.Contains(t, f.Confidences[0].Justification, f.Value[:strings.Index(f.Value+"/", "/")])
 	}
@@ -249,7 +249,7 @@ func TestFaviconFindingAggregation_DeduplicatesIdenticalScannerRows(t *testing.T
 	require.Len(t, findings, 2)
 	for _, finding := range findings {
 		require.Len(t, finding.Confidences, 1)
-		assert.InDelta(t, confFaviconScannerObservation, plugins.TotalConfidence(finding), 0.001)
+		assert.Equal(t, confFaviconScannerObservation, plugins.TotalConfidence(finding))
 	}
 }
 
@@ -267,7 +267,7 @@ func TestFaviconFindingAggregation_CorroboratesAcrossScanners(t *testing.T) {
 	for _, finding := range findings {
 		assert.Equal(t, []string{"fofa", "shodan"}, finding.Data["scanners"])
 		require.Len(t, finding.Confidences, 2)
-		assert.InDelta(t, 1.0, plugins.TotalConfidence(finding), 0.001)
+		assert.Equal(t, 100, plugins.TotalConfidence(finding))
 		assert.Contains(t, finding.Confidences[0].Justification, "Shodan")
 		assert.Contains(t, finding.Confidences[1].Justification, "FOFA")
 	}
@@ -410,7 +410,7 @@ func TestFaviconHashPlugin_Run_ShodanOnly(t *testing.T) {
 	for _, f := range findings {
 		assert.Equal(t, "favicon-hash", f.Source)
 		require.Len(t, f.Confidences, 1)
-		assert.InDelta(t, confFaviconScannerObservation, plugins.TotalConfidence(f), 0.001)
+		assert.Equal(t, confFaviconScannerObservation, plugins.TotalConfidence(f))
 		assert.True(t, plugins.NeedsReview(f))
 		assert.Equal(t, []string{"shodan"}, f.Data["scanners"])
 		switch f.Type {
@@ -452,7 +452,7 @@ func TestFaviconHashPlugin_Run_ShodanAndFOFA(t *testing.T) {
 	var domains, cidrs []string
 	for _, f := range findings {
 		require.Len(t, f.Confidences, 1)
-		assert.InDelta(t, confFaviconScannerObservation, plugins.TotalConfidence(f), 0.001)
+		assert.Equal(t, confFaviconScannerObservation, plugins.TotalConfidence(f))
 		switch f.Type {
 		case plugins.FindingDomain:
 			domains = append(domains, f.Value)
@@ -508,7 +508,7 @@ func TestFaviconHashPlugin_Run_DeduplicatesAcrossScanners(t *testing.T) {
 		}
 		assert.Equal(t, []string{"fofa", "shodan"}, f.Data["scanners"])
 		require.Len(t, f.Confidences, 2)
-		assert.InDelta(t, 1.0, plugins.TotalConfidence(f), 0.001)
+		assert.Equal(t, 100, plugins.TotalConfidence(f))
 		assert.Contains(t, f.Confidences[0].Justification, "Shodan")
 		assert.Contains(t, f.Confidences[1].Justification, "FOFA")
 	}

@@ -19,9 +19,9 @@ import (
 //
 // It is one entry regardless of how many identifiers matched, and the
 // identifiers are listed in its justification. Scoring per identifier instead
-// would mean two matching trackers summed to 1.20 and capped at 1.0 — full
+// would mean two matching trackers summed to 120 and capped at 100 — full
 // certainty from a shared tracker, which is not what a tracker match proves.
-const confBuiltWithSharedAnalytics = 0.60
+const confBuiltWithSharedAnalytics = 60
 
 func init() {
 	plugins.Register("builtwith", func() plugins.Plugin { return &BuiltWithPlugin{client: client.New()} })

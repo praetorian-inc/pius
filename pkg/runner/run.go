@@ -419,6 +419,9 @@ func enrichWithDomains(input plugins.Input, findings []plugins.Finding) plugins.
 		if f.Type != plugins.FindingDomain {
 			continue
 		}
+		if len(f.Confidences) > 0 && plugins.TotalConfidence(f) < plugins.ConfidenceLow {
+			continue
+		}
 		d := strings.ToLower(strings.TrimSpace(f.Value))
 		if d != "" && !seen[d] {
 			seen[d] = true
@@ -473,13 +476,13 @@ func printFindings(findings []plugins.Finding, format string) error {
 			// Surface review flag and confidence for borderline findings.
 			// Only findings a plugin actually scored are annotated: most output
 			// comes from plugins that never score (crt.sh, wayback, RDAP CIDR
-			// expansion), and labelling those "needs-review [confidence:0.00]"
+			// expansion), and labelling those "needs-review [confidence:0]"
 			// would report an assessment that never happened on nearly every line.
 			if len(f.Confidences) > 0 && plugins.NeedsReview(f) {
 				if colorEnabled() {
-					line += fmt.Sprintf(" ⚠ needs-review [confidence:%.2f]", plugins.TotalConfidence(f))
+					line += fmt.Sprintf(" ⚠ needs-review [confidence:%d]", plugins.TotalConfidence(f))
 				} else {
-					line += fmt.Sprintf(" [needs-review confidence:%.2f]", plugins.TotalConfidence(f))
+					line += fmt.Sprintf(" [needs-review confidence:%d]", plugins.TotalConfidence(f))
 				}
 			}
 			fmt.Println(line)

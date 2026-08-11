@@ -12,7 +12,7 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confShodanSearchResult = 0.85
+const confShodanSearchResult = 85
 
 type shodanQueryResult struct {
 	queryURL string

@@ -106,13 +106,19 @@ func tcp43Raw(ctx context.Context, domain string) (string, error) {
 			return "", fmt.Errorf("whois query to %s: %w", server, err)
 		}
 
-		// Only keep records from post-bootstrap servers.
-		if !strings.EqualFold(server, defaultServer) {
+		// Only keep records from post-bootstrap servers. Compared by DNS
+		// identity, not raw string equality: a referral naming
+		// "whois.iana.org." is still the bootstrap server, and salvaging its
+		// seed record would return the TLD registry operator as though it
+		// were the queried domain's registrant.
+		if !sameServer(server, defaultServer) {
 			lastRaw = raw
 		}
 
 		refer := extractReferral(raw)
-		if refer == "" || strings.EqualFold(refer, server) {
+		// Also DNS identity: a self-referral differing only by a trailing
+		// root dot must end the chain here rather than burn another hop.
+		if refer == "" || sameServer(refer, server) {
 			break
 		}
 		server = refer
@@ -174,6 +180,16 @@ func dialAddr(server string) string {
 		server = strings.TrimSuffix(strings.TrimPrefix(server, "["), "]")
 	}
 	return net.JoinHostPort(server, whoisPort)
+}
+
+// sameServer reports whether two WHOIS server names denote the same host.
+// DNS names are equal under a trailing root dot and are case-insensitive,
+// neither of which strings.EqualFold alone accounts for.
+func sameServer(a, b string) bool {
+	return strings.EqualFold(
+		strings.TrimRight(strings.TrimSpace(a), "."),
+		strings.TrimRight(strings.TrimSpace(b), "."),
+	)
 }
 
 func extractReferral(raw string) string {

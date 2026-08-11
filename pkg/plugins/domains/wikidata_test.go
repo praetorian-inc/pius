@@ -175,6 +175,18 @@ func TestWikidataPlugin_Run_EmptyOrgName(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
+func TestCachedWikidataFindings_ReturnsCachedFindings(t *testing.T) {
+	c, err := piuscache.NewAPI(t.TempDir(), "wikidata")
+	require.NoError(t, err)
+
+	want := []plugins.Finding{{Type: plugins.FindingDomain, Value: "example.com"}}
+	c.Set("example", want)
+
+	got, ok := cachedWikidataFindings(c, "example")
+	assert.True(t, ok)
+	assert.Equal(t, want, got)
+}
+
 func TestWikidataPlugin_Run_NoEntityFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/sparql-results+json")
@@ -417,7 +429,7 @@ func TestWikidataPlugin_Run_ConfidenceScoring(t *testing.T) {
 	require.Len(t, findings, 1)
 
 	require.Len(t, findings[0].Confidences, 1)
-	assert.InDelta(t, confWikidataCurrent, plugins.TotalConfidence(findings[0]), 0.001)
+	assert.Equal(t, confWikidataCurrent, plugins.TotalConfidence(findings[0]))
 	assert.True(t, plugins.NeedsReview(findings[0]))
 	assert.Contains(t, findings[0].Confidences[0].Justification, "currently identifies")
 	assert.Equal(t, "current", findings[0].Data["relationship_status"])
@@ -460,6 +472,19 @@ func TestWikidataPlugin_Run_EndedRelationshipConfidence(t *testing.T) {
 		`Wikidata lists "https://www.kavo.com" as the official website of "KaVo Dental", but says its relationship to the target (subsidiary (P749)) is ended or deprecated`,
 		findings[0].Confidences[0].Justification)
 	assert.Equal(t, "ended_or_deprecated", findings[0].Data["relationship_status"])
+}
+
+func TestMergeRelationshipStatus_CurrentWins(t *testing.T) {
+	ended := sparqlBinding{EndTime: sparqlValue{Value: "2020-01-01T00:00:00Z"}}
+	current := sparqlBinding{Rank: sparqlValue{Value: "http://wikiba.se/ontology#NormalRank"}}
+
+	for _, bindings := range [][]sparqlBinding{{ended, current}, {current, ended}} {
+		statuses := make(map[string]string)
+		for _, binding := range bindings {
+			mergeRelationshipStatus(statuses, "Q1", binding)
+		}
+		assert.Equal(t, wikidataRelationshipCurrent, statuses["Q1"])
+	}
 }
 
 func TestWikidataPlugin_Run_HTTPError(t *testing.T) {
@@ -568,7 +593,7 @@ func TestExtractDomainFromURL(t *testing.T) {
 		{"http://linkedin.com", "linkedin.com"},
 		{"https://WWW.MICROSOFT.COM", "microsoft.com"},
 		{"https://www.example.com:8080/path", "example.com"},
-		{"https://resolver.library.example/resolver?ctx=journal", ""},
+		{"https://company.co.jp/?lang=en", "company.co.jp"},
 		{"not-a-url", ""},
 		{"", ""},
 		{"https://localhost", ""},

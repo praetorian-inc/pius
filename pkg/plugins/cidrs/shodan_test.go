@@ -258,7 +258,7 @@ func TestShodanPlugin_ProcessResultsRetainsDistinctQueryEvidence(t *testing.T) {
 	domain := filterFindings(findings, plugins.FindingDomain)[0]
 	for _, finding := range []plugins.Finding{cidr, domain} {
 		require.Len(t, finding.Confidences, 2, "one finding with one evidence entry per distinct query")
-		assert.InDelta(t, confShodanSearchResult, finding.Confidences[0].Score, 0.001)
+		assert.Equal(t, confShodanSearchResult, finding.Confidences[0].Score)
 		assert.Contains(t, finding.Confidences[0].Justification, firstURL)
 		assert.Contains(t, finding.Confidences[1].Justification, secondURL)
 		assert.NotContains(t, finding.Data, "confidence")

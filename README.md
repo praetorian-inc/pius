@@ -109,7 +109,7 @@ pius run --org "Acme Corp" --domain acme.com --mode all
 [domain] acme.com (crt-sh)
 [domain] api.acme.com (crt-sh)
 [domain] staging.acme.com (passive-dns)
-[domain] acme.com (reverse-whois) ⚠ needs-review [confidence:0.42]
+[domain] acme.com (reverse-whois) ⚠ needs-review [confidence:42]
 [cidr] 203.0.113.0/24 (arin)
 [cidr] 198.51.100.0/22 (ripe)
 ```
@@ -129,12 +129,12 @@ Most domain plugins run in Phase 0 (independent, concurrent). Late-stage plugins
 | Plugin | Data Source | Auth Required | Mode | Notes |
 |--------|-------------|---------------|------|-------|
 | `crt-sh` | Certificate Transparency logs | None | Passive | Deduplicates wildcard entries |
-| `apollo` | Apollo.io enrichment API | `APOLLO_API_KEY` | Passive | Caches results 24h; 0.85 confidence for domain queries |
-| `github-org` | GitHub organization search | `GITHUB_TOKEN` (optional) | Passive | Confidence-scored; 0.65 threshold to emit |
+| `apollo` | Apollo.io enrichment API | `APOLLO_API_KEY` | Passive | Caches results 24h; 85 confidence for domain queries |
+| `github-org` | GitHub organization search | `GITHUB_TOKEN` (optional) | Passive | Confidence-scored; 65 threshold to emit |
 | `gleif` | GLEIF LEI corporate registry | None | Passive | Discovers parent/subsidiary domains |
 | `passive-dns` | SecurityTrails passive DNS | `SECURITYTRAILS_API_KEY` | Passive | Historical subdomain records |
-| `reverse-whois` | ViewDNS reverse WHOIS | `VIEWDNS_API_KEY` | Passive | 0.50 confidence (unverified → needs-review); registrant email matching |
-| `whoxy-reverse-whois` | Whoxy reverse WHOIS API | `WHOXY_API_KEY` | Passive | Paginated lookup; stale-record filter; 0.50 confidence (unverified → needs-review) |
+| `reverse-whois` | ViewDNS reverse WHOIS | `VIEWDNS_API_KEY` | Passive | 50 confidence (unverified → needs-review); registrant email matching |
+| `whoxy-reverse-whois` | Whoxy reverse WHOIS API | `WHOXY_API_KEY` | Passive | Paginated lookup; stale-record filter; 50 confidence (unverified → needs-review) |
 | `builtwith` | BuiltWith tag lookup API | `BUILTWITH_API_KEY` | Passive | Phase 3; correlates domains via shared analytics tracking codes |
 | `dns-brute` | Local DNS resolver | None | **Active** | 50 concurrent goroutines; embedded wordlist |
 | `dns-zone-transfer` | DNS AXFR | None | **Active** | Extracts A, AAAA, CNAME, MX, SRV records |
