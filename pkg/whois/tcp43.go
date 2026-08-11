@@ -144,13 +144,41 @@ func tcp43RawDial(ctx context.Context, domain, server string) (string, error) {
 	}
 	defer func() { _ = conn.Close() }()
 
+	return tcp43Exchange(ctx, conn, domain)
+}
+
+// tcp43Exchange writes the WHOIS query and reads the response on an
+// already-established connection. It uses two complementary mechanisms to
+// honor the caller's context:
+//
+//  1. conn.SetDeadline — if the context carries a deadline earlier than the
+//     default dialTimeout, the connection I/O is bounded to that deadline.
+//  2. A background goroutine that calls conn.SetDeadline(time.Now()) when the
+//     context is canceled without a deadline (e.g., parent calls cancel()).
+//     This unblocks any in-flight Read or Write immediately.
+func tcp43Exchange(ctx context.Context, conn net.Conn, domain string) (string, error) {
 	deadline := time.Now().Add(dialTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
 	_ = conn.SetDeadline(deadline)
 
+	// Unblock in-flight I/O if the context is canceled independently of
+	// the connection deadline (e.g., parent canceled without a deadline).
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetDeadline(time.Now())
+		case <-done:
+		}
+	}()
+	defer close(done)
+
 	if _, err := fmt.Fprintf(conn, "%s\r\n", domain); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
 		return "", err
 	}
 
@@ -158,6 +186,14 @@ func tcp43RawDial(ctx context.Context, domain, server string) (string, error) {
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", ctxErr
+		}
+		// The connection deadline and context deadline may target the same
+		// instant via independent clocks. The OS-level connection timeout
+		// can fire fractionally before Go's context timer, producing an
+		// i/o timeout while ctx.Err() is still nil. Surface the context
+		// error when the deadline has clearly passed.
+		if d, ok := ctx.Deadline(); ok && !time.Now().Before(d) {
+			return "", context.DeadlineExceeded
 		}
 		return "", err
 	}
