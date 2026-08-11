@@ -65,6 +65,15 @@ func (p *RPSLPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 
 	handles := splitHandles(input.Meta[p.cfg.metaKey])
 
+	// Accepts() gates on a non-empty handle list too, and that gate is just as
+	// unreachable from an embedder that only calls Run. Zero handles can match
+	// zero records, so every byte of a multi-hundred-megabyte registry dump
+	// downloaded in this state is spent to match nothing. Having nothing to
+	// resolve is not an error.
+	if len(handles) == 0 {
+		return nil, nil
+	}
+
 	// The primary file is not best-effort: losing it means the run found nothing,
 	// which must not read as "this org owns no space in this registry".
 	records, err := p.recordsFrom(ctx, p.cfg.cacheURL, handles)
@@ -77,13 +86,27 @@ func (p *RPSLPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 	// records already in hand.
 	if p.cfg.cacheURL6 != "" {
 		v6Records, err := p.recordsFrom(ctx, p.cfg.cacheURL6, handles)
-		if err != nil {
-			slog.Warn("RPSL inet6num file unavailable, continuing with IPv4 records only",
-				"plugin", p.cfg.name, "url", p.cfg.cacheURL6, "error", err)
-		} else {
+		switch {
+		case err == nil:
 			for handle, recs := range v6Records {
 				records[handle] = append(records[handle], recs...)
 			}
+		case ctx.Err() != nil:
+			// Best-effort ends where the run itself ends. A torn-down run's IPv4
+			// records are a partial result, and returning them with a nil error
+			// would report it as a complete one.
+			//
+			// Classified on ctx.Err(), never on the error's identity: a
+			// transport's own timeout carries a context-shaped error
+			// nondeterministically, so matching context.Canceled or
+			// DeadlineExceeded would misread an unresponsive mirror as a
+			// cancellation. ctx.Err() is monotone and read immediately after the
+			// failing call, so an ancestor cancel landing mid-fetch is visible
+			// here.
+			return nil, err
+		default:
+			slog.Warn("RPSL inet6num file unavailable, continuing with IPv4 records only",
+				"plugin", p.cfg.name, "url", p.cfg.cacheURL6, "error", err)
 		}
 	}
 
@@ -110,19 +133,35 @@ func (p *RPSLPlugin) recordsFrom(ctx context.Context, url string, handles []stri
 // findingsFor renders one RPSL record as findings.
 //
 // An inet6num record carries a prefix directly, so the prefix IS the finding
-// value — emitted exactly as the registry wrote it, with no conversion and no
-// canonicalisation. An inetnum record carries a start-end range, which expands
+// value, with no conversion. Parse and emit differ on canonicalisation, though:
+// the parsed record keeps the registry's bytes verbatim, while the value emitted
+// here is canonical. An inetnum record carries a start-end range, which expands
 // to one finding per covering IPv4 CIDR.
 func (p *RPSLPlugin) findingsFor(handle string, rec rpslInetnum, orgName string) []plugins.Finding {
 	registry := strings.ToUpper(p.Name())
 
 	if rec.prefix != "" {
-		justification := rpslJustification(registry, "prefix", rec.prefix, handle, rec.netname)
-		return []plugins.Finding{p.newFinding(rec.prefix, handle, orgName, rec.netname, justification)}
+		// netip.ParsePrefix accepts uppercase hex and set host bits, so the raw
+		// spelling would let "2001:DB8::1/32" and "2001:db8::/32" land as two
+		// distinct assets for one network. The parser already gated this prefix,
+		// so the error arm cannot fire; it emits the raw string anyway, because
+		// canonicalising must never cost a finding. Justification and value share
+		// the canonical form so the evidence cannot contradict what it explains.
+		value := rec.prefix
+		if prefix, err := netip.ParsePrefix(rec.prefix); err == nil {
+			value = prefix.Masked().String()
+		}
+		justification := rpslJustification(registry, "prefix", value, handle, rec.netname)
+		return []plugins.Finding{p.newFinding(value, handle, orgName, rec.netname, justification)}
 	}
 
 	cidrs, err := cidr.ConvertIPv4RangeToCIDR(rec.start, rec.end)
 	if err != nil {
+		// Dropping the record is the right call, but doing it silently makes a
+		// malformed range indistinguishable from a registry that listed nothing.
+		slog.Warn("RPSL inetnum range could not be converted to CIDRs, skipping record",
+			"registry", p.cfg.registry, "handle", handle,
+			"start", rec.start, "end", rec.end, "error", err)
 		return nil
 	}
 	rangeText := rec.start + " - " + rec.end
@@ -189,44 +228,55 @@ func parseRPSLInetnums(filePath string, handles []string) (map[string][]rpslInet
 	var inetnumStart, inetnumEnd string
 	var currentPrefix string
 
+	// commitRecord files the record accumulated so far, if it matches a handle,
+	// and then clears the accumulator. Both callers depend on that reset: the
+	// blank-line branch so the next record starts clean, and the post-loop flush
+	// so a file that DID end with a blank line does not commit its last record a
+	// second time.
+	commitRecord := func() {
+		if currentOrg != "" && handleSet[strings.ToUpper(currentOrg)] {
+			switch {
+			case currentPrefix != "":
+				// RPSL is downloaded third-party text, so a prefix net/netip
+				// rejects is skipped rather than propagated: malformed lines are
+				// expected and must not abort the rest of the file.
+				if _, err := netip.ParsePrefix(currentPrefix); err == nil {
+					results[currentOrg] = append(results[currentOrg], rpslInetnum{
+						prefix:  currentPrefix,
+						netname: currentNetname,
+					})
+				}
+			case inetnumStart != "" && inetnumEnd != "":
+				results[currentOrg] = append(results[currentOrg], rpslInetnum{
+					start:   inetnumStart,
+					end:     inetnumEnd,
+					netname: currentNetname,
+				})
+			}
+		}
+		// Reset for next record
+		currentOrg, currentNetname = "", ""
+		inetnumStart, inetnumEnd = "", ""
+		currentPrefix = ""
+	}
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
 		// RPSL records are separated by blank lines
 		if strings.TrimSpace(line) == "" {
 			// End of record - check if it matches our handles
-			if currentOrg != "" && handleSet[strings.ToUpper(currentOrg)] {
-				switch {
-				case currentPrefix != "":
-					// RPSL is downloaded third-party text, so a prefix net/netip
-					// rejects is skipped rather than propagated: malformed lines are
-					// expected and must not abort the rest of the file.
-					if _, err := netip.ParsePrefix(currentPrefix); err == nil {
-						results[currentOrg] = append(results[currentOrg], rpslInetnum{
-							prefix:  currentPrefix,
-							netname: currentNetname,
-						})
-					}
-				case inetnumStart != "" && inetnumEnd != "":
-					results[currentOrg] = append(results[currentOrg], rpslInetnum{
-						start:   inetnumStart,
-						end:     inetnumEnd,
-						netname: currentNetname,
-					})
-				}
-			}
-			// Reset for next record
-			currentOrg, currentNetname = "", ""
-			inetnumStart, inetnumEnd = "", ""
-			currentPrefix = ""
+			commitRecord()
 			continue
 		}
 
 		// Parse RPSL fields
 		if strings.HasPrefix(line, "inet6num:") {
 			// An inet6num line carries a prefix ("2001:db8::/32"), never a
-			// start-end range. It is kept verbatim: normalising it here would
-			// rewrite what the registry actually published.
+			// start-end range. The parsed record keeps it verbatim: normalising it
+			// in the parser would rewrite what the registry actually published,
+			// and the record is what reports that. Canonicalisation belongs at the
+			// emit boundary instead, and lives in findingsFor.
 			currentPrefix = strings.TrimSpace(strings.TrimPrefix(line, "inet6num:"))
 		} else if strings.HasPrefix(line, "inetnum:") {
 			currentInetnum = strings.TrimSpace(strings.TrimPrefix(line, "inetnum:"))
@@ -242,6 +292,13 @@ func parseRPSLInetnums(filePath string, handles []string) (map[string][]rpslInet
 			currentNetname = strings.TrimSpace(strings.TrimPrefix(line, "netname:"))
 		}
 	}
+
+	// A file whose last record has no trailing blank line never reaches the
+	// branch above, so that record would be dropped with no error and no log
+	// line: indistinguishable from "this org owns nothing here". Flushing it here
+	// is a no-op for a file that does end with a blank line, because committing
+	// resets the accumulator.
+	commitRecord()
 
 	return results, scanner.Err()
 }

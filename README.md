@@ -411,7 +411,11 @@ Phase 0 plugins (domain plugins + asn-bgp) run immediately and concurrently. Pha
 
 ### What does the `needs-review` confidence flag mean?
 
-Some plugins use confidence scoring to rank ambiguous matches. For example, `github-org` scores organization candidates based on name similarity and domain matching. Confidence scores are integers from 0 to 100. Findings with total confidence between 35 (`ConfidenceLow`) and 65 (`ConfidenceHigh`) are emitted with a `needs-review` flag rather than being silently discarded. Findings below 35 are dropped as noise.
+Some plugins use confidence scoring to rank ambiguous matches. For example, `github-org` scores organization candidates based on name similarity and domain matching. Confidence scores are integers from 0 to 100.
+
+The framework applies exactly one threshold: `plugins.NeedsReview` flags any finding whose total falls below 65 (`ConfidenceHigh`) — including a total of 0, and including a finding that was never scored at all. It has **no lower bound and discards nothing**.
+
+Dropping a finding is a per-plugin decision, not a framework one. `github-org` is the plugin that applies the 35 (`ConfidenceLow`) noise floor: it discards candidates below 35, emits totals from 35 up to 65 with the `needs-review` flag rather than silently discarding them, and treats totals at or above 65 as clean. Most plugins never score at all, and their findings are emitted unflagged rather than being treated as zero-confidence.
 
 ### How do I write a custom Pius plugin?
 

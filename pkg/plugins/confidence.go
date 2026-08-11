@@ -11,9 +11,12 @@ const (
 	// output.
 	ConfidenceHigh = 65
 
-	// ConfidenceLow is the noise floor. Findings below this total are discarded.
-	// Findings between ConfidenceLow and ConfidenceHigh are emitted needing
-	// review for user verification (and future agent disambiguation).
+	// ConfidenceLow is a noise floor a plugin may choose to apply to its own
+	// candidates before emitting them; github-org is the one that does. The
+	// framework neither enforces it nor discards anything: NeedsReview has no
+	// lower bound, so a finding below this total is still emitted, and is emitted
+	// needing review for user verification (and future agent disambiguation)
+	// exactly like one between here and ConfidenceHigh.
 	ConfidenceLow = 35
 )
 

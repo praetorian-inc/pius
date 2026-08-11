@@ -77,13 +77,24 @@ The runner (`pkg/runner/run.go`) executes plugins in phases:
 `RPSLPlugin` handles two record kinds from the same parse:
 
 - **`inetnum:`** carries a start-end range, expanded to one finding per covering IPv4 CIDR by `cidr.ConvertIPv4RangeToCIDR`.
-- **`inet6num:`** carries a prefix directly, so the prefix **is** the finding value — emitted exactly as the registry published it. `netip.ParsePrefix` is a validity gate only; its parsed value is discarded, and a prefix it rejects is skipped rather than aborting the file. There is deliberately no IPv6 range-to-CIDR converter to route through.
+- **`inet6num:`** carries a prefix directly, so the prefix **is** the finding value. There is deliberately no IPv6 range-to-CIDR converter to route through.
 
-Both kinds share one finding builder and one justification renderer, so `Data` keys (`handle`, `org`, `registry`, `netname` — always set, empty string included) and the `confRPSLHandleInetnum` score cannot diverge between them. The justification says `range` for an inetnum and `prefix` for an inet6num; only the range form appends the `; the range contains CIDR %q` tail, because an inet6num record has no range and claiming one would be false.
+  **Parse and emit differ on purpose, and the split is load-bearing.** The *record* keeps the registry's bytes verbatim: in `parseRPSLInetnums`, `netip.ParsePrefix` is a validity gate only — its parsed value is discarded, and a prefix it rejects is skipped rather than aborting the file. Normalising there would rewrite what the registry actually published. The *finding* is canonical: `findingsFor` re-parses and emits `prefix.Masked().String()`, because `ParsePrefix` accepts host bits set and uppercase hex, so `2001:DB8::1/32` would otherwise reach `Finding.Value` byte-for-byte and become a second asset alongside `2001:db8::/32`. A prefix that somehow fails the second parse falls back to the raw string rather than being dropped — the parser already gated it, so this cannot fire, but a canonicalisation step must never cost recall.
+
+Both kinds share one finding builder and one justification renderer, so `Data` keys (`handle`, `org`, `registry`, `netname` — always set, empty string included) and the `confRPSLHandleInetnum` score cannot diverge between them. The justification says `range` for an inetnum and `prefix` for an inet6num; only the range form appends the `; the range contains CIDR %q` tail, because an inet6num record has no range and claiming one would be false. The prefix the justification quotes is the **canonical** one, the same string that lands in `Finding.Value` — an evidence sentence that spelled the netblock differently from the value it explains would read as a bug.
+
+A range that `cidr.ConvertIPv4RangeToCIDR` cannot convert yields no findings, but it is **logged, not swallowed**: the warning names the registry, handle, and offending range. Dropping a malformed record is correct; dropping it silently is what this package is repeatedly held to account for.
 
 Registries differ in how they ship v6, which `rpslConfig.cacheURL6` encodes: AFRINIC's combined dump already contains its inet6num records (`cacheURL6` empty, one download), while APNIC splits them into a second file. That **secondary fetch is best-effort** — losing it costs IPv6 recall and logs a warning, but must not discard the IPv4 records already in hand. The **primary fetch is not**: its failure returns an error, because an empty result would otherwise read as "this org owns no space in this registry".
 
-`Run` guards a nil cache before any cache dereference. The `Accepts()`-based self-disable is not sufficient on its own: an embedder whose runner interface exposes only `Run` never calls `Accepts()`, and a cache that failed to construct would nil-dereference inside `GetOrDownload`.
+**`Run` must re-check every predicate `Accepts()` gates on, because on the embedded path `Accepts()` is never called.** Guard's runner interface exposes only `Run`, so the `Accepts()`-based self-disable protects the CLI and nothing else. `Accepts` has **two** predicates and `Run` reproduces both:
+
+- **nil cache** → error. A cache that failed to construct would otherwise nil-dereference inside `GetOrDownload`.
+- **zero handles** → `(nil, nil)`, returned *before* the primary fetch. Zero handles match zero records, so downloading and parsing a multi-hundred-megabyte registry dump to prove it is pure waste. Note `splitHandles` returns `nil` for an empty, absent, or separators-only value, so all of those land here. Having nothing to resolve is not an error.
+
+The asymmetry with RDAP is real and intended: `RDAPPlugin.Run` issues its requests *inside* the handle loop, so zero handles already means zero requests and it needs no such guard. RPSL downloads ahead of the loop, so it does.
+
+**Cancellation is not a best-effort failure.** The secondary `cacheURL6` fetch tolerates ordinary download failures, but when the context is done that same path would return IPv4 findings with a nil error and read as a complete run. So the secondary arm returns the error when `ctx.Err() != nil`. It classifies on **`ctx.Err()`, never on the error's identity** — the same rule, and for the same reason, as the reverse-WHOIS salvage arm documented below.
 
 **Domain plugins** (`pkg/plugins/domains/`): Independent (Phase 0) plugins querying various sources (crt.sh, passive DNS, etc.).
 
@@ -108,7 +119,9 @@ Use `pkg/client.Client` for HTTP requests. Provides:
 
 ### Dependency Injection Seams
 
-Embedders (notably the Guard capability adapters) construct plugins directly rather than through the registry, so each CIDR plugin exposes a constructor taking the transport it should use. `init()` registration routes through the same constructor, which is what keeps the two paths from drifting.
+Embedders (notably the Guard capability adapters) construct plugins directly rather than through the registry, so each CIDR plugin exposes a constructor taking the transport it should use.
+
+**What keeps the registered plugin and an injected one from drifting is the shared `<registry>Config()` builder, not a shared call chain.** `init()` and the exported constructor each read the same config builder and each default to the same `client.New()`; `init()` does not call the exported constructor. Routing it through one would add a hop without removing a divergence, because with a single config builder there is none to remove. Nil-tolerance lives at the **exported** boundary, where a caller's typed `*client.Client` arrives — `doerOrDefault` handles it there, including the non-nil-interface-holding-a-nil-pointer case that a plain `if x == nil` inside an unexported helper cannot catch.
 
 - `NewReverseRIRPlugin(*client.Client)`, `NewARINPlugin`, `NewRIPEPlugin`, `NewLACNICPlugin` — take a `*client.Client`; a nil argument falls back to a fresh `client.New()` via `doerOrDefault`.
 - `NewAPNICPlugin(*http.Client)`, `NewAFRINICPlugin(*http.Client)` — take a raw `*http.Client` because their dependency is the cache, not the retrying API client, and return `(*RPSLPlugin, error)`: a cache that cannot be created is reported rather than swallowed into a plugin that silently self-disables.
@@ -123,6 +136,7 @@ For name-resolution plugins where mapping may be ambiguous, attach evidence with
 
 - Confidence scores are integers from 0 to 100. `plugins.AddConfidence` clamps each entry to that range, and `plugins.TotalConfidence(f)` clamps their sum to the same range. **No entries means 0**, not 100 — absence of evidence is not confidence.
 - `plugins.NeedsReview(f)` is derived, never stored: `len(f.Confidences) == 0 || TotalConfidence(f) < ConfidenceHigh`. It reads off the total, so an unscored finding needs review just like an explicitly-zero one. **It therefore cannot distinguish "never assessed" from "assessed and found wanting"** — anything that must test `len(f.Confidences)` directly. The Guard adapter does, because only an unscored finding may fall back to a downstream default. So does terminal output in `run.go`, which annotates only scored findings: most output comes from plugins that never score, and labelling those `needs-review [confidence:0]` would report an assessment that never happened.
+- **`ConfidenceLow` is a floor plugins may choose to apply, not one the framework enforces.** `NeedsReview` has no lower bound — it flags everything under `ConfidenceHigh`, zero included — and nothing in `pkg/plugins` discards a finding. The only code that acts on `ConfidenceLow` is `github_org.go`, which drops its own candidates below it. Do not document or rely on it as a framework-wide noise gate; a plugin that wants a floor has to implement one.
 - Confidence never lives in `Finding.Data`. `Data` is source-specific metadata only.
 - Entries are summed as integers, so threshold comparisons are exact; `30 + 35` always lands on `ConfidenceHigh` (`65`).
 
