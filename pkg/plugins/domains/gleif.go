@@ -327,10 +327,10 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins
 
 	// Signal 1: Name resolution quality — how well fuzzycompletions matched.
 	if p.candidateRank == 0 {
-		plugins.AddConfidence(&f, 0.15,
+		plugins.AddConfidence(&f, 15,
 			fmt.Sprintf("Resolved %q to GLEIF entity %q (top candidate)", p.orgName, p.primaryName))
 	} else {
-		plugins.AddConfidence(&f, 0.10,
+		plugins.AddConfidence(&f, 10,
 			fmt.Sprintf("Resolved %q to GLEIF entity %q (candidate #%d, skipped %d leaf entities)",
 				p.orgName, p.primaryName, p.candidateRank+1, p.candidateRank))
 	}
@@ -340,16 +340,16 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins
 	// indirect siblings and later resolution candidates remain reviewable.
 	switch relation {
 	case "direct-parent":
-		plugins.AddConfidence(&f, 0.50,
+		plugins.AddConfidence(&f, 50,
 			fmt.Sprintf("LEI registry lists %q as direct parent of %q", name, p.primaryName))
 	case "ultimate-parent":
-		plugins.AddConfidence(&f, 0.50,
+		plugins.AddConfidence(&f, 50,
 			fmt.Sprintf("LEI registry lists %q as ultimate parent of %q", name, p.primaryName))
 	case "subsidiary":
-		plugins.AddConfidence(&f, 0.50,
+		plugins.AddConfidence(&f, 50,
 			fmt.Sprintf("LEI registry lists %q as direct subsidiary of %q", name, p.primaryName))
 	case "sibling":
-		plugins.AddConfidence(&f, 0.30,
+		plugins.AddConfidence(&f, 30,
 			fmt.Sprintf("Shares corporate parent with %q (discovered via LEI hierarchy)", p.primaryName))
 	}
 

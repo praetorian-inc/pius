@@ -20,13 +20,13 @@ import (
 // threshold is what the evidence rests on, and appearing on more hosts past it
 // does not make the organization more likely to belong to the target. Scoring
 // per host instead would push any organization on eight or more hosts to the
-// 1.0 cap purely on breadth of scanning.
+// 100 cap purely on breadth of scanning.
 const censysMinHosts = 5
 
 const (
-	confCensysCertificateDomain = 0.65
-	confCensysReverseDNSDomain  = 0.55
-	confCensysNetworkCIDR       = 0.55
+	confCensysCertificateDomain = 65
+	confCensysReverseDNSDomain  = 55
+	confCensysNetworkCIDR       = 55
 )
 
 func init() {
@@ -469,7 +469,7 @@ func (p *CensysOrgPlugin) extractFindings(input plugins.Input, hits []censysSear
 	return findings
 }
 
-func buildCensysDomainConfidence(input plugins.Input, hostIP, rawDomain, source, field string, score float64) plugins.Confidence {
+func buildCensysDomainConfidence(input plugins.Input, hostIP, rawDomain, source, field string, score int) plugins.Confidence {
 	domain := normalizeCensysDomain(rawDomain)
 	return plugins.Confidence{
 		Score: score,

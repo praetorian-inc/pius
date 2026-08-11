@@ -115,9 +115,9 @@ func TestTokenSimilarity(t *testing.T) {
 		min  float64
 	}{
 		{"Praetorian", "Praetorian", 1.0},
-		{"Praetorian", "Praetorian Security", 1.0},  // shorter (1 token) fully matches
-		{"Praetorian Security", "Praetorian Inc", 0.49},  // 1/2 = 0.50
-		{"Acme Corp", "Acme Corporation", 0.49}, // "acme" matches, "corp" != "corporation" = 1/2 = 0.50
+		{"Praetorian", "Praetorian Security", 1.0},      // shorter (1 token) fully matches
+		{"Praetorian Security", "Praetorian Inc", 0.49}, // 1/2 = 0.50
+		{"Acme Corp", "Acme Corporation", 0.49},         // "acme" matches, "corp" != "corporation" = 1/2 = 0.50
 		{"Google", "Apple", 0.0},
 		{"", "Google", 0.0},
 	}
@@ -147,7 +147,7 @@ func TestGitHubOrgPlugin_Score_HighConfidenceWithDomain(t *testing.T) {
 	// All four signals fire for this org: blog domain, name similarity, login
 	// token, and repo activity.
 	require.Len(t, f.Confidences, 4)
-	assert.InDelta(t, 0.60, f.Confidences[0].Score, 0.001)
+	assert.Equal(t, 60, f.Confidences[0].Score)
 	assert.Contains(t, f.Confidences[0].Justification, "praetorian.com")
 	for _, c := range f.Confidences {
 		assert.NotEmpty(t, c.Justification, "every entry needs a justification")

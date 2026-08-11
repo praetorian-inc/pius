@@ -108,7 +108,7 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 	}
 }
 
-const confWhoisServerRecord = 0.85
+const confWhoisServerRecord = 85
 
 func extractPreseeds(r whois.Result) []plugins.Finding {
 	type candidate struct {

@@ -121,7 +121,7 @@ org:            ORG-ACME1-AP
 		byCIDR[finding.Value] = finding
 		require.Len(t, finding.Confidences, 1)
 		confidence := finding.Confidences[0]
-		assert.InDelta(t, confRPSLHandleInetnum, confidence.Score, 0.001)
+		assert.Equal(t, confRPSLHandleInetnum, confidence.Score)
 		assert.NotEmpty(t, confidence.Justification)
 		assert.Contains(t, confidence.Justification, "APNIC")
 		assert.Contains(t, confidence.Justification, "ORG-ACME1-AP")

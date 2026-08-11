@@ -19,7 +19,7 @@ var defaultWordlist string
 
 const (
 	dnsBruteConcurrency  = 50
-	confDNSBruteResolved = 0.70
+	confDNSBruteResolved = 70
 )
 
 // dnsDefaultResolver is the DNS resolver used for wildcard detection and brute-force.

@@ -50,18 +50,15 @@ type httpDoer interface {
 }
 
 // Wikidata evidence contributions. A domain finding carries the relationship
-// and website entries together (0.65, matching the previous flat score); a
+// and website entries together (65, matching the previous flat score); a
 // company-name preseed carries only confWikidataRelationshipOnly, since nothing
 // corroborates the relationship there.
 //
-// This pair lands exactly ON ConfidenceHigh, and their float64 sum is
-// 0.6499999999999999 — see plugins.confidenceEpsilon, which is what keeps a
-// corroborated Wikidata domain reading as clean rather than being pushed into
-// the review queue by rounding.
+// This pair lands exactly on ConfidenceHigh.
 const (
-	confWikidataRelationship     = 0.30
-	confWikidataWebsite          = 0.35
-	confWikidataRelationshipOnly = 0.55
+	confWikidataRelationship     = 30
+	confWikidataWebsite          = 35
+	confWikidataRelationshipOnly = 55
 )
 
 func (p *WikidataPlugin) Name() string { return "wikidata" }

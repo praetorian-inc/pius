@@ -138,7 +138,7 @@ func TestGoogleDorksPlugin_Run_FindsSubsidiaries(t *testing.T) {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "google-dorks", f.Source)
 		assert.NotEmpty(t, f.Value)
-		assert.InDelta(t, googleDorksConfidence, plugins.TotalConfidence(f), 0.001)
+		assert.Equal(t, googleDorksConfidence, plugins.TotalConfidence(f))
 		assert.True(t, plugins.NeedsReview(f))
 		// Verify subsidiary name is in finding data
 		assert.NotEmpty(t, f.Data["subsidiary"])
@@ -480,14 +480,14 @@ func TestGoogleDorks_Run_TwoEvidenceEntries(t *testing.T) {
 
 	f := findings[0]
 	require.Len(t, f.Confidences, 2)
-	assert.InDelta(t, confGoogleDorksSubsidiary, f.Confidences[0].Score, 0.001)
+	assert.Equal(t, confGoogleDorksSubsidiary, f.Confidences[0].Score)
 	assert.Contains(t, f.Confidences[0].Justification, "Acme Widgets")
 	assert.Contains(t, f.Confidences[0].Justification, "subsidiary")
 
-	assert.InDelta(t, confGoogleDorksDomain, f.Confidences[1].Score, 0.001)
+	assert.Equal(t, confGoogleDorksDomain, f.Confidences[1].Score)
 	assert.Contains(t, f.Confidences[1].Justification, "Acme Widgets")
 	assert.Contains(t, f.Confidences[1].Justification, "acmewidgets.com")
 
-	assert.InDelta(t, 0.55, plugins.TotalConfidence(f), 0.001)
+	assert.Equal(t, 55, plugins.TotalConfidence(f))
 	assert.True(t, plugins.NeedsReview(f))
 }

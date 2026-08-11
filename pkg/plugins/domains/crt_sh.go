@@ -11,7 +11,7 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confCRTShCertificateTransparencyObservation = 0.65
+const confCRTShCertificateTransparencyObservation = 65
 
 func init() {
 	plugins.Register("crt-sh", func() plugins.Plugin { return NewCRTShPlugin(client.New()) })

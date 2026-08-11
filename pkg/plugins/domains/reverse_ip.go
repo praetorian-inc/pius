@@ -66,27 +66,27 @@ func (p *ReverseIPPlugin) key() string {
 
 // Independent evidence contributions for a reverse-IP hostname. They are
 // additive, so the branch totals of the original decision tree fall out of the
-// combinations: CDN + unrelated hostname = 0.25, CDN + known-domain = 0.55,
-// non-CDN + unmatched = 0.55, non-CDN + org-name = 0.70, non-CDN +
-// known-domain = 0.85.
+// combinations: CDN + unrelated hostname = 25, CDN + known-domain = 55,
+// non-CDN + unmatched = 55, non-CDN + org-name = 70, non-CDN +
+// known-domain = 85.
 const (
 	// confReverseIPAssociated is the base signal: the hostname was observed
 	// against an IP inside a netblock attributed to the target.
-	confReverseIPAssociated = 0.25
+	confReverseIPAssociated = 25
 	// confReverseIPNonCDN credits the IP not belonging to a known CDN — shared
 	// CDN address space is where reverse-IP false positives come from.
-	confReverseIPNonCDN = 0.30
+	confReverseIPNonCDN = 30
 	// confReverseIPKnownDomain credits the hostname sitting under the known
 	// target domain.
-	confReverseIPKnownDomain = 0.30
+	confReverseIPKnownDomain = 30
 	// confReverseIPOrgName credits the weaker signal of the hostname carrying
 	// the normalized organization name. It is only added when the stronger
 	// known-domain evidence did not already fire.
-	confReverseIPOrgName = 0.15
+	confReverseIPOrgName = 15
 
 	// confReverseIPDiscardFloor is the aggregate below which a hostname is
 	// dropped rather than emitted.
-	confReverseIPDiscardFloor = 0.30
+	confReverseIPDiscardFloor = 30
 )
 
 func (p *ReverseIPPlugin) Name() string { return "reverse-ip" }
