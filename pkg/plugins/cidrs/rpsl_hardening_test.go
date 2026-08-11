@@ -3,7 +3,9 @@ package cidrs
 import (
 	"context"
 	"net/http"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/praetorian-inc/pius/pkg/cache"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -265,8 +267,11 @@ func TestParseRPSLInetnums_TrailingBlankLineCommitsExactlyOnce(t *testing.T) {
 
 // ─── Run: the cancelled secondary fetch ────────────────────────────────────
 
-// rpslCancelDuringV6Transport answers the secondary (inet6num) download by
+// rpslCancelOnURLTransport answers the download of one designated URL by
 // cancelling the run's context and then handing back a plain 503 response.
+// Every other URL gets the same 503 without the cancel, so a test can aim the
+// teardown at whichever fetch it is exercising: APNIC's secondary inet6num
+// file, or a registry's primary dump.
 //
 // The two halves are what make the test's premise real, and BOTH are
 // load-bearing:
@@ -291,13 +296,13 @@ func TestParseRPSLInetnums_TrailingBlankLineCommitsExactlyOnce(t *testing.T) {
 // because the transport put it there, and the assertion below would go green
 // without Run's arm having done anything. Here it cannot: any match on
 // context.Canceled must come from Run's own error construction.
-type rpslCancelDuringV6Transport struct {
+type rpslCancelOnURLTransport struct {
 	cancelURL string
 	cancel    context.CancelFunc
 	urls      []string
 }
 
-func (t *rpslCancelDuringV6Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t *rpslCancelOnURLTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.urls = append(t.urls, req.URL.String())
 	if req.URL.String() == t.cancelURL {
 		t.cancel()
@@ -316,23 +321,44 @@ func (t *rpslCancelDuringV6Transport) RoundTrip(req *http.Request) (*http.Respon
 // caller learns when a run is torn down mid-flight during the best-effort
 // inet6num download.
 //
-// rpsl.go's secondary-fetch switch classifies on ctx.Err(), deliberately not on
-// the error's identity, and then returns the raw transport error:
+// rpsl.go's secondary-fetch switch tests cancellation FIRST — ahead of the
+// success arm — and classifies it on ctx.Err(), deliberately not on the error's
+// identity, then wraps BOTH the context error and the transport error through
+// abortedFetchError:
 //
+//	switch {
 //	case ctx.Err() != nil:
-//	    return nil, err
+//	    return nil, p.abortedFetchError("inet6num", ctx.Err(), err)
+//	case err == nil:
+//	    // merge the v6 records
+//	default:
+//	    // warn and continue with IPv4 only
+//	}
 //
-// That raw error carries no context error in its chain when the mirror happened
-// to fail for its own reasons at the same moment. A caller running
+// The arm's POSITION is load-bearing, because err == nil does not mean the
+// fetch succeeded: cache.GetOrDownload falls back to a stale local file and
+// returns a NIL error whenever a download fails, a download aborted by this
+// run's own ctx included. Testing err == nil first therefore routed a
+// torn-down run into the success arm, merged stale IPv6 records, and returned
+// no error at all — a run that never finished, reported as complete, on data
+// of unknown age. TestNewAPNICPlugin_Run_CancelledSecondaryStaleFallbackFailsRun
+// pins that shape directly.
+//
+// The arm's CLASSIFIER is load-bearing for a separate reason: it keys off
+// ctx.Err() rather than the error's identity because the transport error
+// carries no context error in its chain when the mirror happened to fail for
+// its own reasons at the same moment. A caller running
 // errors.Is(err, context.Canceled) — the standard way to tell "we tore this
-// run down" from "this registry mirror is broken" — gets false, and a cancelled
-// run is misreported as an APNIC outage. Retry logic and alerting both key off
-// exactly that distinction.
+// run down" from "this registry mirror is broken" — would get false, and a
+// cancelled run would be misreported as an APNIC outage. Retry logic and
+// alerting both key off exactly that distinction.
 //
-// So the returned error must satisfy BOTH assertions at once: matchable as the
-// cancellation, and still carrying the transport failure's own text. Returning
-// the bare transport error fails the first; returning a bare ctx.Err() would
-// pass the first and throw the 503 away, failing the second.
+// And both halves of the wrap are load-bearing. The returned error must
+// satisfy BOTH assertions at once: matchable as the cancellation, and still
+// carrying the transport failure's own text. Returning the bare transport
+// error fails the first; returning a bare ctx.Err() would pass the first and
+// throw the 503 away — the only diagnostic separating a cancelled run from a
+// cancelled run that was *also* failing — failing the second.
 //
 // Preconditions that make the arm reachable, each asserted rather than assumed:
 // APNIC is the only registry with a non-empty cacheURL6; the handle list is
@@ -351,7 +377,7 @@ func TestNewAPNICPlugin_Run_CancelledSecondaryFetchWrapsContextError(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	transport := &rpslCancelDuringV6Transport{cancelURL: cache.APNICInet6URL, cancel: cancel}
+	transport := &rpslCancelOnURLTransport{cancelURL: cache.APNICInet6URL, cancel: cancel}
 	plugin, err := NewAPNICPlugin(&http.Client{Transport: transport})
 	require.NoError(t, err)
 
@@ -373,4 +399,189 @@ func TestNewAPNICPlugin_Run_CancelledSecondaryFetchWrapsContextError(t *testing.
 		"the transport failure's own text must survive the wrap: a bare ctx.Err() would discard the only diagnostic saying what the mirror actually did")
 	assert.Empty(t, findings,
 		"the run failed, so no partial IPv4 findings may be returned alongside the error")
+}
+
+// ─── Run: cancellation masked by the stale-cache fallback ──────────────────
+
+// seedStaleRPSLCacheEntry seeds a cache entry and then backdates its mtime past
+// cache.DefaultTTL, so cache.GetOrDownload treats it as stale and actually
+// attempts a download.
+//
+// The backdating is not a detail; it is the difference between exercising the
+// stale-cache fallback and proving nothing while looking green.
+// seedRPSLCacheEntry writes with the CURRENT mtime, and Cache.isStale is
+// time.Since(info.ModTime()) > c.ttl against a 24h DefaultTTL — so a freshly
+// seeded entry is WARM, GetOrDownload returns at its `if !c.isStale(localPath)`
+// early exit, download is never called, the transport is never reached, and the
+// cancel hook never fires. A test built on a warm entry would assert against a
+// run that was never cancelled at all.
+//
+// Because a warm entry fails silently that way, every caller below also asserts
+// the recorded transport URLs: an actual request for this URL is the observable
+// proof that the entry was stale enough to reach download.
+func seedStaleRPSLCacheEntry(t *testing.T, home, url, content string) string {
+	t.Helper()
+
+	path := seedRPSLCacheEntry(t, home, url, content)
+	backdated := time.Now().Add(-2 * cache.DefaultTTL)
+	require.NoError(t, os.Chtimes(path, backdated, backdated))
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Greater(t, time.Since(info.ModTime()), cache.DefaultTTL,
+		"the seeded entry must be older than cache.DefaultTTL, or GetOrDownload short-circuits before download and the fetch under test never happens")
+
+	return path
+}
+
+// TestNewAPNICPlugin_Run_CancelledSecondaryStaleFallbackFailsRun is the sibling
+// of the cold-cache test above with its single most consequential precondition
+// inverted: the inet6num entry is present but STALE rather than absent.
+//
+// That inversion is the whole defect. With the entry absent, a cancelled
+// download surfaces to Run as an error, so even the pre-fix `case err == nil`
+// ordering fell through to the cancellation arm and the run failed — loudly and
+// with a badly typed error, but it failed. With the entry present and stale,
+// cache.GetOrDownload catches the failed download, stats the stale file, and
+// returns (path, nil). recordsFrom then hands Run a NIL error and a full set of
+// stale IPv6 records, and the pre-fix switch took the success arm: it merged
+// them and returned findings with no error. A run torn down mid-refresh
+// reported as complete, on data of unknown age.
+//
+// So the assertions here are not mainly about the error's shape. `findings`
+// being empty is the heart of it: pre-fix, this code path did not return a
+// mis-typed error — it returned RESULTS.
+func TestNewAPNICPlugin_Run_CancelledSecondaryStaleFallbackFailsRun(t *testing.T) {
+	home := rpslTempHome(t)
+	blocked := rpslBlockGlobalTransport(t)
+
+	seedRPSLCacheEntry(t, home, cache.APNICInetURL, rpslDIAPNICV4Only)
+	stalePath := seedStaleRPSLCacheEntry(t, home, cache.APNICInet6URL, rpslDIAPNICV6Only)
+	require.FileExists(t, stalePath,
+		"the fallback under test only exists because GetOrDownload finds a file to fall back to")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	transport := &rpslCancelOnURLTransport{cancelURL: cache.APNICInet6URL, cancel: cancel}
+	plugin, err := NewAPNICPlugin(&http.Client{Transport: transport})
+	require.NoError(t, err)
+
+	findings, err := plugin.Run(ctx, plugins.Input{
+		OrgName: "Acme Corp",
+		Meta:    map[string]string{"apnic_handles": "ORG-ACME1-AP"},
+	})
+
+	require.Equal(t, []string{cache.APNICInet6URL}, transport.urls,
+		"exactly one request, for the inet6num file: this is the proof the seeded v6 entry was genuinely stale (a warm entry short-circuits GetOrDownload before download, so the cancel hook would never fire and the test would pass having exercised nothing) and that the warm v4 entry served the primary off disk")
+	require.Empty(t, blocked.recorded(),
+		"a request escaped to http.DefaultTransport instead of the injected client")
+
+	require.Error(t, err,
+		"the run context is done, so the run must fail rather than complete on stale IPv6 records")
+	assert.ErrorIs(t, err, context.Canceled,
+		"a run torn down mid-fetch must be matchable as the cancellation, not as a registry outage")
+	assert.Empty(t, findings,
+		"the defect in one assertion: the stale fallback made the aborted fetch look successful, so the pre-fix success arm merged stale records and returned them alongside a nil error")
+
+	assert.NotContains(t, err.Error(), "transport:",
+		"GetOrDownload swallowed the 503 and returned nil when it fell back to the stale file, so there is no transport error to report; a transport clause here would mean the fallback never fired and this test is not exercising the defect it names")
+	assert.NotContains(t, err.Error(), "%!w",
+		"abortedFetchError must not hand fmt a nil fetch error to %w, which renders as the literal %!w(<nil>)")
+}
+
+// TestNewAFRINICPlugin_Run_CancelledPrimaryStaleFallbackFailsRun moves the same
+// defect onto the PRIMARY fetch, which needed its own ctx.Err() test.
+//
+// AFRINIC is the right registry for it: afrinicConfig has an empty cacheURL6
+// because the registry ships one combined dump, so the primary fetch is the
+// only fetch and nothing downstream can mask the result. Pre-fix the primary
+// path had no cancellation test at all — it checked `if err != nil` and
+// nothing else — so a cancelled download rescued by the stale-cache fallback
+// returned a nil error, parsed the stale dump, and completed the run with
+// findings. Identical failure mode to the secondary arm, one function earlier.
+func TestNewAFRINICPlugin_Run_CancelledPrimaryStaleFallbackFailsRun(t *testing.T) {
+	home := rpslTempHome(t)
+	blocked := rpslBlockGlobalTransport(t)
+
+	seedStaleRPSLCacheEntry(t, home, cache.AFRINICAllURL, rpslDIAFRINICDump)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	transport := &rpslCancelOnURLTransport{cancelURL: cache.AFRINICAllURL, cancel: cancel}
+	plugin, err := NewAFRINICPlugin(&http.Client{Transport: transport})
+	require.NoError(t, err)
+
+	findings, err := plugin.Run(ctx, plugins.Input{
+		OrgName: "Acme Corp",
+		Meta:    map[string]string{"afrinic_handles": "ORG-ACME1-AF"},
+	})
+
+	require.Equal(t, []string{cache.AFRINICAllURL}, transport.urls,
+		"exactly one request, for the combined dump: it proves the seeded entry was genuinely stale (a warm entry never reaches download, so the cancel hook never fires) and that an empty cacheURL6 produced no second fetch")
+	require.Empty(t, blocked.recorded(),
+		"a request escaped to http.DefaultTransport instead of the injected client")
+
+	require.Error(t, err,
+		"the run context is done, so the primary fetch must fail the run rather than complete on a stale dump")
+	assert.ErrorIs(t, err, context.Canceled,
+		"a run torn down during the primary fetch must be matchable as the cancellation")
+	assert.Empty(t, findings,
+		"pre-fix the primary path returned the stale dump's findings with a nil error; a cancelled run must return neither")
+
+	assert.NotContains(t, err.Error(), "transport:",
+		"the stale fallback swallowed the 503 and returned nil, so there is no transport error to report; a transport clause here would mean the fallback never fired")
+	assert.NotContains(t, err.Error(), "%!w",
+		"abortedFetchError must not hand fmt a nil fetch error to %w")
+}
+
+// TestNewAPNICPlugin_Run_CancelledColdPrimaryFetchWrapsContextError is the
+// primary fetch with NO cache entry to fall back to, which is the other half of
+// the primary arm's contract.
+//
+// Here GetOrDownload cannot rescue anything: it stats a path that does not
+// exist and returns ("", "download <url>: HTTP 503") — an error whose chain is
+// empty, because the stub RoundTripper returns (resp, nil) and net/http
+// therefore never builds a *url.Error around context.Canceled. Pre-fix that raw
+// error was exactly what the caller got, so errors.Is(err, context.Canceled)
+// was false and a torn-down run read as an APNIC outage.
+//
+// This test is the reason abortedFetchError takes both errors: the 503 must
+// still be legible in the message, and the cancellation must still be
+// matchable, from one error value.
+func TestNewAPNICPlugin_Run_CancelledColdPrimaryFetchWrapsContextError(t *testing.T) {
+	home := rpslTempHome(t)
+	blocked := rpslBlockGlobalTransport(t)
+
+	require.NoFileExists(t, rpslCacheEntryPath(home, cache.APNICInetURL),
+		"the cold-cache half of the contract requires no entry to fall back to, or GetOrDownload would return a nil error and this would be the stale-fallback test instead")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	transport := &rpslCancelOnURLTransport{cancelURL: cache.APNICInetURL, cancel: cancel}
+	plugin, err := NewAPNICPlugin(&http.Client{Transport: transport})
+	require.NoError(t, err)
+
+	findings, err := plugin.Run(ctx, plugins.Input{
+		OrgName: "Acme Corp",
+		Meta:    map[string]string{"apnic_handles": "ORG-ACME1-AP"},
+	})
+
+	require.Equal(t, []string{cache.APNICInetURL}, transport.urls,
+		"the primary fetch must fail the run outright: the best-effort inet6num download may not be attempted after the run is already lost")
+	require.Empty(t, blocked.recorded(),
+		"a request escaped to http.DefaultTransport instead of the injected client")
+
+	require.Error(t, err,
+		"the primary file is not best-effort; losing it must fail the run")
+	assert.ErrorIs(t, err, context.Canceled,
+		"pre-fix the caller got the bare \"download …: HTTP 503\", whose chain holds no context error, so a cancelled run was indistinguishable from a broken mirror")
+	assert.Contains(t, err.Error(), "503",
+		"a bare ctx.Err() would pass the assertion above and discard the only diagnostic saying what the mirror actually did")
+	assert.Contains(t, err.Error(), "transport:",
+		"both halves of abortedFetchError's wrap must be present when the fetch produced a real transport error")
+	assert.Empty(t, findings,
+		"the run failed before any record was parsed, so there is nothing to return alongside the error")
 }

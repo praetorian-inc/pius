@@ -76,7 +76,17 @@ func (p *RPSLPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 
 	// The primary file is not best-effort: losing it means the run found nothing,
 	// which must not read as "this org owns no space in this registry".
+	//
+	// Cancellation is tested BEFORE err here, for the same reason it is on the
+	// secondary fetch below, where the full rationale lives: a nil err does not
+	// mean the fetch succeeded. An err-first order would let a run torn down
+	// mid-download return records parsed out of stale bytes and report it as a
+	// complete one, and would surface a cancelled run whose fetch DID fail as the
+	// raw, unmatchable transport error.
 	records, err := p.recordsFrom(ctx, p.cfg.cacheURL, handles)
+	if ctx.Err() != nil {
+		return nil, p.abortedFetchError("primary", ctx.Err(), err)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -87,14 +97,21 @@ func (p *RPSLPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 	if p.cfg.cacheURL6 != "" {
 		v6Records, err := p.recordsFrom(ctx, p.cfg.cacheURL6, handles)
 		switch {
-		case err == nil:
-			for handle, recs := range v6Records {
-				records[handle] = append(records[handle], recs...)
-			}
 		case ctx.Err() != nil:
 			// Best-effort ends where the run itself ends. A torn-down run's IPv4
 			// records are a partial result, and returning them with a nil error
 			// would report it as a complete one.
+			//
+			// This arm is tested FIRST, ahead of err, and the order is
+			// load-bearing: err == nil does NOT mean the fetch succeeded.
+			// pkg/cache's GetOrDownload converts a failed download — including one
+			// aborted by this very ctx — into a nil error whenever the stale local
+			// file still stats, handing back the stale path instead. So testing
+			// err first would take the success arm on a run that was torn down
+			// mid-fetch, merge stale IPv6 records into the result, and return it
+			// with a nil error: precisely the "complete run" report this arm
+			// exists to prevent. Cancellation dominates the fetch outcome; it is
+			// not a fallback from it.
 			//
 			// Classified on ctx.Err(), never on the error's identity: a
 			// transport's own timeout carries a context-shaped error
@@ -114,8 +131,14 @@ func (p *RPSLPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 			// transport failure's own text: a bare ctx.Err() would discard the
 			// only diagnostic saying what the mirror actually did, which is what
 			// tells a cancelled run from a cancelled run that was also failing.
-			return nil, fmt.Errorf("%s: inet6num fetch aborted: %w (transport: %w)",
-				p.cfg.name, ctx.Err(), err)
+			// The stale-fallback path above is also why err may be nil here at
+			// all, and a nil operand is the one thing %w cannot render; the wrap
+			// therefore goes through abortedFetchError.
+			return nil, p.abortedFetchError("inet6num", ctx.Err(), err)
+		case err == nil:
+			for handle, recs := range v6Records {
+				records[handle] = append(records[handle], recs...)
+			}
 		default:
 			slog.Warn("RPSL inet6num file unavailable, continuing with IPv4 records only",
 				"plugin", p.cfg.name, "url", p.cfg.cacheURL6, "error", err)
@@ -130,6 +153,29 @@ func (p *RPSLPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 	}
 
 	return findings, nil
+}
+
+// abortedFetchError renders the error a fetch aborted by the run's own
+// cancellation must return. what names the fetch ("primary" or "inet6num").
+//
+// ctxErr is the caller's already-read ctx.Err() and is non-nil at both call
+// sites. fetchErr is that fetch's own error and MAY be nil: pkg/cache's
+// GetOrDownload converts a failed — or cancelled — download into a nil error
+// whenever the stale local file still stats, so "the run was cancelled" and "the
+// fetch reported an error" are independent facts, not two names for one.
+//
+// That nil is why the two shapes cannot share one format string. fmt.Errorf
+// renders a nil operand for %w as the literal "%!w(<nil>)", so a single-format
+// version would print a formatting artefact exactly where the transport
+// diagnostic belongs. Both shapes wrap ctxErr, so errors.Is(err,
+// context.Canceled) holds either way; what the second shape adds is the
+// transport failure's own text.
+func (p *RPSLPlugin) abortedFetchError(what string, ctxErr, fetchErr error) error {
+	if fetchErr == nil {
+		return fmt.Errorf("%s: %s fetch aborted: %w", p.cfg.name, what, ctxErr)
+	}
+	return fmt.Errorf("%s: %s fetch aborted: %w (transport: %w)",
+		p.cfg.name, what, ctxErr, fetchErr)
 }
 
 // recordsFrom resolves one RPSL file through the cache and parses the records
