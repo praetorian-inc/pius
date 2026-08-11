@@ -656,6 +656,11 @@ func TestSelectCompany(t *testing.T) {
 	)
 }
 
+func TestDiscoveryQuery_RejectsInvalidEntityID(t *testing.T) {
+	assert.Empty(t, discoveryQuery("Q1 } UNION { ?entity ?p ?o", wikidataPropertyParent))
+	assert.NotEmpty(t, discoveryQuery("Q248", wikidataPropertyParent))
+}
+
 func TestClassifyClaim(t *testing.T) {
 	tests := []struct {
 		name     string

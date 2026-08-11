@@ -79,7 +79,7 @@ func (p *WikidataPlugin) searchEntityIDs(
 		}
 		entityIDs := make([]string, 0, len(response.Search))
 		for _, result := range response.Search {
-			if result.ID != "" {
+			if isWikidataEntityID(result.ID) {
 				entityIDs = append(entityIDs, result.ID)
 			}
 		}
@@ -197,7 +197,11 @@ func (p *WikidataPlugin) discoverEntityIDs(
 	entityIDs := []string{}
 	failedQueries := 0
 	for _, property := range []string{wikidataPropertySubsidiary, wikidataPropertyParent} {
-		bindings, err := executeSPARQL[discoveryBinding](p, ctx, discoveryQuery(targetID, property))
+		query := discoveryQuery(targetID, property)
+		if query == "" {
+			return nil, fmt.Errorf("invalid Wikidata entity ID %q", targetID)
+		}
+		bindings, err := executeSPARQL[discoveryBinding](p, ctx, query)
 		if err != nil {
 			failedQueries++
 			slog.Debug("wikidata: relationship discovery failed", "property", property, "error", err)
@@ -213,6 +217,9 @@ func (p *WikidataPlugin) discoverEntityIDs(
 }
 
 func discoveryQuery(targetID, property string) string {
+	if !isWikidataEntityID(targetID) {
+		return ""
+	}
 	if property == wikidataPropertyParent {
 		return fmt.Sprintf(`
 SELECT DISTINCT ?entity WHERE {
@@ -554,6 +561,14 @@ func waitForWikidataRetry(ctx context.Context, retryAfter time.Duration, attempt
 	case <-timer.C:
 		return nil
 	}
+}
+
+func isWikidataEntityID(entityID string) bool {
+	if len(entityID) < 2 || entityID[0] != 'Q' || entityID[1] == '0' {
+		return false
+	}
+	_, err := strconv.ParseUint(entityID[1:], 10, 64)
+	return err == nil
 }
 
 func extractEntityID(uri string) string {
