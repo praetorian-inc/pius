@@ -9,8 +9,17 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
+
+var sensitiveQueryParams = map[string]bool{
+	"key":          true,
+	"apikey":       true,
+	"api_key":      true,
+	"token":        true,
+	"access_token": true,
+}
 
 const (
 	defaultTimeout  = 30 * time.Second
@@ -55,14 +64,14 @@ func sanitizeURL(rawURL string) string {
 	}
 	q := parsed.Query()
 	redacted := false
-	for _, key := range []string{"key", "apikey", "api_key", "token", "access_token"} {
-		if q.Has(key) {
+	for key := range q {
+		if sensitiveQueryParams[strings.ToLower(key)] {
 			q.Set(key, "REDACTED")
 			redacted = true
 		}
 	}
 	if !redacted {
-		return rawURL // Return original if nothing to redact
+		return rawURL
 	}
 	parsed.RawQuery = q.Encode()
 	return parsed.String()
