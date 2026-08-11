@@ -44,11 +44,8 @@ func TotalConfidence(f Finding) int {
 	total := 0
 	for _, confidence := range f.Confidences {
 		total += max(0, min(confidence.Score, 100))
-		if total >= 100 {
-			return 100
-		}
 	}
-	return total
+	return min(total, 100)
 }
 
 // NeedsReview reports whether a finding falls short of ConfidenceHigh, which
@@ -57,9 +54,7 @@ func TotalConfidence(f Finding) int {
 // It reads directly off the total: no evidence totals 0 and needs review, an
 // explicit zero-score entry totals 0 and needs review, and anything scored
 // below the threshold needs review. Callers that must distinguish "never
-// assessed" from "assessed and found wanting" test len(f.Confidences) rather
-// than asking here — the SDK emitter and the Guard adapter both do, because
-// only unscored findings may fall back to a downstream default.
+// assessed" from "assessed and found wanting" can inspect f.Confidences.
 func NeedsReview(f Finding) bool {
 	return len(f.Confidences) == 0 || TotalConfidence(f) < ConfidenceHigh
 }
