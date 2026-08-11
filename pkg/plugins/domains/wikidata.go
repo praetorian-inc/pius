@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,9 +20,10 @@ import (
 )
 
 const (
-	confWikidataCurrent    = 50
-	confWikidataUnverified = 30
-	confWikidataEnded      = 0
+	confWikidataCurrent          = 50
+	confWikidataUnverified       = 30
+	confWikidataEnded            = 0
+	wikidataStatusQueryBatchSize = 100
 )
 
 type wikidataConfidenceScenario struct {
@@ -405,21 +407,23 @@ func wikidataEntityIDs(results []sparqlBinding) []string {
 }
 
 func (p *WikidataPlugin) enrichRelationshipStatuses(ctx context.Context, statuses map[string]string, companyID string, entityIDs []string, property string) error {
-	body, err := p.executeSPARQL(ctx, relationshipStatusQuery(companyID, entityIDs, property))
-	if err != nil {
-		return err
-	}
-
-	var resp sparqlResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return fmt.Errorf("parse response: %w", err)
-	}
-	for _, binding := range resp.Results.Bindings {
-		id := extractEntityID(binding.Entity.Value)
-		if id == "" || binding.Rank.Value == "" {
-			continue
+	for batch := range slices.Chunk(entityIDs, wikidataStatusQueryBatchSize) {
+		body, err := p.executeSPARQL(ctx, relationshipStatusQuery(companyID, batch, property))
+		if err != nil {
+			return err
 		}
-		mergeRelationshipStatus(statuses, id, binding)
+
+		var resp sparqlResponse
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return fmt.Errorf("parse response: %w", err)
+		}
+		for _, binding := range resp.Results.Bindings {
+			id := extractEntityID(binding.Entity.Value)
+			if id == "" || binding.Rank.Value == "" {
+				continue
+			}
+			mergeRelationshipStatus(statuses, id, binding)
+		}
 	}
 	return nil
 }

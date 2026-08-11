@@ -3,6 +3,7 @@ package domains
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -472,6 +473,30 @@ func TestWikidataPlugin_Run_EndedRelationshipConfidence(t *testing.T) {
 		`Wikidata lists "https://www.kavo.com" as the official website of "KaVo Dental", but says its relationship to the target (subsidiary (P749)) is ended or deprecated`,
 		findings[0].Confidences[0].Justification)
 	assert.Equal(t, "ended_or_deprecated", findings[0].Data["relationship_status"])
+}
+
+func TestWikidataPlugin_QueryRelationshipStatuses_BatchesEntityIDs(t *testing.T) {
+	requestCount := 0
+	maxEntitiesPerRequest := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		entityCount := strings.Count(r.URL.Query().Get("query"), "wd:Q") - 1
+		maxEntitiesPerRequest = max(maxEntitiesPerRequest, entityCount)
+		w.Header().Set("Content-Type", "application/sparql-results+json")
+		_, _ = w.Write(wikidataEmptyResponse())
+	}))
+	defer srv.Close()
+
+	results := make([]sparqlBinding, 201)
+	for i := range results {
+		results[i].Entity.Value = fmt.Sprintf("http://www.wikidata.org/entity/Q%d", i)
+	}
+
+	p := newWikidataPlugin(t, srv.URL)
+	_, err := p.queryRelationshipStatuses(context.Background(), "Q999", results)
+	require.NoError(t, err)
+	assert.Equal(t, 6, requestCount)
+	assert.LessOrEqual(t, maxEntitiesPerRequest, wikidataStatusQueryBatchSize)
 }
 
 func TestMergeRelationshipStatus_CurrentWins(t *testing.T) {
