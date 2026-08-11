@@ -163,8 +163,16 @@ func TestLookup_LogInjectionEscaping(t *testing.T) {
 				"no log output captured: check that the handler's Level option enables Debug")
 
 			// Proves the log fired at all (both RDAP-failure and
-			// TCP43-failure records carry a "domain" attribute).
-			assert.Contains(t, output, "domain")
+			// TCP43-failure records carry a "domain" attribute) AND that
+			// the normalized domain value itself arrived intact with its
+			// embedded newline escaped to the two-character sequence
+			// `\n`, rather than being dropped, truncated, or replaced.
+			// This subsumes the old key-only "domain" substring check:
+			// if this assertion holds, the weaker one necessarily does
+			// too.
+			escapedDomain := strings.ReplaceAll(rootDomain, "\n", `\n`)
+			assert.Contains(t, output, escapedDomain,
+				"handler did not emit the normalized domain with escaped newlines")
 
 			// The payload's newline must be ESCAPED, not literal: the raw
 			// captured bytes must not contain a real newline that starts a
