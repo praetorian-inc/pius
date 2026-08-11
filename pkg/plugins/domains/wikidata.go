@@ -14,6 +14,15 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
+func init() {
+	plugins.Register("wikidata", func() plugins.Plugin {
+		return &WikidataPlugin{
+			httpClient: &http.Client{Timeout: 30 * time.Second},
+			now:        time.Now,
+		}
+	})
+}
+
 const (
 	wikidataEndpoint        = "https://query.wikidata.org/sparql"
 	wikidataEntityEndpoint  = "https://www.wikidata.org/w/api.php"
@@ -57,136 +66,6 @@ type WikidataPlugin struct {
 
 type httpDoer interface {
 	Do(req *http.Request) (*http.Response, error)
-}
-
-type sparqlValue struct {
-	Type  string `json:"type"`
-	Value string `json:"value"`
-}
-
-type sparqlResponse[T any] struct {
-	Results struct {
-		Bindings []T `json:"bindings"`
-	} `json:"results"`
-}
-
-type entitySearchResponse struct {
-	Search []entitySearchResult `json:"search"`
-}
-
-type entitySearchResult struct {
-	ID string `json:"id"`
-}
-
-type companyCandidate struct {
-	id         string
-	matchKind  string
-	matchScore int
-}
-
-type companyResolution struct {
-	id        string
-	matchKind string
-}
-
-type discoveryBinding struct {
-	Entity sparqlValue `json:"entity"`
-}
-
-type entityResponse struct {
-	Entities map[string]entityDocument `json:"entities"`
-}
-
-type entityDocument struct {
-	ID      string                       `json:"id"`
-	Labels  map[string]entityLabel       `json:"labels"`
-	Aliases map[string][]entityLabel     `json:"aliases"`
-	Claims  map[string][]entityStatement `json:"claims"`
-}
-
-type entityLabel struct {
-	Value string `json:"value"`
-}
-
-type entityStatement struct {
-	ID         string                  `json:"id"`
-	Rank       string                  `json:"rank"`
-	MainSnak   entitySnak              `json:"mainsnak"`
-	Qualifiers map[string][]entitySnak `json:"qualifiers"`
-	References []entityReference       `json:"references"`
-}
-
-type entityReference struct {
-	Snaks map[string][]entitySnak `json:"snaks"`
-}
-
-type entitySnak struct {
-	DataValue entityDataValue `json:"datavalue"`
-}
-
-type entityDataValue struct {
-	Value json.RawMessage `json:"value"`
-}
-
-type entityIDValue struct {
-	ID string `json:"id"`
-}
-
-type entityTimeValue struct {
-	Time string `json:"time"`
-}
-
-type datedClaim struct {
-	statement  string
-	rank       string
-	start      time.Time
-	end        time.Time
-	referenced bool
-}
-
-type relationshipClaim struct {
-	datedClaim
-	property string
-}
-
-type affiliationClaim struct {
-	datedClaim
-	property string
-	entityID string
-	name     string
-}
-
-type websiteClaim struct {
-	datedClaim
-	url    string
-	domain string
-}
-
-type entityEvidence struct {
-	id            string
-	name          string
-	relationships []relationshipClaim
-	affiliations  []affiliationClaim
-	websites      []websiteClaim
-}
-
-type relationshipAssessment struct {
-	score           int
-	status          string
-	details         []string
-	note            string
-	referenced      bool
-	reciprocal      bool
-	hasRelationship bool
-}
-
-func init() {
-	plugins.Register("wikidata", func() plugins.Plugin {
-		return &WikidataPlugin{
-			httpClient: &http.Client{Timeout: 30 * time.Second},
-			now:        time.Now,
-		}
-	})
 }
 
 func NewWikidataPlugin(httpClient *http.Client) *WikidataPlugin {
@@ -413,4 +292,125 @@ func cachedWikidataFindings(apiCache *cache.APICache, cacheKey string) ([]plugin
 		return nil, false
 	}
 	return findings, true
+}
+
+type sparqlValue struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
+type sparqlResponse[T any] struct {
+	Results struct {
+		Bindings []T `json:"bindings"`
+	} `json:"results"`
+}
+
+type entitySearchResponse struct {
+	Search []entitySearchResult `json:"search"`
+}
+
+type entitySearchResult struct {
+	ID string `json:"id"`
+}
+
+type companyCandidate struct {
+	id         string
+	matchKind  string
+	matchScore int
+}
+
+type companyResolution struct {
+	id        string
+	matchKind string
+}
+
+type discoveryBinding struct {
+	Entity sparqlValue `json:"entity"`
+}
+
+type entityResponse struct {
+	Entities map[string]entityDocument `json:"entities"`
+}
+
+type entityDocument struct {
+	ID      string                       `json:"id"`
+	Labels  map[string]entityLabel       `json:"labels"`
+	Aliases map[string][]entityLabel     `json:"aliases"`
+	Claims  map[string][]entityStatement `json:"claims"`
+}
+
+type entityLabel struct {
+	Value string `json:"value"`
+}
+
+type entityStatement struct {
+	ID         string                  `json:"id"`
+	Rank       string                  `json:"rank"`
+	MainSnak   entitySnak              `json:"mainsnak"`
+	Qualifiers map[string][]entitySnak `json:"qualifiers"`
+	References []entityReference       `json:"references"`
+}
+
+type entityReference struct {
+	Snaks map[string][]entitySnak `json:"snaks"`
+}
+
+type entitySnak struct {
+	DataValue entityDataValue `json:"datavalue"`
+}
+
+type entityDataValue struct {
+	Value json.RawMessage `json:"value"`
+}
+
+type entityIDValue struct {
+	ID string `json:"id"`
+}
+
+type entityTimeValue struct {
+	Time string `json:"time"`
+}
+
+type datedClaim struct {
+	statement  string
+	rank       string
+	start      time.Time
+	end        time.Time
+	referenced bool
+}
+
+type relationshipClaim struct {
+	datedClaim
+	property string
+}
+
+type affiliationClaim struct {
+	datedClaim
+	property string
+	entityID string
+	name     string
+}
+
+type websiteClaim struct {
+	datedClaim
+	url    string
+	domain string
+}
+
+type entityEvidence struct {
+	id            string
+	name          string
+	relationships []relationshipClaim
+	affiliations  []affiliationClaim
+	websites      []websiteClaim
+}
+
+type relationshipAssessment struct {
+	score           int
+	status          string
+	details         []string
+	note            string
+	referenced      bool
+	reciprocal      bool
+	hasRelationship bool
 }
