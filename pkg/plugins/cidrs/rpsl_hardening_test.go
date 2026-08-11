@@ -262,3 +262,115 @@ func TestParseRPSLInetnums_TrailingBlankLineCommitsExactlyOnce(t *testing.T) {
 	}, results["ORG-ACME1-AP"],
 		"each record must appear exactly once: the blank line commits it, the EOF flush must not re-commit it")
 }
+
+// ─── Run: the cancelled secondary fetch ────────────────────────────────────
+
+// rpslCancelDuringV6Transport answers the secondary (inet6num) download by
+// cancelling the run's context and then handing back a plain 503 response.
+//
+// The two halves are what make the test's premise real, and BOTH are
+// load-bearing:
+//
+//   - It cancels, synchronously, before returning. RoundTrip runs on the
+//     caller's goroutine, so by the time recordsFrom returns and Run evaluates
+//     its `case ctx.Err() != nil` arm, the run context is already done. No
+//     sleep, no polling, no race.
+//
+//   - It IGNORES req.Context() entirely and returns (resp, nil) — a transport
+//     error is never produced. This is condition (b): because the RoundTripper
+//     returns no error, net/http constructs no *url.Error and therefore never
+//     wraps context.Canceled into the chain. cache.download then rejects the
+//     response on status alone with fmt.Errorf("HTTP %d", …) — an error with an
+//     EMPTY chain — and GetOrDownload wraps only that: "download <url>: HTTP
+//     503". The error Run receives thus provably contains no context error at
+//     any depth.
+//
+// Cancelling the context before calling Run instead would defeat the test: the
+// transport would then likely fail the request with a *url.Error wrapping
+// context.Canceled, errors.Is(err, context.Canceled) would hold today purely
+// because the transport put it there, and the assertion below would go green
+// without Run's arm having done anything. Here it cannot: any match on
+// context.Canceled must come from Run's own error construction.
+type rpslCancelDuringV6Transport struct {
+	cancelURL string
+	cancel    context.CancelFunc
+	urls      []string
+}
+
+func (t *rpslCancelDuringV6Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.urls = append(t.urls, req.URL.String())
+	if req.URL.String() == t.cancelURL {
+		t.cancel()
+	}
+	return &http.Response{
+		Status:     "503 Service Unavailable",
+		StatusCode: http.StatusServiceUnavailable,
+		Proto:      "HTTP/1.1",
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}, nil
+}
+
+// TestNewAPNICPlugin_Run_CancelledSecondaryFetchWrapsContextError pins what the
+// caller learns when a run is torn down mid-flight during the best-effort
+// inet6num download.
+//
+// rpsl.go's secondary-fetch switch classifies on ctx.Err(), deliberately not on
+// the error's identity, and then returns the raw transport error:
+//
+//	case ctx.Err() != nil:
+//	    return nil, err
+//
+// That raw error carries no context error in its chain when the mirror happened
+// to fail for its own reasons at the same moment. A caller running
+// errors.Is(err, context.Canceled) — the standard way to tell "we tore this
+// run down" from "this registry mirror is broken" — gets false, and a cancelled
+// run is misreported as an APNIC outage. Retry logic and alerting both key off
+// exactly that distinction.
+//
+// So the returned error must satisfy BOTH assertions at once: matchable as the
+// cancellation, and still carrying the transport failure's own text. Returning
+// the bare transport error fails the first; returning a bare ctx.Err() would
+// pass the first and throw the 503 away, failing the second.
+//
+// Preconditions that make the arm reachable, each asserted rather than assumed:
+// APNIC is the only registry with a non-empty cacheURL6; the handle list is
+// non-empty so Run does not short-circuit before any fetch; the IPv4 entry is
+// seeded warm so the PRIMARY fetch succeeds off disk and the failure under test
+// is unambiguously the secondary one; and the IPv6 entry is asserted absent so
+// GetOrDownload's stale-cache fallback cannot rescue the download and mask it.
+func TestNewAPNICPlugin_Run_CancelledSecondaryFetchWrapsContextError(t *testing.T) {
+	home := rpslTempHome(t)
+	blocked := rpslBlockGlobalTransport(t)
+
+	seedRPSLCacheEntry(t, home, cache.APNICInetURL, rpslDIAPNICV4Only)
+	require.NoFileExists(t, rpslCacheEntryPath(home, cache.APNICInet6URL),
+		"the inet6num entry must be cold, or GetOrDownload's stale-cache fallback would swallow the failed download")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	transport := &rpslCancelDuringV6Transport{cancelURL: cache.APNICInet6URL, cancel: cancel}
+	plugin, err := NewAPNICPlugin(&http.Client{Transport: transport})
+	require.NoError(t, err)
+
+	findings, err := plugin.Run(ctx, plugins.Input{
+		OrgName: "Acme Corp",
+		Meta:    map[string]string{"apnic_handles": "ORG-ACME1-AP"},
+	})
+
+	require.Equal(t, []string{cache.APNICInet6URL}, transport.urls,
+		"only the secondary fetch may hit the network: a warm IPv4 entry means the primary never downloads")
+	require.Empty(t, blocked.recorded(),
+		"a request escaped to http.DefaultTransport instead of the injected client")
+	require.Error(t, err,
+		"the run context is done, so the best-effort arm must fail the run rather than degrade to IPv4-only")
+
+	assert.ErrorIs(t, err, context.Canceled,
+		"a run torn down mid-fetch must be matchable as the cancellation; the raw transport error is not, so callers read a cancelled run as an APNIC outage")
+	assert.Contains(t, err.Error(), "503",
+		"the transport failure's own text must survive the wrap: a bare ctx.Err() would discard the only diagnostic saying what the mirror actually did")
+	assert.Empty(t, findings,
+		"the run failed, so no partial IPv4 findings may be returned alongside the error")
+}

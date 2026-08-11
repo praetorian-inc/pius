@@ -103,7 +103,19 @@ func (p *RPSLPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 			// cancellation. ctx.Err() is monotone and read immediately after the
 			// failing call, so an ancestor cancel landing mid-fetch is visible
 			// here.
-			return nil, err
+			//
+			// The returned error wraps BOTH ctx.Err() and the transport error,
+			// and neither half is optional. Wrapping ctx.Err() is what makes the
+			// run matchable as the cancellation: pkg/cache renders a bad response
+			// as fmt.Errorf("HTTP %d", ...), a plain error carrying no context
+			// error anywhere in its chain, so returning that bare leaves a
+			// caller's errors.Is(err, context.Canceled) false and a torn-down run
+			// reads as a registry outage. Wrapping err is what keeps the
+			// transport failure's own text: a bare ctx.Err() would discard the
+			// only diagnostic saying what the mirror actually did, which is what
+			// tells a cancelled run from a cancelled run that was also failing.
+			return nil, fmt.Errorf("%s: inet6num fetch aborted: %w (transport: %w)",
+				p.cfg.name, ctx.Err(), err)
 		default:
 			slog.Warn("RPSL inet6num file unavailable, continuing with IPv4 records only",
 				"plugin", p.cfg.name, "url", p.cfg.cacheURL6, "error", err)

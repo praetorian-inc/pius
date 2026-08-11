@@ -94,7 +94,7 @@ Registries differ in how they ship v6, which `rpslConfig.cacheURL6` encodes: AFR
 
 The asymmetry with RDAP is real and intended: `RDAPPlugin.Run` issues its requests *inside* the handle loop, so zero handles already means zero requests and it needs no such guard. RPSL downloads ahead of the loop, so it does.
 
-**Cancellation is not a best-effort failure.** The secondary `cacheURL6` fetch tolerates ordinary download failures, but when the context is done that same path would return IPv4 findings with a nil error and read as a complete run. So the secondary arm returns the error when `ctx.Err() != nil`. It classifies on **`ctx.Err()`, never on the error's identity** — the same rule, and for the same reason, as the reverse-WHOIS salvage arm documented below.
+**Cancellation is not a best-effort failure.** The secondary `cacheURL6` fetch tolerates ordinary download failures, but when the context is done that same path would return IPv4 findings with a nil error and read as a complete run. So the secondary arm fails the run when `ctx.Err() != nil`, returning an error that **wraps `ctx.Err()`** — so a caller's `errors.Is(err, context.Canceled)` holds — while still carrying the transport failure's own text. Neither half is optional. Returning the bare transport error is not matchable: `pkg/cache` renders a bad response as `fmt.Errorf("HTTP %d", …)` with no context error anywhere in the chain, so a mirror answering 503 during a torn-down run reads to a caller as a broken mirror. Returning a bare `ctx.Err()` throws that 503 away, which is the diagnostic an operator needs to tell a cancelled run from a cancelled run *that was also failing*. It classifies on **`ctx.Err()`, never on the error's identity** — the same rule, and for the same reason, as the reverse-WHOIS salvage arm documented below.
 
 **Domain plugins** (`pkg/plugins/domains/`): Independent (Phase 0) plugins querying various sources (crt.sh, passive DNS, etc.).
 
@@ -121,7 +121,14 @@ Use `pkg/client.Client` for HTTP requests. Provides:
 
 Embedders (notably the Guard capability adapters) construct plugins directly rather than through the registry, so each CIDR plugin exposes a constructor taking the transport it should use.
 
-**What keeps the registered plugin and an injected one from drifting is the shared `<registry>Config()` builder, not a shared call chain.** `init()` and the exported constructor each read the same config builder and each default to the same `client.New()`; `init()` does not call the exported constructor. Routing it through one would add a hop without removing a divergence, because with a single config builder there is none to remove. Nil-tolerance lives at the **exported** boundary, where a caller's typed `*client.Client` arrives — `doerOrDefault` handles it there, including the non-nil-interface-holding-a-nil-pointer case that a plain `if x == nil` inside an unexported helper cannot catch.
+**What keeps the registered plugin and an injected one from drifting is the shared `<registry>Config()` builder, not a shared call chain.** `init()` and the exported constructor each read the same config builder; `init()` does not call the exported constructor. Routing it through one would add a hop without removing a divergence, because with a single config builder there is none to remove.
+
+The **default transport** the two paths reach for differs by plugin family, and the two must not be conflated:
+
+- *RDAP family* (`reverse-rir`, `arin`, `ripe`, `lacnic`) — both paths end at `client.New()`: `init()` calls it directly, the constructor via `doerOrDefault`. Nil-tolerance lives at the **exported** boundary, where a caller's typed `*client.Client` arrives — `doerOrDefault` handles it there, including the non-nil-interface-holding-a-nil-pointer case that a plain `if x == nil` inside an unexported helper cannot catch.
+- *RPSL family* (`apnic`, `afrinic`) — neither path touches `client.New()`, because the dependency is the cache rather than the retrying API client: `init()` calls `cache.New()` and the constructor calls `cache.NewWithHTTPClient(hc)`. Nil-tolerance therefore lives inside the cache and is resolved lazily at download time, per the `downloadClient` rule above — not at the plugin boundary.
+
+The seams themselves:
 
 - `NewReverseRIRPlugin(*client.Client)`, `NewARINPlugin`, `NewRIPEPlugin`, `NewLACNICPlugin` — take a `*client.Client`; a nil argument falls back to a fresh `client.New()` via `doerOrDefault`.
 - `NewAPNICPlugin(*http.Client)`, `NewAFRINICPlugin(*http.Client)` — take a raw `*http.Client` because their dependency is the cache, not the retrying API client, and return `(*RPSLPlugin, error)`: a cache that cannot be created is reported rather than swallowed into a plugin that silently self-disables.

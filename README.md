@@ -130,7 +130,7 @@ Most domain plugins run in Phase 0 (independent, concurrent). Late-stage plugins
 |--------|-------------|---------------|------|-------|
 | `crt-sh` | Certificate Transparency logs | None | Passive | Deduplicates wildcard entries |
 | `apollo` | Apollo.io enrichment API | `APOLLO_API_KEY` | Passive | Caches results 24h; 85 confidence for domain queries |
-| `github-org` | GitHub organization search | `GITHUB_TOKEN` (optional) | Passive | Confidence-scored; 65 threshold to emit |
+| `github-org` | GitHub organization search | `GITHUB_TOKEN` (optional) | Passive | Confidence-scored; discards below 35, emits 35–64 needing review, 65+ clean |
 | `gleif` | GLEIF LEI corporate registry | None | Passive | Discovers parent/subsidiary domains |
 | `passive-dns` | SecurityTrails passive DNS | `SECURITYTRAILS_API_KEY` | Passive | Historical subdomain records |
 | `reverse-whois` | ViewDNS reverse WHOIS | `VIEWDNS_API_KEY` | Passive | 50 confidence (unverified → needs-review); registrant email matching |
@@ -415,7 +415,9 @@ Some plugins use confidence scoring to rank ambiguous matches. For example, `git
 
 The framework applies exactly one threshold: `plugins.NeedsReview` flags any finding whose total falls below 65 (`ConfidenceHigh`) — including a total of 0, and including a finding that was never scored at all. It has **no lower bound and discards nothing**.
 
-Dropping a finding is a per-plugin decision, not a framework one. `github-org` is the plugin that applies the 35 (`ConfidenceLow`) noise floor: it discards candidates below 35, emits totals from 35 up to 65 with the `needs-review` flag rather than silently discarding them, and treats totals at or above 65 as clean. Most plugins never score at all, and their findings are emitted unflagged rather than being treated as zero-confidence.
+Dropping a finding is a per-plugin decision, not a framework one. `github-org` is the plugin that applies the 35 (`ConfidenceLow`) noise floor: it discards candidates below 35, emits totals from 35 through 64 with the `needs-review` flag rather than silently discarding them, and treats totals at or above 65 as clean.
+
+Most plugins never score at all — a deterministic lookup like RDAP handle → CIDR expansion has nothing ambiguous to weigh. `NeedsReview` still reports `true` for those findings, because it cannot tell "never assessed" from "assessed at zero" by score alone, and the `NeedsReview` field in `--output json` / `--output ndjson` reports exactly what the helper returns. **Terminal output deliberately does not**: it annotates a finding only when the plugin actually scored it, so the common case is not labelled with an assessment that never happened. If you are consuming JSON and want that distinction, read `Confidences` — an empty list is "unscored", not "scored zero".
 
 ### How do I write a custom Pius plugin?
 
