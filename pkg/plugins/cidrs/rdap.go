@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
@@ -44,6 +46,53 @@ type rdapPlugin struct {
 // newRDAPPlugin creates an rdapPlugin with the given config and a default HTTP client.
 func newRDAPPlugin(cfg rdapConfig) *rdapPlugin {
 	return &rdapPlugin{cfg: cfg, doer: client.New()}
+}
+
+// rdapConfigs is the per-registry configuration behind both the self-registering
+// plugins and NewRDAPPlugin, so an embedder's plugin is the same plugin
+// standalone pius runs — only the HTTP client differs.
+var rdapConfigs = map[string]rdapConfig{
+	"arin": {
+		name:        "arin",
+		description: "ARIN RDAP: resolves org handles to CIDR blocks",
+		baseURL:     "https://rdap.arin.net/registry/entity",
+		metaKey:     "arin_handles",
+		registry:    "arin",
+		mode:        plugins.ModePassive,
+	},
+	"ripe": {
+		name:        "ripe",
+		description: "RIPE RDAP: resolves org handles to CIDR blocks",
+		baseURL:     "https://rdap.db.ripe.net/entity",
+		metaKey:     "ripe_handles",
+		registry:    "ripe",
+		mode:        plugins.ModePassive,
+	},
+	"lacnic": {
+		name:        "lacnic",
+		description: "LACNIC RDAP: resolves org handles to CIDR blocks (Latin America & Caribbean)",
+		baseURL:     "https://rdap.lacnic.net/rdap/entity",
+		metaKey:     "lacnic_handles",
+		registry:    "lacnic",
+		mode:        plugins.ModePassive,
+	},
+}
+
+// NewRDAPPlugin builds the RDAP plugin for one registry around a caller-supplied
+// client. It exists for embedders that must route pius egress through their own
+// transport — Guard runs every plugin through its HTTP collector so the traffic
+// is observable and mockable — rather than the package default. A nil client
+// takes the package default, matching the self-registering plugins.
+func NewRDAPPlugin(registry string, c *client.Client) (plugins.Plugin, error) {
+	cfg, ok := rdapConfigs[registry]
+	if !ok {
+		return nil, fmt.Errorf("no RDAP registry %q (have %s)", registry,
+			strings.Join(slices.Sorted(maps.Keys(rdapConfigs)), ", "))
+	}
+	if c == nil {
+		return newRDAPPlugin(cfg), nil
+	}
+	return &rdapPlugin{cfg: cfg, doer: c}, nil
 }
 
 func (p *rdapPlugin) Name() string        { return p.cfg.name }

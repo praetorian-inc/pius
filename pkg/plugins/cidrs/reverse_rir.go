@@ -16,8 +16,19 @@ const confReverseRIRHandle = 60
 
 func init() {
 	plugins.Register("reverse-rir", func() plugins.Plugin {
-		return &ReverseRIRPlugin{client: client.New()}
+		return NewReverseRIRPlugin(nil)
 	})
+}
+
+// NewReverseRIRPlugin builds the plugin around a caller-supplied client, for
+// embedders that must route pius egress through their own transport rather than
+// the package default. A nil client takes the default, which is what the
+// self-registering plugin uses.
+func NewReverseRIRPlugin(c *client.Client) *ReverseRIRPlugin {
+	if c == nil {
+		return &ReverseRIRPlugin{client: client.New()}
+	}
+	return &ReverseRIRPlugin{client: c}
 }
 
 // ReverseRIRPlugin discovers RIR org handles from company names.
