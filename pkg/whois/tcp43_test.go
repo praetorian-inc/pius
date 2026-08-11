@@ -165,3 +165,88 @@ func TestTCP43Raw_ReportsAnsweringServer(t *testing.T) {
 		assert.Empty(t, server)
 	})
 }
+
+// ENG-5457: a referral cycle (A→B→A) must be detected and short-circuited
+// rather than burning the entire hop budget.
+func TestTCP43Raw_ReferralCycleDetected(t *testing.T) {
+	const serverA = "whois.a.example"
+	const serverB = "whois.b.example"
+
+	responses := map[string]string{
+		defaultServer: "refer: " + serverA + "\n",
+		serverA:       "Registrant Organization: Example Inc\nrefer: " + serverB + "\n",
+		serverB:       "Registrant Organization: Example Inc\nrefer: " + serverA + "\n",
+	}
+	dialed := stubTCP43RawFn(t, responses)
+
+	record, _, err := tcp43Raw(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Contains(t, record, "Example Inc")
+	// Without cycle detection the chain would continue to serverA again.
+	// With it, the chain stops after visiting defaultServer, A, B.
+	assert.Equal(t, []string{defaultServer, serverA, serverB}, *dialed)
+}
+
+// ENG-5457: a referral cycle disguised by a trailing dot must still be
+// caught. "whois.a.example" and "whois.a.example." are the same DNS name.
+func TestTCP43Raw_ReferralCycleNormalizedComparison(t *testing.T) {
+	const registry = "whois.registry.example"
+	const registrar = "whois.registrar.example"
+
+	responses := map[string]string{
+		defaultServer: "refer: " + registry + "\n",
+		registry:      "Registrant Organization: Example Inc\nrefer: " + registrar + "\n",
+		registrar:     "Registrant Organization: Example Inc\nrefer: " + registry + ".\n",
+	}
+	dialed := stubTCP43RawFn(t, responses)
+
+	record, _, err := tcp43Raw(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Contains(t, record, "Example Inc")
+	// The trailing-dot referral targets "whois.registry.example." which
+	// normalizes to the already-visited "whois.registry.example".
+	assert.Equal(t, []string{defaultServer, registry, registrar}, *dialed)
+}
+
+// ENG-5457: a referral that cycles back to the bootstrap seed server must
+// be caught, and the post-bootstrap record salvaged.
+func TestTCP43Raw_ReferralCycleBackToSeedSalvages(t *testing.T) {
+	const registry = "whois.nic.example"
+
+	responses := map[string]string{
+		defaultServer: "refer: " + registry + "\n",
+		registry:      "Registrant Organization: Example Inc\nrefer: " + defaultServer + "\n",
+	}
+	dialed := stubTCP43RawFn(t, responses)
+
+	record, server, err := tcp43Raw(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Contains(t, record, "Example Inc")
+	assert.Equal(t, registry, server)
+	// The cycle back to the bootstrap is detected; no third dial.
+	assert.Equal(t, []string{defaultServer, registry}, *dialed)
+}
+
+func TestNormalizeServer(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"bare hostname", "whois.nic.uk", "whois.nic.uk"},
+		{"trailing dot", "whois.nic.uk.", "whois.nic.uk"},
+		{"uppercase", "WHOIS.NIC.UK", "whois.nic.uk"},
+		{"http prefix", "http://whois.nic.uk", "whois.nic.uk"},
+		{"https prefix", "https://whois.nic.uk/", "whois.nic.uk"},
+		{"explicit port", "whois.nic.uk:43", "whois.nic.uk"},
+		{"all combined", "HTTPS://Whois.NIC.UK.:43/", "whois.nic.uk"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expect, normalizeServer(tt.input))
+		})
+	}
+}
