@@ -467,13 +467,9 @@ func TestWikidataPlugin_Run_ScoresReciprocalReferencedEvidence(t *testing.T) {
 	assert.Contains(t, justification, "source references for both")
 }
 
-func TestWikidataPlugin_Run_DowngradesConflictingRelationships(t *testing.T) {
+func TestWikidataPlugin_Run_ScoresOtherCurrentParentAtZero(t *testing.T) {
 	responses := basicWikidataResponses()
 	responses.claims = append(responses.claims,
-		parentResult(
-			"Q2", "P1", "Q1", "Acme Holdings",
-			"2010-01-01T00:00:00Z", "2020-01-01T00:00:00Z", true,
-		),
 		parentResult("Q2", "P2", "Q3", "Other Holdings", "", "", false),
 	)
 
@@ -482,12 +478,31 @@ func TestWikidataPlugin_Run_DowngradesConflictingRelationships(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
 
-	assert.Equal(t, wikidataConflictScore, plugins.TotalConfidence(findings[0]))
+	assert.Equal(t, wikidataOtherOwnerScore, plugins.TotalConfidence(findings[0]))
 	assert.Equal(t, "conflicting", findings[0].Data["relationship_status"])
 	justification := findings[0].Confidences[0].Justification
-	assert.Contains(t, justification, "also records this relationship as ended")
+	assert.NotContains(t, justification, "also records this relationship as ended")
 	assert.Contains(t, justification, `also lists "Other Holdings" as a parent organization`)
 	assert.Contains(t, justification, "reviewed before treating the domain as in scope")
+}
+
+func TestWikidataPlugin_Run_ScoresUnreconciledEndedRelationshipAtTen(t *testing.T) {
+	responses := basicWikidataResponses()
+	responses.claims = append(responses.claims,
+		parentResult(
+			"Q2", "P1", "Q1", "Acme Holdings",
+			"2010-01-01T00:00:00Z", "2020-01-01T00:00:00Z", true,
+		),
+	)
+
+	plugin, _ := newWikidataPlugin(t, responses)
+	findings, err := plugin.Run(context.Background(), plugins.Input{OrgName: "Acme Holdings"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+
+	assert.Equal(t, wikidataEndedScore, plugins.TotalConfidence(findings[0]))
+	assert.Equal(t, "conflicting", findings[0].Data["relationship_status"])
+	assert.Contains(t, findings[0].Confidences[0].Justification, "also records this relationship as ended")
 }
 
 func TestWikidataPlugin_Run_AllowsDatedReacquisition(t *testing.T) {
@@ -514,7 +529,7 @@ func TestWikidataPlugin_Run_AllowsDatedReacquisition(t *testing.T) {
 	assert.NotContains(t, findings[0].Confidences[0].Justification, "also records this relationship as ended")
 }
 
-func TestWikidataPlugin_Run_SuppressesHistoricalRelationships(t *testing.T) {
+func TestWikidataPlugin_Run_ScoresHistoricalRelationshipsAtTen(t *testing.T) {
 	responses := basicWikidataResponses()
 	responses.claims = []map[string]any{
 		websiteResult("Q2", "W1", "https://acmewidgets.com", false),
@@ -527,7 +542,11 @@ func TestWikidataPlugin_Run_SuppressesHistoricalRelationships(t *testing.T) {
 	plugin, _ := newWikidataPlugin(t, responses)
 	findings, err := plugin.Run(context.Background(), plugins.Input{OrgName: "Acme Holdings"})
 	require.NoError(t, err)
-	assert.Empty(t, findings)
+	require.Len(t, findings, 1)
+
+	assert.Equal(t, wikidataEndedScore, plugins.TotalConfidence(findings[0]))
+	assert.Equal(t, "ended", findings[0].Data["relationship_status"])
+	assert.Contains(t, findings[0].Confidences[0].Justification, "records this relationship as ended on January 2020")
 }
 
 func TestWikidataPlugin_Run_SuppressesFutureRelationships(t *testing.T) {

@@ -26,7 +26,7 @@ func assessRelationship(
 		}
 	}
 	if len(usable) == 0 {
-		return relationshipAssessment{}
+		return assessEndedRelationship(entity, targetID, ended, now)
 	}
 
 	assessment := relationshipAssessment{
@@ -38,11 +38,14 @@ func assessRelationship(
 		hasRelationship: true,
 	}
 
-	conflicts := relationshipConflicts(entity, targetID, usable, ended, now)
-	if len(conflicts) > 0 {
-		assessment.score = wikidataConflictScore
+	conflict := assessRelationshipConflict(entity, targetID, usable, ended, now)
+	if len(conflict.details) > 0 {
+		assessment.score = wikidataEndedScore
+		if conflict.hasOtherAffiliation {
+			assessment.score = wikidataOtherOwnerScore
+		}
 		assessment.status = "conflicting"
-		assessment.note = strings.Join(conflicts, " ")
+		assessment.note = strings.Join(conflict.details, " ")
 		return assessment
 	}
 
@@ -55,6 +58,44 @@ func assessRelationship(
 	assessment.score = min(assessment.score, wikidataMaxScore)
 	assessment.note = relationshipDateNote(usable)
 	return assessment
+}
+
+func assessEndedRelationship(
+	entity entityEvidence,
+	targetID string,
+	ended []relationshipClaim,
+	now time.Time,
+) relationshipAssessment {
+	if len(ended) == 0 {
+		return relationshipAssessment{}
+	}
+
+	assessment := relationshipAssessment{
+		score:           wikidataEndedScore,
+		status:          "ended",
+		details:         relationshipDetails(ended),
+		note:            endedRelationshipDateNote(ended),
+		referenced:      hasReferencedRelationship(ended),
+		reciprocal:      hasReciprocalRelationship(ended),
+		hasRelationship: true,
+	}
+	conflict := assessRelationshipConflict(entity, targetID, nil, nil, now)
+	if conflict.hasOtherAffiliation {
+		assessment.score = wikidataOtherOwnerScore
+		assessment.status = "conflicting"
+		assessment.note += " " + strings.Join(conflict.details, " ")
+	}
+	return assessment
+}
+
+func endedRelationshipDateNote(claims []relationshipClaim) string {
+	latestEnd := time.Time{}
+	for _, claim := range claims {
+		if claim.end.After(latestEnd) {
+			latestEnd = claim.end
+		}
+	}
+	return fmt.Sprintf("Wikidata records this relationship as ended on %s.", formatWikidataDate(latestEnd))
 }
 
 type claimState int
@@ -83,16 +124,21 @@ func classifyClaim(claim datedClaim, now time.Time) claimState {
 	return claimEnded
 }
 
-func relationshipConflicts(
+type relationshipConflict struct {
+	details             []string
+	hasOtherAffiliation bool
+}
+
+func assessRelationshipConflict(
 	entity entityEvidence,
 	targetID string,
 	usable []relationshipClaim,
 	ended []relationshipClaim,
 	now time.Time,
-) []string {
-	conflicts := []string{}
+) relationshipConflict {
+	var conflict relationshipConflict
 	if endedRelationshipConflicts(usable, ended) {
-		conflicts = append(conflicts, "Wikidata also records this relationship as ended.")
+		conflict.details = append(conflict.details, "Wikidata also records this relationship as ended.")
 	}
 
 	otherParents := currentAffiliationNames(
@@ -102,18 +148,20 @@ func relationshipConflicts(
 		now,
 	)
 	if len(otherParents) > 0 {
-		conflicts = append(conflicts,
+		conflict.hasOtherAffiliation = true
+		conflict.details = append(conflict.details,
 			fmt.Sprintf("Wikidata also lists %s as a parent organization.", quotedList(otherParents)))
 	}
 	otherOwners := currentAffiliationNames(entity.affiliations, targetID, wdPropertyOwner, now)
 	if len(otherOwners) > 0 {
-		conflicts = append(conflicts,
+		conflict.hasOtherAffiliation = true
+		conflict.details = append(conflict.details,
 			fmt.Sprintf("Wikidata also lists %s as an owner.", quotedList(otherOwners)))
 	}
-	if len(conflicts) > 0 {
-		conflicts = append(conflicts, "The relationship should be reviewed before treating the domain as in scope.")
+	if len(conflict.details) > 0 {
+		conflict.details = append(conflict.details, "The relationship should be reviewed before treating the domain as in scope.")
 	}
-	return conflicts
+	return conflict
 }
 
 func endedRelationshipConflicts(usable, ended []relationshipClaim) bool {

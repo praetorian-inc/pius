@@ -30,7 +30,8 @@ const (
 	wikidataMaxCandidates   = 500
 	wikidataMaxResponse     = 10 * 1024 * 1024
 	wikidataMaxAttempts     = 3
-	wikidataConflictScore   = 30
+	wikidataOtherOwnerScore = 0
+	wikidataEndedScore      = 10
 	wikidataBaseScore       = 40
 	wikidataMaxScore        = 60
 	wikidataReferenceScore  = 5
@@ -237,7 +238,7 @@ func (p *WikidataPlugin) newFinding(
 	}
 
 	score := assessment.score
-	if score != wikidataConflictScore {
+	if assessment.status == "active" || assessment.status == "open_ended" {
 		score = min(score+websiteReferenceScore(website), wikidataMaxScore)
 	}
 	plugins.AddConfidence(

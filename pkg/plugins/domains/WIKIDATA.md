@@ -19,7 +19,7 @@ flowchart LR
    - the target lists the candidate as a subsidiary (`P355`)
    - the candidate lists the target as its parent organization (`P749`)
 3. **Fetch the evidence.** The plugin retrieves complete statements for the target and candidates, including ranks, date qualifiers, and references.
-4. **Evaluate locally.** Deprecated, future, and ended relationships are not emitted. Current claims are checked for contradictory parents (`P749`) or owners (`P127`).
+4. **Evaluate locally.** Deprecated and future relationships are not emitted. Ended relationships are retained at low confidence for review. Claims are also checked for a different current parent (`P749`) or owner (`P127`).
 5. **Extract domains.** A candidate must have a current official website (`P856`). The URL is reduced to its hostname and duplicate domains are resolved deterministically.
 
 ## Corroboration and confidence
@@ -33,7 +33,7 @@ A usable relationship starts at **40** confidence. The score increases when Wiki
 | Relationship appears in both directions (`P355` and `P749`) | +10 |
 | Official website statement has a source | +5 |
 
-The score is capped at **60**. A contradictory current parent, owner, or unreconciled ended claim lowers it to **30**. Wikidata-only findings therefore remain below Pius's high-confidence threshold and require review.
+The score is capped at **60**. A current parent or owner other than the target lowers it to **0**; an unreconciled ended claim with no other current affiliation lowers it to **10**. Wikidata-only findings therefore remain below Pius's high-confidence threshold and require review.
 
 Dates come from start time (`P580`) and end time (`P582`). A missing end date means "open-ended," not confirmed current ownership; the justification says this explicitly.
 
