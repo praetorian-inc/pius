@@ -2,7 +2,6 @@ package domains
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -52,15 +51,6 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	return findings, nil
 }
 
-// toMap round-trips a struct through JSON into map[string]any. This keeps
-// Finding.Data generic while letting us define the schema as a struct.
-func toMap(v any) map[string]any {
-	b, _ := json.Marshal(v)
-	var m map[string]any
-	_ = json.Unmarshal(b, &m)
-	return m
-}
-
 // whoisFindingData wraps a whois.Result with corroboration metadata for the
 // Finding payload.
 type whoisFindingData struct {
@@ -74,7 +64,7 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 			Type:   plugins.FindingWhoisResult,
 			Value:  r.Domain,
 			Source: "whois",
-			Data:   toMap(whois.Result{Domain: r.Domain, Unregistered: true}),
+			Data:   plugins.FindingData(whois.Result{Domain: r.Domain, Unregistered: true}),
 		}
 	}
 
@@ -104,7 +94,7 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 		Type:   plugins.FindingWhoisResult,
 		Value:  r.Domain,
 		Source: "whois",
-		Data:   toMap(fd),
+		Data:   plugins.FindingData(fd),
 	}
 }
 

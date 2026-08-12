@@ -129,12 +129,16 @@ func extractContact(entities []rdap.Entity, role string) Contact {
 	if e == nil || e.VCard == nil {
 		return Contact{}
 	}
-	c := Contact{
-		Name:         e.VCard.Name(),
-		Organization: extractOrgFromVCard(e.VCard),
+	return contactFromVCard(e.VCard)
+}
+
+func contactFromVCard(vcard *rdap.VCard) Contact {
+	contact := Contact{
+		Name:         vcard.Name(),
+		Organization: extractOrgFromVCard(vcard),
 	}
-	c.Country, c.Province, c.City = extractAddressFromVCard(e.VCard)
-	return c
+	contact.Country, contact.Province, contact.City = extractAddressFromVCard(vcard)
+	return contact
 }
 
 func extractOrgFromVCard(vcard *rdap.VCard) string {
@@ -176,4 +180,3 @@ func extractAddressFromVCard(vcard *rdap.VCard) (country, province, city string)
 	}
 	return country, province, city
 }
-

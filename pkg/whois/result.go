@@ -1,8 +1,4 @@
-// Package whois provides domain registration lookups via RDAP and TCP port-43.
-//
-// Lookup is the primary entry point: it cascades through RDAP (structured data,
-// standardized dates) then TCP-43 (broader email coverage, raw text) and merges
-// the best fields from each source into a single Result.
+// Package whois provides domain and IP registration lookups via RDAP and TCP port 43.
 package whois
 
 import "cmp"

@@ -25,13 +25,11 @@ const (
 	FindingPreseed FindingType = "preseed"
 
 	// FindingWhoisResult carries structured WHOIS/RDAP registration data for a domain.
-	// Value is the domain name. Data carries:
-	//   registrant, email, registrar, country, province, city (strings)
-	//   purchased, updated, expiration (RFC3339 timestamps)
-	//   raw (raw WHOIS text for archival)
-	//   unregistered (bool, true if domain is not registered)
-	//   corroboration ("match", "mismatch", "unverifiable", "" if no pivot org)
+	// Value is the domain name; Data includes registration dates, contacts, and source metadata.
 	FindingWhoisResult FindingType = "whois-result"
+
+	// FindingIPWhoisResult carries structured WHOIS/RDAP allocation data for an IP or CIDR.
+	FindingIPWhoisResult FindingType = "ip-whois-result"
 )
 
 // Mode constants for plugin classification.
@@ -61,6 +59,9 @@ type Input struct {
 
 	// ASN is an optional known Autonomous System Number (e.g., "AS12345").
 	ASN string
+
+	// IP is an optional known IP address.
+	IP string
 
 	// CIDR is an optional known IP range (e.g., "192.0.2.0/24").
 	CIDR string
@@ -104,6 +105,19 @@ type Finding struct {
 	// Data contains source-specific metadata. It must never carry confidence
 	// state — that lives in Confidences.
 	Data map[string]any
+}
+
+// FindingData converts a typed result into Finding.Data.
+func FindingData(value any) map[string]any {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var data map[string]any
+	if err := json.Unmarshal(encoded, &data); err != nil {
+		return nil
+	}
+	return data
 }
 
 // findingFields aliases Finding so MarshalJSON can encode the plain struct
