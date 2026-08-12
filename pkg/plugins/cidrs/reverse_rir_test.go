@@ -92,3 +92,72 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 		})
 	}
 }
+
+// A handle a phase-two plugin could not act on must not leave this plugin at
+// all. Consumers cannot repair any of these, so filtering here is the only place
+// it happens once rather than in every embedder.
+func TestReverseRIRPlugin_DropsUnusableHandles(t *testing.T) {
+	tests := map[string]struct {
+		handle   string
+		registry string
+		org      string
+	}{
+		"empty handle":          {"", "arin", "Acme Corp"},
+		"whitespace handle":     {"   ", "arin", "Acme Corp"},
+		"empty org":             {"ACME-1", "arin", ""},
+		"whitespace org":        {"ACME-1", "arin", "  "},
+		"unknown registry":      {"ACME-1", "unknown", "Acme Corp"},
+		"unresolvable registry": {"ACME-1", "twnic", "Acme Corp"},
+		"empty registry":        {"ACME-1", "", "Acme Corp"},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, ok := newReverseRIRFinding(tt.handle, tt.registry, "test database", tt.org)
+			assert.False(t, ok)
+		})
+	}
+}
+
+func TestReverseRIRPlugin_TrimsHandleAndOrg(t *testing.T) {
+	finding, ok := newReverseRIRFinding("  ACME-1  ", "arin", "ARIN orgs database", "  Acme Corp  ")
+	require.True(t, ok)
+
+	assert.Equal(t, "ACME-1", finding.Value)
+	assert.Equal(t, "Acme Corp", finding.Data["org"])
+}
+
+// Every registry reverse-rir queries must be one a phase-two plugin can resolve,
+// or discovery would emit handles with no way to look them up.
+func TestReverseRIRPlugin_EveryQueriedRegistryIsResolvable(t *testing.T) {
+	for _, registry := range []string{"arin", "ripe", "apnic", "afrinic", "lacnic"} {
+		assert.True(t, resolvableRegistry(registry), "%s must be resolvable", registry)
+	}
+	assert.False(t, resolvableRegistry("unknown"), "edgar's placeholder is not resolvable")
+}
+
+// RIPE and LACNIC return a record with a blank handle rather than omitting it,
+// so these two paths are where an empty finding would otherwise escape.
+func TestReverseRIRPlugin_BlankHandlesFromRIPEAndLACNIC(t *testing.T) {
+	plugin := &ReverseRIRPlugin{client: &stubHTTPDoer{
+		body: []byte(`{"objects":{"object":[{"primary-key":{"attribute":[{"name":"organisation","value":""}]}}]}}`),
+	}}
+	findings, _ := plugin.queryRIPE(context.Background(), "Acme Corp")
+	assert.Empty(t, findings, "RIPE must not emit a blank handle")
+
+	plugin = &ReverseRIRPlugin{client: &stubHTTPDoer{body: []byte(`{"entities":[{"handle":""}]}`)}}
+	findings, _ = plugin.queryLACNIC(context.Background(), "Acme Corp")
+	assert.Empty(t, findings, "LACNIC must not emit a blank handle")
+}
+
+// Run is the boundary an embedder sees, so the guarantee has to hold there too:
+// an org that is only whitespace yields nothing rather than unattributed handles.
+func TestReverseRIRPlugin_RunEmitsNothingForABlankOrg(t *testing.T) {
+	plugin := &ReverseRIRPlugin{client: &stubHTTPDoer{
+		body: []byte(`{"orgs":{"orgRef":{"@handle":"ACME-1"}}}`),
+	}}
+
+	findings, err := plugin.Run(context.Background(), plugins.Input{OrgName: "   "})
+	require.NoError(t, err)
+	assert.Empty(t, findings)
+}
