@@ -70,6 +70,25 @@ func TestWhoisPlugin_RunEmitsResultAndPreseeds(t *testing.T) {
 	}
 }
 
+func TestNetworkPreseedJustification_AttributesMergedSources(t *testing.T) {
+	result := whois.NetworkResult{
+		Query:        "80.156.86.78",
+		StartAddress: "80.156.84.0",
+		EndAddress:   "80.156.87.255",
+		Handle:       "80.156.84.0 - 80.156.87.255",
+		RDAPServer:   "rdap.db.ripe.net",
+		WhoisServer:  "whois.ripe.net",
+		Sources:      []string{"rdap", "whois"},
+	}
+
+	justification := networkPreseedJustification(result, networkPreseedCandidate{
+		field: "company", role: "registrant", value: "Example Networks",
+	})
+
+	assert.Contains(t, justification, `IP RDAP server "rdap.db.ripe.net"`)
+	assert.Contains(t, justification, `IP WHOIS server "whois.ripe.net"`)
+}
+
 func TestNetworkPreseeds_PrefersCustomerOverRegistrant(t *testing.T) {
 	findings := networkPreseeds(whois.NetworkResult{Contacts: []whois.NetworkContact{
 		{Roles: []string{"registrant"}, Kind: "org", Direct: true, Name: "Upstream ISP"},

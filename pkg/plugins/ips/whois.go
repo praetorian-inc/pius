@@ -102,13 +102,7 @@ func networkPreseeds(result whois.NetworkResult) []plugins.Finding {
 }
 
 func preferredNetworkRole(contacts []whois.NetworkContact) string {
-	hasCustomer := slices.ContainsFunc(contacts, func(contact whois.NetworkContact) bool {
-		return contact.Direct && slices.Contains(contact.Roles, "customer")
-	})
-	if hasCustomer {
-		return "customer"
-	}
-	return "registrant"
+	return whois.PreferredNetworkRole(contacts)
 }
 
 func networkPreseedCandidates(contacts []whois.NetworkContact, preferredRole string) []networkPreseedCandidate {
@@ -123,7 +117,7 @@ func networkPreseedCandidates(contacts []whois.NetworkContact, preferredRole str
 }
 
 func eligibleNetworkContact(contact whois.NetworkContact, preferredRole string) bool {
-	return contact.Direct && slices.Contains(contact.Roles, preferredRole) && !isMaintainer(contact)
+	return contact.Direct && contact.HasRole(preferredRole) && !contact.IsMaintainer()
 }
 
 func contactPreseedCandidates(contact whois.NetworkContact) []networkPreseedCandidate {
@@ -180,6 +174,8 @@ func networkPreseedFinding(result whois.NetworkResult, candidate networkPreseedC
 			"allocation_end":   result.EndAddress,
 			"registry":         result.Registry,
 			"server":           result.Server,
+			"rdap_server":      result.RDAPServer,
+			"whois_server":     result.WhoisServer,
 			"sources":          result.Sources,
 		},
 	}
@@ -188,15 +184,7 @@ func networkPreseedFinding(result whois.NetworkResult, candidate networkPreseedC
 }
 
 func networkPreseedJustification(result whois.NetworkResult, candidate networkPreseedCandidate) string {
-	source := "IP registry"
-	if slices.Contains(result.Sources, "whois") {
-		source = "IP WHOIS"
-	} else if slices.Contains(result.Sources, "rdap") {
-		source = "IP RDAP"
-	}
-	if result.Server != "" {
-		source += fmt.Sprintf(" server %q", result.Server)
-	}
+	source := networkResultSource(result)
 
 	return fmt.Sprintf(
 		"%s records %q as the %s contact %s for allocation %q spanning %s-%s, returned for query %q",
@@ -205,6 +193,23 @@ func networkPreseedJustification(result whois.NetworkResult, candidate networkPr
 	)
 }
 
-func isMaintainer(contact whois.NetworkContact) bool {
-	return strings.HasSuffix(strings.ToUpper(contact.Handle), "-MNT")
+func networkResultSource(result whois.NetworkResult) string {
+	var sources []string
+	if slices.Contains(result.Sources, "rdap") {
+		sources = append(sources, protocolServer("IP RDAP", cmp.Or(result.RDAPServer, result.Server)))
+	}
+	if slices.Contains(result.Sources, "whois") {
+		sources = append(sources, protocolServer("IP WHOIS", cmp.Or(result.WhoisServer, result.Server)))
+	}
+	if len(sources) == 0 {
+		return "IP registry"
+	}
+	return strings.Join(sources, " and ")
+}
+
+func protocolServer(protocol, server string) string {
+	if server == "" {
+		return protocol
+	}
+	return fmt.Sprintf("%s server %q", protocol, server)
 }

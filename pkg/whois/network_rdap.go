@@ -31,6 +31,7 @@ func rdapNetworkLookup(ctx context.Context, httpClient *http.Client, target netw
 
 	result := mapRDAPToNetworkResult(target.query, network)
 	result.Server = rdapResponseServer(response)
+	result.RDAPServer = result.Server
 	if err := requireContainingAllocation(result, target); err != nil {
 		return NetworkResult{}, err
 	}

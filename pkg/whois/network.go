@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 )
 
 // ErrAllocationDoesNotContainTarget means applying the returned registration
@@ -23,6 +24,8 @@ type NetworkResult struct {
 	ParentHandle string           `json:"parent_handle,omitempty"`
 	Registry     string           `json:"registry,omitempty"`
 	Server       string           `json:"server,omitempty"`
+	RDAPServer   string           `json:"rdap_server,omitempty"`
+	WhoisServer  string           `json:"whois_server,omitempty"`
 	Contacts     []NetworkContact `json:"contacts,omitempty"`
 	Sources      []string         `json:"sources,omitempty"`
 	Raw          string           `json:"raw,omitempty"`
@@ -49,6 +52,28 @@ func (c NetworkContact) IsEmpty() bool {
 	return c.Organization == "" && c.Name == "" && c.Email == ""
 }
 
+func (c NetworkContact) HasRole(role string) bool {
+	for _, candidate := range c.Roles {
+		if candidate == role {
+			return true
+		}
+	}
+	return false
+}
+
+func (c NetworkContact) IsMaintainer() bool {
+	return strings.HasSuffix(strings.ToUpper(c.Handle), "-MNT")
+}
+
+func PreferredNetworkRole(contacts []NetworkContact) string {
+	for _, contact := range contacts {
+		if contact.Direct && contact.HasRole("customer") {
+			return "customer"
+		}
+	}
+	return "registrant"
+}
+
 // ValidateNetworkTarget checks that query is an IP address or CIDR.
 func ValidateNetworkTarget(query string) error {
 	_, err := parseNetworkTarget(query)
@@ -68,20 +93,14 @@ func LookupNetwork(ctx context.Context, query string, opts ...Option) (NetworkRe
 	}
 
 	rdapResult, rdapErr := rdapNetworkLookup(ctx, cfg.httpClient, target)
-	if rdapErr == nil && len(rdapResult.Contacts) > 0 {
+	if rdapErr == nil && hasUsefulNetworkIdentity(rdapResult.Contacts) {
 		return rdapResult, nil
 	}
 
 	tcpResult, tcpErr := tcp43NetworkLookup(ctx, target)
 	if rdapErr == nil {
 		if tcpErr == nil {
-			rdapResult.Contacts = mergeNetworkContacts(rdapResult.Contacts, tcpResult.Contacts)
-			rdapResult.Sources = append(rdapResult.Sources, "whois")
-			rdapResult.Server = tcpResult.Server
-			rdapResult.Raw = tcpResult.Raw
-			if rdapResult.Registry == "" {
-				rdapResult.Registry = tcpResult.Registry
-			}
+			mergeTCP43NetworkResult(&rdapResult, tcpResult)
 		}
 		return rdapResult, nil
 	}
@@ -140,6 +159,45 @@ func requireContainingAllocation(result NetworkResult, target networkTarget) err
 		return fmt.Errorf("%w: %s-%s does not contain %s", ErrAllocationDoesNotContainTarget, start, end, target.query)
 	}
 	return nil
+}
+
+func hasUsefulNetworkIdentity(contacts []NetworkContact) bool {
+	preferredRole := PreferredNetworkRole(contacts)
+	for _, contact := range contacts {
+		if !contact.Direct || !contact.HasRole(preferredRole) || contact.IsMaintainer() {
+			continue
+		}
+
+		identity := contact.Organization
+		switch contact.Kind {
+		case "org":
+			if identity == "" {
+				identity = contact.Name
+			}
+		case "individual":
+			identity = contact.Name
+		case "":
+		default:
+			identity = ""
+		}
+		if identity != "" && !IsPrivacy(identity) {
+			return true
+		}
+		if contact.Email != "" && !IsPrivacy(contact.Email) && IsEmail(contact.Email) {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeTCP43NetworkResult(rdapResult *NetworkResult, tcpResult NetworkResult) {
+	rdapResult.Contacts = mergeNetworkContacts(rdapResult.Contacts, tcpResult.Contacts)
+	rdapResult.Sources = append(rdapResult.Sources, "whois")
+	rdapResult.WhoisServer = tcpResult.WhoisServer
+	rdapResult.Raw = tcpResult.Raw
+	if rdapResult.Registry == "" {
+		rdapResult.Registry = tcpResult.Registry
+	}
 }
 
 func mergeNetworkContacts(base, other []NetworkContact) []NetworkContact {

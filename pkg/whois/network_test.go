@@ -3,8 +3,10 @@ package whois
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/openrdap/rdap"
@@ -86,6 +88,144 @@ func TestLastAddress(t *testing.T) {
 	}
 }
 
+func TestHasUsefulNetworkIdentity(t *testing.T) {
+	tests := []struct {
+		name     string
+		contacts []NetworkContact
+		want     bool
+	}{
+		{
+			name: "direct registrant organization",
+			contacts: []NetworkContact{{
+				Roles: []string{"registrant"}, Kind: "org", Direct: true, Name: "Example Networks",
+			}},
+			want: true,
+		},
+		{
+			name: "direct customer email",
+			contacts: []NetworkContact{{
+				Roles: []string{"customer"}, Direct: true, Email: "owner@example.com",
+			}},
+			want: true,
+		},
+		{
+			name: "customer without identity does not fall back to registrant",
+			contacts: []NetworkContact{
+				{Roles: []string{"customer"}, Kind: "group", Direct: true, Name: "Customer Operations"},
+				{Roles: []string{"registrant"}, Kind: "org", Direct: true, Name: "Upstream Networks"},
+			},
+		},
+		{
+			name: "operational contact only",
+			contacts: []NetworkContact{{
+				Roles: []string{"abuse"}, Kind: "group", Direct: true, Name: "Abuse Desk", Email: "abuse@example.com",
+			}},
+		},
+		{
+			name: "maintainer registrant",
+			contacts: []NetworkContact{{
+				Handle: "EXAMPLE-MNT", Roles: []string{"registrant"}, Kind: "individual", Direct: true, Name: "EXAMPLE-MNT",
+			}},
+		},
+		{
+			name: "nested registrant",
+			contacts: []NetworkContact{{
+				Roles: []string{"registrant"}, Kind: "org", Name: "Upstream Networks",
+			}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.want, hasUsefulNetworkIdentity(test.contacts))
+		})
+	}
+}
+
+func TestMergeTCP43NetworkResult_PreservesServerAttribution(t *testing.T) {
+	rdapResult := NetworkResult{
+		Registry:   "whois.ripe.net",
+		Server:     "rdap.db.ripe.net",
+		RDAPServer: "rdap.db.ripe.net",
+		Sources:    []string{"rdap"},
+		Contacts: []NetworkContact{{
+			Roles: []string{"technical"}, Kind: "group", Direct: true, Name: "Network Operations",
+		}},
+	}
+	tcpResult := NetworkResult{
+		Server:      "whois.ripe.net",
+		WhoisServer: "whois.ripe.net",
+		Sources:     []string{"whois"},
+		Raw:         "raw response",
+		Contacts: []NetworkContact{{
+			Roles: []string{"registrant"}, Kind: "org", Direct: true, Organization: "Example Networks",
+		}},
+	}
+
+	mergeTCP43NetworkResult(&rdapResult, tcpResult)
+
+	assert.Equal(t, "rdap.db.ripe.net", rdapResult.Server)
+	assert.Equal(t, "rdap.db.ripe.net", rdapResult.RDAPServer)
+	assert.Equal(t, "whois.ripe.net", rdapResult.WhoisServer)
+	assert.Equal(t, []string{"rdap", "whois"}, rdapResult.Sources)
+	assert.Equal(t, "raw response", rdapResult.Raw)
+	require.Len(t, rdapResult.Contacts, 2)
+}
+
+func TestLookupNetwork_SuccessfulRDAPWithoutUsefulIdentityFallsBackToTCP43(t *testing.T) {
+	original := tcp43RawFn
+	tcp43RawFn = func(_ context.Context, _, server string) (string, error) {
+		switch server {
+		case defaultServer:
+			return "refer: whois.example.test\n", nil
+		case "whois.example.test":
+			return "NetRange: 8.8.8.0 - 8.8.8.255\nOrgName: Example Networks\n", nil
+		default:
+			return "", errors.New("unexpected server")
+		}
+	}
+	t.Cleanup(func() { tcp43RawFn = original })
+
+	result, err := LookupNetwork(context.Background(), "8.8.8.8", WithHTTPClient(&http.Client{
+		Transport: rdapResponseRoundTripper{},
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"rdap", "whois"}, result.Sources)
+	assert.Equal(t, "rdap.arin.net", result.RDAPServer)
+	assert.Equal(t, "whois.example.test", result.WhoisServer)
+	assert.True(t, hasUsefulNetworkIdentity(result.Contacts))
+}
+
+type rdapResponseRoundTripper struct{}
+
+func (rdapResponseRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	const response = `{
+		"rdapConformance":["rdap_level_0"],
+		"objectClassName":"ip network",
+		"handle":"NET-8-8-8-0-1",
+		"startAddress":"8.8.8.0",
+		"endAddress":"8.8.8.255",
+		"ipVersion":"v4",
+		"entities":[{
+			"objectClassName":"entity",
+			"handle":"ABUSE-1",
+			"roles":["abuse"],
+			"vcardArray":["vcard",[
+				["version",{},"text","4.0"],
+				["kind",{},"text","group"],
+				["fn",{},"text","Abuse Desk"],
+				["email",{},"text","abuse@example.com"]
+			]]
+		}]
+	}`
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/rdap+json"}},
+		Body:       io.NopCloser(strings.NewReader(response)),
+		Request:    request,
+	}, nil
+}
+
 func TestLookupNetwork_FallsBackToTCP43(t *testing.T) {
 	original := tcp43RawFn
 	tcp43RawFn = func(_ context.Context, query, server string) (string, error) {
@@ -104,6 +244,7 @@ func TestLookupNetwork_FallsBackToTCP43(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"whois"}, result.Sources)
 	assert.Equal(t, "whois.example.test", result.Server)
+	assert.Equal(t, "whois.example.test", result.WhoisServer)
 	assert.Equal(t, "8.8.8.0", result.StartAddress)
 	assert.Equal(t, "8.8.8.255", result.EndAddress)
 	require.Len(t, result.Contacts, 2)
