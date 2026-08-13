@@ -1,6 +1,7 @@
 package ips
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -88,16 +89,35 @@ func networkPreseeds(result whois.NetworkResult) []plugins.Finding {
 		value string
 	}
 
+	preferredRole := "registrant"
+	if slices.ContainsFunc(result.Contacts, func(contact whois.NetworkContact) bool {
+		return contact.Direct && slices.Contains(contact.Roles, "customer")
+	}) {
+		preferredRole = "customer"
+	}
+
 	var candidates []candidate
 	for _, contact := range result.Contacts {
+		if !contact.Direct || !slices.Contains(contact.Roles, preferredRole) || isMaintainer(contact) {
+			continue
+		}
+
 		roles := slices.Clone(contact.Roles)
 		slices.Sort(roles)
 		role := strings.Join(roles, ",")
-		for _, item := range []candidate{
-			{field: "company", role: role, value: contact.Organization},
-			{field: "name", role: role, value: contact.Name},
-			{field: "email", role: role, value: contact.Email},
-		} {
+		var identity candidate
+		switch contact.Kind {
+		case "org":
+			identity = candidate{field: "company", role: role, value: cmp.Or(contact.Organization, contact.Name)}
+		case "individual":
+			identity = candidate{field: "name", role: role, value: contact.Name}
+		default:
+			if contact.Organization != "" {
+				identity = candidate{field: "company", role: role, value: contact.Organization}
+			}
+		}
+
+		for _, item := range []candidate{identity, {field: "email", role: role, value: contact.Email}} {
 			item.value = strings.TrimSpace(item.value)
 			if item.value == "" || whois.IsPrivacy(item.value) {
 				continue
@@ -133,4 +153,8 @@ func networkPreseeds(result whois.NetworkResult) []plugins.Finding {
 		findings = append(findings, finding)
 	}
 	return findings
+}
+
+func isMaintainer(contact whois.NetworkContact) bool {
+	return strings.HasSuffix(strings.ToUpper(contact.Handle), "-MNT")
 }

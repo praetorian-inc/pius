@@ -53,27 +53,30 @@ func mapRDAPToNetworkResult(query string, network *rdap.IPNetwork) NetworkResult
 
 func rdapNetworkContacts(entities []rdap.Entity) []NetworkContact {
 	var contacts []NetworkContact
-	var visit func([]rdap.Entity)
-	visit = func(current []rdap.Entity) {
+	var visit func([]rdap.Entity, bool)
+	visit = func(current []rdap.Entity, direct bool) {
 		for i := range current {
 			entity := &current[i]
 			if entity.VCard != nil {
-				contact := networkContactFromVCard(entity.Roles, entity.VCard)
+				contact := networkContactFromVCard(entity.Handle, entity.Roles, entity.VCard, direct)
 				if !contact.IsEmpty() {
 					contacts = append(contacts, contact)
 				}
 			}
-			visit(entity.Entities)
+			visit(entity.Entities, false)
 		}
 	}
-	visit(entities)
+	visit(entities, true)
 	return mergeNetworkContacts(nil, contacts)
 }
 
-func networkContactFromVCard(roles []string, vcard *rdap.VCard) NetworkContact {
+func networkContactFromVCard(handle string, roles []string, vcard *rdap.VCard, direct bool) NetworkContact {
 	base := contactFromVCard(vcard).Scrub()
 	contact := NetworkContact{
+		Handle:       handle,
 		Roles:        roles,
+		Kind:         firstVCardValue(vcard, "kind"),
+		Direct:       direct,
 		Organization: base.Organization,
 		Name:         base.Name,
 		Email:        clearIfPrivacy(vcard.Email()),
@@ -88,4 +91,16 @@ func networkContactFromVCard(roles []string, vcard *rdap.VCard) NetworkContact {
 		contact.Roles = []string{"unknown"}
 	}
 	return contact
+}
+
+func firstVCardValue(vcard *rdap.VCard, name string) string {
+	properties := vcard.Get(name)
+	if len(properties) == 0 {
+		return ""
+	}
+	values := properties[0].Values()
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }

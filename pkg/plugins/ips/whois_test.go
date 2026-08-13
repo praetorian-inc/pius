@@ -39,29 +39,38 @@ func TestWhoisPlugin_RunEmitsResultAndPreseeds(t *testing.T) {
 			Handle:   "NET-8-8-8-0-1",
 			Registry: "whois.example.test",
 			Contacts: []whois.NetworkContact{
-				{Roles: []string{"registrant"}, Organization: "Example Networks", Name: "Jane Doe", Email: "jane@example.com"},
-				{Roles: []string{"technical"}, Organization: "example networks", Email: "jane@example.com"},
-				{Roles: []string{"abuse"}, Organization: "REDACTED FOR PRIVACY", Email: "not-an-email"},
+				{Roles: []string{"registrant"}, Kind: "org", Direct: true, Name: "Example Networks", Email: "jane@example.com"},
+				{Handle: "EXAMPLE-MNT", Roles: []string{"registrant"}, Kind: "individual", Direct: true, Name: "EXAMPLE-MNT"},
+				{Roles: []string{"registrant"}, Kind: "org", Name: "Upstream ISP"},
+				{Roles: []string{"technical"}, Kind: "group", Direct: true, Organization: "Carrier NOC", Email: "noc@carrier.example"},
 			},
 		}, nil
 	}
 
 	findings, err := plugin.Run(context.Background(), plugins.Input{IP: "8.8.8.8"})
 	require.NoError(t, err)
-	require.Len(t, findings, 4)
+	require.Len(t, findings, 3)
 	assert.Equal(t, plugins.FindingIPWhoisResult, findings[0].Type)
 	assert.Equal(t, "8.8.8.8", findings[0].Value)
 
 	assert.Equal(t, "whois+company", findings[1].Data["preseed_type"])
 	assert.Equal(t, "Example Networks", findings[1].Value)
-	assert.Equal(t, "whois+name", findings[2].Data["preseed_type"])
-	assert.Equal(t, "Jane Doe", findings[2].Value)
-	assert.Equal(t, "whois+email", findings[3].Data["preseed_type"])
-	assert.Equal(t, "jane@example.com", findings[3].Value)
+	assert.Equal(t, "whois+email", findings[2].Data["preseed_type"])
+	assert.Equal(t, "jane@example.com", findings[2].Value)
 	for _, finding := range findings[1:] {
 		require.Len(t, finding.Confidences, 1)
 		assert.Equal(t, confIPWhoisContact, finding.Confidences[0].Score)
 	}
+}
+
+func TestNetworkPreseeds_PrefersCustomerOverRegistrant(t *testing.T) {
+	findings := networkPreseeds(whois.NetworkResult{Contacts: []whois.NetworkContact{
+		{Roles: []string{"registrant"}, Kind: "org", Direct: true, Name: "Upstream ISP"},
+		{Roles: []string{"customer"}, Kind: "org", Direct: true, Name: "Example Customer"},
+	}})
+
+	require.Len(t, findings, 1)
+	assert.Equal(t, "Example Customer", findings[0].Value)
 }
 
 func TestWhoisPlugin_RunRejectsAmbiguousInput(t *testing.T) {

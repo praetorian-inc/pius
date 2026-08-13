@@ -29,7 +29,10 @@ type NetworkResult struct {
 
 // NetworkContact is an organization or person named by a network registration.
 type NetworkContact struct {
+	Handle       string   `json:"handle,omitempty"`
 	Roles        []string `json:"roles,omitempty"`
+	Kind         string   `json:"kind,omitempty"`
+	Direct       bool     `json:"direct,omitempty"`
 	Organization string   `json:"organization,omitempty"`
 	Name         string   `json:"name,omitempty"`
 	Email        string   `json:"email,omitempty"`
@@ -141,7 +144,7 @@ func mergeNetworkContacts(base, other []NetworkContact) []NetworkContact {
 	seen := make(map[string]bool, len(base)+len(other))
 	out := make([]NetworkContact, 0, len(base)+len(other))
 	for _, contact := range append(append([]NetworkContact(nil), base...), other...) {
-		key := fmt.Sprintf("%v\x00%s\x00%s\x00%s", contact.Roles, contact.Organization, contact.Name, contact.Email)
+		key := fmt.Sprintf("%s\x00%v\x00%s\x00%t\x00%s\x00%s\x00%s", contact.Handle, contact.Roles, contact.Kind, contact.Direct, contact.Organization, contact.Name, contact.Email)
 		if contact.IsEmpty() || seen[key] {
 			continue
 		}

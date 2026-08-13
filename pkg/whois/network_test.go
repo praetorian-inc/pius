@@ -93,7 +93,7 @@ func TestLookupNetwork_FallsBackToTCP43(t *testing.T) {
 		case defaultServer:
 			return "refer: whois.example.test\n", nil
 		case "whois.example.test":
-			return "NetRange: 8.8.8.0 - 8.8.8.255\nOrgName: Example Networks\nOrgAbuseEmail: abuse@example.com\n", nil
+			return "NetRange: 8.8.8.0 - 8.8.8.255\nOrgName: Example Networks\nOrganization: Example Networks (EXAMPLE-1)\nOrgAbuseEmail: abuse@example.com\n", nil
 		default:
 			return "", errors.New("unexpected server")
 		}
@@ -121,7 +121,7 @@ func failingHTTPClient() *http.Client {
 }
 
 func TestMapRDAPToNetworkResult_RecursesEntities(t *testing.T) {
-	vcard, err := rdap.NewVCard([]byte(`["vcard",[["version",{},"text","4.0"],["fn",{},"text","Jane Doe"],["org",{},"text","Example Networks"],["email",{},"text","jane@example.com"]]]`))
+	vcard, err := rdap.NewVCard([]byte(`["vcard",[["version",{},"text","4.0"],["kind",{},"text","org"],["fn",{},"text","Jane Doe"],["org",{},"text","Example Networks"],["email",{},"text","jane@example.com"]]]`))
 	require.NoError(t, err)
 
 	result := mapRDAPToNetworkResult("8.8.8.8", &rdap.IPNetwork{
@@ -129,12 +129,15 @@ func TestMapRDAPToNetworkResult_RecursesEntities(t *testing.T) {
 		StartAddress: "8.8.8.0",
 		EndAddress:   "8.8.8.255",
 		Entities: []rdap.Entity{{
-			Entities: []rdap.Entity{{Roles: []string{"technical"}, VCard: vcard}},
+			Entities: []rdap.Entity{{Handle: "EXAMPLE-TECH", Roles: []string{"technical"}, VCard: vcard}},
 		}},
 	})
 
 	require.Len(t, result.Contacts, 1)
+	assert.Equal(t, "EXAMPLE-TECH", result.Contacts[0].Handle)
 	assert.Equal(t, []string{"technical"}, result.Contacts[0].Roles)
+	assert.Equal(t, "org", result.Contacts[0].Kind)
+	assert.False(t, result.Contacts[0].Direct)
 	assert.Equal(t, "Example Networks", result.Contacts[0].Organization)
 	assert.Equal(t, "jane@example.com", result.Contacts[0].Email)
 }

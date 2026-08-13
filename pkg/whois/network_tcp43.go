@@ -103,19 +103,15 @@ func containingTCP43Range(fields map[string][]string, target networkTarget) (net
 
 func tcp43NetworkContacts(fields map[string][]string) []NetworkContact {
 	var contacts []NetworkContact
-	for _, field := range []struct {
-		key  string
-		role string
+	for _, organization := range []struct {
+		role  string
+		value string
 	}{
-		{"orgname", "registrant"},
-		{"org-name", "registrant"},
-		{"organization", "registrant"},
-		{"owner", "registrant"},
-		{"custname", "customer"},
-		{"customer", "customer"},
+		{"customer", firstField(fields, "custname", "customer")},
+		{"registrant", firstField(fields, "orgname", "org-name", "organization", "owner")},
 	} {
-		for _, value := range fields[field.key] {
-			contacts = append(contacts, NetworkContact{Roles: []string{field.role}, Organization: clearIfPrivacy(value)})
+		if organization.value != "" {
+			contacts = append(contacts, NetworkContact{Roles: []string{organization.role}, Kind: "org", Direct: true, Organization: clearIfPrivacy(organization.value)})
 		}
 	}
 	for _, field := range []struct {
@@ -127,7 +123,7 @@ func tcp43NetworkContacts(fields map[string][]string) []NetworkContact {
 		{"contact", "unknown"},
 	} {
 		for _, value := range fields[field.key] {
-			contacts = append(contacts, NetworkContact{Roles: []string{field.role}, Name: clearIfPrivacy(value)})
+			contacts = append(contacts, NetworkContact{Roles: []string{field.role}, Kind: "individual", Direct: true, Name: clearIfPrivacy(value)})
 		}
 	}
 	for _, field := range []struct {
@@ -145,7 +141,7 @@ func tcp43NetworkContacts(fields map[string][]string) []NetworkContact {
 			for token := range strings.FieldsSeq(value) {
 				token = strings.Trim(token, "<>,;()")
 				if IsEmail(token) {
-					contacts = append(contacts, NetworkContact{Roles: []string{field.role}, Email: token})
+					contacts = append(contacts, NetworkContact{Roles: []string{field.role}, Direct: true, Email: token})
 					break
 				}
 			}
