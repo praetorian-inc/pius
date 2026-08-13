@@ -46,7 +46,7 @@ The registry (`pkg/plugins/registry.go`) stores `PluginFactory` functions, ensur
 Every plugin must implement:
 - `Name()` - unique identifier
 - `Description()` - human-readable description
-- `Category()` - "cidr" or "domain"
+- `Category()` - "cidr", "domain", or "ip"
 - `Phase()` - 0 (independent), 1 (discovers handles), or 2 (resolves handles)
 - `Mode()` - "passive" (OSINT) or "active" (sends probes)
 - `Accepts(Input)` - returns false to self-disable (missing API keys, inputs, etc.)
@@ -67,6 +67,8 @@ The runner (`pkg/runner/run.go`) executes plugins in phases:
 - `FindingCIDR` - discovered CIDR block
 - `FindingDomain` - discovered domain name
 - `FindingPreseed` - discovered organizational seed (company name, email); emitted as `capmodel.Preseed` via `invoke.go`
+- `FindingIPResult` - local ASN metadata for an IP or CIDR
+- `FindingIPWhoisResult` - structured RDAP/TCP-43 allocation data for an IP or CIDR
 
 ### Plugin Patterns
 
@@ -75,6 +77,8 @@ The runner (`pkg/runner/run.go`) executes plugins in phases:
 **RPSL plugins** (`pkg/plugins/cidrs/rpsl_plugin.go`): Download and parse RIR RPSL databases. Use the cache system (`pkg/cache/`) with 24-hour TTL.
 
 **Domain plugins** (`pkg/plugins/domains/`): Independent (Phase 0) plugins querying various sources (crt.sh, passive DNS, etc.).
+
+**IP plugins** (`pkg/plugins/ips/`): Independent (Phase 0) plugins enriching IP and CIDR inputs from local ASN data or public registration services.
 
 **Active plugins**: Set `Mode()` to "active". Run only with `--mode active` or `--mode all`.
 

@@ -110,7 +110,7 @@ func parseDashedRange(value string) (netip.Addr, netip.Addr, bool) {
 }
 
 func prefixFieldRange(fields map[string][]string, target networkTarget) (netip.Addr, netip.Addr, bool) {
-	for _, key := range []string{"cidr", "route", "route6", "inet6num"} {
+	for _, key := range []string{"cidr", "route", "route6", "inetnum", "inet6num"} {
 		for _, value := range fields[key] {
 			for prefixText := range strings.SplitSeq(value, ",") {
 				prefix, err := netip.ParsePrefix(strings.TrimSpace(prefixText))

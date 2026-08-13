@@ -30,6 +30,9 @@ const (
 
 	// FindingIPWhoisResult carries structured WHOIS/RDAP allocation data for an IP or CIDR.
 	FindingIPWhoisResult FindingType = "ip-whois-result"
+
+	// FindingIPResult carries local ASN metadata for an IP or CIDR.
+	FindingIPResult FindingType = "ip-result"
 )
 
 // Mode constants for plugin classification.
@@ -153,7 +156,7 @@ type Descriptor interface {
 	// Description returns a short human-readable description of what this plugin does.
 	Description() string
 
-	// Category returns the type of assets this plugin discovers: "cidr" or "domain".
+	// Category returns the type of assets this plugin discovers: "cidr", "domain", or "ip".
 	Category() string
 }
 

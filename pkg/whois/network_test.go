@@ -226,6 +226,16 @@ func (rdapResponseRoundTripper) RoundTrip(request *http.Request) (*http.Response
 	}, nil
 }
 
+func TestParseTCP43NetworkResult_AcceptsCIDRFormInetnum(t *testing.T) {
+	target, err := parseNetworkTarget("200.0.0.1")
+	require.NoError(t, err)
+
+	result, err := parseTCP43NetworkResult(target, "inetnum: 200.0.0.0/21\nowner: HOCOL S.A.\n", "whois.lacnic.net")
+	require.NoError(t, err)
+	assert.Equal(t, "200.0.0.0", result.StartAddress)
+	assert.Equal(t, "200.0.7.255", result.EndAddress)
+}
+
 func TestTCP43NetworkContacts_OmitsPrivacyEmail(t *testing.T) {
 	contacts := tcp43NetworkContacts(map[string][]string{
 		"email": {"zzzz03.com@shieldwhois.com"},
