@@ -25,13 +25,14 @@ func WithHTTPClient(c *http.Client) Option {
 }
 
 // Lookup resolves domain registration data by trying RDAP first (structured,
-// standardized dates) then TCP-43 (better email coverage, raw text), and
-// merging the best fields from each source.
+// standardized dates), then TCP-43 (better email coverage, raw text), and
+// finally WhoisFreaks as a fallback, merging the best fields from each source.
 //
-// Both sources are always attempted unless one definitively says the domain is
-// unregistered. RDAP provides clean metadata but rarely has email (GDPR),
-// while TCP-43 has email but fragile referral chains. The merge gives callers
-// the best of both.
+// RDAP and TCP-43 are always attempted unless one definitively says the domain
+// is unregistered. RDAP provides clean metadata but rarely has email (GDPR),
+// while TCP-43 has email but fragile referral chains. WhoisFreaks is tried
+// when both prior legs fail, or when their merged result lacks registrant
+// identity. The merge gives callers the best of all sources.
 func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) {
 	cfg := config{}
 	for _, o := range opts {
@@ -59,13 +60,35 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 		slog.Debug("TCP-43 lookup failed", "domain", domain, "error", tcp43Err)
 	}
 
+	// If both prior legs failed, try WhoisFreaks before giving up.
 	if rdapErr != nil && tcp43Err != nil {
+		wfResult, wfErr := whoisFreaksLookup(ctx, cfg.httpClient, domain)
+		if wfErr != nil {
+			slog.Debug("WhoisFreaks fallback failed", "domain", domain, "error", wfErr)
+			return Result{}, fmt.Errorf("whois: all methods failed for %s", domain)
+		}
+		if wfResult.Domain != "" {
+			wfResult.ScrubContacts()
+			return wfResult, nil
+		}
 		return Result{}, fmt.Errorf("whois: all methods failed for %s", domain)
 	}
 
 	result := mergeResults(domain, rdapResult, rdapErr, tcp43Result, tcp43Err)
 	applyISOCILFallback(&result, tcp43Raw)
 	result.ScrubContacts()
+
+	// If prior sources left registrant gaps, try WhoisFreaks to fill them.
+	if !result.HasRegistrant() {
+		wfResult, wfErr := whoisFreaksLookup(ctx, cfg.httpClient, domain)
+		if wfErr != nil {
+			slog.Debug("WhoisFreaks fallback failed", "domain", domain, "error", wfErr)
+		} else if wfResult.Domain != "" && !wfResult.Unregistered {
+			wfResult.ScrubContacts()
+			result.Merge(wfResult)
+		}
+	}
+
 	return result, nil
 }
 
