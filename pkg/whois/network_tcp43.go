@@ -204,11 +204,13 @@ func emailContacts(fields map[string][]string) []NetworkContact {
 	var contacts []NetworkContact
 	for _, field := range emailFields {
 		for _, value := range fields[field.key] {
-			if email := firstEmail(value); email != "" {
-				contacts = append(contacts, NetworkContact{
-					Roles: []string{field.role}, Direct: true, Email: email,
-				})
+			email := firstEmail(value)
+			if email == "" || IsPrivacy(email) {
+				continue
 			}
+			contacts = append(contacts, NetworkContact{
+				Roles: []string{field.role}, Direct: true, Email: email,
+			})
 		}
 	}
 	return contacts

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 )
 
@@ -53,12 +54,7 @@ func (c NetworkContact) IsEmpty() bool {
 }
 
 func (c NetworkContact) HasRole(role string) bool {
-	for _, candidate := range c.Roles {
-		if candidate == role {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.Roles, role)
 }
 
 func (c NetworkContact) IsMaintainer() bool {
@@ -180,10 +176,10 @@ func hasUsefulNetworkIdentity(contacts []NetworkContact) bool {
 		default:
 			identity = ""
 		}
-		if identity != "" && !IsPrivacy(identity) {
+		if identity != "" {
 			return true
 		}
-		if contact.Email != "" && !IsPrivacy(contact.Email) && IsEmail(contact.Email) {
+		if IsEmail(contact.Email) {
 			return true
 		}
 	}

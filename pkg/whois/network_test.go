@@ -226,6 +226,14 @@ func (rdapResponseRoundTripper) RoundTrip(request *http.Request) (*http.Response
 	}, nil
 }
 
+func TestTCP43NetworkContacts_OmitsPrivacyEmail(t *testing.T) {
+	contacts := tcp43NetworkContacts(map[string][]string{
+		"email": {"zzzz03.com@shieldwhois.com"},
+	})
+
+	assert.Empty(t, contacts)
+}
+
 func TestLookupNetwork_FallsBackToTCP43(t *testing.T) {
 	original := tcp43RawFn
 	tcp43RawFn = func(_ context.Context, query, server string) (string, error) {

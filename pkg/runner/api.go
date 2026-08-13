@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"maps"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -59,9 +60,7 @@ func Run(ctx context.Context, cfg Config) ([]plugins.Finding, error) {
 	}
 
 	// Copy caller-provided meta into input for plugin consumption.
-	for k, v := range cfg.Meta {
-		input.Meta[k] = v
-	}
+	maps.Copy(input.Meta, cfg.Meta)
 
 	mode := cfg.Mode
 	if mode == "" {

@@ -9,10 +9,10 @@ import "cmp"
 type Result struct {
 	Domain       string   `json:"domain"`
 	Registrar    string   `json:"registrar,omitempty"`
-	Registrant   Contact  `json:"registrant,omitempty"`
-	Admin        Contact  `json:"admin,omitempty"`
-	Tech         Contact  `json:"tech,omitempty"`
-	Billing      Contact  `json:"billing,omitempty"`
+	Registrant   Contact  `json:"registrant"`
+	Admin        Contact  `json:"admin"`
+	Tech         Contact  `json:"tech"`
+	Billing      Contact  `json:"billing"`
 	Created      string   `json:"created,omitempty"`
 	Updated      string   `json:"updated,omitempty"`
 	Expiration   string   `json:"expiration,omitempty"`

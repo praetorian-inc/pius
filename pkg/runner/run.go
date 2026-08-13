@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -134,7 +135,7 @@ func selectPlugins(whitelist, blacklist, mode string) []plugins.Plugin {
 		result = plugins.All()
 		if blacklist != "" {
 			disabled := make(map[string]bool)
-			for _, name := range strings.Split(blacklist, ",") {
+			for name := range strings.SplitSeq(blacklist, ",") {
 				disabled[strings.TrimSpace(name)] = true
 			}
 			filtered := make([]plugins.Plugin, 0, len(result))
@@ -293,7 +294,6 @@ func runPlugins(ctx context.Context, pluginList []plugins.Plugin, input plugins.
 	group.SetLimit(concurrency)
 
 	for _, p := range pluginList {
-		p := p // capture loop variable
 		if !p.Accepts(input) {
 			continue
 		}
@@ -325,7 +325,6 @@ func runPhaseWithResults(ctx context.Context, pluginList []plugins.Plugin, input
 	group.SetLimit(concurrency)
 
 	for _, p := range pluginList {
-		p := p // capture loop variable
 		if !p.Accepts(input) {
 			continue
 		}
@@ -350,9 +349,7 @@ func runPhaseWithResults(ctx context.Context, pluginList []plugins.Plugin, input
 func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.Input {
 	enriched := input
 	enriched.Meta = make(map[string]string, len(input.Meta))
-	for k, v := range input.Meta {
-		enriched.Meta[k] = v
-	}
+	maps.Copy(enriched.Meta, input.Meta)
 
 	groups := make(map[string][]string)
 	for _, f := range findings {
@@ -385,9 +382,7 @@ func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.
 func enrichWithCIDRs(input plugins.Input, findings []plugins.Finding) plugins.Input {
 	enriched := input
 	enriched.Meta = make(map[string]string, len(input.Meta))
-	for k, v := range input.Meta {
-		enriched.Meta[k] = v
-	}
+	maps.Copy(enriched.Meta, input.Meta)
 
 	var cidrs []string
 	seen := make(map[string]bool)
@@ -412,9 +407,7 @@ func enrichWithCIDRs(input plugins.Input, findings []plugins.Finding) plugins.In
 func enrichWithDomains(input plugins.Input, findings []plugins.Finding) plugins.Input {
 	enriched := input
 	enriched.Meta = make(map[string]string, len(input.Meta))
-	for k, v := range input.Meta {
-		enriched.Meta[k] = v
-	}
+	maps.Copy(enriched.Meta, input.Meta)
 
 	seen := make(map[string]bool)
 	var domains []string
