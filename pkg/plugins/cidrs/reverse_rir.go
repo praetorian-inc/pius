@@ -17,7 +17,7 @@ const confReverseRIRHandle = 60
 
 func init() {
 	plugins.Register("reverse-rir", func() plugins.Plugin {
-		return NewReverseRIRPlugin(nil)
+		return NewReverseRIRPlugin(client.New())
 	})
 }
 
