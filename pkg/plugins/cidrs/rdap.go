@@ -11,12 +11,6 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-// httpDoer abstracts HTTP GET operations for testability.
-type httpDoer interface {
-	Get(ctx context.Context, url string) ([]byte, error)
-	GetWithHeaders(ctx context.Context, url string, headers map[string]string) ([]byte, error)
-}
-
 const confRDAPHandleNetwork = 85
 
 type rdapCIDR struct {
@@ -37,13 +31,16 @@ type rdapConfig struct {
 // rdapPlugin is a Phase 2 CIDR plugin that resolves RIR org handles
 // to CIDR blocks via RDAP entity lookup.
 type rdapPlugin struct {
-	cfg  rdapConfig
-	doer httpDoer
+	cfg rdapConfig
+	c   *client.Client
 }
 
 // newRDAPPlugin creates an rdapPlugin with the given config and a default HTTP client.
-func newRDAPPlugin(cfg rdapConfig) *rdapPlugin {
-	return &rdapPlugin{cfg: cfg, doer: client.New()}
+func newRDAPPlugin(cfg rdapConfig, c *client.Client) *rdapPlugin {
+	if c == nil {
+		c = client.New()
+	}
+	return &rdapPlugin{cfg: cfg, c: c}
 }
 
 func (p *rdapPlugin) Name() string        { return p.cfg.name }
@@ -92,7 +89,7 @@ func (p *rdapPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 
 func (p *rdapPlugin) fetchCIDRs(ctx context.Context, handle string) ([]rdapCIDR, error) {
 	reqURL := fmt.Sprintf("%s/%s", p.cfg.baseURL, url.PathEscape(handle))
-	body, err := p.doer.GetWithHeaders(ctx, reqURL, map[string]string{
+	body, err := p.c.GetWithHeaders(ctx, reqURL, map[string]string{
 		"Accept": "application/rdap+json",
 	})
 	if err != nil {

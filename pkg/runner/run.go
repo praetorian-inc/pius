@@ -415,6 +415,9 @@ func enrichWithDomains(input plugins.Input, findings []plugins.Finding) plugins.
 		if f.Type != plugins.FindingDomain {
 			continue
 		}
+		if len(f.Confidences) > 0 && plugins.TotalConfidence(f) < plugins.ConfidenceLow {
+			continue
+		}
 		d := strings.ToLower(strings.TrimSpace(f.Value))
 		if d != "" && !seen[d] {
 			seen[d] = true
