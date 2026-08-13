@@ -13,13 +13,21 @@ func init() {
 		if err != nil {
 			slog.Warn("cache init failed, plugin will be disabled", "plugin", "afrinic", "error", err)
 		}
-		return newRPSLPlugin(rpslConfig{
-			name:        "afrinic",
-			description: "AFRINIC RPSL: resolves org handles to CIDR blocks",
-			cacheURL:    cache.AFRINICAllURL,
-			metaKey:     "afrinic_handles",
-			registry:    "afrinic",
-			mode:        plugins.ModePassive,
-		}, c)
+
+		return NewAFRINICPlugin(c)
 	})
+}
+
+// NewAFRINICPlugin builds the AFRINIC RPSL plugin. Supplied database paths are
+// parsed directly and take precedence over c; without paths, c downloads and
+// caches AFRINIC's published database. Passing neither source disables the plugin.
+func NewAFRINICPlugin(c *cache.Cache, databases ...string) plugins.Plugin {
+	return newRPSLPlugin(rpslConfig{
+		name:        "afrinic",
+		description: "AFRINIC RPSL: resolves org handles to CIDR blocks",
+		cacheURL:    cache.AFRINICAllURL,
+		metaKey:     "afrinic_handles",
+		registry:    "afrinic",
+		mode:        plugins.ModePassive,
+	}, c, databases...)
 }
