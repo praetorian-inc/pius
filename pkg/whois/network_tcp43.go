@@ -36,6 +36,7 @@ func parseTCP43NetworkResult(target networkTarget, raw, server string) (NetworkR
 		Country:      firstField(fields, "country"),
 		ParentHandle: firstField(fields, "parent", "parenthandle"),
 		Registry:     server,
+		Server:       server,
 		Contacts:     tcp43NetworkContacts(fields),
 		Sources:      []string{"whois"},
 		Raw:          raw,

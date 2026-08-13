@@ -22,6 +22,7 @@ type NetworkResult struct {
 	Country      string           `json:"country,omitempty"`
 	ParentHandle string           `json:"parent_handle,omitempty"`
 	Registry     string           `json:"registry,omitempty"`
+	Server       string           `json:"server,omitempty"`
 	Contacts     []NetworkContact `json:"contacts,omitempty"`
 	Sources      []string         `json:"sources,omitempty"`
 	Raw          string           `json:"raw,omitempty"`
@@ -76,6 +77,7 @@ func LookupNetwork(ctx context.Context, query string, opts ...Option) (NetworkRe
 		if tcpErr == nil {
 			rdapResult.Contacts = mergeNetworkContacts(rdapResult.Contacts, tcpResult.Contacts)
 			rdapResult.Sources = append(rdapResult.Sources, "whois")
+			rdapResult.Server = tcpResult.Server
 			rdapResult.Raw = tcpResult.Raw
 			if rdapResult.Registry == "" {
 				rdapResult.Registry = tcpResult.Registry

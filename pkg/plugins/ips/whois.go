@@ -171,17 +171,38 @@ func networkPreseedFinding(result whois.NetworkResult, candidate networkPreseedC
 		Value:  candidate.value,
 		Source: "ip-whois",
 		Data: map[string]any{
-			"preseed_type":   "whois+" + candidate.field,
-			"preseed_title":  candidate.value,
-			"roles":          candidate.role,
-			"network_handle": result.Handle,
-			"registry":       result.Registry,
+			"preseed_type":     "whois+" + candidate.field,
+			"preseed_title":    candidate.value,
+			"roles":            candidate.role,
+			"query":            result.Query,
+			"network_handle":   result.Handle,
+			"allocation_start": result.StartAddress,
+			"allocation_end":   result.EndAddress,
+			"registry":         result.Registry,
+			"server":           result.Server,
+			"sources":          result.Sources,
 		},
 	}
-	plugins.AddConfidence(&finding, confIPWhoisContact, fmt.Sprintf(
-		"IP registry records %q as the %s contact %s for allocation %q",
-		candidate.value, candidate.role, candidate.field, result.Handle))
+	plugins.AddConfidence(&finding, confIPWhoisContact, networkPreseedJustification(result, candidate))
 	return finding
+}
+
+func networkPreseedJustification(result whois.NetworkResult, candidate networkPreseedCandidate) string {
+	source := "IP registry"
+	if slices.Contains(result.Sources, "whois") {
+		source = "IP WHOIS"
+	} else if slices.Contains(result.Sources, "rdap") {
+		source = "IP RDAP"
+	}
+	if result.Server != "" {
+		source += fmt.Sprintf(" server %q", result.Server)
+	}
+
+	return fmt.Sprintf(
+		"%s records %q as the %s contact %s for allocation %q spanning %s-%s, returned for query %q",
+		source, candidate.value, candidate.role, candidate.field, result.Handle,
+		result.StartAddress, result.EndAddress, result.Query,
+	)
 }
 
 func isMaintainer(contact whois.NetworkContact) bool {

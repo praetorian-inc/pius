@@ -35,9 +35,13 @@ func TestWhoisPlugin_RunEmitsResultAndPreseeds(t *testing.T) {
 	plugin := NewWhoisPlugin(nil)
 	plugin.lookup = func(context.Context, string, ...whois.Option) (whois.NetworkResult, error) {
 		return whois.NetworkResult{
-			Query:    "8.8.8.8",
-			Handle:   "NET-8-8-8-0-1",
-			Registry: "whois.example.test",
+			Query:        "8.8.8.8",
+			StartAddress: "8.8.8.0",
+			EndAddress:   "8.8.8.255",
+			Handle:       "NET-8-8-8-0-1",
+			Registry:     "arin",
+			Server:       "whois.example.test",
+			Sources:      []string{"whois"},
 			Contacts: []whois.NetworkContact{
 				{Roles: []string{"registrant"}, Kind: "org", Direct: true, Name: "Example Networks", Email: "jane@example.com"},
 				{Handle: "EXAMPLE-MNT", Roles: []string{"registrant"}, Kind: "individual", Direct: true, Name: "EXAMPLE-MNT"},
@@ -60,6 +64,9 @@ func TestWhoisPlugin_RunEmitsResultAndPreseeds(t *testing.T) {
 	for _, finding := range findings[1:] {
 		require.Len(t, finding.Confidences, 1)
 		assert.Equal(t, confIPWhoisContact, finding.Confidences[0].Score)
+		assert.Contains(t, finding.Confidences[0].Justification, `IP WHOIS server "whois.example.test"`)
+		assert.Contains(t, finding.Confidences[0].Justification, `allocation "NET-8-8-8-0-1" spanning 8.8.8.0-8.8.8.255`)
+		assert.Contains(t, finding.Confidences[0].Justification, `returned for query "8.8.8.8"`)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/openrdap/rdap"
@@ -29,10 +30,21 @@ func rdapNetworkLookup(ctx context.Context, httpClient *http.Client, target netw
 	}
 
 	result := mapRDAPToNetworkResult(target.query, network)
+	result.Server = rdapResponseServer(response)
 	if err := requireContainingAllocation(result, target); err != nil {
 		return NetworkResult{}, err
 	}
 	return result, nil
+}
+
+func rdapResponseServer(response *rdap.Response) string {
+	for _, httpResponse := range response.HTTP {
+		parsed, err := url.Parse(httpResponse.URL)
+		if err == nil && parsed.Host != "" {
+			return parsed.Host
+		}
+	}
+	return ""
 }
 
 func mapRDAPToNetworkResult(query string, network *rdap.IPNetwork) NetworkResult {

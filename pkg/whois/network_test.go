@@ -103,6 +103,7 @@ func TestLookupNetwork_FallsBackToTCP43(t *testing.T) {
 	result, err := LookupNetwork(context.Background(), "8.8.8.8", WithHTTPClient(failingHTTPClient()))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"whois"}, result.Sources)
+	assert.Equal(t, "whois.example.test", result.Server)
 	assert.Equal(t, "8.8.8.0", result.StartAddress)
 	assert.Equal(t, "8.8.8.255", result.EndAddress)
 	require.Len(t, result.Contacts, 2)
@@ -118,6 +119,14 @@ func (failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 
 func failingHTTPClient() *http.Client {
 	return &http.Client{Transport: failingRoundTripper{}}
+}
+
+func TestRDAPResponseServer(t *testing.T) {
+	response := &rdap.Response{HTTP: []*rdap.HTTPResponse{{
+		URL: "https://rdap.example.test/ip/8.8.8.8",
+	}}}
+
+	assert.Equal(t, "rdap.example.test", rdapResponseServer(response))
 }
 
 func TestMapRDAPToNetworkResult_RecursesEntities(t *testing.T) {
