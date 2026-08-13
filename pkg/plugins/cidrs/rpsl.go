@@ -4,10 +4,8 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"maps"
 	"net"
 	"os"
-	"slices"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/cache"
@@ -27,73 +25,34 @@ type rpslConfig struct {
 	mode        string // plugins.ModePassive or plugins.ModeActive
 }
 
-// rpslConfigs is the per-registry configuration behind both the self-registering
-// plugins and NewRPSLPlugin, so an embedder's plugin is the same plugin
-// standalone pius runs — only where the database comes from differs.
-var rpslConfigs = map[string]rpslConfig{
-	"apnic": {
-		name:        "apnic",
-		description: "APNIC RPSL: resolves org handles to CIDR blocks",
-		cacheURL:    cache.APNICInetURL,
-		metaKey:     "apnic_handles",
-		registry:    "apnic",
-		mode:        plugins.ModePassive,
-	},
-	"afrinic": {
-		name:        "afrinic",
-		description: "AFRINIC RPSL: resolves org handles to CIDR blocks",
-		cacheURL:    cache.AFRINICAllURL,
-		metaKey:     "afrinic_handles",
-		registry:    "afrinic",
-		mode:        plugins.ModePassive,
-	},
-}
-
 // rpslPlugin is a Phase 2 CIDR plugin that resolves RIR org handles to CIDR
 // blocks by parsing RPSL inetnum/inet6num databases.
 //
-// The database comes from exactly one of two places. cache downloads and
-// refreshes the registry's published dump; dbPaths are files the caller already
-// has on disk. They are mutually exclusive by construction — see databases —
-// because an embedder that supplies paths is telling us not to reach the
-// network, and silently downloading a several-hundred-megabyte dump when one of
-// those files is missing is precisely the failure it asked us to avoid.
+// The database comes from one of two places. cache downloads and refreshes the
+// registry's published dump; dbPaths are files the caller already has on disk.
+// When paths are supplied they take precedence over the cache, because an
+// embedder that supplies paths is telling us not to reach the network. A missing
+// supplied file therefore returns an error instead of falling back to a
+// several-hundred-megabyte download.
 type rpslPlugin struct {
 	cfg     rpslConfig
 	cache   *cache.Cache
 	dbPaths []string
 }
 
-// newRPSLPlugin creates a cache-backed rpslPlugin with the given config.
-// If cache is nil (init failed), the plugin self-disables via Accepts().
-func newRPSLPlugin(cfg rpslConfig, c *cache.Cache) *rpslPlugin {
-	return &rpslPlugin{cfg: cfg, cache: c}
-}
-
-// NewRPSLPlugin builds the RPSL plugin for one registry over databases the
-// caller already has on disk. It exists for embedders that ship the RIR dumps in
-// their runtime image — Guard decompresses them into RIR_DIR at build time — so
-// a run neither downloads a dump nor needs a writable cache directory.
-//
-// Every supplied path is parsed, which is how APNIC covers both address
-// families: it publishes inetnum and inet6num as separate files.
-func NewRPSLPlugin(registry string, databasePaths ...string) (plugins.Plugin, error) {
-	cfg, ok := rpslConfigs[registry]
-	if !ok {
-		return nil, fmt.Errorf("no RPSL registry %q (have %s)", registry,
-			strings.Join(slices.Sorted(maps.Keys(rpslConfigs)), ", "))
-	}
-
+// newRPSLPlugin creates a plugin backed by either local database paths or a
+// download cache. Local paths take precedence when both are provided. With
+// neither source configured, the plugin self-disables via Accepts(), while a
+// direct Run reports the missing database source.
+func newRPSLPlugin(cfg rpslConfig, c *cache.Cache, databasePaths ...string) *rpslPlugin {
 	paths := make([]string, 0, len(databasePaths))
 	for _, path := range databasePaths {
 		if strings.TrimSpace(path) != "" {
 			paths = append(paths, path)
 		}
 	}
-	if len(paths) == 0 {
-		return nil, fmt.Errorf("%s: no database paths supplied", registry)
-	}
-	return &rpslPlugin{cfg: cfg, dbPaths: paths}, nil
+
+	return &rpslPlugin{cfg: cfg, cache: c, dbPaths: paths}
 }
 
 func (p *rpslPlugin) Name() string        { return p.cfg.name }

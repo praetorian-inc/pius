@@ -13,6 +13,21 @@ func init() {
 		if err != nil {
 			slog.Warn("cache init failed, plugin will be disabled", "plugin", "apnic", "error", err)
 		}
-		return newRPSLPlugin(rpslConfigs["apnic"], c)
+
+		return NewAPNICPlugin(c)
 	})
+}
+
+// NewAPNICPlugin builds the APNIC RPSL plugin. Supplied database paths are
+// parsed directly and take precedence over c; without paths, c downloads and
+// caches APNIC's published database. Passing neither source disables the plugin.
+func NewAPNICPlugin(c *cache.Cache, databases ...string) plugins.Plugin {
+	return newRPSLPlugin(rpslConfig{
+		name:        "apnic",
+		description: "APNIC RPSL: resolves org handles to CIDR blocks",
+		cacheURL:    cache.APNICInetURL,
+		metaKey:     "apnic_handles",
+		registry:    "apnic",
+		mode:        plugins.ModePassive,
+	}, c, databases...)
 }

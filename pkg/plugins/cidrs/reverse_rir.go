@@ -27,7 +27,7 @@ func init() {
 // self-registering plugin uses.
 func NewReverseRIRPlugin(c *client.Client) *ReverseRIRPlugin {
 	if c == nil {
-		return &ReverseRIRPlugin{client: client.New()}
+		c = client.New()
 	}
 	return &ReverseRIRPlugin{client: c}
 }

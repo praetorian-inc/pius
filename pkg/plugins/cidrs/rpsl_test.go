@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -256,25 +254,27 @@ org:            ORG-ACME1-AP
 
 // ── Local-file construction (the embedded path) ───────────────────────────────
 
-func TestNewRPSLPlugin_RejectsUnknownRegistry(t *testing.T) {
-	p, err := NewRPSLPlugin("arin", "/tmp/whatever.db")
-	require.Error(t, err)
-	assert.Nil(t, p)
-	assert.Contains(t, err.Error(), "apnic")
-	assert.Contains(t, err.Error(), "afrinic")
-}
+func TestRPSLConstructors_RequireACacheOrDatabasePath(t *testing.T) {
+	constructors := map[string]func(*cache.Cache, ...string) plugins.Plugin{
+		"apnic":   NewAPNICPlugin,
+		"afrinic": NewAFRINICPlugin,
+	}
 
-func TestNewRPSLPlugin_RequiresANonEmptyPath(t *testing.T) {
-	for _, paths := range [][]string{nil, {}, {""}, {"", "   "}} {
-		p, err := NewRPSLPlugin("apnic", paths...)
-		require.Error(t, err, "paths %q should be rejected", paths)
-		assert.Nil(t, p)
+	for registry, newPlugin := range constructors {
+		t.Run(registry, func(t *testing.T) {
+			p := newPlugin(nil, "", "   ")
+			input := plugins.Input{Meta: map[string]string{registry + "_handles": "ORG-1"}}
+
+			assert.False(t, p.Accepts(input))
+			findings, err := p.Run(context.Background(), input)
+			require.ErrorContains(t, err, "no database paths and no download cache")
+			assert.Nil(t, findings)
+		})
 	}
 }
 
-func TestNewRPSLPlugin_AcceptsWithoutACache(t *testing.T) {
-	p, err := NewRPSLPlugin("afrinic", writeTempRPSL(t, ""))
-	require.NoError(t, err)
+func TestNewAFRINICPlugin_AcceptsWithoutACache(t *testing.T) {
+	p := NewAFRINICPlugin(nil, writeTempRPSL(t, ""))
 
 	assert.True(t, p.Accepts(plugins.Input{Meta: map[string]string{"afrinic_handles": "ORG-1"}}))
 	assert.False(t, p.Accepts(plugins.Input{}), "still needs a handle to resolve")
@@ -282,12 +282,11 @@ func TestNewRPSLPlugin_AcceptsWithoutACache(t *testing.T) {
 	assert.Equal(t, 2, p.Phase())
 }
 
-func TestNewRPSLPlugin_ReadsIPv4FromLocalFile(t *testing.T) {
+func TestNewAPNICPlugin_ReadsIPv4FromLocalFile(t *testing.T) {
 	path := writeRPSLNamed(t, t.TempDir(), "apnic.db.inetnum",
 		"inetnum:        203.0.113.0 - 203.0.113.255\nnetname:        ACME-AP\norg:            ORG-ACME1-AP\n\n")
 
-	p, err := NewRPSLPlugin("apnic", path)
-	require.NoError(t, err)
+	p := NewAPNICPlugin(nil, path)
 
 	findings, err := p.Run(context.Background(), plugins.Input{
 		OrgName: "Acme Corp",
@@ -304,12 +303,11 @@ func TestNewRPSLPlugin_ReadsIPv4FromLocalFile(t *testing.T) {
 	assert.Equal(t, confRPSLHandleInetnum, findings[0].Confidences[0].Score)
 }
 
-func TestNewRPSLPlugin_ReadsIPv6FromLocalFile(t *testing.T) {
+func TestNewAPNICPlugin_ReadsIPv6FromLocalFile(t *testing.T) {
 	path := writeRPSLNamed(t, t.TempDir(), "apnic.db.inet6num",
 		"inet6num:       2001:db8::/32\nnetname:        ACME-AP-V6\norg:            ORG-ACME1-AP\n\n")
 
-	p, err := NewRPSLPlugin("apnic", path)
-	require.NoError(t, err)
+	p := NewAPNICPlugin(nil, path)
 
 	findings, err := p.Run(context.Background(), plugins.Input{
 		OrgName: "Acme Corp",
@@ -324,15 +322,14 @@ func TestNewRPSLPlugin_ReadsIPv6FromLocalFile(t *testing.T) {
 
 // APNIC publishes the two address families as separate files, so covering IPv6
 // means reading every path the caller supplied, not just the first.
-func TestNewRPSLPlugin_ReadsEverySuppliedPath(t *testing.T) {
+func TestNewAPNICPlugin_ReadsEverySuppliedPath(t *testing.T) {
 	dir := t.TempDir()
 	v4 := writeRPSLNamed(t, dir, "apnic.db.inetnum",
 		"inetnum:        203.0.113.0 - 203.0.113.255\norg:            ORG-ACME1-AP\n\n")
 	v6 := writeRPSLNamed(t, dir, "apnic.db.inet6num",
 		"inet6num:       2001:db8::/32\norg:            ORG-ACME1-AP\n\n")
 
-	p, err := NewRPSLPlugin("apnic", v4, v6)
-	require.NoError(t, err)
+	p := NewAPNICPlugin(nil, v4, v6)
 
 	findings, err := p.Run(context.Background(), plugins.Input{
 		Meta: map[string]string{"apnic_handles": "ORG-ACME1-AP"},
@@ -344,7 +341,7 @@ func TestNewRPSLPlugin_ReadsEverySuppliedPath(t *testing.T) {
 }
 
 // AFRINIC ships one combined database carrying both families.
-func TestNewRPSLPlugin_AfrinicCombinedDatabase(t *testing.T) {
+func TestNewAFRINICPlugin_ReadsCombinedDatabase(t *testing.T) {
 	path := writeRPSLNamed(t, t.TempDir(), "afrinic.db", `inetnum:        196.216.2.0 - 196.216.2.255
 netname:        ACME-AFRINIC
 org:            ORG-ACME1-AFRINIC
@@ -355,8 +352,7 @@ org:            ORG-ACME1-AFRINIC
 
 `)
 
-	p, err := NewRPSLPlugin("afrinic", path)
-	require.NoError(t, err)
+	p := NewAFRINICPlugin(nil, path)
 
 	findings, err := p.Run(context.Background(), plugins.Input{
 		Meta: map[string]string{"afrinic_handles": "org-acme1-afrinic"},
@@ -372,20 +368,9 @@ org:            ORG-ACME1-AFRINIC
 
 // The whole point of the injected-path mode: a missing file is an error, never
 // a fallback to downloading a several-hundred-megabyte dump.
-func TestNewRPSLPlugin_MissingFileErrorsWithoutDownloading(t *testing.T) {
-	var requests int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	// A cache that would serve this plugin if it ever consulted one.
-	t.Setenv("HOME", t.TempDir())
+func TestNewAPNICPlugin_MissingFileErrorsWithoutDownloading(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "apnic.db.inetnum")
-
-	p, err := NewRPSLPlugin("apnic", missing)
-	require.NoError(t, err)
+	p := NewAPNICPlugin(nil, missing)
 
 	findings, err := p.Run(context.Background(), plugins.Input{
 		Meta: map[string]string{"apnic_handles": "ORG-ACME1-AP"},
@@ -394,22 +379,16 @@ func TestNewRPSLPlugin_MissingFileErrorsWithoutDownloading(t *testing.T) {
 	assert.Nil(t, findings)
 	assert.Contains(t, err.Error(), "apnic")
 	assert.Contains(t, err.Error(), missing, "error should identify the unreadable file")
-	assert.Zero(t, requests, "local-file mode must never reach the network")
 }
 
 // A plugin built over local paths must not consult the cache even when one is
 // available and populated — the paths are the sole source of records.
 func TestRPSLPlugin_LocalPathsNeverFallBackToCache(t *testing.T) {
-	cacheURL := "https://example.test/apnic.db.gz"
-	pluginCache := newTestRPSLCache(t, cacheURL,
+	pluginCache := newTestRPSLCache(t, cache.APNICInetURL,
 		"inetnum:        10.0.0.0 - 10.0.0.255\norg:            ORG-ACME1-AP\n\n")
 
 	local := writeTempRPSL(t, "inetnum:        203.0.113.0 - 203.0.113.255\norg:            ORG-ACME1-AP\n\n")
-	p := &rpslPlugin{
-		cfg:     rpslConfigs["apnic"],
-		cache:   pluginCache,
-		dbPaths: []string{local},
-	}
+	p := NewAPNICPlugin(pluginCache, local)
 
 	findings, err := p.Run(context.Background(), plugins.Input{
 		Meta: map[string]string{"apnic_handles": "ORG-ACME1-AP"},
