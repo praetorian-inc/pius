@@ -121,7 +121,7 @@ func (p *rpslPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 
 	var findings []plugins.Finding
 	for _, dbFile := range dbFiles {
-		netblocks, err := parseRPSLNetblocks(dbFile, handles)
+		netblocks, err := parseRPSLNetblocks(dbFile, handles, input.OrgName)
 		if err != nil {
 			return nil, fmt.Errorf("%s: read RPSL database: %w", p.cfg.name, err)
 		}
@@ -156,8 +156,14 @@ func (p *rpslPlugin) findings(input plugins.Input, netblocks []rpslNetblock) []p
 			continue
 		}
 		for _, c := range cidrs {
-			justification := fmt.Sprintf("%s RPSL records %s %q under organization handle %q",
-				strings.ToUpper(p.Name()), netblock.kind(), netblock.source(), netblock.handle)
+			justification := fmt.Sprintf("%s RPSL records %s %q",
+				strings.ToUpper(p.Name()), netblock.kind(), netblock.source())
+			if netblock.handle != "" {
+				justification += fmt.Sprintf(" under organization handle %q", netblock.handle)
+			} else {
+				justification += fmt.Sprintf(" with descr %q matching organization name %q",
+					netblock.description, input.OrgName)
+			}
 			if netblock.netname != "" {
 				justification += fmt.Sprintf(" with netname %q", netblock.netname)
 			}
@@ -168,10 +174,11 @@ func (p *rpslPlugin) findings(input plugins.Input, netblocks []rpslNetblock) []p
 				Value:  c,
 				Source: p.Name(),
 				Data: map[string]any{
-					"handle":   netblock.handle,
-					"org":      input.OrgName,
-					"registry": p.cfg.registry,
-					"netname":  netblock.netname,
+					"handle":      netblock.handle,
+					"org":         input.OrgName,
+					"registry":    p.cfg.registry,
+					"netname":     netblock.netname,
+					"description": netblock.description,
 				},
 			}
 			plugins.AddConfidence(&finding, confRPSLHandleInetnum, justification)
@@ -181,10 +188,10 @@ func (p *rpslPlugin) findings(input plugins.Input, netblocks []rpslNetblock) []p
 	return findings
 }
 
-// rpslNetblock is one inetnum or inet6num record matched to a requested handle.
+// rpslNetblock is one matched inetnum or inet6num record. A match carries either
+// its org handle or the descr line that matched the requested organization name.
 // inetnum states an inclusive IPv4 range; inet6num states an IPv6 prefix. Which
-// of the two a record is decides how it converts to CIDRs, so both forms are
-// kept as written and resolved in cidrs().
+// form the record uses decides how it converts to CIDRs.
 type rpslNetblock struct {
 	handle string
 
@@ -195,7 +202,9 @@ type rpslNetblock struct {
 	// prefix is set for an inet6num record.
 	prefix string
 
-	netname string
+	netname      string
+	description  string
+	descriptions []string
 }
 
 func (n rpslNetblock) isPrefix() bool { return n.prefix != "" }
@@ -231,9 +240,10 @@ func (n rpslNetblock) cidrs() ([]string, error) {
 	return cidr.ConvertIPv4RangeToCIDR(n.start, n.end)
 }
 
-// parseRPSLNetblocks scans an RPSL database and returns the inetnum and
-// inet6num records belonging to any of the given handles, in file order.
-func parseRPSLNetblocks(filePath string, handles []string) ([]rpslNetblock, error) {
+// parseRPSLNetblocks scans an RPSL database and returns inetnum and inet6num
+// records linked either to a requested handle through org or to the organization
+// name through descr, in file order.
+func parseRPSLNetblocks(filePath string, handles []string, organizationName string) ([]rpslNetblock, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
@@ -251,8 +261,14 @@ func parseRPSLNetblocks(filePath string, handles []string) ([]rpslNetblock, erro
 	var current rpslNetblock
 
 	keep := func() {
-		if current.handle != "" && handleSet[strings.ToUpper(current.handle)] &&
-			(current.prefix != "" || (current.start != "" && current.end != "")) {
+		hasNetblock := current.prefix != "" || (current.start != "" && current.end != "")
+		hasMatchingHandle := current.handle != "" && handleSet[strings.ToUpper(current.handle)]
+		matchingDescription := findMatchingDescription(current.descriptions, organizationName)
+		if hasNetblock && (hasMatchingHandle || matchingDescription != "") {
+			if !hasMatchingHandle {
+				current.handle = ""
+				current.description = matchingDescription
+			}
 			results = append(results, current)
 		}
 		current = rpslNetblock{}
@@ -281,6 +297,9 @@ func parseRPSLNetblocks(filePath string, handles []string) ([]rpslNetblock, erro
 			current.prefix = strings.TrimSpace(strings.TrimPrefix(line, "inet6num:"))
 		case strings.HasPrefix(line, "org:"):
 			current.handle = strings.TrimSpace(strings.TrimPrefix(line, "org:"))
+		case strings.HasPrefix(line, "descr:"):
+			current.descriptions = append(current.descriptions,
+				strings.TrimSpace(strings.TrimPrefix(line, "descr:")))
 		case strings.HasPrefix(line, "netname:"):
 			current.netname = strings.TrimSpace(strings.TrimPrefix(line, "netname:"))
 		}
@@ -293,4 +312,17 @@ func parseRPSLNetblocks(filePath string, handles []string) ([]rpslNetblock, erro
 	// record at EOF; without this the final netblock in the file is dropped.
 	keep()
 	return results, nil
+}
+
+func findMatchingDescription(descriptions []string, organizationName string) string {
+	organizationName = strings.ToLower(strings.TrimSpace(organizationName))
+	if organizationName == "" {
+		return ""
+	}
+	for _, description := range descriptions {
+		if strings.HasPrefix(strings.ToLower(description), organizationName) {
+			return description
+		}
+	}
+	return ""
 }

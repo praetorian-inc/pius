@@ -39,7 +39,7 @@ func TestParseRPSLNetblocks_BasicParsing(t *testing.T) {
 	content := "inetnum:        192.168.0.0 - 192.168.255.255\nnetname:        ACME-NET\norg:            ACME-1\n\n"
 	path := writeTempRPSL(t, content)
 
-	results, err := parseRPSLNetblocks(path, []string{"ACME-1"})
+	results, err := parseRPSLNetblocks(path, []string{"ACME-1"}, "")
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "ACME-1", results[0].handle)
@@ -53,7 +53,7 @@ func TestParseRPSLNetblocks_Inet6num(t *testing.T) {
 	content := "inet6num:       2001:db8::/32\nnetname:        ACME-V6\norg:            ACME-1\n\n"
 	path := writeTempRPSL(t, content)
 
-	results, err := parseRPSLNetblocks(path, []string{"ACME-1"})
+	results, err := parseRPSLNetblocks(path, []string{"ACME-1"}, "")
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.True(t, results[0].isPrefix())
@@ -69,7 +69,7 @@ func TestParseRPSLNetblocks_Inet6num(t *testing.T) {
 func TestParseRPSLNetblocks_Inet6numCanonicalizesPrefix(t *testing.T) {
 	path := writeTempRPSL(t, "inet6num:       2001:db8:1234::/32\norg:            ACME-1\n\n")
 
-	results, err := parseRPSLNetblocks(path, []string{"ACME-1"})
+	results, err := parseRPSLNetblocks(path, []string{"ACME-1"}, "")
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 
@@ -83,7 +83,7 @@ func TestParseRPSLNetblocks_Inet6numCanonicalizesPrefix(t *testing.T) {
 func TestParseRPSLNetblocks_MalformedPrefixIsRejected(t *testing.T) {
 	path := writeTempRPSL(t, "inet6num:       not-a-prefix\norg:            ACME-1\n\n")
 
-	results, err := parseRPSLNetblocks(path, []string{"ACME-1"})
+	results, err := parseRPSLNetblocks(path, []string{"ACME-1"}, "")
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 
@@ -103,7 +103,7 @@ org:            ACME-1
 `
 	path := writeTempRPSL(t, content)
 
-	results, err := parseRPSLNetblocks(path, []string{"ACME-1"})
+	results, err := parseRPSLNetblocks(path, []string{"ACME-1"}, "")
 	require.NoError(t, err)
 	require.Len(t, results, 2)
 	assert.False(t, results[0].isPrefix())
@@ -126,7 +126,7 @@ org:            ORG-C
 `
 	path := writeTempRPSL(t, content)
 
-	results, err := parseRPSLNetblocks(path, []string{"ORG-A", "ORG-C"})
+	results, err := parseRPSLNetblocks(path, []string{"ORG-A", "ORG-C"}, "")
 	require.NoError(t, err)
 	require.Len(t, results, 2)
 	assert.Equal(t, "ORG-A", results[0].handle)
@@ -138,7 +138,7 @@ func TestParseRPSLNetblocks_CaseInsensitiveHandleMatching(t *testing.T) {
 	path := writeTempRPSL(t, content)
 
 	// Request with lowercase — should still match.
-	results, err := parseRPSLNetblocks(path, []string{"acme-upper"})
+	results, err := parseRPSLNetblocks(path, []string{"acme-upper"}, "")
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "ACME-UPPER", results[0].handle,
@@ -150,31 +150,55 @@ func TestParseRPSLNetblocks_CaseInsensitiveHandleMatching(t *testing.T) {
 func TestParseRPSLNetblocks_RecordAtEOFWithoutTrailingBlankLine(t *testing.T) {
 	path := writeTempRPSL(t, "inetnum:        10.0.0.0 - 10.0.0.255\norg:            ACME-1\n")
 
-	results, err := parseRPSLNetblocks(path, []string{"ACME-1"})
+	results, err := parseRPSLNetblocks(path, []string{"ACME-1"}, "")
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "10.0.0.0", results[0].start)
 }
 
-func TestParseRPSLNetblocks_RecordWithNoOrg(t *testing.T) {
-	// Record without org: field — should be skipped entirely.
+func TestParseRPSLNetblocks_RecordWithNoOrgOrMatchingDescription(t *testing.T) {
 	content := "inetnum:        10.0.0.0 - 10.0.0.255\nnetname:        ORPHAN-NET\n\n"
 	path := writeTempRPSL(t, content)
 
-	results, err := parseRPSLNetblocks(path, []string{"ORPHAN-NET"})
+	results, err := parseRPSLNetblocks(path, []string{"ORPHAN-NET"}, "Acme Corp")
 	require.NoError(t, err)
-	assert.Empty(t, results, "record with no org: field should not produce results")
+	assert.Empty(t, results)
+}
+
+func TestParseRPSLNetblocks_MatchesOrganizationNameInDescription(t *testing.T) {
+	content := `inetnum:        203.0.113.0 - 203.0.113.255
+netname:        ACME-NET
+descr:          Acme Corporation, Sydney office
+org:            ORG-UPSTREAM1-AP
+
+`
+	path := writeTempRPSL(t, content)
+
+	results, err := parseRPSLNetblocks(path, []string{"ORG-ACME1-AP"}, "acme corporation")
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Empty(t, results[0].handle)
+	assert.Equal(t, "Acme Corporation, Sydney office", results[0].description)
+}
+
+func TestParseRPSLNetblocks_DescriptionMustStartWithOrganizationName(t *testing.T) {
+	content := "inetnum:        203.0.113.0 - 203.0.113.255\ndescr:          Unrelated company for Acme Corp\n\n"
+	path := writeTempRPSL(t, content)
+
+	results, err := parseRPSLNetblocks(path, []string{"ORG-ACME1-AP"}, "Acme Corp")
+	require.NoError(t, err)
+	assert.Empty(t, results)
 }
 
 func TestParseRPSLNetblocks_FileNotFound(t *testing.T) {
-	results, err := parseRPSLNetblocks("/nonexistent/path/that/does/not/exist.db", []string{"HANDLE"})
+	results, err := parseRPSLNetblocks("/nonexistent/path/that/does/not/exist.db", []string{"HANDLE"}, "")
 	assert.Error(t, err)
 	assert.Nil(t, results)
 }
 
 func TestParseRPSLNetblocks_EmptyFile(t *testing.T) {
 	path := writeTempRPSL(t, "")
-	results, err := parseRPSLNetblocks(path, []string{"ANY-HANDLE"})
+	results, err := parseRPSLNetblocks(path, []string{"ANY-HANDLE"}, "")
 	require.NoError(t, err)
 	assert.Empty(t, results)
 }
