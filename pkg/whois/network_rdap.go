@@ -97,8 +97,8 @@ func networkContactFromVCard(handle string, roles []string, vcard *rdap.VCard, d
 		Country:      base.Country,
 		Province:     base.Province,
 		City:         base.City,
-		Street:       clearIfPrivacy(vcard.StreetAddress()),
-		PostalCode:   clearIfPrivacy(vcard.PostalCode()),
+		Street:       base.Street,
+		PostalCode:   base.PostalCode,
 	}
 	if len(contact.Roles) == 0 {
 		contact.Roles = []string{"unknown"}

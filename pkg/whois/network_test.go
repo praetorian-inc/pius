@@ -3,6 +3,7 @@ package whois
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/netip"
@@ -286,6 +287,39 @@ func TestRDAPResponseServer(t *testing.T) {
 	}}}
 
 	assert.Equal(t, "rdap.example.test", rdapResponseServer(response))
+}
+
+func TestNetworkContactFromVCard_UsesAddressLabelFallback(t *testing.T) {
+	tests := []struct {
+		name  string
+		label string
+		want  string
+	}{
+		{
+			name:  "Watertown",
+			label: "404 BERNARD\nWatertown\nWI\n53094\nUnited States",
+			want:  "404 BERNARD, Watertown, WI, 53094, United States",
+		},
+		{
+			name:  "Sun Prairie",
+			label: "6000 AMERICAN PKWY\nSUN PRAIRIE\nWI\n53783\nUnited States",
+			want:  "6000 AMERICAN PKWY, SUN PRAIRIE, WI, 53783, United States",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			vcard, err := rdap.NewVCard([]byte(fmt.Sprintf(
+				`["vcard",[["version",{},"text","4.0"],["kind",{},"text","org"],["fn",{},"text","Example"],["adr",{"label":%q},"text",["","","","","","",""]]]]`,
+				test.label,
+			)))
+			require.NoError(t, err)
+
+			contact := networkContactFromVCard("EXAMPLE", []string{"registrant"}, vcard, true)
+
+			assert.Equal(t, test.want, contact.Street)
+		})
+	}
 }
 
 func TestMapRDAPToNetworkResult_RecursesEntities(t *testing.T) {
