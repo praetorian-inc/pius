@@ -77,7 +77,8 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			plugin := &ReverseRIRPlugin{client: &stubHTTPDoer{body: []byte(tt.response)}}
+			c, _ := newStubClient([]byte(tt.response))
+			plugin := &ReverseRIRPlugin{client: c}
 			findings := tt.query(plugin)
 
 			require.Len(t, findings, 1)
@@ -139,13 +140,13 @@ func TestReverseRIRPlugin_EveryQueriedRegistryIsResolvable(t *testing.T) {
 // RIPE and LACNIC return a record with a blank handle rather than omitting it,
 // so these two paths are where an empty finding would otherwise escape.
 func TestReverseRIRPlugin_BlankHandlesFromRIPEAndLACNIC(t *testing.T) {
-	plugin := &ReverseRIRPlugin{client: &stubHTTPDoer{
-		body: []byte(`{"objects":{"object":[{"primary-key":{"attribute":[{"name":"organisation","value":""}]}}]}}`),
-	}}
+	c, _ := newStubClient([]byte(`{"objects":{"object":[{"primary-key":{"attribute":[{"name":"organisation","value":""}]}}]}}`))
+	plugin := &ReverseRIRPlugin{client: c}
 	findings, _ := plugin.queryRIPE(context.Background(), "Acme Corp")
 	assert.Empty(t, findings, "RIPE must not emit a blank handle")
 
-	plugin = &ReverseRIRPlugin{client: &stubHTTPDoer{body: []byte(`{"entities":[{"handle":""}]}`)}}
+	c, _ = newStubClient([]byte(`{"entities":[{"handle":""}]}`))
+	plugin = &ReverseRIRPlugin{client: c}
 	findings, _ = plugin.queryLACNIC(context.Background(), "Acme Corp")
 	assert.Empty(t, findings, "LACNIC must not emit a blank handle")
 }
@@ -153,9 +154,8 @@ func TestReverseRIRPlugin_BlankHandlesFromRIPEAndLACNIC(t *testing.T) {
 // Run is the boundary an embedder sees, so the guarantee has to hold there too:
 // an org that is only whitespace yields nothing rather than unattributed handles.
 func TestReverseRIRPlugin_RunEmitsNothingForABlankOrg(t *testing.T) {
-	plugin := &ReverseRIRPlugin{client: &stubHTTPDoer{
-		body: []byte(`{"orgs":{"orgRef":{"@handle":"ACME-1"}}}`),
-	}}
+	c, _ := newStubClient([]byte(`{"orgs":{"orgRef":{"@handle":"ACME-1"}}}`))
+	plugin := &ReverseRIRPlugin{client: c}
 
 	findings, err := plugin.Run(context.Background(), plugins.Input{OrgName: "   "})
 	require.NoError(t, err)

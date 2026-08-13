@@ -59,23 +59,28 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
-// ── NewRDAPPlugin ─────────────────────────────────────────────────────────────
+// ── RDAP constructors ─────────────────────────────────────────────────────────
 
-func TestNewRDAPPlugin_SupportedRegistries(t *testing.T) {
-	for registry, want := range map[string]string{
+var rdapConstructors = map[string]func(*client.Client) plugins.Plugin{
+	"arin":   NewARINPlugin,
+	"ripe":   NewRIPEPlugin,
+	"lacnic": NewLACNICPlugin,
+}
+
+func TestRDAPConstructors_SupportedRegistries(t *testing.T) {
+	baseURLs := map[string]string{
 		"arin":   "https://rdap.arin.net/registry/entity",
 		"ripe":   "https://rdap.db.ripe.net/entity",
 		"lacnic": "https://rdap.lacnic.net/rdap/entity",
-	} {
-		t.Run(registry, func(t *testing.T) {
-			p, err := NewRDAPPlugin(registry, client.New())
-			require.NoError(t, err)
+	}
 
-			rdap, ok := p.(*rdapPlugin)
+	for registry, newPlugin := range rdapConstructors {
+		t.Run(registry, func(t *testing.T) {
+			rdap, ok := newPlugin(client.New()).(*rdapPlugin)
 			require.True(t, ok)
 			assert.Equal(t, registry, rdap.Name())
 			assert.Equal(t, registry, rdap.cfg.registry)
-			assert.Equal(t, want, rdap.cfg.baseURL)
+			assert.Equal(t, baseURLs[registry], rdap.cfg.baseURL)
 			assert.Equal(t, registry+"_handles", rdap.cfg.metaKey)
 			assert.Equal(t, 2, rdap.Phase())
 			assert.Equal(t, plugins.ModePassive, rdap.Mode())
@@ -83,22 +88,15 @@ func TestNewRDAPPlugin_SupportedRegistries(t *testing.T) {
 	}
 }
 
-func TestNewRDAPPlugin_RejectsUnknownRegistry(t *testing.T) {
-	for _, registry := range []string{"apnic", "afrinic", "", "ARIN", "nonsense"} {
-		p, err := NewRDAPPlugin(registry, client.New())
-		require.Error(t, err, "registry %q should be rejected", registry)
-		assert.Nil(t, p)
-		assert.Contains(t, err.Error(), "arin, lacnic, ripe")
+func TestRDAPConstructors_NilClientTakesTheDefault(t *testing.T) {
+	for registry, newPlugin := range rdapConstructors {
+		t.Run(registry, func(t *testing.T) {
+			require.NotNil(t, newPlugin(nil).(*rdapPlugin).c)
+		})
 	}
 }
 
-func TestNewRDAPPlugin_NilClientTakesTheDefault(t *testing.T) {
-	p, err := NewRDAPPlugin("arin", nil)
-	require.NoError(t, err)
-	require.NotNil(t, p.(*rdapPlugin).doer)
-}
-
-func TestNewRDAPPlugin_UsesTheInjectedClient(t *testing.T) {
+func TestNewARINPlugin_UsesTheInjectedClient(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "application/rdap+json", r.Header.Get("Accept"))
 		_, _ = fmt.Fprint(w, `{"handle":"ACME-1","networks":[{"cidr0_cidrs":[
@@ -109,8 +107,7 @@ func TestNewRDAPPlugin_UsesTheInjectedClient(t *testing.T) {
 	defer srv.Close()
 
 	c, transport := injectedClient(t, srv)
-	p, err := NewRDAPPlugin("arin", c)
-	require.NoError(t, err)
+	p := NewARINPlugin(c)
 
 	findings, err := p.Run(context.Background(), plugins.Input{
 		OrgName: "Acme Corp",
@@ -136,17 +133,15 @@ func TestNewRDAPPlugin_UsesTheInjectedClient(t *testing.T) {
 	}
 }
 
-// The registered plugins and the exported constructor must stay the same plugin:
+// The registered plugins and exported constructors must stay the same plugins:
 // a registry whose config drifted between the two would behave differently
 // embedded than standalone.
-func TestNewRDAPPlugin_MatchesRegisteredPlugin(t *testing.T) {
-	for _, registry := range []string{"arin", "ripe", "lacnic"} {
+func TestRDAPConstructors_MatchRegisteredPlugins(t *testing.T) {
+	for registry, newPlugin := range rdapConstructors {
 		registered, found := plugins.Get(registry)
 		require.True(t, found)
 
-		constructed, err := NewRDAPPlugin(registry, client.New())
-		require.NoError(t, err)
-
+		constructed := newPlugin(client.New())
 		assert.Equal(t, registered.(*rdapPlugin).cfg, constructed.(*rdapPlugin).cfg)
 	}
 }

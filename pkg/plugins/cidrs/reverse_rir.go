@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
@@ -35,7 +36,7 @@ func NewReverseRIRPlugin(c *client.Client) *ReverseRIRPlugin {
 // Queries ARIN, RIPE, APNIC, AFRINIC, and LACNIC WHOIS/RDAP APIs.
 // Phase 1 plugin: emits FindingCIDRHandle findings consumed by Phase 2.
 type ReverseRIRPlugin struct {
-	client httpDoer
+	client *client.Client
 }
 
 func (p *ReverseRIRPlugin) Name() string { return "reverse-rir" }
@@ -344,18 +345,6 @@ func newReverseRIRFinding(handle, registry, database, org string) (plugins.Findi
 	return finding, true
 }
 
-// resolvableRegistry reports whether a phase-two plugin in this package can
-// resolve a handle at this registry — the RDAP registries plus the RPSL ones.
-// Deriving it from those maps rather than a separate list means a registry
-// cannot be discovered here without also being resolvable.
-func resolvableRegistry(registry string) bool {
-	if _, ok := rdapConfigs[registry]; ok {
-		return true
-	}
-	_, ok := rpslConfigs[registry]
-	return ok
-}
-
 // ── ARIN response types ───────────────────────────────────────────────────────
 
 type ArinRef struct {
@@ -448,4 +437,14 @@ type LacnicSearchResponse struct {
 	Entities []struct {
 		Handle string `json:"handle"`
 	} `json:"entities"`
+}
+
+var knownRIRs = []string{
+	"arin", "lacnic", "apnic", "afrinic", "ripe",
+}
+
+// resolvableRegistry reports whether a phase-two plugin in this package can
+// resolve a handle at one of the five regional internet registries.
+func resolvableRegistry(registry string) bool {
+	return slices.Contains(knownRIRs, strings.ToLower(registry))
 }
