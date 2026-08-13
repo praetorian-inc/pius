@@ -41,12 +41,12 @@ func (p *WhoisPlugin) Phase() int          { return 0 }
 func (p *WhoisPlugin) Mode() string        { return plugins.ModePassive }
 
 func (p *WhoisPlugin) Accepts(input plugins.Input) bool {
-	target, ok := inputTarget(input)
+	target, ok := networkTarget(input)
 	return ok && whois.ValidateNetworkTarget(target) == nil
 }
 
 func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	target, ok := inputTarget(input)
+	target, ok := networkTarget(input)
 	if !ok {
 		return nil, fmt.Errorf("ip-whois: expected exactly one IP or CIDR")
 	}
@@ -67,6 +67,16 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	findings := []plugins.Finding{networkResultFinding(result)}
 	findings = append(findings, networkPreseeds(result)...)
 	return findings, nil
+}
+
+func networkTarget(input plugins.Input) (string, bool) {
+	if (input.IP == "") == (input.CIDR == "") {
+		return "", false
+	}
+	if input.IP != "" {
+		return input.IP, true
+	}
+	return input.CIDR, true
 }
 
 func networkResultFinding(result whois.NetworkResult) plugins.Finding {
