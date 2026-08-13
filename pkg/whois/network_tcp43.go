@@ -64,26 +64,50 @@ func parseTCP43Fields(raw string) map[string][]string {
 }
 
 func containingTCP43Range(fields map[string][]string, target networkTarget) (netip.Addr, netip.Addr, bool) {
-	if start, startErr := netip.ParseAddr(firstField(fields, "startaddress")); startErr == nil {
-		if end, endErr := netip.ParseAddr(firstField(fields, "endaddress")); endErr == nil && allocationContainsTarget(start.Unmap(), end.Unmap(), target) {
-			return start.Unmap(), end.Unmap(), true
-		}
+	if start, end, ok := addressFieldRange(fields, target); ok {
+		return start, end, true
 	}
+	if start, end, ok := dashedFieldRange(fields, target); ok {
+		return start, end, true
+	}
+	return prefixFieldRange(fields, target)
+}
 
+func addressFieldRange(fields map[string][]string, target networkTarget) (netip.Addr, netip.Addr, bool) {
+	start, startErr := netip.ParseAddr(firstField(fields, "startaddress"))
+	end, endErr := netip.ParseAddr(firstField(fields, "endaddress"))
+	if startErr != nil || endErr != nil {
+		return netip.Addr{}, netip.Addr{}, false
+	}
+	return containingRange(start, end, target)
+}
+
+func dashedFieldRange(fields map[string][]string, target networkTarget) (netip.Addr, netip.Addr, bool) {
 	for _, key := range []string{"netrange", "inetnum"} {
 		for _, value := range fields[key] {
-			startText, endText, ok := strings.Cut(value, "-")
-			if !ok {
-				continue
-			}
-			start, startErr := netip.ParseAddr(strings.TrimSpace(startText))
-			end, endErr := netip.ParseAddr(strings.TrimSpace(endText))
-			if startErr == nil && endErr == nil && allocationContainsTarget(start.Unmap(), end.Unmap(), target) {
-				return start.Unmap(), end.Unmap(), true
+			start, end, ok := parseDashedRange(value)
+			if ok && allocationContainsTarget(start, end, target) {
+				return start, end, true
 			}
 		}
 	}
+	return netip.Addr{}, netip.Addr{}, false
+}
 
+func parseDashedRange(value string) (netip.Addr, netip.Addr, bool) {
+	startText, endText, ok := strings.Cut(value, "-")
+	if !ok {
+		return netip.Addr{}, netip.Addr{}, false
+	}
+	start, startErr := netip.ParseAddr(strings.TrimSpace(startText))
+	end, endErr := netip.ParseAddr(strings.TrimSpace(endText))
+	if startErr != nil || endErr != nil {
+		return netip.Addr{}, netip.Addr{}, false
+	}
+	return start.Unmap(), end.Unmap(), true
+}
+
+func prefixFieldRange(fields map[string][]string, target networkTarget) (netip.Addr, netip.Addr, bool) {
 	for _, key := range []string{"cidr", "route", "route6", "inet6num"} {
 		for _, value := range fields[key] {
 			for prefixText := range strings.SplitSeq(value, ",") {
@@ -92,8 +116,9 @@ func containingTCP43Range(fields map[string][]string, target networkTarget) (net
 					continue
 				}
 				prefix = prefix.Masked()
-				if allocationContainsTarget(prefix.Addr(), lastAddress(prefix), target) {
-					return prefix.Addr(), lastAddress(prefix), true
+				start, end := prefix.Addr(), lastAddress(prefix)
+				if allocationContainsTarget(start, end, target) {
+					return start, end, true
 				}
 			}
 		}
@@ -101,32 +126,68 @@ func containingTCP43Range(fields map[string][]string, target networkTarget) (net
 	return netip.Addr{}, netip.Addr{}, false
 }
 
+func containingRange(start, end netip.Addr, target networkTarget) (netip.Addr, netip.Addr, bool) {
+	start, end = start.Unmap(), end.Unmap()
+	return start, end, allocationContainsTarget(start, end, target)
+}
+
 func tcp43NetworkContacts(fields map[string][]string) []NetworkContact {
-	var contacts []NetworkContact
-	for _, organization := range []struct {
+	contacts := organizationContacts(fields)
+	contacts = append(contacts, individualContacts(fields)...)
+	contacts = append(contacts, emailContacts(fields)...)
+	return mergeNetworkContacts(nil, contacts)
+}
+
+func organizationContacts(fields map[string][]string) []NetworkContact {
+	organizations := []struct {
 		role  string
 		value string
 	}{
 		{"customer", firstField(fields, "custname", "customer")},
 		{"registrant", firstField(fields, "orgname", "org-name", "organization", "owner")},
-	} {
-		if organization.value != "" {
-			contacts = append(contacts, NetworkContact{Roles: []string{organization.role}, Kind: "org", Direct: true, Organization: clearIfPrivacy(organization.value)})
-		}
 	}
-	for _, field := range []struct {
+
+	contacts := make([]NetworkContact, 0, len(organizations))
+	for _, organization := range organizations {
+		if organization.value == "" {
+			continue
+		}
+		contacts = append(contacts, NetworkContact{
+			Roles:        []string{organization.role},
+			Kind:         "org",
+			Direct:       true,
+			Organization: clearIfPrivacy(organization.value),
+		})
+	}
+	return contacts
+}
+
+func individualContacts(fields map[string][]string) []NetworkContact {
+	contactFields := []struct {
 		key  string
 		role string
 	}{
 		{"person", "unknown"},
 		{"personname", "unknown"},
 		{"contact", "unknown"},
-	} {
+	}
+
+	var contacts []NetworkContact
+	for _, field := range contactFields {
 		for _, value := range fields[field.key] {
-			contacts = append(contacts, NetworkContact{Roles: []string{field.role}, Kind: "individual", Direct: true, Name: clearIfPrivacy(value)})
+			contacts = append(contacts, NetworkContact{
+				Roles:  []string{field.role},
+				Kind:   "individual",
+				Direct: true,
+				Name:   clearIfPrivacy(value),
+			})
 		}
 	}
-	for _, field := range []struct {
+	return contacts
+}
+
+func emailContacts(fields map[string][]string) []NetworkContact {
+	emailFields := []struct {
 		key  string
 		role string
 	}{
@@ -136,18 +197,29 @@ func tcp43NetworkContacts(fields map[string][]string) []NetworkContact {
 		{"orgnocemail", "noc"},
 		{"e-mail", "unknown"},
 		{"email", "unknown"},
-	} {
+	}
+
+	var contacts []NetworkContact
+	for _, field := range emailFields {
 		for _, value := range fields[field.key] {
-			for token := range strings.FieldsSeq(value) {
-				token = strings.Trim(token, "<>,;()")
-				if IsEmail(token) {
-					contacts = append(contacts, NetworkContact{Roles: []string{field.role}, Direct: true, Email: token})
-					break
-				}
+			if email := firstEmail(value); email != "" {
+				contacts = append(contacts, NetworkContact{
+					Roles: []string{field.role}, Direct: true, Email: email,
+				})
 			}
 		}
 	}
-	return mergeNetworkContacts(nil, contacts)
+	return contacts
+}
+
+func firstEmail(value string) string {
+	for token := range strings.FieldsSeq(value) {
+		token = strings.Trim(token, "<>,;()")
+		if IsEmail(token) {
+			return token
+		}
+	}
+	return ""
 }
 
 func firstField(fields map[string][]string, keys ...string) string {
