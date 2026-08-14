@@ -188,6 +188,7 @@ func TestWhoisFreaksLookup_UnregisteredDomain(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		resp := map[string]interface{}{
+			"status":            true,
 			"domain_name":       "not-registered-xyz.com",
 			"domain_registered": "no",
 		}
@@ -326,6 +327,29 @@ func TestWhoisFreaksLookup_RateLimit429(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "429")
+	assert.Equal(t, Result{}, result)
+}
+
+// TestWhoisFreaksLookup_StatusFalse verifies that an HTTP 200 response with
+// status:false (e.g. invalid key, quota exceeded) produces an error.
+func TestWhoisFreaksLookup_StatusFalse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]interface{}{
+			"status":  false,
+			"message": "Invalid API Key",
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(resp))
+	}))
+	defer srv.Close()
+
+	t.Setenv("WHOISFREAKS_API_KEY", "bad-key")
+	overrideWhoisFreaksBaseURL(t, srv.URL)
+
+	result, err := whoisFreaksLookup(context.Background(), srv.Client(), "example.com")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsuccessful status")
 	assert.Equal(t, Result{}, result)
 }
 

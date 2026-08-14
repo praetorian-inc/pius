@@ -65,13 +65,13 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 		wfResult, wfErr := whoisFreaksLookup(ctx, cfg.httpClient, domain)
 		if wfErr != nil {
 			slog.Debug("WhoisFreaks fallback failed", "domain", domain, "error", wfErr)
-			return Result{}, fmt.Errorf("whois: all methods failed for %s", domain)
 		}
-		if wfResult.Domain != "" {
+		if wfErr == nil && wfResult.Domain != "" {
 			wfResult.ScrubContacts()
 			return wfResult, nil
 		}
-		return Result{}, fmt.Errorf("whois: all methods failed for %s", domain)
+		return Result{}, fmt.Errorf("whois: all methods failed for %s: %w", domain,
+			errors.Join(rdapErr, tcp43Err, wfErr))
 	}
 
 	result := mergeResults(domain, rdapResult, rdapErr, tcp43Result, tcp43Err)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 )
 
@@ -62,15 +63,21 @@ func whoisFreaksLookup(ctx context.Context, httpClient *http.Client, domain stri
 		httpClient = http.DefaultClient
 	}
 
-	url := fmt.Sprintf("%s?apiKey=%s&domainName=%s", whoisFreaksBaseURL, apiKey, domain)
+	params := url.Values{}
+	params.Set("apiKey", apiKey)
+	params.Set("domainName", domain)
+	reqURL := whoisFreaksBaseURL + "?" + params.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return Result{}, fmt.Errorf("whoisfreaks: building request: %w", err)
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		if urlErr, ok := err.(*url.Error); ok {
+			return Result{}, fmt.Errorf("whoisfreaks: request failed for %s: %w", domain, urlErr.Err)
+		}
 		return Result{}, fmt.Errorf("whoisfreaks: request failed for %s: %w", domain, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -88,6 +95,10 @@ func whoisFreaksLookup(ctx context.Context, httpClient *http.Client, domain stri
 	var wfResp whoisFreaksResponse
 	if err := json.Unmarshal(body, &wfResp); err != nil {
 		return Result{}, fmt.Errorf("whoisfreaks: decoding response for %s: %w", domain, err)
+	}
+
+	if !wfResp.Status {
+		return Result{}, fmt.Errorf("whoisfreaks: API returned unsuccessful status for %s", domain)
 	}
 
 	if wfResp.DomainRegistered == "no" {
