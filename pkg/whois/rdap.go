@@ -3,18 +3,64 @@ package whois
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 
 	"github.com/openrdap/rdap"
+	"github.com/openrdap/rdap/bootstrap"
+	"github.com/praetorian-inc/pius/pkg/lib/netutil"
 )
+
+const maxRDAPResponseBytes int64 = 1 << 20 // 1 MiB
+
+// bodyCappedTransport wraps an http.RoundTripper and caps every response body
+// at a fixed byte limit via io.LimitReader. The original body's Close is
+// preserved so the underlying connection returns to the pool.
+type bodyCappedTransport struct {
+	base http.RoundTripper
+	cap  int64
+}
+
+func (t *bodyCappedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{
+		Reader: io.LimitReader(resp.Body, t.cap),
+		Closer: resp.Body,
+	}
+	return resp, nil
+}
+
+func safeRDAPHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &bodyCappedTransport{
+			base: &http.Transport{
+				DialContext: (&net.Dialer{
+					Control: netutil.SSRFSafeControl,
+				}).DialContext,
+			},
+			cap: maxRDAPResponseBytes,
+		},
+	}
+}
 
 // rdapLookup performs an RDAP domain lookup, following registrar "related"
 // links when the registry response lacks registrant data (common under GDPR).
 func rdapLookup(ctx context.Context, httpClient *http.Client, domain string) (Result, error) {
-	client := &rdap.Client{}
+	safe := safeRDAPHTTPClient()
+	client := &rdap.Client{
+		HTTP:      safe,
+		Bootstrap: &bootstrap.Client{HTTP: safe},
+	}
 	if httpClient != nil {
 		client.HTTP = httpClient
 	}
