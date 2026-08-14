@@ -204,7 +204,8 @@ func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input 
 	// Domain cross-reference: blog URL contains the known domain (strongest signal)
 	if input.Domain != "" && domainContains(org.Blog, input.Domain) {
 		plugins.AddConfidence(finding, 60,
-			fmt.Sprintf("GitHub organization blog URL matches the known domain %q", input.Domain))
+			fmt.Sprintf("GitHub organization blog URL %q matches the known domain %q", org.Blog, input.Domain),
+			githubOrgReference(org))
 	}
 
 	// Name similarity: token overlap between org display name and OrgName.
@@ -220,7 +221,7 @@ func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input 
 	if similarity := strutil.TokenSimilarity(org.Name, input.OrgName); similarity > 0 {
 		plugins.AddConfidence(finding, int(math.Round(25*similarity)),
 			fmt.Sprintf("GitHub organization name %q matches the target organization %q with %.0f%% token similarity",
-				org.Name, input.OrgName, similarity*100))
+				org.Name, input.OrgName, similarity*100), githubOrgReference(org))
 	}
 
 	// Handle contains first word of OrgName (e.g. "praetorian" in "praetorian-inc")
@@ -229,16 +230,24 @@ func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input 
 		if strings.Contains(strings.ToLower(org.Login), firstWord) {
 			plugins.AddConfidence(finding, 10,
 				fmt.Sprintf("GitHub organization login %q contains target organization token %q",
-					org.Login, firstWord))
+					org.Login, firstWord), githubOrgReference(org))
 		}
 	}
 
 	// Activity signal: active org (not a squatter or placeholder)
 	if org.PublicRepos > 5 {
 		plugins.AddConfidence(finding, 5,
-			fmt.Sprintf("GitHub organization has %d public repositories, indicating an active organization",
-				org.PublicRepos))
+			fmt.Sprintf("GitHub organization has %d public repositories, indicating an active organization", org.PublicRepos),
+			githubOrgReference(org))
 	}
+}
+
+func githubOrgReference(org *githubOrg) plugins.Reference {
+	profileURL := org.HTMLURL
+	if profileURL == "" {
+		profileURL = "https://github.com/" + url.PathEscape(org.Login)
+	}
+	return plugins.Reference{Label: "GitHub organization profile", URL: profileURL}
 }
 
 // buildFindings emits the unscored candidate findings for an org. Callers run

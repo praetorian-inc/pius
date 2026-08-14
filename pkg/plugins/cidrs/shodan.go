@@ -212,7 +212,10 @@ func (p *ShodanPlugin) addResultEvidence(findings *[]plugins.Finding, indexes ma
 
 	evidenceURLs[key][queryURL] = true
 	plugins.AddConfidence(&(*findings)[index], confShodanSearchResult, fmt.Sprintf(
-		"Shodan returned %s %q from query %s", itemType, finding.Value, queryURL))
+		"Shodan returned %s %q", itemType, finding.Value), plugins.Reference{
+		Label: "Shodan search query (API key redacted)",
+		URL:   queryURL,
+	})
 }
 
 // ShodanSearchResponse represents the Shodan search API response

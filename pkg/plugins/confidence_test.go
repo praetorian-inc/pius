@@ -17,6 +17,19 @@ func TestAddConfidence_AppendsEntry(t *testing.T) {
 	assert.Equal(t, "blog URL matches the known domain", f.Confidences[0].Justification)
 }
 
+func TestAddConfidence_CopiesReferences(t *testing.T) {
+	references := []Reference{{Label: "source", URL: "https://example.com/evidence"}}
+	var finding Finding
+
+	AddConfidence(&finding, 60, "source supports finding", references...)
+	references[0].URL = "https://example.com/mutated"
+
+	require.Len(t, finding.Confidences, 1)
+	require.Len(t, finding.Confidences[0].References, 1)
+	assert.Equal(t, "source", finding.Confidences[0].References[0].Label)
+	assert.Equal(t, "https://example.com/evidence", finding.Confidences[0].References[0].URL)
+}
+
 func TestAddConfidence_ClampsScore(t *testing.T) {
 	var f Finding
 	AddConfidence(&f, -1, "below range")
@@ -192,7 +205,10 @@ func TestNeedsReview_FalseWhenCappedSumClears(t *testing.T) {
 // modes, which encode a Finding directly.
 func TestFinding_JSONIncludesConfidences(t *testing.T) {
 	f := Finding{Type: FindingDomain, Value: "example.com", Source: "github-org"}
-	AddConfidence(&f, 60, "blog URL matches the known domain")
+	AddConfidence(&f, 60, "blog URL matches the known domain", Reference{
+		Label: "Organization profile",
+		URL:   "https://github.com/acme",
+	})
 	AddConfidence(&f, 5, "organization has 86 public repositories")
 
 	encoded, err := json.Marshal(f)
@@ -204,11 +220,14 @@ func TestFinding_JSONIncludesConfidences(t *testing.T) {
 	require.Len(t, decoded.Confidences, 2)
 	assert.Equal(t, 60, decoded.Confidences[0].Score)
 	assert.Equal(t, "blog URL matches the known domain", decoded.Confidences[0].Justification)
+	require.Len(t, decoded.Confidences[0].References, 1)
+	assert.Equal(t, "https://github.com/acme", decoded.Confidences[0].References[0].URL)
 	assert.Equal(t, 5, decoded.Confidences[1].Score)
 	assert.Equal(t, 65, TotalConfidence(decoded))
 
 	assert.Contains(t, string(encoded), `"score"`)
 	assert.Contains(t, string(encoded), `"justification"`)
+	assert.Contains(t, string(encoded), `"references"`)
 }
 
 func TestTotalConfidence_NormalizesFloatAccumulation(t *testing.T) {

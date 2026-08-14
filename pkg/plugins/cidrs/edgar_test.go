@@ -62,8 +62,12 @@ func TestFindingsFromEDGARResponse_AddsScoredLiveDocumentEvidence(t *testing.T) 
 	require.Len(t, finding.Confidences, 1)
 	assert.Equal(t, 55, finding.Confidences[0].Score)
 	assert.Equal(t,
-		`SEC EDGAR document "0001234567-24-001234:filing.htm" for entity "Acme Corp ACME-1  (CIK 0001234567)" contains apparent RIR organization handle "ACME-1" (https://www.sec.gov/Archives/edgar/data/1234567/000123456724001234/filing.htm)`,
+		`SEC EDGAR document "0001234567-24-001234:filing.htm" for entity "Acme Corp ACME-1  (CIK 0001234567)" contains apparent RIR organization handle "ACME-1"`,
 		finding.Confidences[0].Justification)
+	require.Len(t, finding.Confidences[0].References, 1)
+	assert.Equal(t, "SEC EDGAR document", finding.Confidences[0].References[0].Label)
+	assert.Equal(t, "https://www.sec.gov/Archives/edgar/data/1234567/000123456724001234/filing.htm",
+		finding.Confidences[0].References[0].URL)
 	assert.NotContains(t, finding.Data, "confidence")
 	assert.NotContains(t, finding.Data, "confidences")
 }
@@ -81,6 +85,7 @@ func TestFindingsFromEDGARResponse_IncompleteMetadataOmitsURL(t *testing.T) {
 	assert.Contains(t, justification, "0001234567-24-001234:filing.htm")
 	assert.Contains(t, justification, "Acme Corp ACME-1")
 	assert.NotContains(t, justification, "https://")
+	assert.Empty(t, findings[0].Confidences[0].References)
 }
 
 func TestFindingsFromEDGARResponse_DeduplicatesHandlesUsingFirstDocument(t *testing.T) {

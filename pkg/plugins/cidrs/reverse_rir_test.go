@@ -18,6 +18,7 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 		handle        string
 		registry      string
 		justification string
+		reference     string
 	}{
 		{
 			name:     "ARIN organization entity",
@@ -28,6 +29,7 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 			handle:        "ACME-ARIN",
 			registry:      "arin",
 			justification: `ARIN orgs database returned organization handle "ACME-ARIN" for organization search "Acme Corp"`,
+			reference:     `https://whois.arin.net/rest/orgs;name=*Acme%20Corp*`,
 		},
 		{
 			name:     "RIPE",
@@ -39,6 +41,7 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 			handle:        "ORG-ACME-RIPE",
 			registry:      "ripe",
 			justification: `RIPE database returned organization handle "ORG-ACME-RIPE" for organization search "Acme Corp"`,
+			reference:     `https://rest.db.ripe.net/search?query-string=Acme+Corp`,
 		},
 		{
 			name:     "APNIC",
@@ -50,6 +53,7 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 			handle:        "ORG-ACME-AP",
 			registry:      "apnic",
 			justification: `APNIC WHOIS database returned organization handle "ORG-ACME-AP" for organization search "Acme Corp"`,
+			reference:     `https://wq.apnic.net/query?searchtext=Acme+Corp&type=organisation`,
 		},
 		{
 			name:     "AFRINIC",
@@ -61,6 +65,7 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 			handle:        "ORG-ACME-AFRINIC",
 			registry:      "afrinic",
 			justification: `AFRINIC RDAP database returned organization handle "ORG-ACME-AFRINIC" for organization search "Acme Corp"`,
+			reference:     `https://rdap.afrinic.net/rdap/entities?fn=Acme+Corp`,
 		},
 		{
 			name:     "LACNIC",
@@ -72,6 +77,7 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 			handle:        "BR-ACME-LACNIC",
 			registry:      "lacnic",
 			justification: `LACNIC RDAP database returned organization handle "BR-ACME-LACNIC" for organization search "Acme Corp"`,
+			reference:     `https://rdap.lacnic.net/rdap/entities?fn=Acme+Corp`,
 		},
 	}
 
@@ -88,6 +94,8 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 			require.Len(t, finding.Confidences, 1)
 			assert.Equal(t, confReverseRIRHandle, finding.Confidences[0].Score)
 			assert.Equal(t, tt.justification, finding.Confidences[0].Justification)
+			require.Len(t, finding.Confidences[0].References, 1)
+			assert.Equal(t, tt.reference, finding.Confidences[0].References[0].URL)
 			assert.NotContains(t, finding.Data, "confidence")
 			assert.NotContains(t, finding.Data, "confidences")
 		})

@@ -30,6 +30,7 @@ const (
 type archiveObservation struct {
 	hostname string
 	source   string
+	queryURL string
 }
 
 // WaybackPlugin discovers historical subdomains via Wayback Machine CDX API and Common Crawl index.
@@ -88,7 +89,7 @@ func (p *WaybackPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 }
 
 func (p *WaybackPlugin) findingsFromArchiveObservations(observations []archiveObservation, baseDomain string) []plugins.Finding {
-	sourcesByHostname := make(map[string]map[string]bool)
+	sourcesByHostname := make(map[string]map[string]string)
 	var hostnames []string
 	for _, observation := range observations {
 		hostname := normalizeDomain(observation.hostname)
@@ -96,10 +97,12 @@ func (p *WaybackPlugin) findingsFromArchiveObservations(observations []archiveOb
 			continue
 		}
 		if sourcesByHostname[hostname] == nil {
-			sourcesByHostname[hostname] = make(map[string]bool)
+			sourcesByHostname[hostname] = make(map[string]string)
 			hostnames = append(hostnames, hostname)
 		}
-		sourcesByHostname[hostname][observation.source] = true
+		if _, exists := sourcesByHostname[hostname][observation.source]; !exists {
+			sourcesByHostname[hostname][observation.source] = observation.queryURL
+		}
 	}
 
 	findings := make([]plugins.Finding, 0, len(hostnames))
@@ -113,21 +116,33 @@ func (p *WaybackPlugin) findingsFromArchiveObservations(observations []archiveOb
 				"base_domain": baseDomain,
 			},
 		}
-		plugins.AddConfidence(&finding, confWaybackArchiveObservation,
-			fmt.Sprintf("Archive evidence from %s records hostname %q under base domain %q",
-				strings.Join(sources, " and "), hostname, baseDomain))
+		justification := fmt.Sprintf("Archive evidence from %s records hostname %q under base domain %q",
+			strings.Join(sources, " and "), hostname, baseDomain)
+		plugins.AddConfidence(&finding, confWaybackArchiveObservation, justification,
+			archiveReferences(sourcesByHostname[hostname])...)
 		findings = append(findings, finding)
 	}
 	return findings
 }
 
-func archiveSources(sourceSet map[string]bool) []string {
+func archiveSources(sourceSet map[string]string) []string {
 	sources := make([]string, 0, len(sourceSet))
 	for source := range sourceSet {
 		sources = append(sources, source)
 	}
 	sort.Strings(sources)
 	return sources
+}
+
+func archiveReferences(sources map[string]string) []plugins.Reference {
+	names := archiveSources(sources)
+	references := make([]plugins.Reference, 0, len(names))
+	for _, name := range names {
+		if queryURL := sources[name]; queryURL != "" {
+			references = append(references, plugins.Reference{Label: name + " query", URL: queryURL})
+		}
+	}
+	return references
 }
 
 const (
@@ -221,7 +236,11 @@ func (p *WaybackPlugin) queryWaybackPrefix(ctx context.Context, domain, prefix s
 		}
 		host := extractHost(row[0])
 		if host != "" {
-			observations = append(observations, archiveObservation{hostname: host, source: archiveSourceWayback})
+			observations = append(observations, archiveObservation{
+				hostname: host,
+				source:   archiveSourceWayback,
+				queryURL: urlStr,
+			})
 		}
 	}
 	return observations, nil
@@ -260,7 +279,11 @@ func (p *WaybackPlugin) queryCommonCrawl(ctx context.Context, domain string) ([]
 		}
 		host := extractHost(record.URL)
 		if host != "" {
-			observations = append(observations, archiveObservation{hostname: host, source: archiveSourceCommonCrawl})
+			observations = append(observations, archiveObservation{
+				hostname: host,
+				source:   archiveSourceCommonCrawl,
+				queryURL: queryURL,
+			})
 		}
 	}
 

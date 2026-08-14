@@ -22,7 +22,7 @@ func TestExtractPreseeds_JustificationNamesWhoisServer(t *testing.T) {
 	require.Len(t, findings, 1)
 	require.Len(t, findings[0].Confidences, 1)
 	assert.Equal(t,
-		`WHOIS server whois.registrar.example records "ACME-CORP" as the registrant contact company`,
+		`WHOIS server whois.registrar.example for domain "example.com" records "ACME-CORP" as the registrant contact company`,
 		findings[0].Confidences[0].Justification)
 }
 
@@ -39,6 +39,6 @@ func TestExtractPreseeds_JustificationOmitsUnknownWhoisServer(t *testing.T) {
 	require.Len(t, findings, 1)
 	require.Len(t, findings[0].Confidences, 1)
 	assert.Equal(t,
-		`WHOIS records "ACME-CORP" as the registrant contact company`,
+		`WHOIS for domain "example.com" records "ACME-CORP" as the registrant contact company`,
 		findings[0].Confidences[0].Justification)
 }

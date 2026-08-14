@@ -17,7 +17,8 @@ const (
 	ConfidenceLow = 35
 )
 
-// AddConfidence appends one piece of scored, justified evidence to f.
+// AddConfidence appends one piece of scored, justified evidence to f. References
+// link to source records or queries that let a user verify the justification.
 //
 // Use this in plugins that perform name-to-identifier resolution where the
 // mapping might be ambiguous (e.g., org name → GitHub org, org name → WHOIS
@@ -28,10 +29,11 @@ const (
 // single opaque entry throws away exactly the information it exists to carry.
 // AddConfidence clamps score to 0-100, always appends, and never materializes
 // the total.
-func AddConfidence(f *Finding, score int, justification string) {
+func AddConfidence(f *Finding, score int, justification string, references ...Reference) {
 	f.Confidences = append(f.Confidences, Confidence{
 		Score:         max(0, min(score, 100)),
 		Justification: justification,
+		References:    append([]Reference(nil), references...),
 	})
 }
 

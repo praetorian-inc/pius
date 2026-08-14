@@ -245,6 +245,8 @@ func (p *WikidataPlugin) newFinding(
 		&finding,
 		score,
 		wikidataJustification(orgName, target.id, entity, assessment, website),
+		plugins.Reference{Label: "Target Wikidata item", URL: "https://www.wikidata.org/wiki/" + target.id},
+		plugins.Reference{Label: "Subsidiary Wikidata item", URL: "https://www.wikidata.org/wiki/" + entity.id},
 	)
 	return finding
 }

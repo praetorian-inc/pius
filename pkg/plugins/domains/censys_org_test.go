@@ -282,6 +282,9 @@ func TestCensysOrgPlugin_ExtractFindings_ConfidenceBySource(t *testing.T) {
 			assert.Contains(t, finding.Confidences[0].Justification, "203.0.113.10")
 			assert.Contains(t, finding.Confidences[0].Justification, test.source)
 			assert.Contains(t, finding.Confidences[0].Justification, "Acme Corp")
+			require.Len(t, finding.Confidences[0].References, 1)
+			assert.Equal(t, "https://search.censys.io/hosts/203.0.113.10",
+				finding.Confidences[0].References[0].URL)
 			assert.NotContains(t, finding.Data, "confidence")
 			assert.NotContains(t, finding.Data, "confidences")
 			assert.NotContains(t, finding.Data, "justification")
@@ -909,6 +912,9 @@ func TestCensysOrgPlugin_ExtractPreseeds_ThresholdScoresHighConfidence(t *testin
 	assert.Contains(t, preseeds[0].Confidences[0].Justification, "Acme Corp")
 	assert.Contains(t, preseeds[0].Confidences[0].Justification, "acme.com")
 	assert.Contains(t, preseeds[0].Confidences[0].Justification, "5 distinct hosts")
+	require.Len(t, preseeds[0].Confidences[0].References, 5)
+	assert.Equal(t, "https://search.censys.io/hosts/10.0.0.0",
+		preseeds[0].Confidences[0].References[0].URL)
 	assert.NotContains(t, preseeds[0].Data, "confidence")
 	assert.NotContains(t, preseeds[0].Data, "confidences")
 }

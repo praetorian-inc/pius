@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -133,8 +134,11 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 					},
 				}
 				plugins.AddConfidence(&finding, confDNSBruteResolved,
-					fmt.Sprintf("Discovered valid DNS subdomain record for %q (from base domain %q) via DNS brute force guessing",
-						fqdn, domain))
+					fmt.Sprintf("DNS A/AAAA lookup resolved wordlist candidate %q under base domain %q", fqdn, domain),
+					plugins.Reference{
+						Label: "Verify current DNS A records",
+						URL:   "https://dns.google/resolve?" + url.Values{"name": {fqdn}, "type": {"A"}}.Encode(),
+					})
 				findings = append(findings, finding)
 			}
 		}(word)

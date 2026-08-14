@@ -135,8 +135,11 @@ func (p *URLScanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 				},
 			}
 			plugins.AddConfidence(&finding, confURLScanHistoryObservation,
-				fmt.Sprintf("URLScan scan history records hostname %q under queried base domain %q; query results: %s",
-					host, input.Domain, reqURL))
+				fmt.Sprintf("URLScan scan history records hostname %q under queried base domain %q",
+					host, input.Domain), plugins.Reference{
+					Label: "URLScan search request",
+					URL:   reqURL,
+				})
 			findings = append(findings, finding)
 		}
 	}

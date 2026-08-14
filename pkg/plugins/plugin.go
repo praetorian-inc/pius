@@ -73,6 +73,12 @@ type Input struct {
 	Meta map[string]string
 }
 
+// Reference links to a source or verification resource for confidence evidence.
+type Reference struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
 // Confidence is a single piece of scored, explained evidence supporting a
 // finding. Entries are additive: a finding's total confidence is the sum of its
 // entry scores, capped at 100 (see TotalConfidence).
@@ -83,6 +89,10 @@ type Confidence struct {
 	// Justification explains, in human-readable terms, why this evidence
 	// supports the finding.
 	Justification string `json:"justification"`
+
+	// References link to the records or queries a user can inspect to verify the
+	// justification. Evidence without a useful URL leaves this empty.
+	References []Reference `json:"references,omitempty"`
 }
 
 // Finding represents a single discovered asset or intermediate result.

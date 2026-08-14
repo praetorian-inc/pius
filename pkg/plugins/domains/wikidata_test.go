@@ -443,6 +443,9 @@ func TestWikidataPlugin_Run_EmitsPlainLanguageEvidence(t *testing.T) {
 			wdPropertySubsidiary,
 		),
 		finding.Confidences[0].Justification)
+	require.Len(t, finding.Confidences[0].References, 2)
+	assert.Equal(t, "https://www.wikidata.org/wiki/Q1", finding.Confidences[0].References[0].URL)
+	assert.Equal(t, "https://www.wikidata.org/wiki/Q2", finding.Confidences[0].References[1].URL)
 	assert.Equal(t, 5, *requestCount)
 }
 

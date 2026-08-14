@@ -99,6 +99,9 @@ func TestRDAPPlugin_Run_EmitsFindingCIDR(t *testing.T) {
 	require.Len(t, findings[0].Confidences, 1)
 	assert.Equal(t, confRDAPHandleNetwork, findings[0].Confidences[0].Score)
 	assert.Equal(t, `ARIN RDAP records CIDR "203.0.113.0/24" under organization handle "ACME-1"`, findings[0].Confidences[0].Justification)
+	require.Len(t, findings[0].Confidences[0].References, 1)
+	assert.Equal(t, "RDAP entity record", findings[0].Confidences[0].References[0].Label)
+	assert.Equal(t, fmt.Sprintf("%s/ACME-1", srv.URL), findings[0].Confidences[0].References[0].URL)
 	assert.NotContains(t, findings[0].Data, "confidence")
 	assert.NotContains(t, findings[0].Data, "confidences")
 }

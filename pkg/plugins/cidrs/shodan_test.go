@@ -205,8 +205,10 @@ func TestShodanPlugin_Run(t *testing.T) {
 	for _, finding := range findings {
 		require.Len(t, finding.Confidences, 2)
 		for _, confidence := range finding.Confidences {
-			assert.Contains(t, confidence.Justification, "key=REDACTED")
-			assert.NotContains(t, confidence.Justification, "test-key")
+			require.Len(t, confidence.References, 1)
+			assert.Contains(t, confidence.References[0].URL, "key=REDACTED")
+			assert.NotContains(t, confidence.References[0].URL, "test-key")
+			assert.NotContains(t, confidence.Justification, "http")
 		}
 	}
 }
@@ -259,13 +261,15 @@ func TestShodanPlugin_ProcessResultsRetainsDistinctQueryEvidence(t *testing.T) {
 	for _, finding := range []plugins.Finding{cidr, domain} {
 		require.Len(t, finding.Confidences, 2, "one finding with one evidence entry per distinct query")
 		assert.Equal(t, confShodanSearchResult, finding.Confidences[0].Score)
-		assert.Contains(t, finding.Confidences[0].Justification, firstURL)
-		assert.Contains(t, finding.Confidences[1].Justification, secondURL)
+		require.Len(t, finding.Confidences[0].References, 1)
+		require.Len(t, finding.Confidences[1].References, 1)
+		assert.Equal(t, firstURL, finding.Confidences[0].References[0].URL)
+		assert.Equal(t, secondURL, finding.Confidences[1].References[0].URL)
 		assert.NotContains(t, finding.Data, "confidence")
 		assert.NotContains(t, finding.Data, "confidences")
 	}
-	assert.Equal(t, `Shodan returned CIDR "192.0.2.1/32" from query `+firstURL, cidr.Confidences[0].Justification)
-	assert.Equal(t, `Shodan returned domain "www.example.com" from query `+firstURL, domain.Confidences[0].Justification)
+	assert.Equal(t, `Shodan returned CIDR "192.0.2.1/32"`, cidr.Confidences[0].Justification)
+	assert.Equal(t, `Shodan returned domain "www.example.com"`, domain.Confidences[0].Justification)
 }
 
 func TestShodanPlugin_SearchURLIsEncodedAndRedactedForDisplay(t *testing.T) {

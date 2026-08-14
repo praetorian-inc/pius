@@ -341,8 +341,30 @@ func newReverseRIRFinding(handle, registry, database, org string) (plugins.Findi
 		},
 	}
 	plugins.AddConfidence(&finding, confReverseRIRHandle, fmt.Sprintf(
-		"%s returned organization handle %q for organization search %q", database, handle, org))
+		"%s returned organization handle %q for organization search %q",
+		database, handle, org), plugins.Reference{
+		Label: database + " query",
+		URL:   reverseRIRQueryURL(registry, database, org),
+	})
 	return finding, true
+}
+
+func reverseRIRQueryURL(registry, database, org string) string {
+	switch registry {
+	case "arin":
+		entity := strings.TrimSuffix(strings.TrimPrefix(database, "ARIN "), " database")
+		return fmt.Sprintf("https://whois.arin.net/rest/%s;name=*%s*", entity, url.PathEscape(org))
+	case "ripe":
+		return "https://rest.db.ripe.net/search?" + url.Values{"query-string": {org}}.Encode()
+	case "apnic":
+		return "https://wq.apnic.net/query?" + url.Values{"searchtext": {org}, "type": {"organisation"}}.Encode()
+	case "afrinic":
+		return "https://rdap.afrinic.net/rdap/entities?" + url.Values{"fn": {org}}.Encode()
+	case "lacnic":
+		return "https://rdap.lacnic.net/rdap/entities?" + url.Values{"fn": {org}}.Encode()
+	default:
+		return "not available"
+	}
 }
 
 // ── ARIN response types ───────────────────────────────────────────────────────

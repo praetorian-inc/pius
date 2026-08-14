@@ -458,7 +458,7 @@ func TestCalculateConfidence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var f plugins.Finding
-			scoreReverseIP(&f, tt.hostname, tt.baseDomain, tt.orgName, "192.0.2.1", tt.isCDN)
+			scoreReverseIP(&f, tt.hostname, tt.baseDomain, tt.orgName, "192.0.2.1", "ptr", tt.isCDN)
 
 			assert.Equal(t, tt.expected, plugins.TotalConfidence(f))
 			require.NotEmpty(t, f.Confidences, "every scored hostname carries evidence")
@@ -537,7 +537,7 @@ func TestScoreReverseIP_EvidenceBreakdown(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var f plugins.Finding
-			scoreReverseIP(&f, tt.hostname, tt.baseDomain, tt.orgName, "192.0.2.1", tt.isCDN)
+			scoreReverseIP(&f, tt.hostname, tt.baseDomain, tt.orgName, "192.0.2.1", "ptr", tt.isCDN)
 
 			require.Len(t, f.Confidences, len(tt.wantScores))
 			for i, want := range tt.wantScores {
@@ -553,8 +553,37 @@ func TestScoreReverseIP_EvidenceBreakdown(t *testing.T) {
 // both from double-counting one claim and inflating past the 85 branch.
 func TestScoreReverseIP_KnownDomainSupersedesOrgName(t *testing.T) {
 	var f plugins.Finding
-	scoreReverseIP(&f, "exampleinc.example.com", "example.com", "Example Inc", "192.0.2.1", false)
+	scoreReverseIP(&f, "exampleinc.example.com", "example.com", "Example Inc", "192.0.2.1", "ptr", false)
 
 	assert.Len(t, f.Confidences, 3)
 	assert.Equal(t, 85, plugins.TotalConfidence(f))
+}
+
+func TestScoreReverseIP_AssociationEvidenceNamesLookup(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		methodName string
+		reference  string
+	}{
+		{name: "PTR", method: "ptr", methodName: "DNS PTR lookup"},
+		{name: "HackerTarget", method: "hackertarget", methodName: "HackerTarget reverse-IP lookup", reference: "https://api.hackertarget.com/reverseiplookup/?q=192.0.2.1"},
+		{name: "ViewDNS", method: "viewdns", methodName: "ViewDNS reverse-IP lookup", reference: "apikey=REDACTED&host=192.0.2.1&output=json"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var finding plugins.Finding
+			scoreReverseIP(&finding, "host.example.com", "example.com", "Example Inc", "192.0.2.1", tt.method, false)
+
+			require.NotEmpty(t, finding.Confidences)
+			assert.Contains(t, finding.Confidences[0].Justification, tt.methodName)
+			if tt.reference == "" {
+				assert.Empty(t, finding.Confidences[0].References)
+				return
+			}
+			require.Len(t, finding.Confidences[0].References, 1)
+			assert.Contains(t, finding.Confidences[0].References[0].URL, tt.reference)
+		})
+	}
 }

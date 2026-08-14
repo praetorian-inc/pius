@@ -140,7 +140,10 @@ func (p *rpslPlugin) findings(input plugins.Input, netblocks []rpslNetblock) []p
 					"description": netblock.description,
 				},
 			}
-			plugins.AddConfidence(&finding, confRPSLHandleInetnum, justification)
+			plugins.AddConfidence(&finding, confRPSLHandleInetnum, justification, plugins.Reference{
+				Label: strings.ToUpper(p.Name()) + " RPSL database",
+				URL:   p.cfg.cacheURL,
+			})
 			findings = append(findings, finding)
 		}
 	}

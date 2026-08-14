@@ -38,6 +38,7 @@ type GLEIFPlugin struct {
 	// Per-run enrichment state, set in Run().
 	orgName       string
 	primaryName   string
+	primaryLEI    string
 	candidateRank int
 }
 
@@ -82,6 +83,7 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 
 	p.orgName = input.OrgName
 	p.primaryName = primary.Attributes.Entity.LegalName.Name
+	p.primaryLEI = primary.ID
 	p.candidateRank = candidateRank
 
 	var findings []plugins.Finding
@@ -326,34 +328,49 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins
 	}
 
 	// Signal 1: Name resolution quality — how well fuzzycompletions matched.
+	resolutionURL := fmt.Sprintf("%s/fuzzycompletions?field=entity.legalName&q=%s",
+		p.gleifBase(), url.QueryEscape(p.orgName))
+	resolutionReferences := []plugins.Reference{{Label: "GLEIF resolution request", URL: resolutionURL}}
+	if recordURL := p.gleifRecordURL(p.primaryLEI); recordURL != "" {
+		resolutionReferences = append(resolutionReferences, plugins.Reference{Label: "Resolved GLEIF entity", URL: recordURL})
+	}
 	if p.candidateRank == 0 {
 		plugins.AddConfidence(&f, 15,
-			fmt.Sprintf("Resolved %q to GLEIF entity %q (top candidate)", p.orgName, p.primaryName))
+			fmt.Sprintf("Resolved %q to GLEIF entity %q (top candidate)", p.orgName, p.primaryName),
+			resolutionReferences...)
 	} else {
 		plugins.AddConfidence(&f, 10,
 			fmt.Sprintf("Resolved %q to GLEIF entity %q (candidate #%d, skipped %d leaf entities)",
-				p.orgName, p.primaryName, p.candidateRank+1, p.candidateRank))
+				p.orgName, p.primaryName, p.candidateRank+1, p.candidateRank), resolutionReferences...)
 	}
 
 	// Signal 2: Relationship provenance. A top-ranked resolution plus a
 	// registered direct relationship reaches the high-confidence threshold;
 	// indirect siblings and later resolution candidates remain reviewable.
+	reference := plugins.Reference{Label: "Related GLEIF entity", URL: p.gleifRecordURL(record.ID)}
 	switch relation {
 	case "direct-parent":
 		plugins.AddConfidence(&f, 50,
-			fmt.Sprintf("LEI registry lists %q as direct parent of %q", name, p.primaryName))
+			fmt.Sprintf("GLEIF lists %q as direct parent of %q", name, p.primaryName), reference)
 	case "ultimate-parent":
 		plugins.AddConfidence(&f, 50,
-			fmt.Sprintf("LEI registry lists %q as ultimate parent of %q", name, p.primaryName))
+			fmt.Sprintf("GLEIF lists %q as ultimate parent of %q", name, p.primaryName), reference)
 	case "subsidiary":
 		plugins.AddConfidence(&f, 50,
-			fmt.Sprintf("LEI registry lists %q as direct subsidiary of %q", name, p.primaryName))
+			fmt.Sprintf("GLEIF lists %q as direct subsidiary of %q", name, p.primaryName), reference)
 	case "sibling":
 		plugins.AddConfidence(&f, 30,
-			fmt.Sprintf("Shares corporate parent with %q (discovered via LEI hierarchy)", p.primaryName))
+			fmt.Sprintf("GLEIF entity %q shares a corporate parent with %q", name, p.primaryName), reference)
 	}
 
 	return f
+}
+
+func (p *GLEIFPlugin) gleifRecordURL(lei string) string {
+	if lei == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/lei-records/%s", p.gleifBase(), url.PathEscape(lei))
 }
 
 // ── API response types ─────────────────────────────────────────────────────────

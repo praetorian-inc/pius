@@ -223,6 +223,8 @@ func TestDNSBrutePlugin_Run(t *testing.T) {
 		assert.Equal(t, confDNSBruteResolved, f.Confidences[0].Score)
 		assert.Contains(t, f.Confidences[0].Justification, f.Value)
 		assert.Contains(t, f.Confidences[0].Justification, "example.com")
+		require.Len(t, f.Confidences[0].References, 1)
+		assert.Contains(t, f.Confidences[0].References[0].URL, "https://dns.google/resolve?")
 		assert.NotContains(t, f.Data, "confidence")
 		assert.NotContains(t, f.Data, "confidences")
 		names[f.Value] = true

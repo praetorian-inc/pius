@@ -100,8 +100,9 @@ func TestURLScanPlugin_BasicSubdomainDiscovery(t *testing.T) {
 		assert.Contains(t, f.Confidences[0].Justification, f.Value)
 		assert.Contains(t, f.Confidences[0].Justification, "praetorian.com")
 		assert.Contains(t, f.Confidences[0].Justification, "URLScan scan history")
-		assert.Contains(t, f.Confidences[0].Justification,
-			srv.URL+"/api/v1/search/?q=page.apexDomain:praetorian.com&size=100")
+		require.Len(t, f.Confidences[0].References, 1)
+		assert.Equal(t, srv.URL+"/api/v1/search/?q=page.apexDomain:praetorian.com&size=100",
+			f.Confidences[0].References[0].URL)
 		assert.NotContains(t, f.Data, "confidence")
 		assert.NotContains(t, f.Data, "confidences")
 		values[f.Value] = true

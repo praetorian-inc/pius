@@ -437,8 +437,13 @@ func TestGLEIFPlugin_Run_ConfidenceSignals_Parent(t *testing.T) {
 	assert.Equal(t, 15, f.Confidences[0].Score)
 	assert.Contains(t, f.Confidences[0].Justification, "top candidate")
 	assert.Contains(t, f.Confidences[0].Justification, "Acme Corp")
+	require.Len(t, f.Confidences[0].References, 2)
+	assert.Contains(t, f.Confidences[0].References[0].URL, srv.URL+"/fuzzycompletions?")
+	assert.Equal(t, srv.URL+"/lei-records/LEI001", f.Confidences[0].References[1].URL)
 	assert.Equal(t, 50, f.Confidences[1].Score)
 	assert.Contains(t, f.Confidences[1].Justification, "direct parent")
+	require.Len(t, f.Confidences[1].References, 1)
+	assert.Equal(t, srv.URL+"/lei-records/LEI_PARENT", f.Confidences[1].References[0].URL)
 	assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(f))
 	assert.False(t, plugins.NeedsReview(f), "a registered parent of the top candidate should not need review")
 }

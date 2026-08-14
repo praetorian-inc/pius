@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/cache"
@@ -458,11 +459,10 @@ func (p *CensysOrgPlugin) extractFindings(input plugins.Input, hits []censysSear
 				"host_count":    len(hosts),
 			},
 		}
-		// The host count is the only detail in the justification — no certificate
-		// contents, and no host addresses.
 		plugins.AddConfidence(&f, plugins.ConfidenceHigh,
 			fmt.Sprintf("Certificate Subject Organization %q appeared within Censys results for %s on %d distinct hosts, at or above the %d-host threshold",
-				displayName, describeCensysSearchTarget(input), len(hosts), censysMinHosts))
+				displayName, describeCensysSearchTarget(input), len(hosts), censysMinHosts),
+			censysHostReferences(hosts)...)
 		findings = append(findings, f)
 	}
 
@@ -475,6 +475,7 @@ func buildCensysDomainConfidence(input plugins.Input, hostIP, rawDomain, source,
 		Score: score,
 		Justification: fmt.Sprintf("Censys returned host %q for %s; the host's %s field (%s) contained domain %q%s",
 			hostIP, describeCensysSearchTarget(input), source, field, domain, describeCensysORQueryCaveat(input)),
+		References: []plugins.Reference{{Label: "Censys host record", URL: censysHostURL(hostIP)}},
 	}
 }
 
@@ -484,7 +485,29 @@ func buildCensysCIDRConfidence(input plugins.Input, hostIP, rawCIDR, source, fie
 		Score: confCensysNetworkCIDR,
 		Justification: fmt.Sprintf("Censys returned host %q for %s; the host's %s field (%s) contained CIDR %q%s",
 			hostIP, describeCensysSearchTarget(input), source, field, cidr, describeCensysORQueryCaveat(input)),
+		References: []plugins.Reference{{Label: "Censys host record", URL: censysHostURL(hostIP)}},
 	}
+}
+
+func censysHostURL(hostIP string) string {
+	return "https://search.censys.io/hosts/" + hostIP
+}
+
+func censysHostReferences(hosts map[string]bool) []plugins.Reference {
+	ips := make([]string, 0, len(hosts))
+	for ip := range hosts {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+	if len(ips) > censysMinHosts {
+		ips = ips[:censysMinHosts]
+	}
+
+	references := make([]plugins.Reference, len(ips))
+	for i, ip := range ips {
+		references[i] = plugins.Reference{Label: "Censys host " + ip, URL: censysHostURL(ip)}
+	}
+	return references
 }
 
 func describeCensysSearchTarget(input plugins.Input) string {
@@ -517,7 +540,7 @@ func (p *CensysOrgPlugin) emitDomain(findings *[]plugins.Finding, seen map[strin
 			"field": field,
 		},
 	}
-	plugins.AddConfidence(&newFinding, confidence.Score, confidence.Justification)
+	plugins.AddConfidence(&newFinding, confidence.Score, confidence.Justification, confidence.References...)
 	*findings = append(*findings, newFinding)
 }
 
@@ -537,7 +560,7 @@ func (p *CensysOrgPlugin) emitCIDR(findings *[]plugins.Finding, seen map[string]
 			"field": field,
 		},
 	}
-	plugins.AddConfidence(&newFinding, confidence.Score, confidence.Justification)
+	plugins.AddConfidence(&newFinding, confidence.Score, confidence.Justification, confidence.References...)
 	*findings = append(*findings, newFinding)
 }
 

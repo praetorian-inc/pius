@@ -79,7 +79,7 @@ func (p *rdapPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 				},
 			}
 			for _, confidence := range result.confidences {
-				plugins.AddConfidence(&finding, confidence.Score, confidence.Justification)
+				plugins.AddConfidence(&finding, confidence.Score, confidence.Justification, confidence.References...)
 			}
 			findings = append(findings, finding)
 		}
@@ -122,6 +122,10 @@ func (p *rdapPlugin) newRDAPCIDR(handle, value string) rdapCIDR {
 			Score: confRDAPHandleNetwork,
 			Justification: fmt.Sprintf("%s RDAP records CIDR %q under organization handle %q",
 				strings.ToUpper(p.Name()), value, handle),
+			References: []plugins.Reference{{
+				Label: "RDAP entity record",
+				URL:   p.cfg.baseURL + "/" + url.PathEscape(handle),
+			}},
 		}},
 	}
 }

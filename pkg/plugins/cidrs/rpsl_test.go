@@ -250,6 +250,8 @@ org:            ORG-ACME1-AP
 	assert.Contains(t, justification, "198.51.100.0 - 198.51.100.255")
 	assert.NotContains(t, justification, "netname")
 	assert.Equal(t, `APNIC RPSL records range "198.51.100.0 - 198.51.100.255" under organization handle "ORG-ACME1-AP"; the range contains CIDR "198.51.100.0/24"`, justification)
+	require.Len(t, withoutNetname.Confidences[0].References, 1)
+	assert.Equal(t, "https://example.test/apnic.db.gz", withoutNetname.Confidences[0].References[0].URL)
 }
 
 // ── Local-file construction (the embedded path) ───────────────────────────────
@@ -318,6 +320,9 @@ func TestNewAPNICPlugin_ReadsIPv6FromLocalFile(t *testing.T) {
 	assert.Equal(t, "2001:db8::/32", findings[0].Value)
 	assert.Equal(t, `APNIC RPSL records prefix "2001:db8::/32" under organization handle "ORG-ACME1-AP" with netname "ACME-AP-V6"; the prefix contains CIDR "2001:db8::/32"`,
 		findings[0].Confidences[0].Justification)
+	require.Len(t, findings[0].Confidences[0].References, 1)
+	assert.Equal(t, "https://ftp.apnic.net/apnic/whois/apnic.db.inetnum.gz",
+		findings[0].Confidences[0].References[0].URL)
 }
 
 // APNIC publishes the two address families as separate files, so covering IPv6

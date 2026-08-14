@@ -208,6 +208,7 @@ func (p *DoHEnumPlugin) detectWildcardDoH(ctx context.Context, domain string, en
 func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, fqdn string, rotation []DoHEndpoint) (plugins.Finding, bool) {
 	for attempt := 0; attempt < dohEnumMaxRetries; attempt++ {
 		ep := rotation[attempt%len(rotation)]
+		queryURL := dohQueryURL(fqdn, ep)
 		exists, err := p.queryDoH(ctx, fqdn, ep)
 		if err == nil {
 			if exists {
@@ -221,8 +222,8 @@ func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, fqdn string, rotatio
 					},
 				}
 				plugins.AddConfidence(&finding, confDoHEnumResolved,
-					fmt.Sprintf("Wordlist candidate %q resolved through DNS-over-HTTPS endpoint %q",
-						fqdn, ep.URL))
+					fmt.Sprintf("DNS-over-HTTPS A query resolved wordlist candidate %q", fqdn),
+					plugins.Reference{Label: "DNS-over-HTTPS request", URL: queryURL})
 				return finding, true
 			}
 			return plugins.Finding{}, false
@@ -283,7 +284,7 @@ func isRetryableDoHError(err error) bool {
 // Returns (false, nil) for NXDOMAIN.
 // Returns (false, err) on HTTP errors.
 func (p *DoHEnumPlugin) queryDoH(ctx context.Context, fqdn string, endpoint DoHEndpoint) (bool, error) {
-	reqURL := endpoint.URL + "?" + url.Values{"name": {fqdn}, "type": {"A"}}.Encode()
+	reqURL := dohQueryURL(fqdn, endpoint)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -319,6 +320,10 @@ func (p *DoHEnumPlugin) queryDoH(ctx context.Context, fqdn string, endpoint DoHE
 
 	// NOERROR (0) with at least one answer means the domain exists
 	return result.Status == 0 && len(result.Answer) > 0, nil
+}
+
+func dohQueryURL(fqdn string, endpoint DoHEndpoint) string {
+	return endpoint.URL + "?" + url.Values{"name": {fqdn}, "type": {"A"}}.Encode()
 }
 
 // resolveEndpoints determines which DoH endpoints to use based on Meta configuration.

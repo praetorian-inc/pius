@@ -156,8 +156,8 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 			},
 		}
 		plugins.AddConfidence(&f, confWhoisServerRecord,
-			fmt.Sprintf("%s records %q as the %s contact %s",
-				source, cd.value, cd.role, cd.field))
+			fmt.Sprintf("%s for domain %q records %q as the %s contact %s",
+				source, r.Domain, cd.value, cd.role, cd.field))
 		findings = append(findings, f)
 	}
 	return findings
