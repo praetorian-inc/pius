@@ -1,8 +1,4 @@
-// Package whois provides domain registration lookups via RDAP and TCP port-43.
-//
-// Lookup is the primary entry point: it cascades through RDAP (structured data,
-// standardized dates) then TCP-43 (broader email coverage, raw text) and merges
-// the best fields from each source into a single Result.
+// Package whois provides domain and IP registration lookups via RDAP and TCP port 43.
 package whois
 
 import "cmp"
@@ -13,10 +9,10 @@ import "cmp"
 type Result struct {
 	Domain       string   `json:"domain"`
 	Registrar    string   `json:"registrar,omitempty"`
-	Registrant   Contact  `json:"registrant,omitempty"`
-	Admin        Contact  `json:"admin,omitempty"`
-	Tech         Contact  `json:"tech,omitempty"`
-	Billing      Contact  `json:"billing,omitempty"`
+	Registrant   Contact  `json:"registrant"`
+	Admin        Contact  `json:"admin"`
+	Tech         Contact  `json:"tech"`
+	Billing      Contact  `json:"billing"`
 	Created      string   `json:"created,omitempty"`
 	Updated      string   `json:"updated,omitempty"`
 	Expiration   string   `json:"expiration,omitempty"`
