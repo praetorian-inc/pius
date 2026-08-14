@@ -104,13 +104,11 @@ func LookupNetwork(ctx context.Context, query string, opts ...Option) (NetworkRe
 	}
 
 	rdapResult, rdapErr := rdapNetworkLookup(ctx, cfg.httpClient, target)
-	var handle, server string
-	if rdapErr == nil {
-		handle = rdapResult.Handle
-		server = rdapResult.Registry
+	if rdapErr == nil && hasUsefulNetworkIdentity(rdapResult.Contacts) {
+		return rdapResult, nil
 	}
 
-	tcpResult, tcpErr := tcp43NetworkLookup(ctx, target, handle, server)
+	tcpResult, tcpErr := tcp43NetworkLookup(ctx, target)
 	if rdapErr == nil {
 		if tcpErr == nil {
 			mergeTCP43NetworkResult(&rdapResult, tcpResult)
@@ -172,6 +170,34 @@ func requireContainingAllocation(result NetworkResult, target networkTarget) err
 		return fmt.Errorf("%w: %s-%s does not contain %s", ErrAllocationDoesNotContainTarget, start, end, target.query)
 	}
 	return nil
+}
+
+func hasUsefulNetworkIdentity(contacts []NetworkContact) bool {
+	preferredRole := PreferredNetworkRole(contacts)
+	for _, contact := range contacts {
+		if !contact.Direct || contact.IsPrivacyProtected() {
+			continue
+		}
+		if !contact.HasRole(preferredRole) || contact.IsMaintainer() {
+			continue
+		}
+
+		identity := contact.Organization
+		switch contact.Kind {
+		case "org":
+			if identity == "" {
+				identity = contact.Name
+			}
+		case "individual":
+			identity = contact.Name
+		default:
+			identity = ""
+		}
+		if identity != "" || IsEmail(contact.Email) {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeTCP43NetworkResult(rdapResult *NetworkResult, tcpResult NetworkResult) {

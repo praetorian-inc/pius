@@ -98,6 +98,14 @@ func TestPreferredNetworkRole_IgnoresPrivacyProtectedCustomer(t *testing.T) {
 	assert.Equal(t, "registrant", PreferredNetworkRole(contacts))
 }
 
+func TestHasUsefulNetworkIdentity_IgnoresPrivacyProtectedContact(t *testing.T) {
+	contacts := []NetworkContact{{
+		Roles: []string{"registrant"}, Status: []string{"private"}, Kind: "org", Direct: true, Name: "Private Customer",
+	}}
+
+	assert.False(t, hasUsefulNetworkIdentity(contacts))
+}
+
 func TestMergeTCP43NetworkResult_PreservesServerAttribution(t *testing.T) {
 	rdapResult := NetworkResult{
 		Registry:   "whois.ripe.net",
@@ -128,44 +136,10 @@ func TestMergeTCP43NetworkResult_PreservesServerAttribution(t *testing.T) {
 	require.Len(t, rdapResult.Contacts, 2)
 }
 
-func TestLookupNetwork_EnrichesRDAPWithTCP43AllocationHandle(t *testing.T) {
+func TestLookupNetwork_SuccessfulRDAPWithoutUsefulIdentityFallsBackToTCP43(t *testing.T) {
 	original := tcp43RawFn
-	var queries []string
 	tcp43RawFn = func(_ context.Context, query, server string) (string, error) {
-		queries = append(queries, query+"@"+server)
-		if query == "NET-8-8-8-0-1" && server == "whois.example.test" {
-			return "NetRange: 8.8.8.0 - 8.8.8.255\nCustName: Example Customer\n", nil
-		}
-		return "", errors.New("unexpected query")
-	}
-	t.Cleanup(func() { tcp43RawFn = original })
-
-	result, err := LookupNetwork(context.Background(), "8.8.8.8", WithHTTPClient(&http.Client{
-		Transport: rdapResponseRoundTripper{},
-	}))
-	require.NoError(t, err)
-	assert.Equal(t, []string{"NET-8-8-8-0-1@whois.example.test"}, queries)
-	assert.Equal(t, []string{"rdap", "whois"}, result.Sources)
-	assert.Equal(t, "rdap.arin.net", result.RDAPServer)
-	assert.Equal(t, "whois.example.test", result.WhoisServer)
-	assert.Equal(t, []string{"active"}, result.Status)
-	require.Len(t, result.Contacts, 2)
-	assert.Equal(t, []string{"validated"}, result.Contacts[0].Status)
-	assert.Equal(t, []string{"customer"}, result.Contacts[1].Roles)
-	assert.Equal(t, "Example Customer", result.Contacts[1].Organization)
-}
-
-func TestTCP43NetworkLookup_FallsBackToAddressAfterInvalidHandleResponse(t *testing.T) {
-	target, err := parseNetworkTarget("8.8.8.8")
-	require.NoError(t, err)
-
-	original := tcp43RawFn
-	var queries []string
-	tcp43RawFn = func(_ context.Context, query, server string) (string, error) {
-		queries = append(queries, query+"@"+server)
 		switch {
-		case query == "NET-8-8-8-0-1" && server == "whois.example.test":
-			return "No match\n", nil
 		case query == "8.8.8.8" && server == defaultServer:
 			return "refer: whois.example.test\n", nil
 		case query == "8.8.8.8" && server == "whois.example.test":
@@ -176,14 +150,17 @@ func TestTCP43NetworkLookup_FallsBackToAddressAfterInvalidHandleResponse(t *test
 	}
 	t.Cleanup(func() { tcp43RawFn = original })
 
-	result, err := tcp43NetworkLookup(context.Background(), target, "NET-8-8-8-0-1", "whois.example.test")
+	result, err := LookupNetwork(context.Background(), "8.8.8.8", WithHTTPClient(&http.Client{
+		Transport: rdapResponseRoundTripper{},
+	}))
 	require.NoError(t, err)
-	assert.Equal(t, []string{
-		"NET-8-8-8-0-1@whois.example.test",
-		"8.8.8.8@" + defaultServer,
-		"8.8.8.8@whois.example.test",
-	}, queries)
-	assert.Equal(t, "Example Networks", result.Contacts[0].Organization)
+	assert.Equal(t, []string{"rdap", "whois"}, result.Sources)
+	assert.Equal(t, "rdap.arin.net", result.RDAPServer)
+	assert.Equal(t, "whois.example.test", result.WhoisServer)
+	assert.Equal(t, []string{"active"}, result.Status)
+	require.Len(t, result.Contacts, 2)
+	assert.Equal(t, []string{"validated"}, result.Contacts[0].Status)
+	assert.Equal(t, "Example Networks", result.Contacts[1].Organization)
 }
 
 type rdapResponseRoundTripper struct{}
