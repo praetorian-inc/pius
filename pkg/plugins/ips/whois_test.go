@@ -1,7 +1,6 @@
 package ips
 
 import (
-	"context"
 	"testing"
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -20,7 +19,7 @@ func TestWhoisPlugin_Accepts(t *testing.T) {
 		{name: "IP", input: plugins.Input{IP: "8.8.8.8"}, want: true},
 		{name: "CIDR", input: plugins.Input{CIDR: "8.8.8.0/24"}, want: true},
 		{name: "private", input: plugins.Input{IP: "10.0.0.1"}, want: true},
-		{name: "both", input: plugins.Input{IP: "8.8.8.8", CIDR: "8.8.8.0/24"}},
+		{name: "both", input: plugins.Input{IP: "8.8.8.8", CIDR: "8.8.8.0/24"}, want: true},
 		{name: "neither", input: plugins.Input{}},
 	}
 
@@ -31,28 +30,26 @@ func TestWhoisPlugin_Accepts(t *testing.T) {
 	}
 }
 
-func TestWhoisPlugin_RunEmitsResultAndPreseeds(t *testing.T) {
-	plugin := NewWhoisPlugin(nil)
-	plugin.lookup = func(context.Context, string, ...whois.Option) (whois.NetworkResult, error) {
-		return whois.NetworkResult{
-			Query:        "8.8.8.8",
-			StartAddress: "8.8.8.0",
-			EndAddress:   "8.8.8.255",
-			Handle:       "NET-8-8-8-0-1",
-			Registry:     "arin",
-			Server:       "whois.example.test",
-			Sources:      []string{"whois"},
-			Contacts: []whois.NetworkContact{
-				{Roles: []string{"registrant"}, Kind: "org", Direct: true, Name: "Example Networks", Email: "jane@example.com"},
-				{Handle: "EXAMPLE-MNT", Roles: []string{"registrant"}, Kind: "individual", Direct: true, Name: "EXAMPLE-MNT"},
-				{Roles: []string{"registrant"}, Kind: "org", Name: "Upstream ISP"},
-				{Roles: []string{"technical"}, Kind: "group", Direct: true, Organization: "Carrier NOC", Email: "noc@carrier.example"},
-			},
-		}, nil
+func TestNetworkFindings_EmitResultAndPreseeds(t *testing.T) {
+	result := whois.NetworkResult{
+		Query:        "8.8.8.8",
+		StartAddress: "8.8.8.0",
+		EndAddress:   "8.8.8.255",
+		Handle:       "NET-8-8-8-0-1",
+		Registry:     "arin",
+		Server:       "whois.example.test",
+		Status:       []string{"active"},
+		Sources:      []string{"whois"},
+		Contacts: []whois.NetworkContact{
+			{Roles: []string{"registrant"}, Status: []string{"validated"}, Kind: "org", Direct: true, Name: "Example Networks", Email: "jane@example.com"},
+			{Handle: "EXAMPLE-MNT", Roles: []string{"registrant"}, Kind: "individual", Direct: true, Name: "EXAMPLE-MNT"},
+			{Roles: []string{"registrant"}, Kind: "org", Name: "Upstream ISP"},
+			{Roles: []string{"technical"}, Kind: "group", Direct: true, Organization: "Carrier NOC", Email: "noc@carrier.example"},
+		},
 	}
 
-	findings, err := plugin.Run(context.Background(), plugins.Input{IP: "8.8.8.8"})
-	require.NoError(t, err)
+	findings := []plugins.Finding{networkResultFinding(result)}
+	findings = append(findings, networkPreseeds(result)...)
 	require.Len(t, findings, 3)
 	assert.Equal(t, plugins.FindingIPWhoisResult, findings[0].Type)
 	assert.Equal(t, "8.8.8.8", findings[0].Value)
@@ -64,7 +61,10 @@ func TestWhoisPlugin_RunEmitsResultAndPreseeds(t *testing.T) {
 	for _, finding := range findings[1:] {
 		require.Len(t, finding.Confidences, 1)
 		assert.Equal(t, confIPWhoisContact, finding.Confidences[0].Score)
+		assert.Equal(t, []string{"validated"}, finding.Data["status"])
+		assert.Equal(t, []string{"active"}, finding.Data["allocation_status"])
 		assert.Contains(t, finding.Confidences[0].Justification, `IP WHOIS server "whois.example.test"`)
+		assert.Contains(t, finding.Confidences[0].Justification, `with entity status "validated"`)
 		assert.Contains(t, finding.Confidences[0].Justification, `allocation "NET-8-8-8-0-1" spanning 8.8.8.0-8.8.8.255`)
 		assert.Contains(t, finding.Confidences[0].Justification, `returned for query "8.8.8.8"`)
 	}
@@ -99,8 +99,21 @@ func TestNetworkPreseeds_PrefersCustomerOverRegistrant(t *testing.T) {
 	assert.Equal(t, "Example Customer", findings[0].Value)
 }
 
-func TestWhoisPlugin_RunRejectsAmbiguousInput(t *testing.T) {
-	plugin := NewWhoisPlugin(nil)
-	_, err := plugin.Run(context.Background(), plugins.Input{IP: "8.8.8.8", CIDR: "8.8.8.0/24"})
-	assert.Error(t, err)
+func TestNetworkPreseeds_OmitsPrivacyProtectedContacts(t *testing.T) {
+	for _, status := range []string{"private", "removed", "obscured"} {
+		t.Run(status, func(t *testing.T) {
+			findings := networkPreseeds(whois.NetworkResult{Contacts: []whois.NetworkContact{{
+				Roles: []string{"registrant"}, Status: []string{status}, Kind: "org", Direct: true, Name: "Private Customer",
+			}}})
+
+			assert.Empty(t, findings)
+		})
+	}
+}
+
+func TestNetworkTarget_PrefersIP(t *testing.T) {
+	target, ok := networkTarget(plugins.Input{IP: "8.8.8.8", CIDR: "8.8.8.0/24"})
+
+	assert.True(t, ok)
+	assert.Equal(t, "8.8.8.8", target)
 }

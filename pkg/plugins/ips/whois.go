@@ -16,9 +16,10 @@ import (
 const confIPWhoisContact = 85
 
 type networkPreseedCandidate struct {
-	field string
-	role  string
-	value string
+	field  string
+	role   string
+	value  string
+	status []string
 }
 
 func init() {
@@ -27,7 +28,6 @@ func init() {
 
 type WhoisPlugin struct {
 	HTTPClient *http.Client
-	lookup     func(context.Context, string, ...whois.Option) (whois.NetworkResult, error)
 }
 
 func NewWhoisPlugin(httpClient *http.Client) *WhoisPlugin {
@@ -51,15 +51,11 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 		return nil, fmt.Errorf("ip-whois: expected exactly one IP or CIDR")
 	}
 
-	lookup := p.lookup
-	if lookup == nil {
-		lookup = whois.LookupNetwork
-	}
 	var options []whois.Option
 	if p.HTTPClient != nil {
 		options = append(options, whois.WithHTTPClient(p.HTTPClient))
 	}
-	result, err := lookup(ctx, target, options...)
+	result, err := whois.LookupNetwork(ctx, target, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -70,13 +66,10 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 }
 
 func networkTarget(input plugins.Input) (string, bool) {
-	if (input.IP == "") == (input.CIDR == "") {
+	if input.IP == "" && input.CIDR == "" {
 		return "", false
 	}
-	if input.IP != "" {
-		return input.IP, true
-	}
-	return input.CIDR, true
+	return cmp.Or(input.IP, input.CIDR), true
 }
 
 func networkResultFinding(result whois.NetworkResult) plugins.Finding {
@@ -117,7 +110,7 @@ func networkPreseedCandidates(contacts []whois.NetworkContact, preferredRole str
 }
 
 func eligibleNetworkContact(contact whois.NetworkContact, preferredRole string) bool {
-	return contact.Direct && contact.HasRole(preferredRole) && !contact.IsMaintainer()
+	return contact.Direct && contact.HasRole(preferredRole) && !contact.IsMaintainer() && !contact.IsPrivacyProtected()
 }
 
 func contactPreseedCandidates(contact whois.NetworkContact) []networkPreseedCandidate {
@@ -126,7 +119,7 @@ func contactPreseedCandidates(contact whois.NetworkContact) []networkPreseedCand
 	role := strings.Join(roles, ",")
 	possible := []networkPreseedCandidate{
 		contactIdentityCandidate(contact, role),
-		{field: "email", role: role, value: contact.Email},
+		{field: "email", role: role, value: contact.Email, status: contact.Status},
 	}
 	candidates := make([]networkPreseedCandidate, 0, len(possible))
 	for _, candidate := range possible {
@@ -148,12 +141,12 @@ func validNetworkPreseedCandidate(candidate networkPreseedCandidate) bool {
 func contactIdentityCandidate(contact whois.NetworkContact, role string) networkPreseedCandidate {
 	switch contact.Kind {
 	case "org":
-		return networkPreseedCandidate{field: "company", role: role, value: cmp.Or(contact.Organization, contact.Name)}
+		return networkPreseedCandidate{field: "company", role: role, value: cmp.Or(contact.Organization, contact.Name), status: contact.Status}
 	case "individual":
-		return networkPreseedCandidate{field: "name", role: role, value: contact.Name}
+		return networkPreseedCandidate{field: "name", role: role, value: contact.Name, status: contact.Status}
 	default:
 		if contact.Organization != "" {
-			return networkPreseedCandidate{field: "company", role: role, value: contact.Organization}
+			return networkPreseedCandidate{field: "company", role: role, value: contact.Organization, status: contact.Status}
 		}
 		return networkPreseedCandidate{}
 	}
@@ -179,16 +172,26 @@ func networkPreseedFinding(result whois.NetworkResult, candidate networkPreseedC
 			"sources":          result.Sources,
 		},
 	}
+	if len(candidate.status) > 0 {
+		finding.Data["status"] = candidate.status
+	}
+	if len(result.Status) > 0 {
+		finding.Data["allocation_status"] = result.Status
+	}
 	plugins.AddConfidence(&finding, confIPWhoisContact, networkPreseedJustification(result, candidate))
 	return finding
 }
 
 func networkPreseedJustification(result whois.NetworkResult, candidate networkPreseedCandidate) string {
 	source := networkResultSource(result)
+	status := ""
+	if len(candidate.status) > 0 {
+		status = fmt.Sprintf(" with entity status %q", strings.Join(candidate.status, ","))
+	}
 
 	return fmt.Sprintf(
-		"%s records %q as the %s contact %s for allocation %q spanning %s-%s, returned for query %q",
-		source, candidate.value, candidate.role, candidate.field, result.Handle,
+		"%s records %q as the %s contact %s%s for allocation %q spanning %s-%s, returned for query %q",
+		source, candidate.value, candidate.role, candidate.field, status, result.Handle,
 		result.StartAddress, result.EndAddress, result.Query,
 	)
 }

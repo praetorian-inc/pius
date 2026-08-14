@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/openrdap/rdap"
@@ -56,6 +57,7 @@ func mapRDAPToNetworkResult(query string, network *rdap.IPNetwork) NetworkResult
 		Handle:       network.Handle,
 		Name:         network.Name,
 		Type:         network.Type,
+		Status:       slices.Clone(network.Status),
 		Country:      network.Country,
 		ParentHandle: network.ParentHandle,
 		Registry:     network.Port43,
@@ -70,11 +72,9 @@ func rdapNetworkContacts(entities []rdap.Entity) []NetworkContact {
 	visit = func(current []rdap.Entity, direct bool) {
 		for i := range current {
 			entity := &current[i]
-			if entity.VCard != nil {
-				contact := networkContactFromVCard(entity.Handle, entity.Roles, entity.VCard, direct)
-				if !contact.IsEmpty() {
-					contacts = append(contacts, contact)
-				}
+			contact := networkContactFromEntity(entity, direct)
+			if !contact.IsEmpty() {
+				contacts = append(contacts, contact)
 			}
 			visit(entity.Entities, false)
 		}
@@ -83,26 +83,31 @@ func rdapNetworkContacts(entities []rdap.Entity) []NetworkContact {
 	return mergeNetworkContacts(nil, contacts)
 }
 
-func networkContactFromVCard(handle string, roles []string, vcard *rdap.VCard, direct bool) NetworkContact {
-	base := contactFromVCard(vcard).Scrub()
+func networkContactFromEntity(entity *rdap.Entity, direct bool) NetworkContact {
 	contact := NetworkContact{
-		Handle:       handle,
-		Roles:        roles,
-		Kind:         firstVCardValue(vcard, "kind"),
-		Direct:       direct,
-		Organization: base.Organization,
-		Name:         base.Name,
-		Email:        clearIfPrivacy(vcard.Email()),
-		Phone:        clearIfPrivacy(strings.TrimPrefix(vcard.Tel(), "tel:")),
-		Country:      base.Country,
-		Province:     base.Province,
-		City:         base.City,
-		Street:       base.Street,
-		PostalCode:   base.PostalCode,
+		Handle: entity.Handle,
+		Roles:  entity.Roles,
+		Status: slices.Clone(entity.Status),
+		Direct: direct,
 	}
 	if len(contact.Roles) == 0 {
 		contact.Roles = []string{"unknown"}
 	}
+	if entity.VCard == nil {
+		return contact
+	}
+
+	base := contactFromVCard(entity.VCard).Scrub()
+	contact.Kind = firstVCardValue(entity.VCard, "kind")
+	contact.Organization = base.Organization
+	contact.Name = base.Name
+	contact.Email = clearIfPrivacy(entity.VCard.Email())
+	contact.Phone = clearIfPrivacy(strings.TrimPrefix(entity.VCard.Tel(), "tel:"))
+	contact.Country = base.Country
+	contact.Province = base.Province
+	contact.City = base.City
+	contact.Street = base.Street
+	contact.PostalCode = base.PostalCode
 	return contact
 }
 

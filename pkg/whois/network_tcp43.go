@@ -2,19 +2,34 @@ package whois
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
 )
 
-func tcp43NetworkLookup(ctx context.Context, target networkTarget) (NetworkResult, error) {
-	raw, server, err := tcp43Raw(ctx, target.prefix.Addr().String())
-	if err != nil {
-		return NetworkResult{}, err
+func tcp43NetworkLookup(ctx context.Context, target networkTarget, handle, server string) (NetworkResult, error) {
+	var handleErr error
+	if handle != "" && server != "" {
+		raw, err := tcp43RawFn(ctx, handle, server)
+		if err == nil {
+			result, parseErr := parseTCP43NetworkResult(target, raw, server)
+			if parseErr == nil {
+				return result, nil
+			}
+			handleErr = parseErr
+		} else {
+			handleErr = err
+		}
 	}
-	result, err := parseTCP43NetworkResult(target, raw, server)
+
+	raw, resolvedServer, err := tcp43Raw(ctx, target.prefix.Addr().String())
 	if err != nil {
-		return NetworkResult{}, err
+		return NetworkResult{}, errors.Join(handleErr, err)
+	}
+	result, err := parseTCP43NetworkResult(target, raw, resolvedServer)
+	if err != nil {
+		return NetworkResult{}, errors.Join(handleErr, err)
 	}
 	return result, nil
 }

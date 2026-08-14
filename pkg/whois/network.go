@@ -21,6 +21,7 @@ type NetworkResult struct {
 	Handle       string           `json:"handle,omitempty"`
 	Name         string           `json:"name,omitempty"`
 	Type         string           `json:"type,omitempty"`
+	Status       []string         `json:"status,omitempty"`
 	Country      string           `json:"country,omitempty"`
 	ParentHandle string           `json:"parent_handle,omitempty"`
 	Registry     string           `json:"registry,omitempty"`
@@ -36,6 +37,7 @@ type NetworkResult struct {
 type NetworkContact struct {
 	Handle       string   `json:"handle,omitempty"`
 	Roles        []string `json:"roles,omitempty"`
+	Status       []string `json:"status,omitempty"`
 	Kind         string   `json:"kind,omitempty"`
 	Direct       bool     `json:"direct,omitempty"`
 	Organization string   `json:"organization,omitempty"`
@@ -50,7 +52,7 @@ type NetworkContact struct {
 }
 
 func (c NetworkContact) IsEmpty() bool {
-	return c.Organization == "" && c.Name == "" && c.Email == ""
+	return c.Organization == "" && c.Name == "" && c.Email == "" && len(c.Status) == 0
 }
 
 func (c NetworkContact) HasRole(role string) bool {
@@ -61,9 +63,22 @@ func (c NetworkContact) IsMaintainer() bool {
 	return strings.HasSuffix(strings.ToUpper(c.Handle), "-MNT")
 }
 
+// IsPrivacyProtected recognizes the entity statuses RFC 9083 defines for
+// withheld or altered contact data.
+// https://www.rfc-editor.org/rfc/rfc9083.html#section-13
+func (c NetworkContact) IsPrivacyProtected() bool {
+	for _, status := range c.Status {
+		switch strings.ToLower(status) {
+		case "private", "removed", "obscured":
+			return true
+		}
+	}
+	return false
+}
+
 func PreferredNetworkRole(contacts []NetworkContact) string {
 	for _, contact := range contacts {
-		if contact.Direct && contact.HasRole("customer") {
+		if contact.Direct && !contact.IsPrivacyProtected() && contact.HasRole("customer") {
 			return "customer"
 		}
 	}
@@ -89,11 +104,13 @@ func LookupNetwork(ctx context.Context, query string, opts ...Option) (NetworkRe
 	}
 
 	rdapResult, rdapErr := rdapNetworkLookup(ctx, cfg.httpClient, target)
-	if rdapErr == nil && hasUsefulNetworkIdentity(rdapResult.Contacts) {
-		return rdapResult, nil
+	var handle, server string
+	if rdapErr == nil {
+		handle = rdapResult.Handle
+		server = rdapResult.Registry
 	}
 
-	tcpResult, tcpErr := tcp43NetworkLookup(ctx, target)
+	tcpResult, tcpErr := tcp43NetworkLookup(ctx, target, handle, server)
 	if rdapErr == nil {
 		if tcpErr == nil {
 			mergeTCP43NetworkResult(&rdapResult, tcpResult)
@@ -155,35 +172,6 @@ func requireContainingAllocation(result NetworkResult, target networkTarget) err
 		return fmt.Errorf("%w: %s-%s does not contain %s", ErrAllocationDoesNotContainTarget, start, end, target.query)
 	}
 	return nil
-}
-
-func hasUsefulNetworkIdentity(contacts []NetworkContact) bool {
-	preferredRole := PreferredNetworkRole(contacts)
-	for _, contact := range contacts {
-		if !contact.Direct || !contact.HasRole(preferredRole) || contact.IsMaintainer() {
-			continue
-		}
-
-		identity := contact.Organization
-		switch contact.Kind {
-		case "org":
-			if identity == "" {
-				identity = contact.Name
-			}
-		case "individual":
-			identity = contact.Name
-		case "":
-		default:
-			identity = ""
-		}
-		if identity != "" {
-			return true
-		}
-		if IsEmail(contact.Email) {
-			return true
-		}
-	}
-	return false
 }
 
 func mergeTCP43NetworkResult(rdapResult *NetworkResult, tcpResult NetworkResult) {

@@ -77,7 +77,7 @@ The runner (`pkg/runner/run.go`) executes plugins in phases:
 
 **Domain plugins** (`pkg/plugins/domains/`): Independent (Phase 0) plugins querying various sources (crt.sh, passive DNS, etc.).
 
-**IP plugins** (`pkg/plugins/ips/`): Independent (Phase 0) plugins enriching IP and CIDR inputs from public registration services.
+**IP plugins** (`pkg/plugins/ips/`): Independent (Phase 0) plugins enriching IP and CIDR inputs from public registration services. IP WHOIS resolves the allocation with RDAP, then queries the RDAP allocation handle against its authoritative TCP-43 server for fields such as ARIN `CustName`; it falls back to the original IP when the handle is absent or unusable.
 
 **Active plugins**: Set `Mode()` to "active". Run only with `--mode active` or `--mode all`.
 
