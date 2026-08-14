@@ -211,18 +211,6 @@ func TestGenerateCandidates_DeduplicatesSeedProvenance(t *testing.T) {
 	assert.Equal(t, []string{"api.example.com"}, candidates["api-dev.example.com"])
 }
 
-func TestDNSPermutationJustification_TruncatesSortedIPs(t *testing.T) {
-	justification := dnsPermutationJustification(
-		[]string{"api.example.com"},
-		"api-dev.example.com",
-		[]string{"192.0.2.4", "192.0.2.2", "192.0.2.1", "192.0.2.3"},
-	)
-
-	assert.Equal(t,
-		`Starting with discovered domain "api.example.com", DNS permutation generated variant domain "api-dev.example.com", which resolved to 4 IP addresses (192.0.2.1, 192.0.2.2, 192.0.2.3, ...)`,
-		justification)
-}
-
 func TestGenerateCandidates_SkipsBaseOnly(t *testing.T) {
 	p := &DNSPermutationPlugin{wordlist: []string{"dev"}}
 	// example.com has no subdomain labels relative to base
@@ -291,23 +279,18 @@ func TestDNSPermutationPlugin_Run(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Should discover dev-api.example.com with its seed and DNS result explained.
+	// Should discover dev-api.example.com.
 	var found *plugins.Finding
 	for i := range findings {
 		f := &findings[i]
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "dns-permutation", f.Source)
-		require.Len(t, f.Confidences, 1)
-		assert.Equal(t, confDNSPermutationResolved, f.Confidences[0].Score)
-		assert.NotEmpty(t, f.Confidences[0].Justification)
+		assert.Empty(t, f.Confidences)
 		if f.Value == "dev-api.example.com" {
 			found = f
 		}
 	}
 	require.NotNil(t, found, "should find dev-api.example.com")
-	assert.Equal(t,
-		`Starting with discovered domain "api.example.com", DNS permutation generated variant domain "dev-api.example.com", which resolved to 1 IP address (10.0.0.1)`,
-		found.Confidences[0].Justification)
 	assert.NotContains(t, found.Data, "confidence")
 	assert.NotContains(t, found.Data, "confidences")
 }

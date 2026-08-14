@@ -26,7 +26,6 @@ const (
 	dohEnumConcurrency    = 50
 	dohEnumChannelBufSize = 1000
 	dohEnumMaxRetries     = 3
-	confDoHEnumResolved   = 70
 )
 
 // dohHTTPDoer abstracts HTTP operations for DoH queries (testability).
@@ -148,7 +147,7 @@ func (p *DoHEnumPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				if finding, ok := p.queryWithRetry(ctx, fqdn, rot); ok {
+				if finding, ok := p.queryWithRetry(ctx, domain, fqdn, rot); ok {
 					select {
 					case resultCh <- finding:
 					case <-ctx.Done():
@@ -205,10 +204,9 @@ func (p *DoHEnumPlugin) detectWildcardDoH(ctx context.Context, domain string, en
 // endpoints on rate-limit (429) or server errors (5xx). Returns (finding, true)
 // when the subdomain exists. rotation[0] is the primary endpoint; subsequent
 // entries are used for retries in order.
-func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, fqdn string, rotation []DoHEndpoint) (plugins.Finding, bool) {
+func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, domain, fqdn string, rotation []DoHEndpoint) (plugins.Finding, bool) {
 	for attempt := 0; attempt < dohEnumMaxRetries; attempt++ {
 		ep := rotation[attempt%len(rotation)]
-		queryURL := dohQueryURL(fqdn, ep)
 		exists, err := p.queryDoH(ctx, fqdn, ep)
 		if err == nil {
 			if exists {
@@ -218,12 +216,10 @@ func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, fqdn string, rotatio
 					Source: "doh-enum",
 					Data: map[string]any{
 						"method":   "doh-enum",
+						"domain":   domain,
 						"resolver": ep.Name,
 					},
 				}
-				plugins.AddConfidence(&finding, confDoHEnumResolved,
-					fmt.Sprintf("DNS-over-HTTPS A query resolved wordlist candidate %q", fqdn),
-					plugins.Reference{Label: "DNS-over-HTTPS request", URL: queryURL})
 				return finding, true
 			}
 			return plugins.Finding{}, false

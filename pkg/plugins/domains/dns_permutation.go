@@ -3,10 +3,8 @@ package domains
 import (
 	"context"
 	_ "embed"
-	"fmt"
 	"log/slog"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 
@@ -16,10 +14,7 @@ import (
 //go:embed wordlists/permutations.txt
 var defaultPermutationWordlist string
 
-const (
-	permutationConcurrency     = 50
-	confDNSPermutationResolved = 70
-)
+const permutationConcurrency = 50
 
 func init() {
 	plugins.Register("dns-permutation", func() plugins.Plugin {
@@ -91,14 +86,14 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 
 		// Resolve each candidate concurrently.
 		var wg sync.WaitGroup
-		for candidate, candidateSeeds := range candidates {
+		for candidate := range candidates {
 			if ctx.Err() != nil {
 				break
 			}
 
 			wg.Add(1)
 			sem <- struct{}{}
-			go func(fqdn string, seeds []string) {
+			go func(fqdn string) {
 				defer wg.Done()
 				defer func() { <-sem }()
 
@@ -116,7 +111,6 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 					return
 				}
 
-				justification := dnsPermutationJustification(seeds, fqdn, ips)
 				finding := plugins.Finding{
 					Type:   plugins.FindingDomain,
 					Value:  fqdn,
@@ -126,42 +120,15 @@ func (p *DNSPermutationPlugin) Run(ctx context.Context, input plugins.Input) ([]
 						"domain": base,
 					},
 				}
-				plugins.AddConfidence(&finding, confDNSPermutationResolved, justification)
 				mu.Lock()
 				findings = append(findings, finding)
 				mu.Unlock()
-			}(candidate, candidateSeeds)
+			}(candidate)
 		}
 		wg.Wait()
 	}
 
 	return findings, nil
-}
-
-func dnsPermutationJustification(seeds []string, candidate string, ips []string) string {
-	quotedSeeds := make([]string, len(seeds))
-	for i, seed := range seeds {
-		quotedSeeds[i] = fmt.Sprintf("%q", seed)
-	}
-
-	sortedIPs := append([]string(nil), ips...)
-	sort.Strings(sortedIPs)
-	displayedIPs := sortedIPs
-	if len(sortedIPs) > 3 {
-		displayedIPs = append(append([]string(nil), sortedIPs[:3]...), "...")
-	}
-
-	addressNoun := "IP addresses"
-	if len(sortedIPs) == 1 {
-		addressNoun = "IP address"
-	}
-
-	if len(seeds) == 1 {
-		return fmt.Sprintf("Starting with discovered domain %s, DNS permutation generated variant domain %q, which resolved to %d %s (%s)",
-			quotedSeeds[0], candidate, len(sortedIPs), addressNoun, strings.Join(displayedIPs, ", "))
-	}
-	return fmt.Sprintf("Starting with discovered domains %s, DNS permutation generated variant domain %q, which resolved to %d %s (%s)",
-		strings.Join(quotedSeeds, ", "), candidate, len(sortedIPs), addressNoun, strings.Join(displayedIPs, ", "))
 }
 
 // generateCandidates produces permutation candidates keyed by domain, with the
