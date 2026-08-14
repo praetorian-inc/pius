@@ -85,22 +85,41 @@ func Corroborate(pivotOrg, resolvedOrg string) string {
 	if resolvedOrg == "" || IsPrivacy(resolvedOrg) {
 		return "unverifiable"
 	}
-	sim := OrgSimilarity(pivotOrg, resolvedOrg)
-	if sim >= 0.60 {
+	pivotTokens, resolvedTokens := normalizeOrgTokens(pivotOrg), normalizeOrgTokens(resolvedOrg)
+	if len(pivotTokens) == 0 || len(resolvedTokens) == 0 {
+		// One side has no comparable tokens after legal-suffix stripping (e.g. an
+		// all-suffix org like "Co., Ltd."). Similarity is undefined here, so the
+		// candidate is unverifiable rather than a mismatch.
+		return "unverifiable"
+	}
+	sim := strutil.JaccardTokenSets(pivotTokens, resolvedTokens)
+	switch {
+	case sim >= 0.60: // high similarity
 		return "match"
-	}
-	if sim < 0.30 {
+	case sim < 0.30 && !strutil.TokenSetContained(pivotTokens, resolvedTokens): // low similarity AND one set of tokens is not a subset of the other
 		return "mismatch"
+	default:
+		return "unverifiable"
 	}
-	return "unverifiable"
 }
 
-// OrgSimilarity compares two organization names with legal-suffix stripping.
+// OrgSimilarity compares two organization names with legal-suffix stripping,
+// using Jaccard over the distinct token sets so that BOTH sides' distinguishing
+// tokens count against the score. Containment does not imply similarity here:
+// "Acme" vs "Acme Enterprises" is 0.5, not 1.0 (ENG-5172).
 func OrgSimilarity(a, b string) float64 {
-	return strutil.TokenSimilarity(normalizeOrg(a), normalizeOrg(b))
+	return strutil.JaccardTokenSets(normalizeOrgTokens(a), normalizeOrgTokens(b))
 }
 
-func normalizeOrg(s string) string {
+// normalizeOrgTokens lowercases, tokenizes, and strips legal-suffix tokens so
+// that "Acme Inc." and "Acme" compare equal while disambiguating tokens are
+// preserved. Without suffix stripping, "Acme Inc." vs a "…, Inc." query would
+// share the "inc" token and inflate the score on a legally meaningless match.
+// It returns the kept tokens directly so callers can feed them to
+// JaccardTokenSets and TokenSetContained without re-tokenizing.
+// Dotted acronym runs are collapsed before tokenizing so that punctuated legal
+// suffixes ("L.L.C.", "S.A") reach the suffix lookup as one token (ENG-5393).
+func normalizeOrgTokens(s string) []string {
 	s = dottedAcronymPattern.ReplaceAllStringFunc(s, func(run string) string {
 		return strings.ReplaceAll(run, ".", "")
 	})
@@ -111,31 +130,43 @@ func normalizeOrg(s string) string {
 			kept = append(kept, t)
 		}
 	}
-	return strings.Join(kept, " ")
+	return kept
 }
 
-// dottedAcronymPattern matches a run of two or more single-letter-plus-period
-// sequences (L.L.C., S.A., U.S.), which normalizeOrg collapses to the bare
-// letters before tokenizing.
+// dottedAcronymPattern matches a dotted acronym run — one or more
+// single-letter-plus-period pairs closed by a further letter (L.L.C, U.S, S.A)
+// — which normalizeOrgTokens collapses to the bare letters before tokenizing.
 //
 // The collapse must happen before tokenization because strutil.Tokenize splits
 // on every non-alphanumeric character: "L.L.C." reaches the legal-suffix lookup
-// as ["l","l","c"], never matching the "llc" entry, and the three retained
-// single-letter tokens then dilute strutil.TokenSimilarity — which is what made
-// "Acme L.L.C." score 0.25 against "Acme Holdings Group Division" and corroborate
-// as a mismatch. Collapsing first lets "llc"/"sa" reach the lookup as one token.
+// as ["l","l","c"], never matching the "llc" entry. The suffix is therefore
+// never stripped, and the three retained single-letter tokens are left behind as
+// private tokens on one side only — which both depresses the Jaccard score and
+// defeats the TokenSetContained guard, so a merely less-specific pivot reads as
+// an affirmative "mismatch". Collapsing first lets "llc"/"sa" reach the lookup
+// as one token.
 //
-// The rule is deliberately restricted to multi-letter dotted runs rather than
+// The rule is deliberately restricted to dotted acronym runs rather than
 // stripping every period. A blanket strip merges tokens across a period that was
 // acting as a separator: "Acme.Corp" would normalize to "acmecorp" and "acme.com"
-// to "acmecom", turning both from match into mismatch. Requiring two or more
-// letter-period pairs also leaves a single initial alone, so "John Q. Public"
-// keeps its "q" token.
+// to "acmecom", so "corp" would never reach the suffix list at all.
+//
+// The trailing "[a-z]\b" is what bounds the run at its right edge, and it earns
+// its place three times over. It forces the match to END on a letter that ends a
+// word, so "U.S.Army" collapses only the "U.S" and leaves ".Army" for Tokenize
+// to split into a second token rather than merging into "usarmy". It leaves a
+// letter glued to a following word alone, so "J.Crew" keeps two tokens: "C" is
+// followed by more letters, so there is no word boundary to close on and no
+// second letter-period pair to consume. It likewise leaves a lone initial alone,
+// so "John Q. Public" keeps its "q" token. And because the closing letter needs
+// no period of its own, a two-letter suffix written without a trailing dot
+// ("Globex S.A") still collapses — that spelling carries only ONE period, so a
+// "{2,}" letter-period quantifier would skip it and leave the suffix unstripped.
 //
 // "U.S." → "us" is an intended and beneficial side-effect: "us" is not in
 // legal_suffixes.txt, so it survives as a content token rather than being
 // stripped, which is precisely what lets "U.S. Steel Corp." match "US Steel".
-var dottedAcronymPattern = regexp.MustCompile(`(?i)\b(?:[a-z]\.){2,}`)
+var dottedAcronymPattern = regexp.MustCompile(`(?i)\b(?:[a-z]\.)+[a-z]\b`)
 
 func RootDomain(hostname string) string {
 	hostname = strings.TrimSpace(hostname)

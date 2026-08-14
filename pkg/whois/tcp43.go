@@ -27,7 +27,7 @@ const (
 // tcp43Lookup returns both the parsed Result and the raw WHOIS text. The raw
 // text is needed for ISOC-IL fallback parsing but is not persisted on Result.
 func tcp43Lookup(ctx context.Context, domain string) (Result, string, error) {
-	raw, err := tcp43Raw(ctx, domain)
+	raw, server, err := tcp43Raw(ctx, domain)
 	if err != nil {
 		return Result{}, "", err
 	}
@@ -40,10 +40,12 @@ func tcp43Lookup(ctx context.Context, domain string) (Result, string, error) {
 		return Result{}, "", fmt.Errorf("whois parse failed for %s: %w", domain, err)
 	}
 
-	return mapParsedToResult(domain, parsed, raw), raw, nil
+	result := mapParsedToResult(domain, parsed)
+	result.WhoisServer = server
+	return result, raw, nil
 }
 
-func mapParsedToResult(domain string, info whoisparser.WhoisInfo, raw string) Result {
+func mapParsedToResult(domain string, info whoisparser.WhoisInfo) Result {
 	r := Result{Domain: domain}
 
 	if info.Domain != nil {
@@ -78,22 +80,23 @@ func contactFromParsed(c *whoisparser.Contact) Contact {
 }
 
 // tcp43Raw follows the WHOIS referral chain from whois.iana.org down to the
-// registrar. Returns the deepest non-bootstrap record obtained.
+// registrar. Returns the deepest non-bootstrap record obtained along with the
+// server that answered it, so callers can attribute the record to its source.
 //
 // Test seam: override tcp43RawFn to drive the referral state machine without
 // real network I/O.
 var tcp43RawFn = tcp43RawDial
 
-func tcp43Raw(ctx context.Context, domain string) (string, error) {
+func tcp43Raw(ctx context.Context, domain string) (string, string, error) {
 	server := defaultServer
-	var lastRaw string
+	var lastRaw, lastServer string
 
 	for range maxReferrals {
 		if err := ctx.Err(); err != nil {
 			if lastRaw != "" {
-				return lastRaw, nil // salvage partial chain
+				return lastRaw, lastServer, nil // salvage partial chain
 			}
-			return "", err
+			return "", "", err
 		}
 
 		raw, err := tcp43RawFn(ctx, domain, server)
@@ -101,27 +104,34 @@ func tcp43Raw(ctx context.Context, domain string) (string, error) {
 			if lastRaw != "" {
 				slog.Debug("whois referral hop failed, returning last record",
 					"server", server, "error", err)
-				return lastRaw, nil
+				return lastRaw, lastServer, nil
 			}
-			return "", fmt.Errorf("whois query to %s: %w", server, err)
+			return "", "", fmt.Errorf("whois query to %s: %w", server, err)
 		}
 
-		// Only keep records from post-bootstrap servers.
-		if !strings.EqualFold(server, defaultServer) {
+		// Only keep records from post-bootstrap servers. Compared by DNS
+		// identity, not raw string equality: a referral naming
+		// "whois.iana.org." is still the bootstrap server, and salvaging its
+		// seed record would return the TLD registry operator as though it
+		// were the queried domain's registrant.
+		if !sameServer(server, defaultServer) {
 			lastRaw = raw
+			lastServer = server
 		}
 
 		refer := extractReferral(raw)
-		if refer == "" || strings.EqualFold(refer, server) {
+		// Also DNS identity: a self-referral differing only by a trailing
+		// root dot must end the chain here rather than burn another hop.
+		if refer == "" || sameServer(refer, server) {
 			break
 		}
 		server = refer
 	}
 
 	if lastRaw == "" {
-		return "", fmt.Errorf("whois: no record beyond bootstrap for %s", domain)
+		return "", "", fmt.Errorf("whois: no record beyond bootstrap for %s", domain)
 	}
-	return lastRaw, nil
+	return lastRaw, lastServer, nil
 }
 
 // tcp43RawDial sends a single WHOIS query over a raw TCP socket on port 43.
@@ -174,6 +184,16 @@ func dialAddr(server string) string {
 		server = strings.TrimSuffix(strings.TrimPrefix(server, "["), "]")
 	}
 	return net.JoinHostPort(server, whoisPort)
+}
+
+// sameServer reports whether two WHOIS server names denote the same host.
+// DNS names are equal under a trailing root dot and are case-insensitive,
+// neither of which strings.EqualFold alone accounts for.
+func sameServer(a, b string) bool {
+	return strings.EqualFold(
+		strings.TrimRight(strings.TrimSpace(a), "."),
+		strings.TrimRight(strings.TrimSpace(b), "."),
+	)
 }
 
 func extractReferral(raw string) string {

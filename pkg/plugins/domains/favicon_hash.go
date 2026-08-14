@@ -18,7 +18,7 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confFaviconScannerObservation = 0.50
+const confFaviconScannerObservation = 50
 
 type faviconFindingKey struct {
 	findingType plugins.FindingType

@@ -20,15 +20,6 @@ func newGLEIFPlugin(baseURL string) *GLEIFPlugin {
 
 // ── Mock helpers ──────────────────────────────────────────────────────────────
 
-func gleifSearchResp(records ...leiRecord) []byte {
-	resp := leiSearchResponse{
-		Data: records,
-		Meta: leiMeta{Pagination: leiPagination{CurrentPage: 1, LastPage: 1, Total: len(records)}},
-	}
-	b, _ := json.Marshal(resp)
-	return b
-}
-
 func gleifRecordResp(r leiRecord) []byte {
 	b, _ := json.Marshal(struct {
 		Data leiRecord `json:"data"`
@@ -52,11 +43,38 @@ func gleifRelationshipResp(parentLEI string) []byte {
 }
 
 func gleifChildrenResp(currentPage, lastPage int, records ...leiRecord) []byte {
+	total := len(records)
+	if lastPage > currentPage {
+		total = len(records) * lastPage // approximate
+	}
 	resp := leiChildrenResponse{
 		Data: records,
-		Meta: leiMeta{Pagination: leiPagination{CurrentPage: currentPage, LastPage: lastPage}},
+		Meta: leiMeta{Pagination: leiPagination{CurrentPage: currentPage, LastPage: lastPage, Total: total}},
 	}
 	b, _ := json.Marshal(resp)
+	return b
+}
+
+func gleifFuzzyResp(lei string) []byte {
+	resp := map[string]any{
+		"data": []map[string]any{
+			{
+				"type":       "fuzzycompletions",
+				"attributes": map[string]string{"value": "matched"},
+				"relationships": map[string]any{
+					"lei-records": map[string]any{
+						"data": map[string]string{"type": "lei-records", "id": lei},
+					},
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(resp)
+	return b
+}
+
+func gleifFuzzyEmpty() []byte {
+	b, _ := json.Marshal(map[string]any{"data": []any{}})
 	return b
 }
 
@@ -113,7 +131,7 @@ func TestGLEIFPlugin_Run_EmptyOrgName(t *testing.T) {
 func TestGLEIFPlugin_Run_NoMatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(gleifSearchResp()) // empty data array
+		_, _ = w.Write(gleifFuzzyEmpty())
 	}))
 	defer srv.Close()
 
@@ -124,19 +142,19 @@ func TestGLEIFPlugin_Run_NoMatch(t *testing.T) {
 }
 
 func TestGLEIFPlugin_Run_TopLevelWithSubsidiaries(t *testing.T) {
-	primary := makeLEI("LEI001", "Acme Corp", "US", false) // top-level, no parent
+	primary := makeLEI("LEI001", "Acme Corp", "US", false)
 	childA := makeLEI("LEI010", "Acme Subsidiary A", "US", true)
 	childB := makeLEI("LEI011", "Acme Subsidiary B", "GB", true)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.Contains(r.URL.Path, "/lei-records") && r.URL.Query().Get("filter[entity.legalName]") != "":
-			_, _ = w.Write(gleifSearchResp(primary))
 		case r.URL.Path == "/lei-records/LEI001":
 			_, _ = w.Write(gleifRecordResp(primary))
 		case strings.Contains(r.URL.Path, "/direct-children"):
 			_, _ = w.Write(gleifChildrenResp(1, 1, childA, childB))
+		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -147,47 +165,39 @@ func TestGLEIFPlugin_Run_TopLevelWithSubsidiaries(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	// Now emits FindingDomain + FindingPreseed for each subsidiary = 4 total
-	require.Len(t, findings, 4)
-
-	domainFindings := filterByType(findings, plugins.FindingDomain)
-	preseedFindings := filterByType(findings, plugins.FindingPreseed)
-	require.Len(t, domainFindings, 2)
-	require.Len(t, preseedFindings, 2)
-
-	for _, f := range domainFindings {
-		assert.Equal(t, plugins.FindingDomain, f.Type)
+	require.Len(t, findings, 2)
+	for _, f := range findings {
+		assert.Equal(t, plugins.FindingPreseed, f.Type)
 		assert.Equal(t, "gleif", f.Source)
-		assert.Equal(t, "subsidiary", f.Data["relationshipType"])
-		assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(f), 0.001)
-		require.Len(t, f.Confidences, 1)
-		assert.Contains(t, f.Confidences[0].Justification, "registered direct subsidiary")
+		assert.Equal(t, "subsidiary", f.Data["corporate_relationship"])
+		assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(f))
+		require.Len(t, f.Confidences, 2, "resolution and registered relationship are the independent signals")
+		assert.False(t, plugins.NeedsReview(f))
 	}
-	names := []string{domainFindings[0].Value, domainFindings[1].Value}
+	names := []string{findings[0].Value, findings[1].Value}
 	assert.Contains(t, names, "Acme Subsidiary A")
 	assert.Contains(t, names, "Acme Subsidiary B")
 }
 
 func TestGLEIFPlugin_Run_WithDirectParent(t *testing.T) {
-	primary := makeLEI("LEI001", "Acme Corp", "US", true) // has parent
+	primary := makeLEI("LEI001", "Acme Corp", "US", true)
 	parent := makeLEI("LEI_PARENT", "Acme Holdings", "US", false)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			_, _ = w.Write(gleifSearchResp(primary))
 		case r.URL.Path == "/lei-records/LEI001":
 			_, _ = w.Write(gleifRecordResp(primary))
 		case r.URL.Path == "/lei-records/LEI001/direct-parent-relationship":
 			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
 		case r.URL.Path == "/lei-records/LEI001/ultimate-parent-relationship":
-			// Same as direct parent → no separate ultimate finding
 			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
 		case r.URL.Path == "/lei-records/LEI_PARENT":
 			_, _ = w.Write(gleifRecordResp(parent))
 		case strings.Contains(r.URL.Path, "/direct-children"):
-			_, _ = w.Write(gleifChildrenResp(1, 1)) // no children
+			_, _ = w.Write(gleifChildrenResp(1, 1))
+		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -198,14 +208,11 @@ func TestGLEIFPlugin_Run_WithDirectParent(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	// Now emits FindingDomain + FindingPreseed for parent = 2 total
-	require.Len(t, findings, 2)
-
-	domainFindings := filterByType(findings, plugins.FindingDomain)
-	require.Len(t, domainFindings, 1)
-	assert.Equal(t, "Acme Holdings", domainFindings[0].Value)
-	assert.Equal(t, "direct-parent", domainFindings[0].Data["relationshipType"])
-	assert.Equal(t, "LEI_PARENT", domainFindings[0].Data["lei"])
+	require.Len(t, findings, 1)
+	assert.Equal(t, plugins.FindingPreseed, findings[0].Type)
+	assert.Equal(t, "Acme Holdings", findings[0].Value)
+	assert.Equal(t, "direct-parent", findings[0].Data["corporate_relationship"])
+	assert.Equal(t, "LEI_PARENT", findings[0].Data["lei"])
 }
 
 func TestGLEIFPlugin_Run_WithUltimateParent(t *testing.T) {
@@ -216,8 +223,6 @@ func TestGLEIFPlugin_Run_WithUltimateParent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			_, _ = w.Write(gleifSearchResp(primary))
 		case r.URL.Path == "/lei-records/LEI001":
 			_, _ = w.Write(gleifRecordResp(primary))
 		case r.URL.Path == "/lei-records/LEI001/direct-parent-relationship":
@@ -230,6 +235,8 @@ func TestGLEIFPlugin_Run_WithUltimateParent(t *testing.T) {
 			_, _ = w.Write(gleifRecordResp(ultimateParent))
 		case strings.Contains(r.URL.Path, "/direct-children"):
 			_, _ = w.Write(gleifChildrenResp(1, 1))
+		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -240,14 +247,10 @@ func TestGLEIFPlugin_Run_WithUltimateParent(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	// 2 domain + 2 preseed = 4 total
-	require.Len(t, findings, 4)
-
+	require.Len(t, findings, 2)
 	relTypes := map[string]string{}
 	for _, f := range findings {
-		if f.Type == plugins.FindingDomain {
-			relTypes[f.Data["relationshipType"].(string)] = f.Value
-		}
+		relTypes[f.Data["corporate_relationship"].(string)] = f.Value
 	}
 	assert.Equal(t, "Acme Holdings", relTypes["direct-parent"])
 	assert.Equal(t, "Global Conglomerate Inc", relTypes["ultimate-parent"])
@@ -269,8 +272,6 @@ func TestGLEIFPlugin_Run_PaginatedChildren(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			_, _ = w.Write(gleifSearchResp(primary))
 		case r.URL.Path == "/lei-records/LEI001":
 			_, _ = w.Write(gleifRecordResp(primary))
 		case strings.Contains(r.URL.Path, "/direct-children"):
@@ -280,6 +281,8 @@ func TestGLEIFPlugin_Run_PaginatedChildren(t *testing.T) {
 			} else {
 				_, _ = w.Write(gleifChildrenResp(1, 2, page1Children...))
 			}
+		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -289,65 +292,26 @@ func TestGLEIFPlugin_Run_PaginatedChildren(t *testing.T) {
 	p := newGLEIFPlugin(srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
-	// 6 domain + 6 preseed = 12 total
-	assert.Len(t, findings, 12)
+	assert.Len(t, findings, 6)
 	for _, f := range findings {
-		if f.Type == plugins.FindingDomain {
-			assert.Equal(t, "subsidiary", f.Data["relationshipType"])
-		}
-	}
-}
-
-func TestGLEIFPlugin_Run_MultipleNameMatches(t *testing.T) {
-	primary := makeLEI("LEI001", "Acme Corp", "US", false)
-	match2 := makeLEI("LEI002", "Acme Corporation Ltd", "GB", false)
-	match3 := makeLEI("LEI003", "Acme Corp Holdings", "DE", false)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			_, _ = w.Write(gleifSearchResp(primary, match2, match3))
-		case r.URL.Path == "/lei-records/LEI001":
-			_, _ = w.Write(gleifRecordResp(primary))
-		case strings.Contains(r.URL.Path, "/direct-children"):
-			_, _ = w.Write(gleifChildrenResp(1, 1))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	p := newGLEIFPlugin(srv.URL)
-	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
-	require.NoError(t, err)
-	// Name-match candidates: only domain findings, no preseeds
-	require.Len(t, findings, 2)
-
-	for _, f := range findings {
-		assert.Equal(t, plugins.FindingDomain, f.Type)
-		assert.Equal(t, "name-match", f.Data["relationshipType"])
-		assert.InDelta(t, plugins.ConfidenceLow, plugins.TotalConfidence(f), 0.001)
-		require.Len(t, f.Confidences, 1)
-		assert.Contains(t, f.Confidences[0].Justification, "secondary GLEIF legal-name search match")
+		assert.Equal(t, plugins.FindingPreseed, f.Type)
+		assert.Equal(t, "subsidiary", f.Data["corporate_relationship"])
 	}
 }
 
 func TestGLEIFPlugin_Run_Deduplication(t *testing.T) {
-	// primary has a subsidiary with same name as a name-match candidate
 	primary := makeLEI("LEI001", "Acme Corp", "US", false)
 	child := makeLEI("LEI010", "Acme Corp Duplicate", "US", false)
-	nameMatch := makeLEI("LEI010b", "Acme Corp Duplicate", "US", false) // same name
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			_, _ = w.Write(gleifSearchResp(primary, nameMatch))
+		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
 		case r.URL.Path == "/lei-records/LEI001":
 			_, _ = w.Write(gleifRecordResp(primary))
 		case strings.Contains(r.URL.Path, "/direct-children"):
-			_, _ = w.Write(gleifChildrenResp(1, 1, child))
+			_, _ = w.Write(gleifChildrenResp(1, 1, child, child))
 		default:
 			http.NotFound(w, r)
 		}
@@ -357,22 +321,14 @@ func TestGLEIFPlugin_Run_Deduplication(t *testing.T) {
 	p := newGLEIFPlugin(srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
-	// "Acme Corp Duplicate" appears once as domain + once as preseed
-	// The name-match domain finding is deduplicated (same type+value as subsidiary domain)
-	domainCount := 0
+
 	preseedCount := 0
 	for _, f := range findings {
-		if f.Value == "Acme Corp Duplicate" {
-			switch f.Type {
-			case plugins.FindingDomain:
-				domainCount++
-			case plugins.FindingPreseed:
-				preseedCount++
-			}
+		if f.Value == "Acme Corp Duplicate" && f.Type == plugins.FindingPreseed {
+			preseedCount++
 		}
 	}
-	assert.Equal(t, 1, domainCount, "duplicate domain names should be deduplicated")
-	assert.Equal(t, 1, preseedCount, "preseed should be emitted once for the subsidiary")
+	assert.Equal(t, 1, preseedCount, "duplicate preseeds should be deduplicated")
 }
 
 func TestGLEIFPlugin_Run_ContextCanceled(t *testing.T) {
@@ -383,17 +339,16 @@ func TestGLEIFPlugin_Run_ContextCanceled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		requestCount++
-		if r.URL.Query().Get("filter[entity.legalName]") != "" {
-			_, _ = w.Write(gleifSearchResp(primary))
-			return
-		}
 		if r.URL.Path == "/lei-records/LEI001" {
 			_, _ = w.Write(gleifRecordResp(primary))
 			return
 		}
 		if strings.Contains(r.URL.Path, "/direct-children") {
-			// First page; report 2 pages so it will try to paginate
 			_, _ = w.Write(gleifChildrenResp(1, 2, page1...))
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/fuzzycompletions") {
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
 			return
 		}
 		http.NotFound(w, r)
@@ -401,197 +356,13 @@ func TestGLEIFPlugin_Run_ContextCanceled(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
+	cancel()
 
 	p := newGLEIFPlugin(srv.URL)
-	// Context may already be done; either returns ctx error or empty results
 	_, err := p.Run(ctx, plugins.Input{OrgName: "Acme Corp"})
-	// We accept either nil or context.Canceled depending on timing
 	if err != nil {
 		assert.ErrorIs(t, err, context.Canceled)
 	}
-}
-
-// ── Preseed finding tests ──────────────────────────────────────────────────────
-
-func TestGLEIFPlugin_Run_DirectParent_EmitsPreseed(t *testing.T) {
-	primary := makeLEI("LEI001", "Acme Corp", "US", true)
-	parent := makeLEI("LEI_PARENT", "Acme Holdings", "US", false)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			_, _ = w.Write(gleifSearchResp(primary))
-		case r.URL.Path == "/lei-records/LEI001":
-			_, _ = w.Write(gleifRecordResp(primary))
-		case r.URL.Path == "/lei-records/LEI001/direct-parent-relationship":
-			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
-		case r.URL.Path == "/lei-records/LEI001/ultimate-parent-relationship":
-			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT")) // same as direct
-		case r.URL.Path == "/lei-records/LEI_PARENT":
-			_, _ = w.Write(gleifRecordResp(parent))
-		case strings.Contains(r.URL.Path, "/direct-children"):
-			_, _ = w.Write(gleifChildrenResp(1, 1))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	p := newGLEIFPlugin(srv.URL)
-	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
-	require.NoError(t, err)
-
-	domainFindings := filterByType(findings, plugins.FindingDomain)
-	preseedFindings := filterByType(findings, plugins.FindingPreseed)
-
-	require.Len(t, domainFindings, 1, "expected one domain finding for direct parent")
-	require.Len(t, preseedFindings, 1, "expected one preseed finding for direct parent")
-
-	pf := preseedFindings[0]
-	assert.Equal(t, "Acme Holdings", pf.Value)
-	assert.Equal(t, "gleif", pf.Source)
-	assert.Equal(t, "whois+company", pf.Data["preseed_type"])
-	assert.Equal(t, "Acme Holdings", pf.Data["preseed_title"])
-	assert.Equal(t, "LEI_PARENT", pf.Data["lei"])
-	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(pf), 0.001)
-	require.Len(t, pf.Confidences, 1)
-	assert.Contains(t, pf.Confidences[0].Justification, "registered direct parent")
-}
-
-func TestGLEIFPlugin_Run_UltimateParent_EmitsPreseed(t *testing.T) {
-	primary := makeLEI("LEI001", "Acme Corp", "US", true)
-	directParent := makeLEI("LEI_PARENT", "Acme Holdings", "US", false)
-	ultimateParent := makeLEI("LEI_ULTIMATE", "Global Conglomerate Inc", "US", false)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			_, _ = w.Write(gleifSearchResp(primary))
-		case r.URL.Path == "/lei-records/LEI001":
-			_, _ = w.Write(gleifRecordResp(primary))
-		case r.URL.Path == "/lei-records/LEI001/direct-parent-relationship":
-			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
-		case r.URL.Path == "/lei-records/LEI001/ultimate-parent-relationship":
-			_, _ = w.Write(gleifRelationshipResp("LEI_ULTIMATE"))
-		case r.URL.Path == "/lei-records/LEI_PARENT":
-			_, _ = w.Write(gleifRecordResp(directParent))
-		case r.URL.Path == "/lei-records/LEI_ULTIMATE":
-			_, _ = w.Write(gleifRecordResp(ultimateParent))
-		case strings.Contains(r.URL.Path, "/direct-children"):
-			_, _ = w.Write(gleifChildrenResp(1, 1))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	p := newGLEIFPlugin(srv.URL)
-	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
-	require.NoError(t, err)
-
-	preseedValues := map[string]plugins.Finding{}
-	for _, f := range findings {
-		if f.Type == plugins.FindingPreseed {
-			preseedValues[f.Value] = f
-		}
-	}
-
-	require.Contains(t, preseedValues, "Acme Holdings", "expected preseed for direct parent")
-	require.Contains(t, preseedValues, "Global Conglomerate Inc", "expected preseed for ultimate parent")
-
-	for _, pf := range preseedValues {
-		assert.Equal(t, "whois+company", pf.Data["preseed_type"])
-		assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(pf), 0.001)
-		require.Len(t, pf.Confidences, 1)
-		assert.Contains(t, pf.Confidences[0].Justification, "parent")
-	}
-}
-
-func TestGLEIFPlugin_Run_Subsidiaries_EmitPreseeds(t *testing.T) {
-	primary := makeLEI("LEI001", "Acme Corp", "US", false)
-	childA := makeLEI("LEI010", "Acme Subsidiary A", "US", true)
-	childB := makeLEI("LEI011", "Acme Subsidiary B", "GB", true)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "/lei-records") && r.URL.Query().Get("filter[entity.legalName]") != "":
-			_, _ = w.Write(gleifSearchResp(primary))
-		case r.URL.Path == "/lei-records/LEI001":
-			_, _ = w.Write(gleifRecordResp(primary))
-		case strings.Contains(r.URL.Path, "/direct-children"):
-			_, _ = w.Write(gleifChildrenResp(1, 1, childA, childB))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	p := newGLEIFPlugin(srv.URL)
-	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
-	require.NoError(t, err)
-
-	preseedValues := map[string]plugins.Finding{}
-	for _, f := range findings {
-		if f.Type == plugins.FindingPreseed {
-			preseedValues[f.Value] = f
-		}
-	}
-
-	require.Contains(t, preseedValues, "Acme Subsidiary A", "expected preseed for subsidiary A")
-	require.Contains(t, preseedValues, "Acme Subsidiary B", "expected preseed for subsidiary B")
-
-	for _, pf := range preseedValues {
-		assert.Equal(t, "whois+company", pf.Data["preseed_type"])
-		assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(pf), 0.001)
-		require.Len(t, pf.Confidences, 1)
-		assert.Contains(t, pf.Confidences[0].Justification, "registered direct subsidiary")
-		assert.Equal(t, pf.Value, pf.Data["preseed_title"])
-	}
-}
-
-func TestGLEIFPlugin_Run_NameMatchCandidates_NoPreseed(t *testing.T) {
-	primary := makeLEI("LEI001", "Acme Corp", "US", false)
-	match2 := makeLEI("LEI002", "Acme Corporation Ltd", "GB", false)
-	match3 := makeLEI("LEI003", "Acme Corp Holdings", "DE", false)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			_, _ = w.Write(gleifSearchResp(primary, match2, match3))
-		case r.URL.Path == "/lei-records/LEI001":
-			_, _ = w.Write(gleifRecordResp(primary))
-		case strings.Contains(r.URL.Path, "/direct-children"):
-			_, _ = w.Write(gleifChildrenResp(1, 1))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	p := newGLEIFPlugin(srv.URL)
-	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
-	require.NoError(t, err)
-
-	// Name-match candidates should produce only FindingDomain, never FindingPreseed
-	for _, f := range findings {
-		if f.Type == plugins.FindingPreseed {
-			t.Errorf("unexpected preseed finding for name-match candidate: %s", f.Value)
-		}
-	}
-
-	// Verify we still get the domain findings for candidates
-	domainCount := 0
-	for _, f := range findings {
-		if f.Type == plugins.FindingDomain && f.Data["relationshipType"] == "name-match" {
-			domainCount++
-		}
-	}
-	assert.Equal(t, 2, domainCount, "expected 2 domain findings for name-match candidates")
 }
 
 func TestGLEIFPlugin_Run_PreseedData_ContainsJurisdiction(t *testing.T) {
@@ -601,12 +372,12 @@ func TestGLEIFPlugin_Run_PreseedData_ContainsJurisdiction(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			_, _ = w.Write(gleifSearchResp(primary))
 		case r.URL.Path == "/lei-records/LEI001":
 			_, _ = w.Write(gleifRecordResp(primary))
 		case strings.Contains(r.URL.Path, "/direct-children"):
 			_, _ = w.Write(gleifChildrenResp(1, 1, child))
+		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -629,21 +400,71 @@ func TestGLEIFPlugin_Run_PreseedData_ContainsJurisdiction(t *testing.T) {
 	assert.Equal(t, "LEI010", preseed.Data["lei"])
 }
 
-func TestGLEIFPlugin_Run_DomainAndPreseed_BothEmittedForSameName(t *testing.T) {
-	// Verify that both FindingDomain and FindingPreseed are emitted for the same
-	// parent/subsidiary — they are different types and should not block each other.
-	primary := makeLEI("LEI001", "Acme Corp", "US", false)
-	child := makeLEI("LEI010", "Acme Subsidiary A", "US", false)
+// ── Confidence decomposition tests ──────────────────────────────────────────
+
+func TestGLEIFPlugin_Run_ConfidenceSignals_Parent(t *testing.T) {
+	primary := makeLEI("LEI001", "Acme Corp", "US", true)
+	parent := makeLEI("LEI_PARENT", "Acme Holdings", "US", false)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Query().Get("filter[entity.legalName]") != "":
-			_, _ = w.Write(gleifSearchResp(primary))
+		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
 		case r.URL.Path == "/lei-records/LEI001":
 			_, _ = w.Write(gleifRecordResp(primary))
+		case r.URL.Path == "/lei-records/LEI001/direct-parent-relationship":
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
+		case r.URL.Path == "/lei-records/LEI001/ultimate-parent-relationship":
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
+		case r.URL.Path == "/lei-records/LEI_PARENT":
+			_, _ = w.Write(gleifRecordResp(parent))
 		case strings.Contains(r.URL.Path, "/direct-children"):
-			_, _ = w.Write(gleifChildrenResp(1, 1, child))
+			_, _ = w.Write(gleifChildrenResp(1, 1))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	p := newGLEIFPlugin(srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+
+	f := findings[0]
+	require.Len(t, f.Confidences, 2)
+	assert.Equal(t, 15, f.Confidences[0].Score)
+	assert.Contains(t, f.Confidences[0].Justification, "top candidate")
+	assert.Contains(t, f.Confidences[0].Justification, "Acme Corp")
+	assert.Equal(t, 50, f.Confidences[1].Score)
+	assert.Contains(t, f.Confidences[1].Justification, "direct parent")
+	assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(f))
+	assert.False(t, plugins.NeedsReview(f), "a registered parent of the top candidate should not need review")
+}
+
+func TestGLEIFPlugin_Run_ConfidenceSignals_Sibling_DifferentJurisdiction(t *testing.T) {
+	primary := makeLEI("LEI001", "Acme Corp", "US", true)
+	parent := makeLEI("LEI_PARENT", "Acme Holdings", "GB", false)
+	sibling := makeLEI("LEI010", "Acme Japan", "JP", true)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
+		case r.URL.Path == "/lei-records/LEI001":
+			_, _ = w.Write(gleifRecordResp(primary))
+		case r.URL.Path == "/lei-records/LEI001/direct-parent-relationship":
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
+		case r.URL.Path == "/lei-records/LEI001/ultimate-parent-relationship":
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
+		case r.URL.Path == "/lei-records/LEI_PARENT":
+			_, _ = w.Write(gleifRecordResp(parent))
+		case r.URL.Path == "/lei-records/LEI001/direct-children":
+			_, _ = w.Write(gleifChildrenResp(1, 1))
+		case r.URL.Path == "/lei-records/LEI_PARENT/direct-children":
+			_, _ = w.Write(gleifChildrenResp(1, 1, primary, sibling))
 		default:
 			http.NotFound(w, r)
 		}
@@ -654,30 +475,117 @@ func TestGLEIFPlugin_Run_DomainAndPreseed_BothEmittedForSameName(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	hasDomain := false
-	hasPreseed := false
-	for _, f := range findings {
-		if f.Value == "Acme Subsidiary A" {
-			switch f.Type {
-			case plugins.FindingDomain:
-				hasDomain = true
-			case plugins.FindingPreseed:
-				hasPreseed = true
-			}
+	// Find the sibling finding.
+	var sib *plugins.Finding
+	for i := range findings {
+		if findings[i].Value == "Acme Japan" {
+			sib = &findings[i]
 		}
 	}
-	assert.True(t, hasDomain, "expected FindingDomain for subsidiary")
-	assert.True(t, hasPreseed, "expected FindingPreseed for subsidiary")
+	require.NotNil(t, sib)
+
+	require.Len(t, sib.Confidences, 2)
+	assert.Equal(t, 15, sib.Confidences[0].Score)
+	assert.Equal(t, 30, sib.Confidences[1].Score)
+	assert.Equal(t, 45, plugins.TotalConfidence(*sib))
+	assert.True(t, plugins.NeedsReview(*sib), "sibling in different jurisdiction should need review")
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// ── Sibling discovery tests ──────────────────────────────────────────────────
 
-func filterByType(findings []plugins.Finding, t plugins.FindingType) []plugins.Finding {
-	var result []plugins.Finding
+func TestGLEIFPlugin_Run_SiblingDiscovery(t *testing.T) {
+	primary := makeLEI("LEI001", "Nielsen US LLC", "US", true)
+	parent := makeLEI("LEI_PARENT", "Nielsen Holdings", "GB", false)
+	siblingA := makeLEI("LEI010", "Nielsen Finance BV", "NL", true)
+	siblingB := makeLEI("LEI011", "Nielsen Holdings Inc", "US", true)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/lei-records/LEI001":
+			_, _ = w.Write(gleifRecordResp(primary))
+		case r.URL.Path == "/lei-records/LEI001/direct-parent-relationship":
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
+		case r.URL.Path == "/lei-records/LEI001/ultimate-parent-relationship":
+			_, _ = w.Write(gleifRelationshipResp("LEI_PARENT"))
+		case r.URL.Path == "/lei-records/LEI_PARENT":
+			_, _ = w.Write(gleifRecordResp(parent))
+		case r.URL.Path == "/lei-records/LEI001/direct-children":
+			_, _ = w.Write(gleifChildrenResp(1, 1))
+		case r.URL.Path == "/lei-records/LEI_PARENT/direct-children":
+			_, _ = w.Write(gleifChildrenResp(1, 1, primary, siblingA, siblingB))
+		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	p := newGLEIFPlugin(srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Nielsen US LLC"})
+	require.NoError(t, err)
+
+	preseedRelTypes := map[string]string{}
 	for _, f := range findings {
-		if f.Type == t {
-			result = append(result, f)
+		require.Equal(t, plugins.FindingPreseed, f.Type)
+		preseedRelTypes[f.Value] = f.Data["corporate_relationship"].(string)
+	}
+
+	assert.Equal(t, "direct-parent", preseedRelTypes["Nielsen Holdings"])
+	assert.Equal(t, "sibling", preseedRelTypes["Nielsen Finance BV"])
+	assert.Equal(t, "sibling", preseedRelTypes["Nielsen Holdings Inc"])
+	assert.NotContains(t, preseedRelTypes, "Nielsen US LLC", "primary should not appear as a sibling")
+}
+
+func TestGLEIFPlugin_Run_SiblingDiscovery_UltimateParent(t *testing.T) {
+	primary := makeLEI("LEI001", "Acme US", "US", true)
+	directParent := makeLEI("LEI_DP", "Acme Holdings", "US", true)
+	ultimateParent := makeLEI("LEI_UP", "Global Corp", "US", false)
+	directSibling := makeLEI("LEI010", "Acme EU", "DE", true)
+	ultimateSibling := makeLEI("LEI020", "Beta Holdings", "GB", true)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/lei-records/LEI001":
+			_, _ = w.Write(gleifRecordResp(primary))
+		case r.URL.Path == "/lei-records/LEI001/direct-parent-relationship":
+			_, _ = w.Write(gleifRelationshipResp("LEI_DP"))
+		case r.URL.Path == "/lei-records/LEI001/ultimate-parent-relationship":
+			_, _ = w.Write(gleifRelationshipResp("LEI_UP"))
+		case r.URL.Path == "/lei-records/LEI_DP":
+			_, _ = w.Write(gleifRecordResp(directParent))
+		case r.URL.Path == "/lei-records/LEI_UP":
+			_, _ = w.Write(gleifRecordResp(ultimateParent))
+		case r.URL.Path == "/lei-records/LEI001/direct-children":
+			_, _ = w.Write(gleifChildrenResp(1, 1))
+		case r.URL.Path == "/lei-records/LEI_DP/direct-children":
+			_, _ = w.Write(gleifChildrenResp(1, 1, primary, directSibling))
+		case r.URL.Path == "/lei-records/LEI_UP/direct-children":
+			_, _ = w.Write(gleifChildrenResp(1, 1, directParent, ultimateSibling))
+		case strings.HasPrefix(r.URL.Path, "/fuzzycompletions"):
+			_, _ = w.Write(gleifFuzzyResp("LEI001"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	p := newGLEIFPlugin(srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme US"})
+	require.NoError(t, err)
+
+	preseedValues := map[string]bool{}
+	for _, f := range findings {
+		if f.Type == plugins.FindingPreseed {
+			preseedValues[f.Value] = true
 		}
 	}
-	return result
+
+	assert.Contains(t, preseedValues, "Acme Holdings", "direct parent")
+	assert.Contains(t, preseedValues, "Global Corp", "ultimate parent")
+	assert.Contains(t, preseedValues, "Acme EU", "sibling via direct parent")
+	assert.Contains(t, preseedValues, "Beta Holdings", "sibling via ultimate parent")
+	assert.NotContains(t, preseedValues, "Acme US", "primary excluded from siblings")
 }

@@ -298,7 +298,7 @@ func TestDNSPermutationPlugin_Run(t *testing.T) {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "dns-permutation", f.Source)
 		require.Len(t, f.Confidences, 1)
-		assert.InDelta(t, confDNSPermutationResolved, f.Confidences[0].Score, 0.001)
+		assert.Equal(t, confDNSPermutationResolved, f.Confidences[0].Score)
 		assert.NotEmpty(t, f.Confidences[0].Justification)
 		if f.Value == "dev-api.example.com" {
 			found = f

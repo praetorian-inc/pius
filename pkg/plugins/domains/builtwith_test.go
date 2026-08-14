@@ -124,10 +124,10 @@ func TestBuiltWith_Run_ConfidenceScore(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
 	require.Len(t, findings[0].Confidences, 1, "one analytics ID, one evidence entry")
-	assert.InDelta(t, confBuiltWithSharedAnalytics, findings[0].Confidences[0].Score, 0.001)
+	assert.Equal(t, confBuiltWithSharedAnalytics, findings[0].Confidences[0].Score)
 	assert.Contains(t, findings[0].Confidences[0].Justification, "UA-12345",
 		"the justification names the identifier that linked the domain")
-	assert.InDelta(t, 0.6, plugins.TotalConfidence(findings[0]), 0.001)
+	assert.Equal(t, 60, plugins.TotalConfidence(findings[0]))
 }
 
 func TestBuiltWith_Run_MultipleAnalyticsIDs(t *testing.T) {
@@ -267,7 +267,7 @@ func TestBuiltWith_Run_ListsEveryMatchingIdentifier(t *testing.T) {
 	require.Len(t, findings[0].Confidences, 1, "however many identifiers matched, one entry")
 	assert.Equal(t, `Domain shares analytics identifiers "UA-111", "UA-222" with the target`,
 		findings[0].Confidences[0].Justification)
-	assert.InDelta(t, confBuiltWithSharedAnalytics, plugins.TotalConfidence(findings[0]), 0.001,
+	assert.Equal(t, confBuiltWithSharedAnalytics, plugins.TotalConfidence(findings[0]),
 		"a second tracker does not raise the score")
 	assert.True(t, plugins.NeedsReview(findings[0]))
 }
@@ -296,5 +296,5 @@ func TestBuiltWith_Run_RepeatedPairListedOnce(t *testing.T) {
 	require.Len(t, findings[0].Confidences, 1)
 	assert.Equal(t, `Domain shares analytics identifier "UA-111" with the target`,
 		findings[0].Confidences[0].Justification, "singular noun, and the identifier appears once")
-	assert.InDelta(t, confBuiltWithSharedAnalytics, plugins.TotalConfidence(findings[0]), 0.001)
+	assert.Equal(t, confBuiltWithSharedAnalytics, plugins.TotalConfidence(findings[0]))
 }

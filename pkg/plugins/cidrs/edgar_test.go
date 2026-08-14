@@ -60,7 +60,7 @@ func TestFindingsFromEDGARResponse_AddsScoredLiveDocumentEvidence(t *testing.T) 
 	assert.Equal(t, "ACME-1", finding.Value)
 	assert.Equal(t, "unknown", finding.Data["registry"])
 	require.Len(t, finding.Confidences, 1)
-	assert.InDelta(t, 0.55, finding.Confidences[0].Score, 0.001)
+	assert.Equal(t, 55, finding.Confidences[0].Score)
 	assert.Equal(t,
 		`SEC EDGAR document "0001234567-24-001234:filing.htm" for entity "Acme Corp ACME-1  (CIK 0001234567)" contains apparent RIR organization handle "ACME-1" (https://www.sec.gov/Archives/edgar/data/1234567/000123456724001234/filing.htm)`,
 		finding.Confidences[0].Justification)

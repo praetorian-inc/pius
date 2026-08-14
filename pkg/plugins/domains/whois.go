@@ -108,7 +108,7 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 	}
 }
 
-const confWhoisServerRecord = 0.85
+const confWhoisServerRecord = 85
 
 func extractPreseeds(r whois.Result) []plugins.Finding {
 	type candidate struct {
@@ -146,6 +146,14 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 		return [2]string{c.field, c.value}
 	})
 
+	// Name the answering server so a reviewer can retrace the record to its
+	// source. It is only known when the TCP-43 chain contributed to the
+	// result; an RDAP-only lookup has no WHOIS server to cite.
+	source := "WHOIS"
+	if r.WhoisServer != "" {
+		source = "WHOIS server " + r.WhoisServer
+	}
+
 	var findings []plugins.Finding
 	for _, cd := range unique {
 		f := plugins.Finding{
@@ -158,8 +166,8 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 			},
 		}
 		plugins.AddConfidence(&f, confWhoisServerRecord,
-			fmt.Sprintf("WHOIS records %q as the %s contact %s",
-				cd.value, cd.role, cd.field))
+			fmt.Sprintf("%s records %q as the %s contact %s",
+				source, cd.value, cd.role, cd.field))
 		findings = append(findings, f)
 	}
 	return findings

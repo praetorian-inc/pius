@@ -10,7 +10,7 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confDNSZoneTransferAXFR = 0.90
+const confDNSZoneTransferAXFR = 90
 
 func init() {
 	plugins.Register("dns-zone-transfer", func() plugins.Plugin {

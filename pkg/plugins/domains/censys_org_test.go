@@ -263,7 +263,7 @@ func TestCensysOrgPlugin_ExtractFindings_ConfidenceBySource(t *testing.T) {
 	findings := p.extractFindings(input, hits)
 	tests := []struct {
 		asset  string
-		score  float64
+		score  int
 		source string
 	}{
 		{asset: "san.acme.com", score: confCensysCertificateDomain, source: "TLS certificate SAN"},
@@ -277,7 +277,7 @@ func TestCensysOrgPlugin_ExtractFindings_ConfidenceBySource(t *testing.T) {
 		t.Run(test.asset, func(t *testing.T) {
 			finding := requireCensysFinding(t, findings, test.asset)
 			require.Len(t, finding.Confidences, 1)
-			assert.InDelta(t, test.score, finding.Confidences[0].Score, 0.001)
+			assert.Equal(t, test.score, finding.Confidences[0].Score)
 			assert.Contains(t, finding.Confidences[0].Justification, test.asset)
 			assert.Contains(t, finding.Confidences[0].Justification, "203.0.113.10")
 			assert.Contains(t, finding.Confidences[0].Justification, test.source)
@@ -524,7 +524,7 @@ func TestCensysOrgPlugin_Cache_WriteAndRead(t *testing.T) {
 	require.Len(t, cached, 1)
 	assert.Equal(t, "acme.com", cached[0].Value)
 	require.Len(t, cached[0].Confidences, 1)
-	assert.InDelta(t, confCensysCertificateDomain, cached[0].Confidences[0].Score, 0.001)
+	assert.Equal(t, confCensysCertificateDomain, cached[0].Confidences[0].Score)
 	assert.Equal(t, "Censys certificate evidence for acme.com", cached[0].Confidences[0].Justification)
 	assert.NotContains(t, cached[0].Data, "confidence")
 	assert.NotContains(t, cached[0].Data, "confidences")
@@ -902,7 +902,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_ThresholdScoresHighConfidence(t *testin
 	require.Len(t, preseeds, 1)
 
 	require.Len(t, preseeds[0].Confidences, 1, "crossing the threshold is one judgement")
-	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]), 0.001)
+	assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]))
 	assert.False(t, plugins.NeedsReview(preseeds[0]))
 	assert.Contains(t, preseeds[0].Confidences[0].Justification, "Contoso Ltd")
 	assert.Contains(t, preseeds[0].Confidences[0].Justification, "Censys results")
@@ -931,7 +931,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_MoreHostsDoNotRaiseScore(t *testing.T) 
 	require.Len(t, preseeds, 1)
 
 	require.Len(t, preseeds[0].Confidences, 1)
-	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]), 0.001,
+	assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]),
 		"twelve hosts score the same as five")
 	assert.Contains(t, preseeds[0].Confidences[0].Justification, "12 distinct hosts")
 }
@@ -957,7 +957,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_RepeatedHostCountedOnce(t *testing.T) {
 	require.Len(t, preseeds[0].Confidences, 1)
 	assert.Contains(t, preseeds[0].Confidences[0].Justification, "5 distinct hosts",
 		"the repeated host must not be counted twice")
-	assert.InDelta(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]), 0.001)
+	assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]))
 }
 
 func requireCensysFinding(t *testing.T, findings []plugins.Finding, value string) plugins.Finding {

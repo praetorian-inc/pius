@@ -115,7 +115,7 @@ func TestDNSZoneTransferPlugin_Run_Success(t *testing.T) {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "dns-zone-transfer", f.Source)
 		require.Len(t, f.Confidences, 1)
-		assert.InDelta(t, confDNSZoneTransferAXFR, f.Confidences[0].Score, 0.001)
+		assert.Equal(t, confDNSZoneTransferAXFR, f.Confidences[0].Score)
 		assert.Contains(t, f.Confidences[0].Justification, f.Value)
 		assert.Contains(t, f.Confidences[0].Justification, addr)
 		assert.Contains(t, f.Confidences[0].Justification, "example.com")

@@ -10,7 +10,7 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confASNBGPAnnouncedPrefix = 0.85
+const confASNBGPAnnouncedPrefix = 85
 
 type ripeRISPrefix struct {
 	cidr     string
@@ -26,7 +26,7 @@ func init() {
 // ASNBGPPlugin discovers CIDR blocks from BGP routing tables given an ASN.
 // Independent plugin (Phase 0): emits FindingCIDR findings directly.
 type ASNBGPPlugin struct {
-	client httpDoer
+	client *client.Client
 }
 
 func (p *ASNBGPPlugin) Name() string { return "asn-bgp" }

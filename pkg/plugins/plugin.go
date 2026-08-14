@@ -74,10 +74,10 @@ type Input struct {
 
 // Confidence is a single piece of scored, explained evidence supporting a
 // finding. Entries are additive: a finding's total confidence is the sum of its
-// entry scores, capped at 1.0 (see TotalConfidence).
+// entry scores, capped at 100 (see TotalConfidence).
 type Confidence struct {
 	// Score is this evidence's contribution to the total confidence.
-	Score float64 `json:"score"`
+	Score int `json:"score"`
 
 	// Justification explains, in human-readable terms, why this evidence
 	// supports the finding.
@@ -122,7 +122,7 @@ type findingFields Finding
 func (f Finding) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		findingFields
-		TotalConfidence float64
+		TotalConfidence int
 		NeedsReview     bool
 	}{
 		findingFields:   findingFields(f),
