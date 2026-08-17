@@ -56,7 +56,7 @@ func combineNormalizedReferences(references []Reference) *Reference {
 
 	return &Reference{
 		Label: "Supporting source records",
-		Type:  ReferenceTypeJSON,
+		Type:  ReferenceTypeReferences,
 		Data:  references,
 	}
 }

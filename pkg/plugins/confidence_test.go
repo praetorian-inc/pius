@@ -30,6 +30,19 @@ func TestAddConfidence_CopiesReferences(t *testing.T) {
 	assert.Equal(t, "https://example.com/evidence", finding.Confidences[0].References[0].URL)
 }
 
+func TestAddConfidence_CombinesReferencesAsTypedCollection(t *testing.T) {
+	var finding Finding
+	AddConfidence(&finding, 60, "sources support finding",
+		URLReference("first", "https://example.com/first"),
+		URLReference("second", "https://example.com/second"),
+	)
+
+	require.NotNil(t, finding.Confidences[0].Reference)
+	assert.Equal(t, ReferenceTypeReferences, finding.Confidences[0].Reference.Type)
+	assert.Equal(t, "Supporting source records", finding.Confidences[0].Reference.Label)
+	assert.Len(t, finding.Confidences[0].Reference.Data, 2)
+}
+
 func TestAddConfidence_ClampsScore(t *testing.T) {
 	var f Finding
 	AddConfidence(&f, -1, "below range")

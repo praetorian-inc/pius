@@ -89,6 +89,7 @@ type Reference struct {
 const (
 	ReferenceTypeURL          = "url"
 	ReferenceTypeJSON         = "json"
+	ReferenceTypeReferences   = "references"
 	ReferenceTypeHTTPExchange = "http_exchange"
 	ReferenceTypeRDAP         = "rdap"
 	ReferenceTypeRPSL         = "rpsl"
