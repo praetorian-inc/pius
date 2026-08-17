@@ -213,6 +213,7 @@ org:            ORG-ACME1-AP
 `)
 	p := newRPSLPlugin(rpslConfig{
 		name: "apnic", cacheURL: cacheURL, metaKey: "apnic_handles", registry: "apnic",
+		networkReferenceBaseURL: "https://rdap.apnic.net/ip/",
 	}, pluginCache)
 
 	findings, err := p.Run(context.Background(), plugins.Input{

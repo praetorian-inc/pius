@@ -112,7 +112,8 @@ func (p *ReverseRIRPlugin) queryARIN(ctx context.Context, org string) ([]plugins
 
 // queryArinEntity queries a specific ARIN entity type
 func (p *ReverseRIRPlugin) queryArinEntity(ctx context.Context, entity, org string) []plugins.Finding {
-	apiURL := fmt.Sprintf("https://whois.arin.net/rest/%s;name=*%s*", entity, url.PathEscape(org))
+	database := "ARIN " + entity + " database"
+	apiURL := reverseRIRQueryURL("arin", database, org)
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
 		"Accept": "application/json",
@@ -168,7 +169,7 @@ func (p *ReverseRIRPlugin) queryArinEntity(ctx context.Context, entity, org stri
 
 	var findings []plugins.Finding
 	for _, handle := range handles {
-		if finding, ok := newReverseRIRFinding(handle, "arin", "ARIN "+entity+" database", org); ok {
+		if finding, ok := newReverseRIRFinding(handle, "arin", database, org); ok {
 			findings = append(findings, finding)
 		}
 	}
@@ -178,7 +179,7 @@ func (p *ReverseRIRPlugin) queryArinEntity(ctx context.Context, entity, org stri
 
 // queryRIPE queries RIPE search API
 func (p *ReverseRIRPlugin) queryRIPE(ctx context.Context, org string) ([]plugins.Finding, error) {
-	apiURL := fmt.Sprintf("https://rest.db.ripe.net/search?query-string=%s", url.QueryEscape(org))
+	apiURL := reverseRIRQueryURL("ripe", "RIPE database", org)
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
 		"Accept": "application/json",
@@ -216,7 +217,7 @@ func (p *ReverseRIRPlugin) queryRIPE(ctx context.Context, org string) ([]plugins
 // Response: JSON array where each item has objectType and primaryKey.
 // Handle format: "ORG-STCS1-AP", "ORG-GA71-AP" (Asia-Pacific suffix)
 func (p *ReverseRIRPlugin) queryAPNIC(ctx context.Context, org string) ([]plugins.Finding, error) {
-	apiURL := fmt.Sprintf("https://wq.apnic.net/query?searchtext=%s&type=organisation", url.QueryEscape(org))
+	apiURL := reverseRIRQueryURL("apnic", "APNIC WHOIS database", org)
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
 		"Accept": "application/json",
@@ -249,7 +250,7 @@ func (p *ReverseRIRPlugin) queryAPNIC(ctx context.Context, org string) ([]plugin
 // Handle format: "ORG-AS2-AFRINIC", "ORG-MC12-AFRINIC" (Africa suffix)
 // Only ORG- prefixed handles are emitted; individual contacts (e.g. "ATD1-AFRINIC") are skipped.
 func (p *ReverseRIRPlugin) queryAFRINIC(ctx context.Context, org string) ([]plugins.Finding, error) {
-	apiURL := fmt.Sprintf("https://rdap.afrinic.net/rdap/entities?fn=%s", url.QueryEscape(org))
+	apiURL := reverseRIRQueryURL("afrinic", "AFRINIC RDAP database", org)
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
 		"Accept": "application/rdap+json",
@@ -284,7 +285,7 @@ func (p *ReverseRIRPlugin) queryAFRINIC(ctx context.Context, org string) ([]plug
 // Response key: "entities" (LACNIC non-standard; RDAP spec uses "entitySearchResults")
 // Handle format: "BR-MERC-LACNIC", "MX-USCV4-LACNIC" (country-code prefix)
 func (p *ReverseRIRPlugin) queryLACNIC(ctx context.Context, org string) ([]plugins.Finding, error) {
-	apiURL := fmt.Sprintf("https://rdap.lacnic.net/rdap/entities?fn=%s", url.QueryEscape(org))
+	apiURL := reverseRIRQueryURL("lacnic", "LACNIC RDAP database", org)
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
 		"Accept": "application/rdap+json",

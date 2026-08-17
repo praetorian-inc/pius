@@ -17,12 +17,13 @@ const confRPSLHandleInetnum = 85
 
 // rpslConfig holds per-registry configuration for RPSL plugins.
 type rpslConfig struct {
-	name        string // "apnic" or "afrinic"
-	description string
-	cacheURL    string // cache.APNICInetURL or cache.AFRINICAllURL
-	metaKey     string // "apnic_handles" or "afrinic_handles"
-	registry    string // "apnic" or "afrinic"
-	mode        string // plugins.ModePassive or plugins.ModeActive
+	name                    string // "apnic" or "afrinic"
+	description             string
+	cacheURL                string // cache.APNICInetURL or cache.AFRINICAllURL
+	metaKey                 string // "apnic_handles" or "afrinic_handles"
+	registry                string // "apnic" or "afrinic"
+	networkReferenceBaseURL string
+	mode                    string // plugins.ModePassive or plugins.ModeActive
 }
 
 // rpslPlugin is a Phase 2 CIDR plugin that resolves RIR org handles to CIDR
@@ -151,14 +152,10 @@ func (p *rpslPlugin) findings(input plugins.Input, netblocks []rpslNetblock) []p
 }
 
 func (p *rpslPlugin) networkReferenceURL(cidr string) string {
-	switch p.cfg.registry {
-	case "apnic":
-		return "https://rdap.apnic.net/ip/" + cidr
-	case "afrinic":
-		return "https://rdap.afrinic.net/rdap/ip/" + cidr
-	default:
+	if p.cfg.networkReferenceBaseURL == "" {
 		return ""
 	}
+	return p.cfg.networkReferenceBaseURL + cidr
 }
 
 // rpslNetblock is one matched inetnum or inet6num record. A match carries either
