@@ -141,9 +141,13 @@ func (p *rpslPlugin) findings(input plugins.Input, netblocks []rpslNetblock) []p
 					"description": netblock.description,
 				},
 			}
-			plugins.AddConfidence(&finding, confRPSLHandleInetnum, justification, plugins.Reference{
-				Label: strings.ToUpper(p.Name()) + " RDAP network record",
-				URL:   p.networkReferenceURL(c),
+			plugins.AddConfidenceWithReference(&finding, confRPSLHandleInetnum, justification, plugins.Reference{
+				Label: strings.ToUpper(p.Name()) + " RPSL netblock",
+				Type:  plugins.ReferenceTypeRPSL,
+				Data: map[string]any{
+					"record":      strings.TrimSpace(netblock.record),
+					"network_url": p.networkReferenceURL(c),
+				},
 			})
 			findings = append(findings, finding)
 		}
@@ -175,6 +179,7 @@ type rpslNetblock struct {
 	netname      string
 	description  string
 	descriptions []string
+	record       string
 }
 
 func (n rpslNetblock) isPrefix() bool { return n.prefix != "" }
@@ -253,6 +258,7 @@ func parseRPSLNetblocks(filePath string, handles []string, organizationName stri
 			keep()
 			continue
 		}
+		current.record += line + "\n"
 
 		switch {
 		case strings.HasPrefix(line, "inetnum:"):

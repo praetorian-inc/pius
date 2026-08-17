@@ -2,6 +2,7 @@ package whois
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -36,6 +37,7 @@ func rdapLookup(ctx context.Context, httpClient *http.Client, domain string) (Re
 	}
 
 	result := mapRDAPToResult(domain, domainResp)
+	result.RDAPResponse, _ = json.Marshal(domainResp)
 
 	// Follow registrar link if registrant data is missing.
 	if result.Registrant.IsEmpty() {

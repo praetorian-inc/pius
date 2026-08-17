@@ -144,6 +144,18 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 		source = "WHOIS server " + r.WhoisServer
 	}
 
+	reference := plugins.Reference{
+		Label: "Domain registration responses",
+		Type:  plugins.ReferenceTypeWHOIS,
+		Data: map[string]any{
+			"domain":         r.Domain,
+			"sources":        r.Sources,
+			"rdap_response":  r.RDAPResponse,
+			"whois_server":   r.WhoisServer,
+			"whois_response": r.WHOISResponse,
+		},
+	}
+
 	var findings []plugins.Finding
 	for _, cd := range unique {
 		f := plugins.Finding{
@@ -155,9 +167,9 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 				"preseed_title": cd.value,
 			},
 		}
-		plugins.AddConfidence(&f, confWhoisServerRecord,
+		plugins.AddConfidenceWithReference(&f, confWhoisServerRecord,
 			fmt.Sprintf("%s for domain %q records %q as the %s contact %s",
-				source, r.Domain, cd.value, cd.role, cd.field))
+				source, r.Domain, cd.value, cd.role, cd.field), reference)
 		findings = append(findings, f)
 	}
 	return findings

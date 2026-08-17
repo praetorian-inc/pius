@@ -280,6 +280,11 @@ type censysReverseDNS struct {
 	Names []string `json:"names,omitempty"`
 }
 
+type censysCacheEntry struct {
+	Findings  []plugins.Finding `json:"findings"`
+	Reference plugins.Reference `json:"reference"`
+}
+
 func (p *CensysOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	token := p.token()
 	cacheKey := strings.ToLower("censys-org|" + input.OrgName + "|" + input.Domain)
@@ -287,9 +292,10 @@ func (p *CensysOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	// Check cache first
 	c := p.getCache()
 	if c != nil {
-		var cached []plugins.Finding
+		var cached censysCacheEntry
 		if c.Get(cacheKey, &cached) {
-			return cached, nil
+			attachCensysReference(cached.Findings, cached.Reference)
+			return cached.Findings, nil
 		}
 	}
 
@@ -336,12 +342,22 @@ func (p *CensysOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	}
 
 	findings := p.extractFindings(input, resp.Result.Hits)
-
+	reference := plugins.HTTPReference("Censys search response", "POST", searchURL, reqBody, json.RawMessage(respBody))
 	if c != nil {
-		c.Set(cacheKey, findings)
+		c.Set(cacheKey, censysCacheEntry{Findings: findings, Reference: reference})
 	}
+	attachCensysReference(findings, reference)
 
 	return findings, nil
+}
+
+func attachCensysReference(findings []plugins.Finding, reference plugins.Reference) {
+	for i := range findings {
+		for j := range findings[i].Confidences {
+			findings[i].Confidences[j].Reference = &reference
+			findings[i].Confidences[j].References = nil
+		}
+	}
 }
 
 // buildCensysQuery constructs a CenQL query searching for hosts whose TLS

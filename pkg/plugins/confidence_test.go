@@ -220,14 +220,15 @@ func TestFinding_JSONIncludesConfidences(t *testing.T) {
 	require.Len(t, decoded.Confidences, 2)
 	assert.Equal(t, 60, decoded.Confidences[0].Score)
 	assert.Equal(t, "blog URL matches the known domain", decoded.Confidences[0].Justification)
-	require.Len(t, decoded.Confidences[0].References, 1)
-	assert.Equal(t, "https://github.com/acme", decoded.Confidences[0].References[0].URL)
+	require.NotNil(t, decoded.Confidences[0].Reference)
+	assert.Equal(t, ReferenceTypeURL, decoded.Confidences[0].Reference.Type)
+	assert.Equal(t, map[string]any{"url": "https://github.com/acme"}, decoded.Confidences[0].Reference.Data)
 	assert.Equal(t, 5, decoded.Confidences[1].Score)
 	assert.Equal(t, 65, TotalConfidence(decoded))
 
 	assert.Contains(t, string(encoded), `"score"`)
 	assert.Contains(t, string(encoded), `"justification"`)
-	assert.Contains(t, string(encoded), `"references"`)
+	assert.Contains(t, string(encoded), `"reference"`)
 }
 
 func TestTotalConfidence_NormalizesFloatAccumulation(t *testing.T) {

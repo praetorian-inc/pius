@@ -17,24 +17,56 @@ const (
 	ConfidenceLow = 35
 )
 
-// AddConfidence appends one piece of scored, justified evidence to f. References
-// link to source records or queries that let a user verify the justification.
-//
-// Use this in plugins that perform name-to-identifier resolution where the
-// mapping might be ambiguous (e.g., org name → GitHub org, org name → WHOIS
-// registrant). Deterministic lookups (RDAP handle → CIDRs) should not use this.
-//
-// Call it once per independently observed signal rather than once with a
-// pre-summed score: the evidence list is what Guard surfaces to a human, so a
-// single opaque entry throws away exactly the information it exists to carry.
-// AddConfidence clamps score to 0-100, always appends, and never materializes
-// the total.
+// AddConfidence appends one piece of scored, justified evidence to f.
 func AddConfidence(f *Finding, score int, justification string, references ...Reference) {
+	normalized := normalizeReferences(references)
 	f.Confidences = append(f.Confidences, Confidence{
 		Score:         max(0, min(score, 100)),
 		Justification: justification,
-		References:    append([]Reference(nil), references...),
+		Reference:     combineNormalizedReferences(normalized),
+		References:    normalized,
 	})
+}
+
+// AddConfidenceWithReference is the explicit form for evidence with source
+// material. New plugins should prefer it over the migration-compatible
+// variadic form of AddConfidence.
+func AddConfidenceWithReference(f *Finding, score int, justification string, reference Reference) {
+	AddConfidence(f, score, justification, reference)
+}
+
+func normalizeReferences(references []Reference) []Reference {
+	if len(references) == 0 {
+		return nil
+	}
+	normalized := make([]Reference, len(references))
+	for i, reference := range references {
+		normalized[i] = normalizeReference(reference)
+	}
+	return normalized
+}
+
+func combineNormalizedReferences(references []Reference) *Reference {
+	if len(references) == 0 {
+		return nil
+	}
+	if len(references) == 1 {
+		return &references[0]
+	}
+
+	return &Reference{
+		Label: "Supporting source records",
+		Type:  ReferenceTypeJSON,
+		Data:  references,
+	}
+}
+
+func normalizeReference(reference Reference) Reference {
+	if reference.Type == "" && reference.URL != "" {
+		reference.Type = ReferenceTypeURL
+		reference.Data = URLReferenceData{URL: reference.URL}
+	}
+	return reference
 }
 
 // TotalConfidence returns the sum of a finding's evidence scores, capped at 100.

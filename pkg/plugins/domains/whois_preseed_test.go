@@ -3,6 +3,7 @@ package domains
 import (
 	"testing"
 
+	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/praetorian-inc/pius/pkg/whois"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,9 +13,10 @@ import (
 // reviewer can retrace the claim to the record it came from.
 func TestExtractPreseeds_JustificationNamesWhoisServer(t *testing.T) {
 	r := whois.Result{
-		Domain:      "example.com",
-		WhoisServer: "whois.registrar.example",
-		Registrant:  whois.Contact{Organization: "ACME-CORP"},
+		Domain:        "example.com",
+		WhoisServer:   "whois.registrar.example",
+		WHOISResponse: "Registrant Organization: ACME-CORP",
+		Registrant:    whois.Contact{Organization: "ACME-CORP"},
 	}
 
 	findings := extractPreseeds(r)
@@ -24,6 +26,10 @@ func TestExtractPreseeds_JustificationNamesWhoisServer(t *testing.T) {
 	assert.Equal(t,
 		`WHOIS server whois.registrar.example for domain "example.com" records "ACME-CORP" as the registrant contact company`,
 		findings[0].Confidences[0].Justification)
+	require.NotNil(t, findings[0].Confidences[0].Reference)
+	assert.Equal(t, plugins.ReferenceTypeWHOIS, findings[0].Confidences[0].Reference.Type)
+	data := findings[0].Confidences[0].Reference.Data.(map[string]any)
+	assert.Equal(t, r.WHOISResponse, data["whois_response"])
 }
 
 // An RDAP-only lookup has no WHOIS server to cite, so the justification falls

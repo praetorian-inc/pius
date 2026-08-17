@@ -73,10 +73,59 @@ type Input struct {
 	Meta map[string]string
 }
 
-// Reference links to a source or verification resource for confidence evidence.
+// Reference is display-only source data supporting confidence evidence. Type
+// tells consumers how to render Data without requiring every plugin to share a
+// source-specific schema.
 type Reference struct {
 	Label string `json:"label"`
-	URL   string `json:"url"`
+	Type  string `json:"type"`
+	Data  any    `json:"data"`
+
+	// URL is accepted while source plugins migrate to typed Data. It is
+	// normalized into URLReferenceData before a confidence is emitted.
+	URL string `json:"-"`
+}
+
+const (
+	ReferenceTypeURL          = "url"
+	ReferenceTypeJSON         = "json"
+	ReferenceTypeHTTPExchange = "http_exchange"
+	ReferenceTypeRDAP         = "rdap"
+	ReferenceTypeRPSL         = "rpsl"
+	ReferenceTypeTLS          = "tls_certificate"
+	ReferenceTypeWHOIS        = "whois"
+)
+
+type URLReferenceData struct {
+	URL string `json:"url"`
+}
+
+type HTTPRequestReference struct {
+	Method string `json:"method"`
+	URL    string `json:"url"`
+	Body   any    `json:"body,omitempty"`
+}
+
+type HTTPExchangeReference struct {
+	Request  HTTPRequestReference `json:"request"`
+	Response any                  `json:"response"`
+}
+
+// URLReference constructs a reference to a public source record.
+func URLReference(label, url string) Reference {
+	return Reference{Label: label, Type: ReferenceTypeURL, Data: URLReferenceData{URL: url}}
+}
+
+// HTTPReference constructs a credential-free request/response reference.
+func HTTPReference(label, method, url string, requestBody, response any) Reference {
+	return Reference{
+		Label: label,
+		Type:  ReferenceTypeHTTPExchange,
+		Data: HTTPExchangeReference{
+			Request:  HTTPRequestReference{Method: method, URL: url, Body: requestBody},
+			Response: response,
+		},
+	}
 }
 
 // Confidence is a single piece of scored, explained evidence supporting a
@@ -90,9 +139,13 @@ type Confidence struct {
 	// supports the finding.
 	Justification string `json:"justification"`
 
-	// References link to the records or queries a user can inspect to verify the
-	// justification. Evidence without a useful URL leaves this empty.
-	References []Reference `json:"references,omitempty"`
+	// Reference contains the source material a user can inspect to verify the
+	// justification. Evidence without useful source material leaves this nil.
+	Reference *Reference `json:"reference,omitempty"`
+
+	// References is a plugin-internal migration field. AddConfidence folds it
+	// into the singular Reference before findings leave Pius.
+	References []Reference `json:"-"`
 }
 
 // Finding represents a single discovered asset or intermediate result.

@@ -2,6 +2,7 @@ package cidrs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -75,8 +76,9 @@ func TestRDAPPlugin_FetchCIDRs_IPv6(t *testing.T) {
 }
 
 func TestRDAPPlugin_Run_EmitsFindingCIDR(t *testing.T) {
+	response := `{"handle":"ACME-1","networks":[{"cidr0_cidrs":[{"v4prefix":"203.0.113.0","length":24}]}]}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"handle":"ACME-1","networks":[{"cidr0_cidrs":[{"v4prefix":"203.0.113.0","length":24}]}]}`)
+		_, _ = fmt.Fprint(w, response)
 	}))
 	defer srv.Close()
 
@@ -99,9 +101,12 @@ func TestRDAPPlugin_Run_EmitsFindingCIDR(t *testing.T) {
 	require.Len(t, findings[0].Confidences, 1)
 	assert.Equal(t, confRDAPHandleNetwork, findings[0].Confidences[0].Score)
 	assert.Equal(t, `ARIN RDAP records CIDR "203.0.113.0/24" under organization handle "ACME-1"`, findings[0].Confidences[0].Justification)
-	require.Len(t, findings[0].Confidences[0].References, 1)
-	assert.Equal(t, "RDAP entity record", findings[0].Confidences[0].References[0].Label)
-	assert.Equal(t, fmt.Sprintf("%s/ACME-1", srv.URL), findings[0].Confidences[0].References[0].URL)
+	require.NotNil(t, findings[0].Confidences[0].Reference)
+	assert.Equal(t, "RDAP entity response", findings[0].Confidences[0].Reference.Label)
+	assert.Equal(t, plugins.ReferenceTypeRDAP, findings[0].Confidences[0].Reference.Type)
+	exchange := findings[0].Confidences[0].Reference.Data.(plugins.HTTPExchangeReference)
+	assert.Equal(t, fmt.Sprintf("%s/ACME-1", srv.URL), exchange.Request.URL)
+	assert.JSONEq(t, response, string(exchange.Response.(json.RawMessage)))
 	assert.NotContains(t, findings[0].Data, "confidence")
 	assert.NotContains(t, findings[0].Data, "confidences")
 }

@@ -48,10 +48,11 @@ func TestASNBGPPlugin_Run_AddsRIPERISConfidence(t *testing.T) {
 	assert.Equal(t,
 		`RIPE RIS returned CIDR "203.0.113.0/24" for queried ASN "AS64500"`,
 		finding.Confidences[0].Justification)
-	require.Len(t, finding.Confidences[0].References, 1)
-	assert.Equal(t, "RIPE RIS announced-prefixes query", finding.Confidences[0].References[0].Label)
-	assert.Equal(t, "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS64500", finding.Confidences[0].References[0].URL)
-	assert.Equal(t, finding.Confidences[0].References[0].URL, transport.url)
+	require.NotNil(t, finding.Confidences[0].Reference)
+	assert.Equal(t, "RIPE RIS announced-prefixes response", finding.Confidences[0].Reference.Label)
+	exchange := finding.Confidences[0].Reference.Data.(plugins.HTTPExchangeReference)
+	assert.Equal(t, "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS64500", exchange.Request.URL)
+	assert.Equal(t, exchange.Request.URL, transport.url)
 	assert.NotContains(t, finding.Data, "confidence")
 	assert.NotContains(t, finding.Data, "confidences")
 }
