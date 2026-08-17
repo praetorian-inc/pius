@@ -24,25 +24,43 @@ func TestEDGARResponse_ParsesLiveDocumentProvenance(t *testing.T) {
 	assert.Equal(t, "10-K", hit.Source.Form)
 }
 
+func TestEDGARResponse_UsesDisplayNameCIKForArchivePath(t *testing.T) {
+	hit := EDGARHit{ID: "0001968582-26-000713:primary_doc.xml"}
+	hit.Source.DisplayNames = []string{
+		"Alphabet Inc.  (GOOG, GOOGL, GOOGM, GOOGN)  (CIK 0001652044)",
+		"LAWRENCE PAGE TRUST III  (CIK 0001983744)",
+	}
+	hit.Source.CIKs = []string{"0001652044", "0001983744"}
+
+	assert.Equal(t,
+		"https://www.sec.gov/Archives/edgar/data/1652044/000196858226000713/primary_doc.xml",
+		secDocumentURL(hit.ID, cikForDisplayName(hit, 0)))
+	assert.Equal(t,
+		"https://www.sec.gov/Archives/edgar/data/1983744/000196858226000713/primary_doc.xml",
+		secDocumentURL(hit.ID, cikForDisplayName(hit, 1)))
+}
+
 func TestSECDocumentURL_ConstructsDirectArchiveURL(t *testing.T) {
 	assert.Equal(t,
 		"https://www.sec.gov/Archives/edgar/data/1234567/000123456724001234/filing.htm",
-		secDocumentURL("0001234567-24-001234:filing.htm"))
+		secDocumentURL("0001234567-24-001234:filing.htm", "0001234567"))
 }
 
 func TestSECDocumentURL_RejectsInvalidMetadata(t *testing.T) {
 	tests := []struct {
 		name       string
 		documentID string
+		cik        string
 	}{
-		{name: "zero filing CIK", documentID: "0000000000-24-001234:filing.htm"},
-		{name: "invalid accession", documentID: "1234:filing.htm"},
-		{name: "unsafe filename", documentID: "0001234567-24-001234:../filing.htm"},
+		{name: "missing CIK", documentID: "0001234567-24-001234:filing.htm"},
+		{name: "non-numeric CIK", documentID: "0001234567-24-001234:filing.htm", cik: "12AB"},
+		{name: "invalid accession", documentID: "1234:filing.htm", cik: "0001234567"},
+		{name: "unsafe filename", documentID: "0001234567-24-001234:../filing.htm", cik: "0001234567"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Empty(t, secDocumentURL(tt.documentID))
+			assert.Empty(t, secDocumentURL(tt.documentID, tt.cik))
 		})
 	}
 }
@@ -70,18 +88,20 @@ func TestFindingsFromEDGARResponse_AddsScoredLiveDocumentEvidence(t *testing.T) 
 	assert.NotContains(t, finding.Data, "confidences")
 }
 
-func TestFindingsFromEDGARResponse_UsesFilingCIKFromAccession(t *testing.T) {
+func TestFindingsFromEDGARResponse_IncompleteMetadataOmitsURL(t *testing.T) {
 	response := loadEDGARResponseFixture(t)
-	response.Hits.Hits[0].Source.CIKs = []string{"0007654321", "0007654321"}
+	response.Hits.Hits[0].Source.CIKs = nil
 
 	findings := findingsFromEDGARResponse(plugins.Input{OrgName: "Acme Corp"}, response)
 
 	require.Len(t, findings, 1)
 	require.Len(t, findings[0].Confidences, 1)
-	require.Len(t, findings[0].Confidences[0].References, 1)
-	assert.Equal(t,
-		"https://www.sec.gov/Archives/edgar/data/1234567/000123456724001234/filing.htm",
-		findings[0].Confidences[0].References[0].URL)
+	justification := findings[0].Confidences[0].Justification
+	assert.Contains(t, justification, "ACME-1")
+	assert.Contains(t, justification, "0001234567-24-001234:filing.htm")
+	assert.Contains(t, justification, "Acme Corp ACME-1")
+	assert.NotContains(t, justification, "https://")
+	assert.Empty(t, findings[0].Confidences[0].References)
 }
 
 func TestFindingsFromEDGARResponse_DeduplicatesHandlesUsingFirstDocument(t *testing.T) {
