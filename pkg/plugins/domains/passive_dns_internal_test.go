@@ -42,10 +42,7 @@ func TestPassiveDNSPlugin_Run_Confidence(t *testing.T) {
 		assert.Contains(t, finding.Confidences[0].Justification, "example.com")
 		assert.Contains(t, finding.Confidences[0].Justification, "SecurityTrails")
 		assert.Contains(t, finding.Confidences[0].Justification, "historical/passive DNS")
-		require.Len(t, finding.Confidences[0].References, 1)
-		assert.Equal(t,
-			"https://api.securitytrails.com/v1/domain/example.com/subdomains?include_inactive=true",
-			finding.Confidences[0].References[0].URL)
+		assert.Empty(t, finding.Confidences[0].References, "SecurityTrails has no replayable reference URL without the request API key")
 		assert.NotContains(t, finding.Data, "confidence")
 		assert.NotContains(t, finding.Data, "confidences")
 	}

@@ -168,10 +168,7 @@ func (p *ApolloPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 		field, _ := findings[i].Data["field"].(string)
 		plugins.AddConfidence(&findings[i], score, fmt.Sprintf(
 			"Apollo organization enrichment for %s returned %q in response field %q",
-			queryDescription, findings[i].Value, field), plugins.Reference{
-			Label: "Apollo enrichment request",
-			URL:   apiURL,
-		})
+			queryDescription, findings[i].Value, field))
 	}
 
 	if c != nil {

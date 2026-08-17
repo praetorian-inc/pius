@@ -141,12 +141,16 @@ func (p *ShodanPlugin) search(ctx context.Context, apiKey, query string) (*Shoda
 		return nil, "", err
 	}
 
-	return &resp, p.shodanSearchURL("REDACTED", query), nil
+	return &resp, shodanReferenceURL(query), nil
 }
 
 func (p *ShodanPlugin) shodanSearchURL(apiKey, query string) string {
 	parameters := url.Values{"key": {apiKey}, "query": {query}}
 	return fmt.Sprintf("%s/shodan/host/search?%s", p.shodanBase(), parameters.Encode())
+}
+
+func shodanReferenceURL(query string) string {
+	return "https://www.shodan.io/search?" + url.Values{"query": {query}}.Encode()
 }
 
 // processResults converts Shodan results to findings while retaining query provenance.
@@ -213,7 +217,7 @@ func (p *ShodanPlugin) addResultEvidence(findings *[]plugins.Finding, indexes ma
 	evidenceURLs[key][queryURL] = true
 	plugins.AddConfidence(&(*findings)[index], confShodanSearchResult, fmt.Sprintf(
 		"Shodan returned %s %q", itemType, finding.Value), plugins.Reference{
-		Label: "Shodan search query (API key redacted)",
+		Label: "Shodan search results",
 		URL:   queryURL,
 	})
 }

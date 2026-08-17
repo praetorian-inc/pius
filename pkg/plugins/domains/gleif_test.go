@@ -442,8 +442,9 @@ func TestGLEIFPlugin_Run_ConfidenceSignals_Parent(t *testing.T) {
 	assert.Equal(t, srv.URL+"/lei-records/LEI001", f.Confidences[0].References[1].URL)
 	assert.Equal(t, 50, f.Confidences[1].Score)
 	assert.Contains(t, f.Confidences[1].Justification, "direct parent")
-	require.Len(t, f.Confidences[1].References, 1)
+	require.Len(t, f.Confidences[1].References, 2)
 	assert.Equal(t, srv.URL+"/lei-records/LEI_PARENT", f.Confidences[1].References[0].URL)
+	assert.Equal(t, srv.URL+"/lei-records/LEI001/direct-parent-relationship", f.Confidences[1].References[1].URL)
 	assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(f))
 	assert.False(t, plugins.NeedsReview(f), "a registered parent of the top candidate should not need review")
 }
@@ -492,6 +493,10 @@ func TestGLEIFPlugin_Run_ConfidenceSignals_Sibling_DifferentJurisdiction(t *test
 	require.Len(t, sib.Confidences, 2)
 	assert.Equal(t, 15, sib.Confidences[0].Score)
 	assert.Equal(t, 30, sib.Confidences[1].Score)
+	require.Len(t, sib.Confidences[1].References, 3)
+	assert.Equal(t, srv.URL+"/lei-records/LEI010", sib.Confidences[1].References[0].URL)
+	assert.Equal(t, srv.URL+"/lei-records/LEI010/direct-parent-relationship", sib.Confidences[1].References[1].URL)
+	assert.Equal(t, srv.URL+"/lei-records/LEI001/direct-parent-relationship", sib.Confidences[1].References[2].URL)
 	assert.Equal(t, 45, plugins.TotalConfidence(*sib))
 	assert.True(t, plugins.NeedsReview(*sib), "sibling in different jurisdiction should need review")
 }

@@ -568,7 +568,7 @@ func TestScoreReverseIP_AssociationEvidenceNamesLookup(t *testing.T) {
 	}{
 		{name: "PTR", method: "ptr", methodName: "DNS PTR lookup"},
 		{name: "HackerTarget", method: "hackertarget", methodName: "HackerTarget reverse-IP lookup", reference: "https://api.hackertarget.com/reverseiplookup/?q=192.0.2.1"},
-		{name: "ViewDNS", method: "viewdns", methodName: "ViewDNS reverse-IP lookup", reference: "apikey=REDACTED&host=192.0.2.1&output=json"},
+		{name: "ViewDNS", method: "viewdns", methodName: "ViewDNS reverse-IP lookup"},
 	}
 
 	for _, tt := range tests {

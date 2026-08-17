@@ -73,11 +73,11 @@ func TestURLScanPlugin_BasicSubdomainDiscovery(t *testing.T) {
 		Results: []urlscanResult{
 			{
 				Page: urlscanPage{Domain: "www.praetorian.com"},
-				Task: urlscanTask{Domain: "api.praetorian.com"},
+				Task: urlscanTask{Domain: "api.praetorian.com", UUID: "scan-1"},
 			},
 			{
 				Page: urlscanPage{Domain: "blog.praetorian.com"},
-				Task: urlscanTask{Domain: "blog.praetorian.com"},
+				Task: urlscanTask{Domain: "blog.praetorian.com", UUID: "scan-2"},
 			},
 		},
 	}
@@ -101,8 +101,11 @@ func TestURLScanPlugin_BasicSubdomainDiscovery(t *testing.T) {
 		assert.Contains(t, f.Confidences[0].Justification, "praetorian.com")
 		assert.Contains(t, f.Confidences[0].Justification, "URLScan scan history")
 		require.Len(t, f.Confidences[0].References, 1)
-		assert.Equal(t, srv.URL+"/api/v1/search/?q=page.apexDomain:praetorian.com&size=100",
-			f.Confidences[0].References[0].URL)
+		expectedScan := "scan-1"
+		if f.Value == "blog.praetorian.com" {
+			expectedScan = "scan-2"
+		}
+		assert.Equal(t, srv.URL+"/result/"+expectedScan+"/", f.Confidences[0].References[0].URL)
 		assert.NotContains(t, f.Data, "confidence")
 		assert.NotContains(t, f.Data, "confidences")
 		values[f.Value] = true

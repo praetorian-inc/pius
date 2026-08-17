@@ -442,15 +442,6 @@ func reverseIPReferences(method, ip string) []plugins.Reference {
 			Label: "HackerTarget reverse-IP request",
 			URL:   "https://api.hackertarget.com/reverseiplookup/?" + url.Values{"q": {ip}}.Encode(),
 		}}
-	case "viewdns":
-		return []plugins.Reference{{
-			Label: "ViewDNS reverse-IP request (API key redacted)",
-			URL: "https://api.viewdns.info/reverseip/?" + url.Values{
-				"apikey": {"REDACTED"},
-				"host":   {ip},
-				"output": {"json"},
-			}.Encode(),
-		}}
 	default:
 		return nil
 	}

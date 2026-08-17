@@ -100,10 +100,7 @@ func (p *PassiveDNSPlugin) Run(ctx context.Context, input plugins.Input) ([]plug
 		}
 		plugins.AddConfidence(&finding, confPassiveDNSHistoricalObservation,
 			fmt.Sprintf("SecurityTrails historical/passive DNS data records subdomain %q for base domain %q",
-				domain, input.Domain), plugins.Reference{
-				Label: "SecurityTrails subdomains request",
-				URL:   reqURL,
-			})
+				domain, input.Domain))
 		findings = append(findings, finding)
 	}
 	return findings, nil

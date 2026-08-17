@@ -141,13 +141,24 @@ func (p *rpslPlugin) findings(input plugins.Input, netblocks []rpslNetblock) []p
 				},
 			}
 			plugins.AddConfidence(&finding, confRPSLHandleInetnum, justification, plugins.Reference{
-				Label: strings.ToUpper(p.Name()) + " RPSL database",
-				URL:   p.cfg.cacheURL,
+				Label: strings.ToUpper(p.Name()) + " RDAP network record",
+				URL:   p.networkReferenceURL(c),
 			})
 			findings = append(findings, finding)
 		}
 	}
 	return findings
+}
+
+func (p *rpslPlugin) networkReferenceURL(cidr string) string {
+	switch p.cfg.registry {
+	case "apnic":
+		return "https://rdap.apnic.net/ip/" + cidr
+	case "afrinic":
+		return "https://rdap.afrinic.net/rdap/ip/" + cidr
+	default:
+		return ""
+	}
 }
 
 // rpslNetblock is one matched inetnum or inet6num record. A match carries either

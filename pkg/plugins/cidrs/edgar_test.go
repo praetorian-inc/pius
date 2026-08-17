@@ -27,24 +27,22 @@ func TestEDGARResponse_ParsesLiveDocumentProvenance(t *testing.T) {
 func TestSECDocumentURL_ConstructsDirectArchiveURL(t *testing.T) {
 	assert.Equal(t,
 		"https://www.sec.gov/Archives/edgar/data/1234567/000123456724001234/filing.htm",
-		secDocumentURL("0001234567-24-001234:filing.htm", "0001234567"))
+		secDocumentURL("0001234567-24-001234:filing.htm"))
 }
 
 func TestSECDocumentURL_RejectsInvalidMetadata(t *testing.T) {
 	tests := []struct {
 		name       string
 		documentID string
-		cik        string
 	}{
-		{name: "missing CIK", documentID: "0001234567-24-001234:filing.htm"},
-		{name: "non-numeric CIK", documentID: "0001234567-24-001234:filing.htm", cik: "12AB"},
-		{name: "invalid accession", documentID: "1234:filing.htm", cik: "0001234567"},
-		{name: "unsafe filename", documentID: "0001234567-24-001234:../filing.htm", cik: "0001234567"},
+		{name: "zero filing CIK", documentID: "0000000000-24-001234:filing.htm"},
+		{name: "invalid accession", documentID: "1234:filing.htm"},
+		{name: "unsafe filename", documentID: "0001234567-24-001234:../filing.htm"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Empty(t, secDocumentURL(tt.documentID, tt.cik))
+			assert.Empty(t, secDocumentURL(tt.documentID))
 		})
 	}
 }
@@ -72,20 +70,18 @@ func TestFindingsFromEDGARResponse_AddsScoredLiveDocumentEvidence(t *testing.T) 
 	assert.NotContains(t, finding.Data, "confidences")
 }
 
-func TestFindingsFromEDGARResponse_IncompleteMetadataOmitsURL(t *testing.T) {
+func TestFindingsFromEDGARResponse_UsesFilingCIKFromAccession(t *testing.T) {
 	response := loadEDGARResponseFixture(t)
-	response.Hits.Hits[0].Source.CIKs = nil
+	response.Hits.Hits[0].Source.CIKs = []string{"0007654321", "0007654321"}
 
 	findings := findingsFromEDGARResponse(plugins.Input{OrgName: "Acme Corp"}, response)
 
 	require.Len(t, findings, 1)
 	require.Len(t, findings[0].Confidences, 1)
-	justification := findings[0].Confidences[0].Justification
-	assert.Contains(t, justification, "ACME-1")
-	assert.Contains(t, justification, "0001234567-24-001234:filing.htm")
-	assert.Contains(t, justification, "Acme Corp ACME-1")
-	assert.NotContains(t, justification, "https://")
-	assert.Empty(t, findings[0].Confidences[0].References)
+	require.Len(t, findings[0].Confidences[0].References, 1)
+	assert.Equal(t,
+		"https://www.sec.gov/Archives/edgar/data/1234567/000123456724001234/filing.htm",
+		findings[0].Confidences[0].References[0].URL)
 }
 
 func TestFindingsFromEDGARResponse_DeduplicatesHandlesUsingFirstDocument(t *testing.T) {

@@ -19,7 +19,6 @@ var (
 	// handlePattern matches potential RIR org handles in SEC EDGAR entity names.
 	handlePattern    = regexp.MustCompile(`\b([A-Z]{2,8}-[0-9A-Z]+)\b`)
 	accessionPattern = regexp.MustCompile(`^\d{10}-\d{2}-\d{6}$`)
-	cikPattern       = regexp.MustCompile(`^\d+$`)
 	filenamePattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 )
 
@@ -93,7 +92,7 @@ func findingsFromEDGARResponse(input plugins.Input, resp EDGARResponse) []plugin
 	seenHandles := make(map[string]bool)
 
 	for _, hit := range resp.Hits.Hits {
-		for displayNameIndex, displayName := range hit.Source.DisplayNames {
+		for _, displayName := range hit.Source.DisplayNames {
 			matches := handlePattern.FindAllString(displayName, -1)
 			for _, handle := range matches {
 				if seenHandles[handle] || !isLikelyRIRHandle(handle) {
@@ -110,9 +109,8 @@ func findingsFromEDGARResponse(input plugins.Input, resp EDGARResponse) []plugin
 						"org":      input.OrgName,
 					},
 				}
-				cik := cikForDisplayName(hit, displayNameIndex)
 				var references []plugins.Reference
-				if documentURL := secDocumentURL(hit.ID, cik); documentURL != "" {
+				if documentURL := secDocumentURL(hit.ID); documentURL != "" {
 					references = append(references, plugins.Reference{Label: "SEC EDGAR document", URL: documentURL})
 				}
 				plugins.AddConfidence(&finding, confEDGARApparentHandle,
@@ -123,13 +121,6 @@ func findingsFromEDGARResponse(input plugins.Input, resp EDGARResponse) []plugin
 	}
 
 	return findings
-}
-
-func cikForDisplayName(hit EDGARHit, displayNameIndex int) string {
-	if displayNameIndex >= len(hit.Source.CIKs) {
-		return ""
-	}
-	return hit.Source.CIKs[displayNameIndex]
 }
 
 func edgarJustification(hit EDGARHit, displayName, handle string) string {
@@ -144,22 +135,19 @@ func edgarJustification(hit EDGARHit, displayName, handle string) string {
 	return justification
 }
 
-func secDocumentURL(documentID, cik string) string {
-	if !cikPattern.MatchString(cik) {
-		return ""
-	}
-
+func secDocumentURL(documentID string) string {
 	idComponents := strings.Split(documentID, ":")
 	if len(idComponents) != 2 || !accessionPattern.MatchString(idComponents[0]) || !filenamePattern.MatchString(idComponents[1]) {
 		return ""
 	}
 
-	numericCIK := strings.TrimLeft(cik, "0")
-	if numericCIK == "" {
+	accessionParts := strings.Split(idComponents[0], "-")
+	filingCIK := strings.TrimLeft(accessionParts[0], "0")
+	if filingCIK == "" {
 		return ""
 	}
 	accession := strings.ReplaceAll(idComponents[0], "-", "")
-	return fmt.Sprintf("https://www.sec.gov/Archives/edgar/data/%s/%s/%s", numericCIK, accession, idComponents[1])
+	return fmt.Sprintf("https://www.sec.gov/Archives/edgar/data/%s/%s/%s", filingCIK, accession, idComponents[1])
 }
 
 // EDGARResponse represents SEC EDGAR search results.

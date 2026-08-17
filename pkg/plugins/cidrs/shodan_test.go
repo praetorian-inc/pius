@@ -206,7 +206,7 @@ func TestShodanPlugin_Run(t *testing.T) {
 		require.Len(t, finding.Confidences, 2)
 		for _, confidence := range finding.Confidences {
 			require.Len(t, confidence.References, 1)
-			assert.Contains(t, confidence.References[0].URL, "key=REDACTED")
+			assert.Contains(t, confidence.References[0].URL, "https://www.shodan.io/search?query=")
 			assert.NotContains(t, confidence.References[0].URL, "test-key")
 			assert.NotContains(t, confidence.Justification, "http")
 		}
@@ -247,8 +247,8 @@ func TestShodanPlugin_Run_APIError(t *testing.T) {
 func TestShodanPlugin_ProcessResultsRetainsDistinctQueryEvidence(t *testing.T) {
 	plugin := &ShodanPlugin{}
 	match := ShodanMatch{IPStr: "192.0.2.1", Hostnames: []string{"WWW.Example.com.", "www.example.com"}}
-	firstURL := `https://api.shodan.io/shodan/host/search?key=REDACTED&query=org%3A%22Acme+Corp%22`
-	secondURL := `https://api.shodan.io/shodan/host/search?key=REDACTED&query=hostname%3Aexample.com`
+	firstURL := `https://www.shodan.io/search?query=org%3A%22Acme+Corp%22`
+	secondURL := `https://www.shodan.io/search?query=hostname%3Aexample.com`
 
 	findings := plugin.processResults([]shodanQueryResult{
 		{queryURL: firstURL, matches: []ShodanMatch{match, match}},
@@ -272,16 +272,16 @@ func TestShodanPlugin_ProcessResultsRetainsDistinctQueryEvidence(t *testing.T) {
 	assert.Equal(t, `Shodan returned domain "www.example.com"`, domain.Confidences[0].Justification)
 }
 
-func TestShodanPlugin_SearchURLIsEncodedAndRedactedForDisplay(t *testing.T) {
+func TestShodanPlugin_SearchURLIsEncodedAndReferenceIsReplayable(t *testing.T) {
 	plugin := &ShodanPlugin{}
 	query := `org:"Acme & Sons"`
 
 	requestURL := plugin.shodanSearchURL("secret-key", query)
-	displayURL := plugin.shodanSearchURL("REDACTED", query)
+	referenceURL := shodanReferenceURL(query)
 
 	assert.Equal(t, `https://api.shodan.io/shodan/host/search?key=secret-key&query=org%3A%22Acme+%26+Sons%22`, requestURL)
-	assert.Equal(t, `https://api.shodan.io/shodan/host/search?key=REDACTED&query=org%3A%22Acme+%26+Sons%22`, displayURL)
-	assert.NotContains(t, displayURL, "secret-key")
+	assert.Equal(t, `https://www.shodan.io/search?query=org%3A%22Acme+%26+Sons%22`, referenceURL)
+	assert.NotContains(t, referenceURL, "secret-key")
 }
 
 func filterFindings(findings []plugins.Finding, ft plugins.FindingType) []plugins.Finding {
