@@ -105,6 +105,10 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 // A handle a phase-two plugin could not act on must not leave this plugin at
 // all. Consumers cannot repair any of these, so filtering here is the only place
 // it happens once rather than in every embedder.
+func TestReverseRIRQueryURL_UnknownRegistryIsEmpty(t *testing.T) {
+	assert.Empty(t, reverseRIRQueryURL("unknown", "test database", "Acme Corp"))
+}
+
 func TestReverseRIRPlugin_DropsUnusableHandles(t *testing.T) {
 	tests := map[string]struct {
 		handle   string

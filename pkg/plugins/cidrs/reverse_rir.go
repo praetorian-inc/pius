@@ -340,12 +340,17 @@ func newReverseRIRFinding(handle, registry, database, org string) (plugins.Findi
 			"org":      org,
 		},
 	}
+	referenceURL := reverseRIRQueryURL(registry, database, org)
+	var references []plugins.Reference
+	if referenceURL != "" {
+		references = append(references, plugins.Reference{
+			Label: database + " query",
+			URL:   referenceURL,
+		})
+	}
 	plugins.AddConfidence(&finding, confReverseRIRHandle, fmt.Sprintf(
 		"%s returned organization handle %q for organization search %q",
-		database, handle, org), plugins.Reference{
-		Label: database + " query",
-		URL:   reverseRIRQueryURL(registry, database, org),
-	})
+		database, handle, org), references...)
 	return finding, true
 }
 
@@ -363,7 +368,7 @@ func reverseRIRQueryURL(registry, database, org string) string {
 	case "lacnic":
 		return "https://rdap.lacnic.net/rdap/entities?" + url.Values{"fn": {org}}.Encode()
 	default:
-		return "not available"
+		return ""
 	}
 }
 
