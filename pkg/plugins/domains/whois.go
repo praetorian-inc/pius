@@ -100,22 +100,24 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 
 const confWhoisServerRecord = 85
 
-func extractPreseeds(r whois.Result) []plugins.Finding {
-	type candidate struct {
-		field, role, value string
-	}
+type domainContact struct {
+	field string
+	role  string
+	value string
+}
 
+func extractPreseeds(r whois.Result) []plugins.Finding {
 	roles := [4]string{"registrant", "administrative", "technical", "billing"}
 	contacts := r.AllContacts()
 
 	// Collect all valid candidates, then dedupe by {field, value}.
-	var all []candidate
+	var all []domainContact
 	for i, c := range contacts {
 		org := c.Organization
 		if i == 0 {
 			org = whois.RegistrantOrg(c, r.Domain)
 		}
-		for _, cd := range []candidate{
+		for _, cd := range []domainContact{
 			{"company", roles[i], org},
 			{"name", roles[i], c.Name},
 			{"email", roles[i], c.Email},
@@ -132,19 +134,9 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 
 	// Dedupe: keep first occurrence per {field, value} (preserves the
 	// highest-priority role since contacts are ordered registrant-first).
-	unique := strutil.UniqueFunc(all, func(c candidate) [2]string {
+	unique := strutil.UniqueFunc(all, func(c domainContact) [2]string {
 		return [2]string{c.field, c.value}
 	})
-
-	// Name the answering server so a reviewer can retrace the record to its
-	// source. It is only known when the TCP-43 chain contributed to the
-	// result; an RDAP-only lookup has no WHOIS server to cite.
-	source := "WHOIS"
-	if r.WhoisServer != "" {
-		source = "WHOIS server " + r.WhoisServer
-	}
-
-	references := domainRegistrationReferences(r)
 
 	var findings []plugins.Finding
 	for _, cd := range unique {
@@ -157,12 +149,36 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 				"preseed_title": cd.value,
 			},
 		}
-		plugins.AddConfidence(&f, confWhoisServerRecord,
-			fmt.Sprintf("%s for domain %q records %q as the %s contact %s",
-				source, r.Domain, cd.value, cd.role, cd.field), references...)
+		addDomainRegistrationConfidences(&f, r, cd)
 		findings = append(findings, f)
 	}
 	return findings
+}
+
+func addDomainRegistrationConfidences(finding *plugins.Finding, result whois.Result, contact domainContact) {
+	references := domainRegistrationReferences(result)
+	if len(references) == 0 {
+		plugins.AddConfidence(finding, confWhoisServerRecord,
+			domainRegistrationJustification("WHOIS", result, contact))
+		return
+	}
+
+	for _, reference := range references {
+		source := "RDAP"
+		if reference.Type == plugins.ReferenceTypeWHOIS {
+			source = "WHOIS"
+			if result.WhoisServer != "" {
+				source += " server " + result.WhoisServer
+			}
+		}
+		plugins.AddConfidenceWithReference(finding, confWhoisServerRecord,
+			domainRegistrationJustification(source, result, contact), reference)
+	}
+}
+
+func domainRegistrationJustification(source string, result whois.Result, contact domainContact) string {
+	return fmt.Sprintf("%s for domain %q records %q as the %s contact %s",
+		source, result.Domain, contact.value, contact.role, contact.field)
 }
 
 func domainRegistrationReferences(result whois.Result) []plugins.Reference {

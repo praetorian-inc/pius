@@ -85,14 +85,15 @@ func TestNetworkPreseeds_AttachObservedProtocolResponses(t *testing.T) {
 
 	findings := networkPreseeds(result)
 	require.Len(t, findings, 1)
-	require.Len(t, findings[0].Confidences, 1)
-	reference := findings[0].Confidences[0].Reference
-	require.NotNil(t, reference)
-	assert.Equal(t, plugins.ReferenceTypeReferences, reference.Type)
-	references := reference.Data.([]plugins.Reference)
-	require.Len(t, references, 2)
-	assert.Equal(t, plugins.ReferenceTypeRDAP, references[0].Type)
-	assert.Equal(t, plugins.ReferenceTypeWHOIS, references[1].Type)
+	require.Len(t, findings[0].Confidences, 2)
+	rdap := findings[0].Confidences[0]
+	whois := findings[0].Confidences[1]
+	require.NotNil(t, rdap.Reference)
+	require.NotNil(t, whois.Reference)
+	assert.Equal(t, plugins.ReferenceTypeRDAP, rdap.Reference.Type)
+	assert.Equal(t, plugins.ReferenceTypeWHOIS, whois.Reference.Type)
+	assert.Contains(t, rdap.Justification, "IP RDAP")
+	assert.Contains(t, whois.Justification, "IP WHOIS")
 }
 
 func TestNetworkPreseedJustification_AttributesMergedSources(t *testing.T) {

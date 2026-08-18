@@ -33,9 +33,7 @@ func TestExtractPreseeds_JustificationNamesWhoisServer(t *testing.T) {
 	assert.Equal(t, r.WHOISResponse, data["whois_response"])
 }
 
-// An RDAP-only lookup has no WHOIS server to cite, so the justification falls
-// back to the unattributed wording rather than naming an empty server.
-func TestExtractPreseeds_BundlesRDAPAndWhoisReferences(t *testing.T) {
+func TestExtractPreseeds_SeparatesRDAPAndWhoisConfidences(t *testing.T) {
 	r := whois.Result{
 		Domain:        "example.com",
 		WhoisServer:   "whois.registrar.example",
@@ -46,13 +44,15 @@ func TestExtractPreseeds_BundlesRDAPAndWhoisReferences(t *testing.T) {
 
 	findings := extractPreseeds(r)
 
-	reference := findings[0].Confidences[0].Reference
-	require.NotNil(t, reference)
-	assert.Equal(t, plugins.ReferenceTypeReferences, reference.Type)
-	references := reference.Data.([]plugins.Reference)
-	require.Len(t, references, 2)
-	assert.Equal(t, plugins.ReferenceTypeRDAP, references[0].Type)
-	assert.Equal(t, plugins.ReferenceTypeWHOIS, references[1].Type)
+	require.Len(t, findings[0].Confidences, 2)
+	rdap := findings[0].Confidences[0]
+	whois := findings[0].Confidences[1]
+	require.NotNil(t, rdap.Reference)
+	require.NotNil(t, whois.Reference)
+	assert.Equal(t, plugins.ReferenceTypeRDAP, rdap.Reference.Type)
+	assert.Equal(t, plugins.ReferenceTypeWHOIS, whois.Reference.Type)
+	assert.Contains(t, rdap.Justification, `RDAP for domain "example.com"`)
+	assert.Contains(t, whois.Justification, `WHOIS server whois.registrar.example for domain "example.com"`)
 }
 
 func TestExtractPreseeds_FiltersAnonymisedEmail(t *testing.T) {

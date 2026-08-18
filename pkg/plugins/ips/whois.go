@@ -178,8 +178,7 @@ func networkPreseedFinding(result whois.NetworkResult, candidate networkPreseedC
 	if len(result.Status) > 0 {
 		finding.Data["allocation_status"] = result.Status
 	}
-	plugins.AddConfidence(&finding, confIPWhoisContact,
-		networkPreseedJustification(result, candidate), networkReferences(result)...)
+	addNetworkConfidences(&finding, result, candidate)
 	return finding
 }
 
@@ -209,8 +208,29 @@ func networkReferences(result whois.NetworkResult) []plugins.Reference {
 	return references
 }
 
+func addNetworkConfidences(finding *plugins.Finding, result whois.NetworkResult, candidate networkPreseedCandidate) {
+	references := networkReferences(result)
+	if len(references) == 0 {
+		plugins.AddConfidence(finding, confIPWhoisContact,
+			networkPreseedJustification(result, candidate))
+		return
+	}
+
+	for _, reference := range references {
+		source := protocolServer("IP RDAP", cmp.Or(result.RDAPServer, result.Server))
+		if reference.Type == plugins.ReferenceTypeWHOIS {
+			source = protocolServer("IP WHOIS", cmp.Or(result.WhoisServer, result.Server))
+		}
+		plugins.AddConfidenceWithReference(finding, confIPWhoisContact,
+			networkPreseedJustificationForSource(source, result, candidate), reference)
+	}
+}
+
 func networkPreseedJustification(result whois.NetworkResult, candidate networkPreseedCandidate) string {
-	source := networkResultSource(result)
+	return networkPreseedJustificationForSource(networkResultSource(result), result, candidate)
+}
+
+func networkPreseedJustificationForSource(source string, result whois.NetworkResult, candidate networkPreseedCandidate) string {
 	status := ""
 	if len(candidate.status) > 0 {
 		status = fmt.Sprintf(" with entity status %q", strings.Join(candidate.status, ","))
