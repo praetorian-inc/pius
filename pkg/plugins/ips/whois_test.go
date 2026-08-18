@@ -75,7 +75,7 @@ func TestNetworkPreseeds_AttachObservedProtocolResponses(t *testing.T) {
 	result := whois.NetworkResult{
 		Query:        "203.15.226.0/24",
 		RDAPURL:      "https://rdap.apnic.net/ip/203.15.226.0/24",
-		RDAPResponse: json.RawMessage(`{"handle":"AUNIC-NET"}`),
+		RDAPResponse: json.RawMessage(`{"handle":"AUNIC-NET","organization":"National Library of Australia"}`),
 		WhoisServer:  "whois.apnic.net",
 		Raw:          "inetnum: 203.15.226.0 - 203.15.226.255",
 		Contacts: []whois.NetworkContact{{
@@ -85,15 +85,32 @@ func TestNetworkPreseeds_AttachObservedProtocolResponses(t *testing.T) {
 
 	findings := networkPreseeds(result)
 	require.Len(t, findings, 1)
-	require.Len(t, findings[0].Confidences, 2)
-	rdap := findings[0].Confidences[0]
-	whois := findings[0].Confidences[1]
-	require.NotNil(t, rdap.Reference)
-	require.NotNil(t, whois.Reference)
-	assert.Equal(t, plugins.ReferenceTypeRDAP, rdap.Reference.Type)
-	assert.Equal(t, plugins.ReferenceTypeWHOIS, whois.Reference.Type)
-	assert.Contains(t, rdap.Justification, "IP RDAP")
-	assert.Contains(t, whois.Justification, "IP WHOIS")
+	require.Len(t, findings[0].Confidences, 1)
+	confidence := findings[0].Confidences[0]
+	require.NotNil(t, confidence.Reference)
+	assert.Equal(t, plugins.ReferenceTypeRDAP, confidence.Reference.Type)
+	assert.Contains(t, confidence.Justification, "IP RDAP")
+}
+
+func TestNetworkPreseeds_UseWhoisWhenOnlyWhoisContainsContact(t *testing.T) {
+	result := whois.NetworkResult{
+		Query:        "203.15.226.0/24",
+		RDAPResponse: json.RawMessage(`{"handle":"AUNIC-NET"}`),
+		WhoisServer:  "whois.apnic.net",
+		Raw:          "org-name: National Library of Australia",
+		Contacts: []whois.NetworkContact{{
+			Roles: []string{"registrant"}, Kind: "org", Direct: true, Name: "National Library of Australia",
+		}},
+	}
+
+	findings := networkPreseeds(result)
+
+	require.Len(t, findings, 1)
+	require.Len(t, findings[0].Confidences, 1)
+	confidence := findings[0].Confidences[0]
+	require.NotNil(t, confidence.Reference)
+	assert.Equal(t, plugins.ReferenceTypeWHOIS, confidence.Reference.Type)
+	assert.Contains(t, confidence.Justification, "IP WHOIS")
 }
 
 func TestNetworkPreseedJustification_AttributesMergedSources(t *testing.T) {

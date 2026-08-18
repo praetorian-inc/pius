@@ -149,31 +149,27 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 				"preseed_title": cd.value,
 			},
 		}
-		addDomainRegistrationConfidences(&f, r, cd)
+		addDomainRegistrationConfidence(&f, r, cd)
 		findings = append(findings, f)
 	}
 	return findings
 }
 
-func addDomainRegistrationConfidences(finding *plugins.Finding, result whois.Result, contact domainContact) {
-	references := domainRegistrationReferences(result)
-	if len(references) == 0 {
-		plugins.AddConfidence(finding, confWhoisServerRecord,
-			domainRegistrationJustification("WHOIS", result, contact))
-		return
+func addDomainRegistrationConfidence(finding *plugins.Finding, result whois.Result, contact domainContact) {
+	reference := domainRegistrationReference(result, contact.value)
+	source := "WHOIS"
+	if reference != nil && reference.Type == plugins.ReferenceTypeRDAP {
+		source = "RDAP"
+	} else if result.WhoisServer != "" {
+		source += " server " + result.WhoisServer
 	}
 
-	for _, reference := range references {
-		source := "RDAP"
-		if reference.Type == plugins.ReferenceTypeWHOIS {
-			source = "WHOIS"
-			if result.WhoisServer != "" {
-				source += " server " + result.WhoisServer
-			}
-		}
-		plugins.AddConfidenceWithReference(finding, confWhoisServerRecord,
-			domainRegistrationJustification(source, result, contact), reference)
+	justification := domainRegistrationJustification(source, result, contact)
+	if reference == nil {
+		plugins.AddConfidence(finding, confWhoisServerRecord, justification)
+		return
 	}
+	plugins.AddConfidenceWithReference(finding, confWhoisServerRecord, justification, *reference)
 }
 
 func domainRegistrationJustification(source string, result whois.Result, contact domainContact) string {
@@ -181,28 +177,27 @@ func domainRegistrationJustification(source string, result whois.Result, contact
 		source, result.Domain, contact.value, contact.role, contact.field)
 }
 
-func domainRegistrationReferences(result whois.Result) []plugins.Reference {
-	var references []plugins.Reference
-	if len(result.RDAPResponse) > 0 {
-		references = append(references, plugins.Reference{
+func domainRegistrationReference(result whois.Result, value string) *plugins.Reference {
+	if len(result.RDAPResponse) > 0 && strutil.ContainsFold(string(result.RDAPResponse), value) {
+		return &plugins.Reference{
 			Label: "Observed domain RDAP response",
 			Type:  plugins.ReferenceTypeRDAP,
 			Data: map[string]any{
 				"domain":   result.Domain,
 				"response": result.RDAPResponse,
 			},
-		})
+		}
 	}
-	if result.WHOISResponse != "" {
-		references = append(references, plugins.Reference{
-			Label: "Observed domain WHOIS response",
-			Type:  plugins.ReferenceTypeWHOIS,
-			Data: map[string]any{
-				"domain":         result.Domain,
-				"whois_server":   result.WhoisServer,
-				"whois_response": result.WHOISResponse,
-			},
-		})
+	if !strutil.ContainsFold(result.WHOISResponse, value) {
+		return nil
 	}
-	return references
+	return &plugins.Reference{
+		Label: "Observed domain WHOIS response",
+		Type:  plugins.ReferenceTypeWHOIS,
+		Data: map[string]any{
+			"domain":         result.Domain,
+			"whois_server":   result.WhoisServer,
+			"whois_response": result.WHOISResponse,
+		},
+	}
 }

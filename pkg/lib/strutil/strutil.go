@@ -2,6 +2,11 @@ package strutil
 
 import "strings"
 
+// ContainsFold reports whether substr occurs in s case-insensitively.
+func ContainsFold(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
+
 // Tokenize lowercases s and splits on non-alphanumeric characters.
 func Tokenize(s string) []string {
 	s = strings.ToLower(s)

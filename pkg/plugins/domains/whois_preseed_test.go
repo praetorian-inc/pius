@@ -33,7 +33,25 @@ func TestExtractPreseeds_JustificationNamesWhoisServer(t *testing.T) {
 	assert.Equal(t, r.WHOISResponse, data["whois_response"])
 }
 
-func TestExtractPreseeds_SeparatesRDAPAndWhoisConfidences(t *testing.T) {
+func TestExtractPreseeds_PrefersRDAPConfidence(t *testing.T) {
+	r := whois.Result{
+		Domain:        "example.com",
+		WhoisServer:   "whois.registrar.example",
+		RDAPResponse:  json.RawMessage(`{"ldhName":"EXAMPLE.COM","organization":"ACME-CORP"}`),
+		WHOISResponse: "Registrant Organization: ACME-CORP",
+		Registrant:    whois.Contact{Organization: "ACME-CORP"},
+	}
+
+	findings := extractPreseeds(r)
+
+	require.Len(t, findings[0].Confidences, 1)
+	confidence := findings[0].Confidences[0]
+	require.NotNil(t, confidence.Reference)
+	assert.Equal(t, plugins.ReferenceTypeRDAP, confidence.Reference.Type)
+	assert.Contains(t, confidence.Justification, `RDAP for domain "example.com"`)
+}
+
+func TestExtractPreseeds_UsesWhoisWhenOnlyWhoisContainsContact(t *testing.T) {
 	r := whois.Result{
 		Domain:        "example.com",
 		WhoisServer:   "whois.registrar.example",
@@ -44,15 +62,11 @@ func TestExtractPreseeds_SeparatesRDAPAndWhoisConfidences(t *testing.T) {
 
 	findings := extractPreseeds(r)
 
-	require.Len(t, findings[0].Confidences, 2)
-	rdap := findings[0].Confidences[0]
-	whois := findings[0].Confidences[1]
-	require.NotNil(t, rdap.Reference)
-	require.NotNil(t, whois.Reference)
-	assert.Equal(t, plugins.ReferenceTypeRDAP, rdap.Reference.Type)
-	assert.Equal(t, plugins.ReferenceTypeWHOIS, whois.Reference.Type)
-	assert.Contains(t, rdap.Justification, `RDAP for domain "example.com"`)
-	assert.Contains(t, whois.Justification, `WHOIS server whois.registrar.example for domain "example.com"`)
+	require.Len(t, findings[0].Confidences, 1)
+	confidence := findings[0].Confidences[0]
+	require.NotNil(t, confidence.Reference)
+	assert.Equal(t, plugins.ReferenceTypeWHOIS, confidence.Reference.Type)
+	assert.Contains(t, confidence.Justification, `WHOIS server whois.registrar.example`)
 }
 
 func TestExtractPreseeds_FiltersAnonymisedEmail(t *testing.T) {

@@ -178,52 +178,49 @@ func networkPreseedFinding(result whois.NetworkResult, candidate networkPreseedC
 	if len(result.Status) > 0 {
 		finding.Data["allocation_status"] = result.Status
 	}
-	addNetworkConfidences(&finding, result, candidate)
+	addNetworkConfidence(&finding, result, candidate)
 	return finding
 }
 
-func networkReferences(result whois.NetworkResult) []plugins.Reference {
-	var references []plugins.Reference
-	if len(result.RDAPResponse) > 0 {
-		references = append(references, plugins.Reference{
+func networkReference(result whois.NetworkResult, value string) *plugins.Reference {
+	if len(result.RDAPResponse) > 0 && strutil.ContainsFold(string(result.RDAPResponse), value) {
+		return &plugins.Reference{
 			Label: "Observed IP RDAP response",
 			Type:  plugins.ReferenceTypeRDAP,
 			Data: plugins.HTTPExchangeReference{
 				Request:  plugins.HTTPRequestReference{Method: http.MethodGet, URL: result.RDAPURL},
 				Response: result.RDAPResponse,
 			},
-		})
+		}
 	}
-	if result.Raw != "" {
-		references = append(references, plugins.Reference{
-			Label: "Observed IP WHOIS response",
-			Type:  plugins.ReferenceTypeWHOIS,
-			Data: map[string]any{
-				"query":          result.Query,
-				"whois_server":   result.WhoisServer,
-				"whois_response": result.Raw,
-			},
-		})
+	if !strutil.ContainsFold(result.Raw, value) {
+		return nil
 	}
-	return references
+	return &plugins.Reference{
+		Label: "Observed IP WHOIS response",
+		Type:  plugins.ReferenceTypeWHOIS,
+		Data: map[string]any{
+			"query":          result.Query,
+			"whois_server":   result.WhoisServer,
+			"whois_response": result.Raw,
+		},
+	}
 }
 
-func addNetworkConfidences(finding *plugins.Finding, result whois.NetworkResult, candidate networkPreseedCandidate) {
-	references := networkReferences(result)
-	if len(references) == 0 {
+func addNetworkConfidence(finding *plugins.Finding, result whois.NetworkResult, candidate networkPreseedCandidate) {
+	reference := networkReference(result, candidate.value)
+	if reference == nil {
 		plugins.AddConfidence(finding, confIPWhoisContact,
 			networkPreseedJustification(result, candidate))
 		return
 	}
 
-	for _, reference := range references {
-		source := protocolServer("IP RDAP", cmp.Or(result.RDAPServer, result.Server))
-		if reference.Type == plugins.ReferenceTypeWHOIS {
-			source = protocolServer("IP WHOIS", cmp.Or(result.WhoisServer, result.Server))
-		}
-		plugins.AddConfidenceWithReference(finding, confIPWhoisContact,
-			networkPreseedJustificationForSource(source, result, candidate), reference)
+	source := protocolServer("IP RDAP", cmp.Or(result.RDAPServer, result.Server))
+	if reference.Type == plugins.ReferenceTypeWHOIS {
+		source = protocolServer("IP WHOIS", cmp.Or(result.WhoisServer, result.Server))
 	}
+	plugins.AddConfidenceWithReference(finding, confIPWhoisContact,
+		networkPreseedJustificationForSource(source, result, candidate), *reference)
 }
 
 func networkPreseedJustification(result whois.NetworkResult, candidate networkPreseedCandidate) string {
