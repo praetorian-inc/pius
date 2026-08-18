@@ -592,6 +592,15 @@ func TestCensysOrgPlugin_Run_ExtractsDomains(t *testing.T) {
 	var domains, cidrs []string
 	for _, f := range findings {
 		assert.Equal(t, "censys-org", f.Source)
+		for _, confidence := range f.Confidences {
+			require.NotNil(t, confidence.Reference)
+			assert.Equal(t, plugins.ReferenceTypeHTTPExchange, confidence.Reference.Type)
+			encoded, err := json.Marshal(confidence.Reference)
+			require.NoError(t, err)
+			assert.NotContains(t, string(encoded), "test-token")
+			assert.NotContains(t, string(encoded), "Authorization")
+			assert.NotContains(t, string(encoded), "Bearer")
+		}
 		switch f.Type {
 		case plugins.FindingDomain:
 			domains = append(domains, f.Value)

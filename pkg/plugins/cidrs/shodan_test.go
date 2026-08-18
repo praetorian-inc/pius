@@ -2,6 +2,7 @@ package cidrs
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -208,6 +209,11 @@ func TestShodanPlugin_Run(t *testing.T) {
 			require.Len(t, confidence.References, 1)
 			assert.Contains(t, confidence.References[0].URL, "https://www.shodan.io/search?query=")
 			assert.NotContains(t, confidence.References[0].URL, "test-key")
+			require.NotNil(t, confidence.Reference)
+			encoded, err := json.Marshal(confidence.Reference)
+			require.NoError(t, err)
+			assert.NotContains(t, string(encoded), "test-key")
+			assert.NotContains(t, string(encoded), "key=")
 			assert.NotContains(t, confidence.Justification, "http")
 		}
 	}
