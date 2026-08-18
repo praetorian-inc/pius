@@ -7,23 +7,52 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/miekg/dns"
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
+	"golang.org/x/sync/errgroup"
 )
 
-const confCRTShCertificateTransparencyObservation = 65
+const (
+	crtShDNSConcurrency                         = 10
+	confCRTShCertificateTransparencyObservation = 20
+	confCRTShDNSPresenceObservation             = 50
+)
+
+var crtShDNSRecordTypes = []uint16{
+	dns.TypeA,
+	dns.TypeAAAA,
+	dns.TypeCNAME,
+	dns.TypeMX,
+	dns.TypeSRV,
+	dns.TypeSVCB,
+	dns.TypeHTTPS,
+	dns.TypeNS,
+	dns.TypeSOA,
+	dns.TypeNAPTR,
+}
 
 func init() {
 	plugins.Register("crt-sh", func() plugins.Plugin { return NewCRTShPlugin(client.New()) })
 }
 
 type CRTShPlugin struct {
-	client  *client.Client
-	baseURL string // override for testing
+	client   *client.Client
+	baseURL  string // override for testing
+	resolver string // override for testing
+}
+
+type crtShEntry struct {
+	NameValue string `json:"name_value"`
+}
+
+type crtShCandidate struct {
+	domain        string
+	dnsRecordType uint16
 }
 
 func NewCRTShPlugin(c *client.Client) *CRTShPlugin {
-	return &CRTShPlugin{client: c}
+	return &CRTShPlugin{client: c, resolver: dnsDefaultResolver}
 }
 
 func (p *CRTShPlugin) crtshBase() string {
@@ -31,6 +60,13 @@ func (p *CRTShPlugin) crtshBase() string {
 		return p.baseURL
 	}
 	return "https://crt.sh"
+}
+
+func (p *CRTShPlugin) dnsResolver() string {
+	if p.resolver != "" {
+		return p.resolver
+	}
+	return dnsDefaultResolver
 }
 
 func (p *CRTShPlugin) Name() string { return "crt-sh" }
@@ -47,56 +83,124 @@ func (p *CRTShPlugin) Accepts(input plugins.Input) bool {
 }
 
 func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	// Search by domain if available, otherwise by org name
 	query := input.Domain
 	if query == "" {
 		query = input.OrgName
 	}
 
+	fmt.Printf("running against %v\n", query)
+
 	urlStr := fmt.Sprintf("%s/?q=%s&output=json", p.crtshBase(), url.QueryEscape(query))
 	body, err := p.client.Get(ctx, urlStr)
 	if err != nil {
-		return nil, nil // Rate limit or network error — not critical
+		fmt.Printf("http error: %v", err)
+		return nil, nil
 	}
 
-	// Parse crt.sh response
-	var entries []struct {
-		NameValue string `json:"name_value"`
-	}
+	var entries []crtShEntry
 	if err := json.Unmarshal(body, &entries); err != nil {
 		return nil, nil
 	}
 
-	// Deduplicate domains
+	candidates := p.findDNSRecordTypes(ctx, crtShCandidates(entries))
+
+	findings := make([]plugins.Finding, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.dnsRecordType == 0 {
+			fmt.Printf("skipping domain %v due to invalid DNS record (%d)\n", candidate.domain, candidate.dnsRecordType)
+			continue
+		}
+
+		finding := plugins.Finding{
+			Type:   plugins.FindingDomain,
+			Value:  candidate.domain,
+			Source: p.Name(),
+			Data: map[string]any{
+				"org":   input.OrgName,
+				"query": query,
+			},
+		}
+		plugins.AddConfidence(&finding, confCRTShCertificateTransparencyObservation,
+			fmt.Sprintf("crt.sh returned domain %q from Certificate Transparency data for query %q; query results: %s",
+				candidate.domain, query, urlStr))
+		plugins.AddConfidence(&finding, confCRTShDNSPresenceObservation,
+			fmt.Sprintf("DNS presence for %q was confirmed by a qualifying %s record",
+				candidate.domain, dns.TypeToString[candidate.dnsRecordType]))
+		findings = append(findings, finding)
+	}
+	return findings, nil
+}
+
+func crtShCandidates(entries []crtShEntry) []crtShCandidate {
 	seen := make(map[string]bool)
-	var findings []plugins.Finding
+	var candidates []crtShCandidate
 	for _, entry := range entries {
-		// name_value can contain multiple domains separated by newlines
-		for _, domain := range strings.Split(entry.NameValue, "\n") {
-			domain = strings.TrimSpace(domain)
-			domain = strings.ToLower(domain)
-			domain = strings.TrimSuffix(domain, ".")
-			// Skip wildcards and empty
-			if domain == "" || strings.HasPrefix(domain, "*") {
+		for _, name := range strings.Split(entry.NameValue, "\n") {
+			domain := normalizeDomain(name)
+			domain = strings.TrimPrefix(domain, "*.")
+			if domain == "" || domain == "*" || strings.HasPrefix(domain, "*") || seen[domain] {
 				continue
 			}
-			if !seen[domain] {
-				seen[domain] = true
-				finding := plugins.Finding{
-					Type:   plugins.FindingDomain,
-					Value:  domain,
-					Source: p.Name(),
-					Data: map[string]any{
-						"org":   input.OrgName,
-						"query": query,
-					},
-				}
-				plugins.AddConfidence(&finding, confCRTShCertificateTransparencyObservation,
-					fmt.Sprintf("crt.sh returned domain %q from Certificate Transparency data for query %q; query results: %s",
-						domain, query, urlStr))
-				findings = append(findings, finding)
+			seen[domain] = true
+			candidates = append(candidates, crtShCandidate{domain: domain})
+		}
+	}
+	return candidates
+}
+
+func (p *CRTShPlugin) findDNSRecordTypes(ctx context.Context, candidates []crtShCandidate) []crtShCandidate {
+	var group errgroup.Group
+	group.SetLimit(crtShDNSConcurrency)
+
+	for index := range candidates {
+		candidatePtr := &candidates[index]
+		group.Go(func() error {
+			candidatePtr.dnsRecordType = p.findDNSRecordType(ctx, candidatePtr.domain)
+			return nil
+		})
+	}
+
+	_ = group.Wait()
+	return candidates
+}
+
+func (p *CRTShPlugin) findDNSRecordType(ctx context.Context, candidate string) uint16 {
+	for _, queryType := range crtShDNSRecordTypes {
+		if ctx.Err() != nil {
+			fmt.Printf("encountered error: %v\n", ctx.Err())
+			return 0
+		}
+
+		response, err := queryDNS(ctx, candidate, queryType, p.dnsResolver())
+		if err != nil || response == nil {
+			fmt.Printf("encountered query dns error: %v\n", err)
+			continue
+		}
+		if response.Rcode == dns.RcodeNameError {
+			fmt.Println("response had dns error code")
+			return 0
+		}
+		if response.Rcode != dns.RcodeSuccess {
+			fmt.Println("response was not a success")
+			continue
+		}
+		if recordType := qualifyingDNSRecordType(response.Answer); recordType != 0 {
+			return recordType
+		}
+	}
+
+	fmt.Println("no response received")
+	return 0
+}
+
+func qualifyingDNSRecordType(records []dns.RR) uint16 {
+	for _, record := range records {
+		recordType := record.Header().Rrtype
+		for _, qualifyingType := range crtShDNSRecordTypes {
+			if recordType == qualifyingType {
+				return recordType
 			}
 		}
 	}
-	return findings, nil
+	return 0
 }
