@@ -355,7 +355,6 @@ func attachCensysReference(findings []plugins.Finding, reference plugins.Referen
 	for i := range findings {
 		for j := range findings[i].Confidences {
 			findings[i].Confidences[j].Reference = &reference
-			findings[i].Confidences[j].References = nil
 		}
 	}
 }
@@ -487,21 +486,23 @@ func (p *CensysOrgPlugin) extractFindings(input plugins.Input, hits []censysSear
 
 func buildCensysDomainConfidence(input plugins.Input, hostIP, rawDomain, source, field string, score int) plugins.Confidence {
 	domain := normalizeCensysDomain(rawDomain)
+	reference := plugins.URLReference("Censys host record", censysHostURL(hostIP))
 	return plugins.Confidence{
 		Score: score,
 		Justification: fmt.Sprintf("Censys returned host %q for %s; the host's %s field (%s) contained domain %q%s",
 			hostIP, describeCensysSearchTarget(input), source, field, domain, describeCensysORQueryCaveat(input)),
-		References: []plugins.Reference{{Label: "Censys host record", URL: censysHostURL(hostIP)}},
+		Reference: &reference,
 	}
 }
 
 func buildCensysCIDRConfidence(input plugins.Input, hostIP, rawCIDR, source, field string) plugins.Confidence {
 	cidr := strings.TrimSpace(rawCIDR)
+	reference := plugins.URLReference("Censys host record", censysHostURL(hostIP))
 	return plugins.Confidence{
 		Score: confCensysNetworkCIDR,
 		Justification: fmt.Sprintf("Censys returned host %q for %s; the host's %s field (%s) contained CIDR %q%s",
 			hostIP, describeCensysSearchTarget(input), source, field, cidr, describeCensysORQueryCaveat(input)),
-		References: []plugins.Reference{{Label: "Censys host record", URL: censysHostURL(hostIP)}},
+		Reference: &reference,
 	}
 }
 
@@ -521,7 +522,7 @@ func censysHostReferences(hosts map[string]bool) []plugins.Reference {
 
 	references := make([]plugins.Reference, len(ips))
 	for i, ip := range ips {
-		references[i] = plugins.Reference{Label: "Censys host " + ip, URL: censysHostURL(ip)}
+		references[i] = plugins.URLReference("Censys host "+ip, censysHostURL(ip))
 	}
 	return references
 }
@@ -556,7 +557,7 @@ func (p *CensysOrgPlugin) emitDomain(findings *[]plugins.Finding, seen map[strin
 			"field": field,
 		},
 	}
-	plugins.AddConfidence(&newFinding, confidence.Score, confidence.Justification, confidence.References...)
+	addCensysConfidence(&newFinding, confidence)
 	*findings = append(*findings, newFinding)
 }
 
@@ -576,8 +577,16 @@ func (p *CensysOrgPlugin) emitCIDR(findings *[]plugins.Finding, seen map[string]
 			"field": field,
 		},
 	}
-	plugins.AddConfidence(&newFinding, confidence.Score, confidence.Justification, confidence.References...)
+	addCensysConfidence(&newFinding, confidence)
 	*findings = append(*findings, newFinding)
+}
+
+func addCensysConfidence(finding *plugins.Finding, confidence plugins.Confidence) {
+	if confidence.Reference == nil {
+		plugins.AddConfidence(finding, confidence.Score, confidence.Justification)
+		return
+	}
+	plugins.AddConfidenceWithReference(finding, confidence.Score, confidence.Justification, *confidence.Reference)
 }
 
 // normalizeCensysDomain extends normalizeDomain with Censys-specific cleanup:

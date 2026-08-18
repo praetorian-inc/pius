@@ -100,12 +100,12 @@ func TestURLScanPlugin_BasicSubdomainDiscovery(t *testing.T) {
 		assert.Contains(t, f.Confidences[0].Justification, f.Value)
 		assert.Contains(t, f.Confidences[0].Justification, "praetorian.com")
 		assert.Contains(t, f.Confidences[0].Justification, "URLScan scan history")
-		require.Len(t, f.Confidences[0].References, 1)
+		require.NotNil(t, f.Confidences[0].Reference)
 		expectedScan := "scan-1"
 		if f.Value == "blog.praetorian.com" {
 			expectedScan = "scan-2"
 		}
-		assert.Equal(t, srv.URL+"/result/"+expectedScan+"/", f.Confidences[0].References[0].URL)
+		assert.Equal(t, srv.URL+"/result/"+expectedScan+"/", confidenceURL(t, f.Confidences[0]))
 		assert.NotContains(t, f.Data, "confidence")
 		assert.NotContains(t, f.Data, "confidences")
 		values[f.Value] = true

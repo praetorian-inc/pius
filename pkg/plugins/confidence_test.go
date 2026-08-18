@@ -18,16 +18,17 @@ func TestAddConfidence_AppendsEntry(t *testing.T) {
 }
 
 func TestAddConfidence_CopiesReferences(t *testing.T) {
-	references := []Reference{{Label: "source", URL: "https://example.com/evidence"}}
+	references := []Reference{URLReference("source", "https://example.com/evidence")}
 	var finding Finding
 
 	AddConfidence(&finding, 60, "source supports finding", references...)
-	references[0].URL = "https://example.com/mutated"
+	references[0].Data = URLReferenceData{URL: "https://example.com/mutated"}
 
 	require.Len(t, finding.Confidences, 1)
-	require.Len(t, finding.Confidences[0].References, 1)
-	assert.Equal(t, "source", finding.Confidences[0].References[0].Label)
-	assert.Equal(t, "https://example.com/evidence", finding.Confidences[0].References[0].URL)
+	reference := finding.Confidences[0].Reference
+	require.NotNil(t, reference)
+	assert.Equal(t, "source", reference.Label)
+	assert.Equal(t, URLReferenceData{URL: "https://example.com/evidence"}, reference.Data)
 }
 
 func TestAddConfidence_CombinesReferencesAsTypedCollection(t *testing.T) {
@@ -218,10 +219,8 @@ func TestNeedsReview_FalseWhenCappedSumClears(t *testing.T) {
 // modes, which encode a Finding directly.
 func TestFinding_JSONIncludesConfidences(t *testing.T) {
 	f := Finding{Type: FindingDomain, Value: "example.com", Source: "github-org"}
-	AddConfidence(&f, 60, "blog URL matches the known domain", Reference{
-		Label: "Organization profile",
-		URL:   "https://github.com/acme",
-	})
+	AddConfidence(&f, 60, "blog URL matches the known domain",
+		URLReference("Organization profile", "https://github.com/acme"))
 	AddConfidence(&f, 5, "organization has 86 public repositories")
 
 	encoded, err := json.Marshal(f)

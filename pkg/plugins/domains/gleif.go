@@ -335,9 +335,9 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation, primaryRelatio
 	// Signal 1: Name resolution quality — how well fuzzycompletions matched.
 	resolutionURL := fmt.Sprintf("%s/fuzzycompletions?field=entity.legalName&q=%s",
 		p.gleifBase(), url.QueryEscape(p.orgName))
-	resolutionReferences := []plugins.Reference{{Label: "GLEIF resolution request", URL: resolutionURL}}
+	resolutionReferences := []plugins.Reference{plugins.URLReference("GLEIF resolution request", resolutionURL)}
 	if recordURL := p.gleifRecordURL(p.primaryLEI); recordURL != "" {
-		resolutionReferences = append(resolutionReferences, plugins.Reference{Label: "Resolved GLEIF entity", URL: recordURL})
+		resolutionReferences = append(resolutionReferences, plugins.URLReference("Resolved GLEIF entity", recordURL))
 	}
 	if p.candidateRank == 0 {
 		plugins.AddConfidence(&f, 15,
@@ -372,7 +372,7 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation, primaryRelatio
 }
 
 func (p *GLEIFPlugin) relationshipReferences(relatedLEI, relation, primaryRelationship string) []plugins.Reference {
-	references := []plugins.Reference{{Label: "Related GLEIF entity", URL: p.gleifRecordURL(relatedLEI)}}
+	references := []plugins.Reference{plugins.URLReference("Related GLEIF entity", p.gleifRecordURL(relatedLEI))}
 
 	var relationshipLEI, relationship string
 	switch relation {
@@ -384,16 +384,12 @@ func (p *GLEIFPlugin) relationshipReferences(relatedLEI, relation, primaryRelati
 		relationship = "direct-parent"
 	}
 	if relationshipLEI != "" {
-		references = append(references, plugins.Reference{
-			Label: "GLEIF relationship record",
-			URL:   p.gleifRelationshipURL(relationshipLEI, relationship),
-		})
+		references = append(references, plugins.URLReference(
+			"GLEIF relationship record", p.gleifRelationshipURL(relationshipLEI, relationship)))
 	}
 	if relation == "sibling" {
-		references = append(references, plugins.Reference{
-			Label: "Target GLEIF relationship record",
-			URL:   p.gleifRelationshipURL(p.primaryLEI, primaryRelationship),
-		})
+		references = append(references, plugins.URLReference(
+			"Target GLEIF relationship record", p.gleifRelationshipURL(p.primaryLEI, primaryRelationship)))
 	}
 	return references
 }

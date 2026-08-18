@@ -151,8 +151,7 @@ func TestGitHubOrgPlugin_Score_HighConfidenceWithDomain(t *testing.T) {
 	assert.Contains(t, f.Confidences[0].Justification, "praetorian.com")
 	for _, confidence := range f.Confidences {
 		assert.NotEmpty(t, confidence.Justification, "every entry needs a justification")
-		require.Len(t, confidence.References, 1)
-		assert.Equal(t, "https://github.com/praetorian-inc", confidence.References[0].URL)
+		assert.Equal(t, "https://github.com/praetorian-inc", confidenceURL(t, confidence))
 	}
 }
 

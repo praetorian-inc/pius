@@ -247,7 +247,7 @@ func githubOrgReference(org *githubOrg) plugins.Reference {
 	if profileURL == "" {
 		profileURL = "https://github.com/" + url.PathEscape(org.Login)
 	}
-	return plugins.Reference{Label: "GitHub organization profile", URL: profileURL}
+	return plugins.URLReference("GitHub organization profile", profileURL)
 }
 
 // buildFindings emits the unscored candidate findings for an org. Callers run

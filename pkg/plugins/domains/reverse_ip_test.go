@@ -579,11 +579,10 @@ func TestScoreReverseIP_AssociationEvidenceNamesLookup(t *testing.T) {
 			require.NotEmpty(t, finding.Confidences)
 			assert.Contains(t, finding.Confidences[0].Justification, tt.methodName)
 			if tt.reference == "" {
-				assert.Empty(t, finding.Confidences[0].References)
+				assert.Nil(t, finding.Confidences[0].Reference)
 				return
 			}
-			require.Len(t, finding.Confidences[0].References, 1)
-			assert.Contains(t, finding.Confidences[0].References[0].URL, tt.reference)
+			assert.Contains(t, confidenceURL(t, finding.Confidences[0]), tt.reference)
 		})
 	}
 }

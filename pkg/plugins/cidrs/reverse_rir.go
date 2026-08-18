@@ -344,10 +344,7 @@ func newReverseRIRFinding(handle, registry, database, org string) (plugins.Findi
 	referenceURL := reverseRIRQueryURL(registry, database, org)
 	var references []plugins.Reference
 	if referenceURL != "" {
-		references = append(references, plugins.Reference{
-			Label: database + " query",
-			URL:   referenceURL,
-		})
+		references = append(references, plugins.URLReference(database+" query", referenceURL))
 	}
 	plugins.AddConfidence(&finding, confReverseRIRHandle, fmt.Sprintf(
 		"%s returned organization handle %q for organization search %q",

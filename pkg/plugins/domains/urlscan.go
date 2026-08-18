@@ -137,10 +137,8 @@ func (p *URLScanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 			}
 			var references []plugins.Reference
 			if result.Task.UUID != "" {
-				references = append(references, plugins.Reference{
-					Label: "URLScan result",
-					URL:   p.urlscanBase() + "/result/" + url.PathEscape(result.Task.UUID) + "/",
-				})
+				references = append(references, plugins.URLReference(
+					"URLScan result", p.urlscanBase()+"/result/"+url.PathEscape(result.Task.UUID)+"/"))
 			}
 			plugins.AddConfidence(&finding, confURLScanHistoryObservation,
 				fmt.Sprintf("URLScan scan history records hostname %q under queried base domain %q",

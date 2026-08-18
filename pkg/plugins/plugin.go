@@ -80,10 +80,6 @@ type Reference struct {
 	Label string `json:"label"`
 	Type  string `json:"type"`
 	Data  any    `json:"data"`
-
-	// URL is accepted while source plugins migrate to typed Data. It is
-	// normalized into URLReferenceData before a confidence is emitted.
-	URL string `json:"-"`
 }
 
 const (
@@ -143,10 +139,6 @@ type Confidence struct {
 	// Reference contains the source material a user can inspect to verify the
 	// justification. Evidence without useful source material leaves this nil.
 	Reference *Reference `json:"reference,omitempty"`
-
-	// References is a plugin-internal migration field. AddConfidence folds it
-	// into the singular Reference before findings leave Pius.
-	References []Reference `json:"-"`
 }
 
 // Finding represents a single discovered asset or intermediate result.

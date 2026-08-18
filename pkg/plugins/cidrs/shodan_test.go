@@ -206,9 +206,9 @@ func TestShodanPlugin_Run(t *testing.T) {
 	for _, finding := range findings {
 		require.Len(t, finding.Confidences, 2)
 		for _, confidence := range finding.Confidences {
-			require.Len(t, confidence.References, 1)
-			assert.Contains(t, confidence.References[0].URL, "https://www.shodan.io/search?query=")
-			assert.NotContains(t, confidence.References[0].URL, "test-key")
+			referenceURL := confidenceURL(t, confidence)
+			assert.Contains(t, referenceURL, "https://www.shodan.io/search?query=")
+			assert.NotContains(t, referenceURL, "test-key")
 			require.NotNil(t, confidence.Reference)
 			encoded, err := json.Marshal(confidence.Reference)
 			require.NoError(t, err)
@@ -267,10 +267,8 @@ func TestShodanPlugin_ProcessResultsRetainsDistinctQueryEvidence(t *testing.T) {
 	for _, finding := range []plugins.Finding{cidr, domain} {
 		require.Len(t, finding.Confidences, 2, "one finding with one evidence entry per distinct query")
 		assert.Equal(t, confShodanSearchResult, finding.Confidences[0].Score)
-		require.Len(t, finding.Confidences[0].References, 1)
-		require.Len(t, finding.Confidences[1].References, 1)
-		assert.Equal(t, firstURL, finding.Confidences[0].References[0].URL)
-		assert.Equal(t, secondURL, finding.Confidences[1].References[0].URL)
+		assert.Equal(t, firstURL, confidenceURL(t, finding.Confidences[0]))
+		assert.Equal(t, secondURL, confidenceURL(t, finding.Confidences[1]))
 		assert.NotContains(t, finding.Data, "confidence")
 		assert.NotContains(t, finding.Data, "confidences")
 	}

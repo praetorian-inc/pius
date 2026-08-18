@@ -139,7 +139,7 @@ func archiveReferences(sources map[string]string) []plugins.Reference {
 	references := make([]plugins.Reference, 0, len(names))
 	for _, name := range names {
 		if queryURL := sources[name]; queryURL != "" {
-			references = append(references, plugins.Reference{Label: name + " query", URL: queryURL})
+			references = append(references, plugins.URLReference(name+" query", queryURL))
 		}
 	}
 	return references

@@ -438,10 +438,9 @@ func reverseIPMethodName(method string) string {
 func reverseIPReferences(method, ip string) []plugins.Reference {
 	switch method {
 	case "hackertarget":
-		return []plugins.Reference{{
-			Label: "HackerTarget reverse-IP request",
-			URL:   "https://api.hackertarget.com/reverseiplookup/?" + url.Values{"q": {ip}}.Encode(),
-		}}
+		return []plugins.Reference{plugins.URLReference(
+			"HackerTarget reverse-IP request",
+			"https://api.hackertarget.com/reverseiplookup/?"+url.Values{"q": {ip}}.Encode())}
 	default:
 		return nil
 	}

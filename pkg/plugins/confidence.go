@@ -1,5 +1,7 @@
 package plugins
 
+import "slices"
+
 // Confidence thresholds used by name-to-identifier resolution plugins.
 // Plugins that map an org name to a third-party identifier (GitHub org,
 // domain registrant, etc.) attach scored, justified evidence to their findings
@@ -19,12 +21,11 @@ const (
 
 // AddConfidence appends one piece of scored, justified evidence to f.
 func AddConfidence(f *Finding, score int, justification string, references ...Reference) {
-	normalized := normalizeReferences(references)
+	references = slices.Clone(references)
 	f.Confidences = append(f.Confidences, Confidence{
 		Score:         max(0, min(score, 100)),
 		Justification: justification,
-		Reference:     combineNormalizedReferences(normalized),
-		References:    normalized,
+		Reference:     combineReferences(references),
 	})
 }
 
@@ -35,18 +36,7 @@ func AddConfidenceWithReference(f *Finding, score int, justification string, ref
 	AddConfidence(f, score, justification, reference)
 }
 
-func normalizeReferences(references []Reference) []Reference {
-	if len(references) == 0 {
-		return nil
-	}
-	normalized := make([]Reference, len(references))
-	for i, reference := range references {
-		normalized[i] = normalizeReference(reference)
-	}
-	return normalized
-}
-
-func combineNormalizedReferences(references []Reference) *Reference {
+func combineReferences(references []Reference) *Reference {
 	if len(references) == 0 {
 		return nil
 	}
@@ -59,14 +49,6 @@ func combineNormalizedReferences(references []Reference) *Reference {
 		Type:  ReferenceTypeReferences,
 		Data:  references,
 	}
-}
-
-func normalizeReference(reference Reference) Reference {
-	if reference.Type == "" && reference.URL != "" {
-		reference.Type = ReferenceTypeURL
-		reference.Data = URLReferenceData{URL: reference.URL}
-	}
-	return reference
 }
 
 // TotalConfidence returns the sum of a finding's evidence scores, capped at 100.

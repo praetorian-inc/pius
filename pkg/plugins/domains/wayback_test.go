@@ -226,9 +226,10 @@ func TestWaybackPlugin_DeduplicatesAcrossSources(t *testing.T) {
 		confidence := f.Confidences[0]
 		assert.Equal(t, confWaybackArchiveObservation, confidence.Score)
 		assert.Contains(t, confidence.Justification, `Archive evidence from Common Crawl and Wayback Machine records hostname "api.example.com" under base domain "example.com"`)
-		require.Len(t, confidence.References, 2)
-		assert.Contains(t, confidence.References[0].URL, ccSrv.URL)
-		assert.Contains(t, confidence.References[1].URL, wbSrv.URL)
+		references := confidenceReferences(t, confidence)
+		require.Len(t, references, 2)
+		assert.Contains(t, referenceURL(t, references[0]), ccSrv.URL)
+		assert.Contains(t, referenceURL(t, references[1]), wbSrv.URL)
 		assert.NotContains(t, f.Data, "confidence")
 		assert.NotContains(t, f.Data, "confidences")
 	}
