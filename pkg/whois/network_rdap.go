@@ -2,6 +2,7 @@ package whois
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -31,22 +32,31 @@ func rdapNetworkLookup(ctx context.Context, httpClient *http.Client, target netw
 	}
 
 	result := mapRDAPToNetworkResult(target.query, network)
-	result.Server = rdapResponseServer(response)
+	result.RDAPURL = rdapResponseURL(response)
+	result.Server = rdapResponseServer(result.RDAPURL)
 	result.RDAPServer = result.Server
+	result.RDAPResponse, _ = json.Marshal(network)
 	if err := requireContainingAllocation(result, target); err != nil {
 		return NetworkResult{}, err
 	}
 	return result, nil
 }
 
-func rdapResponseServer(response *rdap.Response) string {
+func rdapResponseURL(response *rdap.Response) string {
 	for _, httpResponse := range response.HTTP {
-		parsed, err := url.Parse(httpResponse.URL)
-		if err == nil && parsed.Host != "" {
-			return parsed.Host
+		if httpResponse.URL != "" {
+			return httpResponse.URL
 		}
 	}
 	return ""
+}
+
+func rdapResponseServer(responseURL string) string {
+	parsed, err := url.Parse(responseURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Host
 }
 
 func mapRDAPToNetworkResult(query string, network *rdap.IPNetwork) NetworkResult {

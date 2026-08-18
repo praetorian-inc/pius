@@ -2,6 +2,7 @@ package whois
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -27,6 +28,8 @@ type NetworkResult struct {
 	Registry     string           `json:"registry,omitempty"`
 	Server       string           `json:"server,omitempty"`
 	RDAPServer   string           `json:"rdap_server,omitempty"`
+	RDAPURL      string           `json:"rdap_url,omitempty"`
+	RDAPResponse json.RawMessage  `json:"rdap_response,omitempty"`
 	WhoisServer  string           `json:"whois_server,omitempty"`
 	Contacts     []NetworkContact `json:"contacts,omitempty"`
 	Sources      []string         `json:"sources,omitempty"`
@@ -91,7 +94,8 @@ func ValidateNetworkTarget(query string) error {
 	return err
 }
 
-// LookupNetwork resolves an IP or CIDR through RDAP with TCP-43 fallback.
+// LookupNetwork resolves an IP or CIDR through RDAP and TCP-43, merging both
+// protocol responses when available.
 func LookupNetwork(ctx context.Context, query string, opts ...Option) (NetworkResult, error) {
 	target, err := parseNetworkTarget(query)
 	if err != nil {
@@ -104,10 +108,6 @@ func LookupNetwork(ctx context.Context, query string, opts ...Option) (NetworkRe
 	}
 
 	rdapResult, rdapErr := rdapNetworkLookup(ctx, cfg.httpClient, target)
-	if rdapErr == nil && hasUsefulNetworkIdentity(rdapResult.Contacts) {
-		return rdapResult, nil
-	}
-
 	tcpResult, tcpErr := tcp43NetworkLookup(ctx, target)
 	if rdapErr == nil {
 		if tcpErr == nil {

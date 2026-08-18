@@ -178,8 +178,35 @@ func networkPreseedFinding(result whois.NetworkResult, candidate networkPreseedC
 	if len(result.Status) > 0 {
 		finding.Data["allocation_status"] = result.Status
 	}
-	plugins.AddConfidence(&finding, confIPWhoisContact, networkPreseedJustification(result, candidate))
+	plugins.AddConfidence(&finding, confIPWhoisContact,
+		networkPreseedJustification(result, candidate), networkReferences(result)...)
 	return finding
+}
+
+func networkReferences(result whois.NetworkResult) []plugins.Reference {
+	var references []plugins.Reference
+	if len(result.RDAPResponse) > 0 {
+		references = append(references, plugins.Reference{
+			Label: "Observed IP RDAP response",
+			Type:  plugins.ReferenceTypeRDAP,
+			Data: plugins.HTTPExchangeReference{
+				Request:  plugins.HTTPRequestReference{Method: http.MethodGet, URL: result.RDAPURL},
+				Response: result.RDAPResponse,
+			},
+		})
+	}
+	if result.Raw != "" {
+		references = append(references, plugins.Reference{
+			Label: "Observed IP WHOIS response",
+			Type:  plugins.ReferenceTypeWHOIS,
+			Data: map[string]any{
+				"query":          result.Query,
+				"whois_server":   result.WhoisServer,
+				"whois_response": result.Raw,
+			},
+		})
+	}
+	return references
 }
 
 func networkPreseedJustification(result whois.NetworkResult, candidate networkPreseedCandidate) string {

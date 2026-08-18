@@ -1,6 +1,7 @@
 package ips
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -68,6 +69,30 @@ func TestNetworkFindings_EmitResultAndPreseeds(t *testing.T) {
 		assert.Contains(t, finding.Confidences[0].Justification, `allocation "NET-8-8-8-0-1" spanning 8.8.8.0-8.8.8.255`)
 		assert.Contains(t, finding.Confidences[0].Justification, `returned for query "8.8.8.8"`)
 	}
+}
+
+func TestNetworkPreseeds_AttachObservedProtocolResponses(t *testing.T) {
+	result := whois.NetworkResult{
+		Query:        "203.15.226.0/24",
+		RDAPURL:      "https://rdap.apnic.net/ip/203.15.226.0/24",
+		RDAPResponse: json.RawMessage(`{"handle":"AUNIC-NET"}`),
+		WhoisServer:  "whois.apnic.net",
+		Raw:          "inetnum: 203.15.226.0 - 203.15.226.255",
+		Contacts: []whois.NetworkContact{{
+			Roles: []string{"registrant"}, Kind: "org", Direct: true, Name: "National Library of Australia",
+		}},
+	}
+
+	findings := networkPreseeds(result)
+	require.Len(t, findings, 1)
+	require.Len(t, findings[0].Confidences, 1)
+	reference := findings[0].Confidences[0].Reference
+	require.NotNil(t, reference)
+	assert.Equal(t, plugins.ReferenceTypeReferences, reference.Type)
+	references := reference.Data.([]plugins.Reference)
+	require.Len(t, references, 2)
+	assert.Equal(t, plugins.ReferenceTypeRDAP, references[0].Type)
+	assert.Equal(t, plugins.ReferenceTypeWHOIS, references[1].Type)
 }
 
 func TestNetworkPreseedJustification_AttributesMergedSources(t *testing.T) {

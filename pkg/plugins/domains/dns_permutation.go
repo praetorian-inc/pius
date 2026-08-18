@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
+	"golang.org/x/net/publicsuffix"
 )
 
 //go:embed wordlists/permutations.txt
@@ -276,9 +277,7 @@ func extractLabels(fqdn, base string) []string {
 	return strings.Split(sub, ".")
 }
 
-// groupByBaseDomain groups FQDNs by their base domain (eTLD+1 approximation).
-// It finds the shortest common suffix that is shared by at least two subdomains,
-// or falls back to the last two labels.
+// groupByBaseDomain groups FQDNs by their registrable domain.
 func groupByBaseDomain(domains []string) map[string][]string {
 	groups := make(map[string][]string)
 	for _, d := range domains {
@@ -289,14 +288,15 @@ func groupByBaseDomain(domains []string) map[string][]string {
 	return groups
 }
 
-// guessBaseDomain extracts the base domain from a FQDN by taking the last two labels.
-// e.g., "api.staging.example.com" → "example.com"
+// guessBaseDomain extracts the registrable domain without crossing public
+// suffix boundaries. Invalid or suffix-only inputs remain their own boundary.
 func guessBaseDomain(fqdn string) string {
-	parts := strings.Split(fqdn, ".")
-	if len(parts) <= 2 {
+	fqdn = normalizeDomain(fqdn)
+	base, err := publicsuffix.EffectiveTLDPlusOne(fqdn)
+	if err != nil {
 		return fqdn
 	}
-	return strings.Join(parts[len(parts)-2:], ".")
+	return base
 }
 
 // joinFQDN joins subdomain labels with a base domain.

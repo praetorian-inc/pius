@@ -66,6 +66,8 @@ func TestGuessBaseDomain(t *testing.T) {
 	assert.Equal(t, "example.com", guessBaseDomain("api.example.com"))
 	assert.Equal(t, "example.com", guessBaseDomain("a.b.c.example.com"))
 	assert.Equal(t, "example.com", guessBaseDomain("example.com"))
+	assert.Equal(t, "example.co.uk", guessBaseDomain("api.example.co.uk"))
+	assert.Equal(t, "example.com.au", guessBaseDomain("api.example.com.au"))
 	assert.Equal(t, "localhost", guessBaseDomain("localhost"))
 }
 

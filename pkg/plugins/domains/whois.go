@@ -144,17 +144,7 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 		source = "WHOIS server " + r.WhoisServer
 	}
 
-	reference := plugins.Reference{
-		Label: "Domain registration responses",
-		Type:  plugins.ReferenceTypeWHOIS,
-		Data: map[string]any{
-			"domain":         r.Domain,
-			"sources":        r.Sources,
-			"rdap_response":  r.RDAPResponse,
-			"whois_server":   r.WhoisServer,
-			"whois_response": r.WHOISResponse,
-		},
-	}
+	references := domainRegistrationReferences(r)
 
 	var findings []plugins.Finding
 	for _, cd := range unique {
@@ -167,10 +157,36 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 				"preseed_title": cd.value,
 			},
 		}
-		plugins.AddConfidenceWithReference(&f, confWhoisServerRecord,
+		plugins.AddConfidence(&f, confWhoisServerRecord,
 			fmt.Sprintf("%s for domain %q records %q as the %s contact %s",
-				source, r.Domain, cd.value, cd.role, cd.field), reference)
+				source, r.Domain, cd.value, cd.role, cd.field), references...)
 		findings = append(findings, f)
 	}
 	return findings
+}
+
+func domainRegistrationReferences(result whois.Result) []plugins.Reference {
+	var references []plugins.Reference
+	if len(result.RDAPResponse) > 0 {
+		references = append(references, plugins.Reference{
+			Label: "Observed domain RDAP response",
+			Type:  plugins.ReferenceTypeRDAP,
+			Data: map[string]any{
+				"domain":   result.Domain,
+				"response": result.RDAPResponse,
+			},
+		})
+	}
+	if result.WHOISResponse != "" {
+		references = append(references, plugins.Reference{
+			Label: "Observed domain WHOIS response",
+			Type:  plugins.ReferenceTypeWHOIS,
+			Data: map[string]any{
+				"domain":         result.Domain,
+				"whois_server":   result.WhoisServer,
+				"whois_response": result.WHOISResponse,
+			},
+		})
+	}
+	return references
 }

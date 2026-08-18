@@ -18,7 +18,9 @@ import (
 const maxWhoxyPages = 100
 
 func init() {
-	plugins.Register("whoxy-reverse-whois", func() plugins.Plugin { return &WhoxyReverseWhoisPlugin{client: client.New()} })
+	plugins.Register("whoxy-reverse-whois", func() plugins.Plugin {
+		return NewWhoxyReverseWhoisPlugin(client.New(), os.Getenv("WHOXY_API_KEY"))
+	})
 }
 
 // WhoxyReverseWhoisPlugin discovers related domains via Whoxy reverse WHOIS.
@@ -26,12 +28,17 @@ func init() {
 // runs the whois capability on each discovered domain.
 type WhoxyReverseWhoisPlugin struct {
 	client  *client.Client
+	apiKey  string
 	baseURL string // overridable for tests
 }
 
 // NewWhoxyReverseWhoisPlugin creates a plugin with an injectable HTTP client.
-func NewWhoxyReverseWhoisPlugin(httpClient *client.Client) *WhoxyReverseWhoisPlugin {
-	return &WhoxyReverseWhoisPlugin{client: httpClient}
+func NewWhoxyReverseWhoisPlugin(httpClient *client.Client, apiKeys ...string) *WhoxyReverseWhoisPlugin {
+	apiKey := os.Getenv("WHOXY_API_KEY")
+	if len(apiKeys) > 0 {
+		apiKey = apiKeys[0]
+	}
+	return &WhoxyReverseWhoisPlugin{client: httpClient, apiKey: apiKey}
 }
 
 func (p *WhoxyReverseWhoisPlugin) Name() string { return "whoxy-reverse-whois" }
@@ -43,7 +50,14 @@ func (p *WhoxyReverseWhoisPlugin) Phase() int       { return 0 }
 func (p *WhoxyReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *WhoxyReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("WHOXY_API_KEY") != "" && (input.OrgName != "" || input.PersonName != "" || input.Email != "")
+	return p.credential() != "" && (input.OrgName != "" || input.PersonName != "" || input.Email != "")
+}
+
+func (p *WhoxyReverseWhoisPlugin) credential() string {
+	if p.apiKey != "" {
+		return p.apiKey
+	}
+	return os.Getenv("WHOXY_API_KEY")
 }
 
 func (p *WhoxyReverseWhoisPlugin) apiBase() string {
@@ -70,8 +84,6 @@ type whoxyQuery struct {
 }
 
 func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	apiKey := os.Getenv("WHOXY_API_KEY")
-
 	// Build the set of queries from the input. Whoxy distinguishes company
 	// names (&company=) from person names (&name=) from email (&email=).
 	queries := buildWhoxyQueries(input)
@@ -86,7 +98,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		domains, err := p.paginateQuery(ctx, apiKey, q)
+		domains, err := p.paginateQuery(ctx, p.credential(), q)
 		if err != nil {
 			slog.Warn("whoxy-reverse-whois: query failed", "param", q.param, "value", q.value, "error", err)
 			continue

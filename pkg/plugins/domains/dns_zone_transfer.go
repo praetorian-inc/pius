@@ -67,8 +67,9 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 		for _, hostname := range records {
 			hostname = normalizeDomain(hostname)
 
-			// Skip the base domain itself, empty, and already-seen
-			if hostname == "" || hostname == domain || seen[hostname] {
+			// AXFR records may point outside the transferred zone. Only record
+			// owners within the requested boundary are discoveries.
+			if hostname == "" || hostname == domain || !matchesDomain(hostname, domain) || seen[hostname] {
 				continue
 			}
 			seen[hostname] = true
