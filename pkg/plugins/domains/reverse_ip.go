@@ -402,9 +402,13 @@ func scoreReverseIP(f *plugins.Finding, hostname, baseDomain, orgName, ip, metho
 	baseDomain = strings.ToLower(baseDomain)
 	orgName = strings.ToLower(orgName)
 
-	plugins.AddConfidence(f, confReverseIPAssociated,
-		fmt.Sprintf("%s associated hostname %q with discovered IP %s",
-			reverseIPMethodName(method), hostname, ip), reverseIPReferences(method, ip)...)
+	justification := fmt.Sprintf("%s associated hostname %q with discovered IP %s",
+		reverseIPMethodName(method), hostname, ip)
+	if reference := reverseIPReference(method, ip); reference != nil {
+		plugins.AddConfidenceWithReference(f, confReverseIPAssociated, justification, *reference)
+	} else {
+		plugins.AddConfidence(f, confReverseIPAssociated, justification)
+	}
 
 	if !isCDN {
 		plugins.AddConfidence(f, confReverseIPNonCDN,
@@ -435,15 +439,14 @@ func reverseIPMethodName(method string) string {
 	}
 }
 
-func reverseIPReferences(method, ip string) []plugins.Reference {
-	switch method {
-	case "hackertarget":
-		return []plugins.Reference{plugins.URLReference(
-			"HackerTarget reverse-IP request",
-			"https://api.hackertarget.com/reverseiplookup/?"+url.Values{"q": {ip}}.Encode())}
-	default:
+func reverseIPReference(method, ip string) *plugins.Reference {
+	if method != "hackertarget" {
 		return nil
 	}
+	reference := plugins.URLReference(
+		"HackerTarget reverse-IP request",
+		"https://api.hackertarget.com/reverseiplookup/?"+url.Values{"q": {ip}}.Encode())
+	return &reference
 }
 
 // Known CDN/cloud provider IP ranges (simplified - common prefixes)

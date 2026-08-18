@@ -182,9 +182,9 @@ func domainRegistrationReference(result whois.Result, value string) *plugins.Ref
 		return &plugins.Reference{
 			Label: "Observed domain RDAP response",
 			Type:  plugins.ReferenceTypeRDAP,
-			Data: map[string]any{
-				"domain":   result.Domain,
-				"response": result.RDAPResponse,
+			Data: plugins.RDAPReferenceData{
+				Domain:   result.Domain,
+				Response: result.RDAPResponse,
 			},
 		}
 	}
@@ -194,10 +194,10 @@ func domainRegistrationReference(result whois.Result, value string) *plugins.Ref
 	return &plugins.Reference{
 		Label: "Observed domain WHOIS response",
 		Type:  plugins.ReferenceTypeWHOIS,
-		Data: map[string]any{
-			"domain":         result.Domain,
-			"whois_server":   result.WhoisServer,
-			"whois_response": result.WHOISResponse,
+		Data: plugins.WHOISReferenceData{
+			Domain:        result.Domain,
+			WHOISServer:   result.WhoisServer,
+			WHOISResponse: result.WHOISResponse,
 		},
 	}
 }

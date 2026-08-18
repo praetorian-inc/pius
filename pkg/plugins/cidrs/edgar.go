@@ -115,8 +115,12 @@ func findingsFromEDGARResponse(input plugins.Input, resp EDGARResponse) []plugin
 				if documentURL := secDocumentURL(hit.ID, cik); documentURL != "" {
 					references = append(references, plugins.URLReference("SEC EDGAR document", documentURL))
 				}
-				plugins.AddConfidence(&finding, confEDGARApparentHandle,
-					edgarJustification(hit, displayName, handle), references...)
+				justification := edgarJustification(hit, displayName, handle)
+				if len(references) == 0 {
+					plugins.AddConfidence(&finding, confEDGARApparentHandle, justification)
+				} else {
+					plugins.AddConfidenceWithReference(&finding, confEDGARApparentHandle, justification, references[0])
+				}
 				findings = append(findings, finding)
 			}
 		}

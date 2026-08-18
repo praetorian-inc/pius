@@ -380,9 +380,10 @@ func assertRPSLReference(t *testing.T, confidence plugins.Confidence, expectedUR
 	t.Helper()
 	require.NotNil(t, confidence.Reference)
 	assert.Equal(t, plugins.ReferenceTypeRPSL, confidence.Reference.Type)
-	data := confidence.Reference.Data.(map[string]any)
-	assert.Equal(t, expectedURL, data["network_url"])
-	assert.NotEmpty(t, data["record"])
+	data, ok := confidence.Reference.Data.(plugins.RPSLReferenceData)
+	require.True(t, ok)
+	assert.Equal(t, expectedURL, data.NetworkURL)
+	assert.NotEmpty(t, data.Record)
 }
 
 // The whole point of the injected-path mode: a missing file is an error, never

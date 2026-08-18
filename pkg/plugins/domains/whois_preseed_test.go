@@ -29,8 +29,9 @@ func TestExtractPreseeds_JustificationNamesWhoisServer(t *testing.T) {
 		findings[0].Confidences[0].Justification)
 	require.NotNil(t, findings[0].Confidences[0].Reference)
 	assert.Equal(t, plugins.ReferenceTypeWHOIS, findings[0].Confidences[0].Reference.Type)
-	data := findings[0].Confidences[0].Reference.Data.(map[string]any)
-	assert.Equal(t, r.WHOISResponse, data["whois_response"])
+	data, ok := findings[0].Confidences[0].Reference.Data.(plugins.WHOISReferenceData)
+	require.True(t, ok)
+	assert.Equal(t, r.WHOISResponse, data.WHOISResponse)
 }
 
 func TestExtractPreseeds_PrefersRDAPConfidence(t *testing.T) {

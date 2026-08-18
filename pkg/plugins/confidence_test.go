@@ -17,31 +17,15 @@ func TestAddConfidence_AppendsEntry(t *testing.T) {
 	assert.Equal(t, "blog URL matches the known domain", f.Confidences[0].Justification)
 }
 
-func TestAddConfidence_CopiesReferences(t *testing.T) {
-	references := []Reference{URLReference("source", "https://example.com/evidence")}
+func TestAddConfidenceWithReference_AppendsReference(t *testing.T) {
 	var finding Finding
+	reference := URLReference("source", "https://example.com/evidence")
 
-	AddConfidence(&finding, 60, "source supports finding", references...)
-	references[0].Data = URLReferenceData{URL: "https://example.com/mutated"}
+	AddConfidenceWithReference(&finding, 60, "source supports finding", reference)
 
 	require.Len(t, finding.Confidences, 1)
-	reference := finding.Confidences[0].Reference
-	require.NotNil(t, reference)
-	assert.Equal(t, "source", reference.Label)
-	assert.Equal(t, URLReferenceData{URL: "https://example.com/evidence"}, reference.Data)
-}
-
-func TestAddConfidence_CombinesReferencesAsTypedCollection(t *testing.T) {
-	var finding Finding
-	AddConfidence(&finding, 60, "sources support finding",
-		URLReference("first", "https://example.com/first"),
-		URLReference("second", "https://example.com/second"),
-	)
-
 	require.NotNil(t, finding.Confidences[0].Reference)
-	assert.Equal(t, ReferenceTypeReferences, finding.Confidences[0].Reference.Type)
-	assert.Equal(t, "Supporting source records", finding.Confidences[0].Reference.Label)
-	assert.Len(t, finding.Confidences[0].Reference.Data, 2)
+	assert.Equal(t, reference, *finding.Confidences[0].Reference)
 }
 
 func TestAddConfidence_ClampsScore(t *testing.T) {
@@ -219,7 +203,7 @@ func TestNeedsReview_FalseWhenCappedSumClears(t *testing.T) {
 // modes, which encode a Finding directly.
 func TestFinding_JSONIncludesConfidences(t *testing.T) {
 	f := Finding{Type: FindingDomain, Value: "example.com", Source: "github-org"}
-	AddConfidence(&f, 60, "blog URL matches the known domain",
+	AddConfidenceWithReference(&f, 60, "blog URL matches the known domain",
 		URLReference("Organization profile", "https://github.com/acme"))
 	AddConfidence(&f, 5, "organization has 86 public repositories")
 

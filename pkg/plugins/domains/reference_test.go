@@ -19,9 +19,13 @@ func confidenceURL(t *testing.T, confidence plugins.Confidence) string {
 func confidenceReferences(t *testing.T, confidence plugins.Confidence) []plugins.Reference {
 	t.Helper()
 	require.NotNil(t, confidence.Reference)
-	require.Equal(t, plugins.ReferenceTypeReferences, confidence.Reference.Type)
-	references, ok := confidence.Reference.Data.([]plugins.Reference)
+	require.Equal(t, plugins.ReferenceTypeJSON, confidence.Reference.Type)
+	collection, ok := confidence.Reference.Data.(plugins.URLCollectionReferenceData)
 	require.True(t, ok)
+	references := make([]plugins.Reference, len(collection.URLs))
+	for i, item := range collection.URLs {
+		references[i] = plugins.URLReference(item.Label, item.URL)
+	}
 	return references
 }
 

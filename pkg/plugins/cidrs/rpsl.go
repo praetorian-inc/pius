@@ -144,9 +144,9 @@ func (p *rpslPlugin) findings(input plugins.Input, netblocks []rpslNetblock) []p
 			plugins.AddConfidenceWithReference(&finding, confRPSLHandleInetnum, justification, plugins.Reference{
 				Label: strings.ToUpper(p.Name()) + " RPSL netblock",
 				Type:  plugins.ReferenceTypeRPSL,
-				Data: map[string]any{
-					"record":      strings.TrimSpace(netblock.record),
-					"network_url": p.networkReferenceURL(c),
+				Data: plugins.RPSLReferenceData{
+					Record:     strings.TrimSpace(netblock.record),
+					NetworkURL: p.networkReferenceURL(c),
 				},
 			})
 			findings = append(findings, finding)

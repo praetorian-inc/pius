@@ -85,7 +85,6 @@ type Reference struct {
 const (
 	ReferenceTypeURL          = "url"
 	ReferenceTypeJSON         = "json"
-	ReferenceTypeReferences   = "references"
 	ReferenceTypeHTTPExchange = "http_exchange"
 	ReferenceTypeRDAP         = "rdap"
 	ReferenceTypeRPSL         = "rpsl"
@@ -95,6 +94,15 @@ const (
 
 type URLReferenceData struct {
 	URL string `json:"url"`
+}
+
+type LabeledURLReferenceData struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
+type URLCollectionReferenceData struct {
+	URLs []LabeledURLReferenceData `json:"urls"`
 }
 
 type HTTPRequestReference struct {
@@ -108,13 +116,34 @@ type HTTPExchangeReference struct {
 	Response any                  `json:"response"`
 }
 
+type RDAPReferenceData struct {
+	Domain   string `json:"domain,omitempty"`
+	Response any    `json:"response"`
+}
+
+type RPSLReferenceData struct {
+	Record     string `json:"record"`
+	NetworkURL string `json:"network_url,omitempty"`
+}
+
+type WHOISReferenceData struct {
+	Query         string `json:"query,omitempty"`
+	Domain        string `json:"domain,omitempty"`
+	WHOISServer   string `json:"whois_server,omitempty"`
+	WHOISResponse string `json:"whois_response"`
+}
+
 // URLReference constructs a reference to a public source record.
 func URLReference(label, url string) Reference {
 	return Reference{Label: label, Type: ReferenceTypeURL, Data: URLReferenceData{URL: url}}
 }
 
-// HTTPReference constructs a credential-free request/response reference.
-func HTTPReference(label, method, url string, requestBody, response any) Reference {
+func URLCollectionReference(label string, urls []LabeledURLReferenceData) Reference {
+	return Reference{Label: label, Type: ReferenceTypeJSON, Data: URLCollectionReferenceData{URLs: urls}}
+}
+
+// NewHTTPExchangeReference constructs a credential-free HTTP exchange reference.
+func NewHTTPExchangeReference(label, method, url string, requestBody, response any) Reference {
 	return Reference{
 		Label: label,
 		Type:  ReferenceTypeHTTPExchange,

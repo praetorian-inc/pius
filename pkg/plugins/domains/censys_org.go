@@ -342,7 +342,7 @@ func (p *CensysOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	}
 
 	findings := p.extractFindings(input, resp.Result.Hits)
-	reference := plugins.HTTPReference("Censys search response", "POST", searchURL, reqBody, json.RawMessage(respBody))
+	reference := plugins.NewHTTPExchangeReference("Censys search response", "POST", searchURL, reqBody, json.RawMessage(respBody))
 	if c != nil {
 		c.Set(cacheKey, censysCacheEntry{Findings: findings, Reference: reference})
 	}
@@ -474,10 +474,10 @@ func (p *CensysOrgPlugin) extractFindings(input plugins.Input, hits []censysSear
 				"host_count":    len(hosts),
 			},
 		}
-		plugins.AddConfidence(&f, plugins.ConfidenceHigh,
-			fmt.Sprintf("Certificate Subject Organization %q appeared within Censys results for %s on %d distinct hosts, at or above the %d-host threshold",
-				displayName, describeCensysSearchTarget(input), len(hosts), censysMinHosts),
-			censysHostReferences(hosts)...)
+		justification := fmt.Sprintf("Certificate Subject Organization %q appeared within Censys results for %s on %d distinct hosts, at or above the %d-host threshold",
+			displayName, describeCensysSearchTarget(input), len(hosts), censysMinHosts)
+		plugins.AddConfidenceWithReference(&f, plugins.ConfidenceHigh, justification,
+			plugins.URLCollectionReference("Censys hosts containing the organization", censysHostReferences(hosts)))
 		findings = append(findings, f)
 	}
 
@@ -510,7 +510,7 @@ func censysHostURL(hostIP string) string {
 	return "https://search.censys.io/hosts/" + hostIP
 }
 
-func censysHostReferences(hosts map[string]bool) []plugins.Reference {
+func censysHostReferences(hosts map[string]bool) []plugins.LabeledURLReferenceData {
 	ips := make([]string, 0, len(hosts))
 	for ip := range hosts {
 		ips = append(ips, ip)
@@ -520,9 +520,9 @@ func censysHostReferences(hosts map[string]bool) []plugins.Reference {
 		ips = ips[:censysMinHosts]
 	}
 
-	references := make([]plugins.Reference, len(ips))
+	references := make([]plugins.LabeledURLReferenceData, len(ips))
 	for i, ip := range ips {
-		references[i] = plugins.URLReference("Censys host "+ip, censysHostURL(ip))
+		references[i] = plugins.LabeledURLReferenceData{Label: "Censys host " + ip, URL: censysHostURL(ip)}
 	}
 	return references
 }

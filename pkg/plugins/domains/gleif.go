@@ -335,18 +335,19 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation, primaryRelatio
 	// Signal 1: Name resolution quality — how well fuzzycompletions matched.
 	resolutionURL := fmt.Sprintf("%s/fuzzycompletions?field=entity.legalName&q=%s",
 		p.gleifBase(), url.QueryEscape(p.orgName))
-	resolutionReferences := []plugins.Reference{plugins.URLReference("GLEIF resolution request", resolutionURL)}
+	resolutionReferences := []plugins.LabeledURLReferenceData{{Label: "GLEIF resolution request", URL: resolutionURL}}
 	if recordURL := p.gleifRecordURL(p.primaryLEI); recordURL != "" {
-		resolutionReferences = append(resolutionReferences, plugins.URLReference("Resolved GLEIF entity", recordURL))
+		resolutionReferences = append(resolutionReferences, plugins.LabeledURLReferenceData{Label: "Resolved GLEIF entity", URL: recordURL})
 	}
 	if p.candidateRank == 0 {
-		plugins.AddConfidence(&f, 15,
+		plugins.AddConfidenceWithReference(&f, 15,
 			fmt.Sprintf("Resolved %q to GLEIF entity %q (top candidate)", p.orgName, p.primaryName),
-			resolutionReferences...)
+			plugins.URLCollectionReference("GLEIF resolution records", resolutionReferences))
 	} else {
-		plugins.AddConfidence(&f, 10,
+		plugins.AddConfidenceWithReference(&f, 10,
 			fmt.Sprintf("Resolved %q to GLEIF entity %q (candidate #%d, skipped %d leaf entities)",
-				p.orgName, p.primaryName, p.candidateRank+1, p.candidateRank), resolutionReferences...)
+				p.orgName, p.primaryName, p.candidateRank+1, p.candidateRank),
+			plugins.URLCollectionReference("GLEIF resolution records", resolutionReferences))
 	}
 
 	// Signal 2: Relationship provenance. A top-ranked resolution plus a
@@ -355,24 +356,28 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation, primaryRelatio
 	references := p.relationshipReferences(record.ID, relation, primaryRelationship)
 	switch relation {
 	case "direct-parent":
-		plugins.AddConfidence(&f, 50,
-			fmt.Sprintf("GLEIF lists %q as direct parent of %q", name, p.primaryName), references...)
+		plugins.AddConfidenceWithReference(&f, 50,
+			fmt.Sprintf("GLEIF lists %q as direct parent of %q", name, p.primaryName),
+			plugins.URLCollectionReference("GLEIF relationship records", references))
 	case "ultimate-parent":
-		plugins.AddConfidence(&f, 50,
-			fmt.Sprintf("GLEIF lists %q as ultimate parent of %q", name, p.primaryName), references...)
+		plugins.AddConfidenceWithReference(&f, 50,
+			fmt.Sprintf("GLEIF lists %q as ultimate parent of %q", name, p.primaryName),
+			plugins.URLCollectionReference("GLEIF relationship records", references))
 	case "subsidiary":
-		plugins.AddConfidence(&f, 50,
-			fmt.Sprintf("GLEIF lists %q as direct subsidiary of %q", name, p.primaryName), references...)
+		plugins.AddConfidenceWithReference(&f, 50,
+			fmt.Sprintf("GLEIF lists %q as direct subsidiary of %q", name, p.primaryName),
+			plugins.URLCollectionReference("GLEIF relationship records", references))
 	case "sibling":
-		plugins.AddConfidence(&f, 30,
-			fmt.Sprintf("GLEIF entity %q shares a corporate parent with %q", name, p.primaryName), references...)
+		plugins.AddConfidenceWithReference(&f, 30,
+			fmt.Sprintf("GLEIF entity %q shares a corporate parent with %q", name, p.primaryName),
+			plugins.URLCollectionReference("GLEIF relationship records", references))
 	}
 
 	return f
 }
 
-func (p *GLEIFPlugin) relationshipReferences(relatedLEI, relation, primaryRelationship string) []plugins.Reference {
-	references := []plugins.Reference{plugins.URLReference("Related GLEIF entity", p.gleifRecordURL(relatedLEI))}
+func (p *GLEIFPlugin) relationshipReferences(relatedLEI, relation, primaryRelationship string) []plugins.LabeledURLReferenceData {
+	references := []plugins.LabeledURLReferenceData{{Label: "Related GLEIF entity", URL: p.gleifRecordURL(relatedLEI)}}
 
 	var relationshipLEI, relationship string
 	switch relation {
@@ -384,12 +389,12 @@ func (p *GLEIFPlugin) relationshipReferences(relatedLEI, relation, primaryRelati
 		relationship = "direct-parent"
 	}
 	if relationshipLEI != "" {
-		references = append(references, plugins.URLReference(
-			"GLEIF relationship record", p.gleifRelationshipURL(relationshipLEI, relationship)))
+		references = append(references, plugins.LabeledURLReferenceData{
+			Label: "GLEIF relationship record", URL: p.gleifRelationshipURL(relationshipLEI, relationship)})
 	}
 	if relation == "sibling" {
-		references = append(references, plugins.URLReference(
-			"Target GLEIF relationship record", p.gleifRelationshipURL(p.primaryLEI, primaryRelationship)))
+		references = append(references, plugins.LabeledURLReferenceData{
+			Label: "Target GLEIF relationship record", URL: p.gleifRelationshipURL(p.primaryLEI, primaryRelationship)})
 	}
 	return references
 }

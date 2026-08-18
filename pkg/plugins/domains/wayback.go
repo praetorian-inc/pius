@@ -118,8 +118,8 @@ func (p *WaybackPlugin) findingsFromArchiveObservations(observations []archiveOb
 		}
 		justification := fmt.Sprintf("Archive evidence from %s records hostname %q under base domain %q",
 			strings.Join(sources, " and "), hostname, baseDomain)
-		plugins.AddConfidence(&finding, confWaybackArchiveObservation, justification,
-			archiveReferences(sourcesByHostname[hostname])...)
+		plugins.AddConfidenceWithReference(&finding, confWaybackArchiveObservation, justification,
+			plugins.URLCollectionReference("Archive query records", archiveReferences(sourcesByHostname[hostname])))
 		findings = append(findings, finding)
 	}
 	return findings
@@ -134,12 +134,12 @@ func archiveSources(sourceSet map[string]string) []string {
 	return sources
 }
 
-func archiveReferences(sources map[string]string) []plugins.Reference {
+func archiveReferences(sources map[string]string) []plugins.LabeledURLReferenceData {
 	names := archiveSources(sources)
-	references := make([]plugins.Reference, 0, len(names))
+	references := make([]plugins.LabeledURLReferenceData, 0, len(names))
 	for _, name := range names {
 		if queryURL := sources[name]; queryURL != "" {
-			references = append(references, plugins.URLReference(name+" query", queryURL))
+			references = append(references, plugins.LabeledURLReferenceData{Label: name + " query", URL: queryURL})
 		}
 	}
 	return references

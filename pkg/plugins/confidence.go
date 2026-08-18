@@ -1,7 +1,5 @@
 package plugins
 
-import "slices"
-
 // Confidence thresholds used by name-to-identifier resolution plugins.
 // Plugins that map an org name to a third-party identifier (GitHub org,
 // domain registrant, etc.) attach scored, justified evidence to their findings
@@ -20,35 +18,19 @@ const (
 )
 
 // AddConfidence appends one piece of scored, justified evidence to f.
-func AddConfidence(f *Finding, score int, justification string, references ...Reference) {
-	references = slices.Clone(references)
+func AddConfidence(f *Finding, score int, justification string) {
 	f.Confidences = append(f.Confidences, Confidence{
 		Score:         max(0, min(score, 100)),
 		Justification: justification,
-		Reference:     combineReferences(references),
 	})
 }
 
-// AddConfidenceWithReference is the explicit form for evidence with source
-// material. New plugins should prefer it over the migration-compatible
-// variadic form of AddConfidence.
 func AddConfidenceWithReference(f *Finding, score int, justification string, reference Reference) {
-	AddConfidence(f, score, justification, reference)
-}
-
-func combineReferences(references []Reference) *Reference {
-	if len(references) == 0 {
-		return nil
-	}
-	if len(references) == 1 {
-		return &references[0]
-	}
-
-	return &Reference{
-		Label: "Supporting source records",
-		Type:  ReferenceTypeReferences,
-		Data:  references,
-	}
+	f.Confidences = append(f.Confidences, Confidence{
+		Score:         max(0, min(score, 100)),
+		Justification: justification,
+		Reference:     &reference,
+	})
 }
 
 // TotalConfidence returns the sum of a finding's evidence scores, capped at 100.

@@ -215,7 +215,7 @@ func (p *ShodanPlugin) addResultEvidence(findings *[]plugins.Finding, indexes ma
 	}
 
 	evidenceURLs[key][queryURL] = true
-	plugins.AddConfidence(&(*findings)[index], confShodanSearchResult, fmt.Sprintf(
+	plugins.AddConfidenceWithReference(&(*findings)[index], confShodanSearchResult, fmt.Sprintf(
 		"Shodan returned %s %q", itemType, finding.Value),
 		plugins.URLReference("Shodan search results", queryURL))
 }

@@ -169,7 +169,7 @@ func (p *ApolloPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 		justification := fmt.Sprintf(
 			"Apollo organization enrichment for %s returned %q in response field %q",
 			queryDescription, findings[i].Value, field)
-		reference := plugins.HTTPReference(
+		reference := plugins.NewHTTPExchangeReference(
 			"Apollo organization enrichment response", "GET", apiURL, nil, json.RawMessage(body))
 		plugins.AddConfidenceWithReference(&findings[i], score, justification, reference)
 	}

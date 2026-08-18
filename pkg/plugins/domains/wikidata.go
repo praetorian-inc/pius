@@ -241,13 +241,13 @@ func (p *WikidataPlugin) newFinding(
 	if assessment.status == "active" || assessment.status == "open_ended" {
 		score = min(score+websiteReferenceScore(website), wikidataMaxScore)
 	}
-	plugins.AddConfidence(
-		&finding,
-		score,
+	references := []plugins.LabeledURLReferenceData{
+		{Label: "Target Wikidata item", URL: "https://www.wikidata.org/wiki/" + target.id},
+		{Label: "Subsidiary Wikidata item", URL: "https://www.wikidata.org/wiki/" + entity.id},
+	}
+	plugins.AddConfidenceWithReference(&finding, score,
 		wikidataJustification(orgName, target.id, entity, assessment, website),
-		plugins.URLReference("Target Wikidata item", "https://www.wikidata.org/wiki/"+target.id),
-		plugins.URLReference("Subsidiary Wikidata item", "https://www.wikidata.org/wiki/"+entity.id),
-	)
+		plugins.URLCollectionReference("Wikidata relationship records", references))
 	return finding
 }
 

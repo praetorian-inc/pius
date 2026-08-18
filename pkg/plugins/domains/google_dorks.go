@@ -98,10 +98,10 @@ func (p *GoogleDorksPlugin) makeFinding(subsidiaryName, domainValue, inputDomain
 			"domain":     inputDomain,
 		},
 	}
-	plugins.AddConfidence(&f, confGoogleDorksSubsidiary,
+	plugins.AddConfidenceWithReference(&f, confGoogleDorksSubsidiary,
 		fmt.Sprintf("Google Knowledge Graph identifies %q as a subsidiary of the target", subsidiaryName),
 		plugins.URLReference("Subsidiary search results", discoveryURL))
-	plugins.AddConfidence(&f, confGoogleDorksDomain,
+	plugins.AddConfidenceWithReference(&f, confGoogleDorksDomain,
 		fmt.Sprintf("A search for subsidiary %q resolves to the domain %q", subsidiaryName, domainValue),
 		plugins.URLReference("Domain search results", resolveURL))
 	return f

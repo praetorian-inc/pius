@@ -199,10 +199,10 @@ func networkReference(result whois.NetworkResult, value string) *plugins.Referen
 	return &plugins.Reference{
 		Label: "Observed IP WHOIS response",
 		Type:  plugins.ReferenceTypeWHOIS,
-		Data: map[string]any{
-			"query":          result.Query,
-			"whois_server":   result.WhoisServer,
-			"whois_response": result.Raw,
+		Data: plugins.WHOISReferenceData{
+			Query:         result.Query,
+			WHOISServer:   result.WhoisServer,
+			WHOISResponse: result.Raw,
 		},
 	}
 }
