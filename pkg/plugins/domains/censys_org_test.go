@@ -180,7 +180,7 @@ func TestCensysOrgPlugin_ExtractDomains_FromCertNames(t *testing.T) {
 		makeHit([]string{"acme.com", "www.acme.com", "*.acme.com"}, nil, nil),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	var values []string
 	for _, f := range findings {
@@ -204,7 +204,7 @@ func TestCensysOrgPlugin_ExtractDomains_FromAllSources(t *testing.T) {
 		),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	var values []string
 	for _, f := range findings {
@@ -218,16 +218,20 @@ func TestCensysOrgPlugin_ExtractDomains_FromAllSources(t *testing.T) {
 func TestCensysOrgPlugin_ExtractDomains_DeduplicatesDomains(t *testing.T) {
 	p := &CensysOrgPlugin{}
 	hits := []censysSearchHit{
-		makeHit([]string{"acme.com", "acme.com", "*.acme.com"}, nil, nil),
-		makeHit([]string{"acme.com"}, nil, nil),
+		makeHitFull(hitOpts{ip: "1.2.3.4", certNames: []string{"acme.com", "acme.com", "*.acme.com"}}),
+		makeHitFull(hitOpts{ip: "5.6.7.8", certNames: []string{"acme.com"}}),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	count := 0
 	for _, f := range findings {
 		if f.Value == "acme.com" {
 			count++
+			require.Len(t, f.Confidences, 1)
+			assert.Contains(t, f.Confidences[0].Justification, "1.2.3.4",
+				"first observation should supply confidence")
+			assert.NotContains(t, f.Confidences[0].Justification, "5.6.7.8")
 		}
 	}
 	assert.Equal(t, 1, count, "acme.com should appear exactly once")
@@ -235,13 +239,71 @@ func TestCensysOrgPlugin_ExtractDomains_DeduplicatesDomains(t *testing.T) {
 
 func TestCensysOrgPlugin_ExtractDomains_EmptyHits(t *testing.T) {
 	p := &CensysOrgPlugin{}
-	assert.Empty(t, p.extractFindings("Acme", nil))
+	assert.Empty(t, p.extractFindings(plugins.Input{OrgName: "Acme"}, nil))
 }
 
 func TestCensysOrgPlugin_ExtractDomains_NilHostSkipped(t *testing.T) {
 	p := &CensysOrgPlugin{}
 	hits := []censysSearchHit{{Host: nil}}
-	assert.Empty(t, p.extractFindings("Acme", hits))
+	assert.Empty(t, p.extractFindings(plugins.Input{OrgName: "Acme"}, hits))
+}
+
+func TestCensysOrgPlugin_ExtractFindings_ConfidenceBySource(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	input := plugins.Input{OrgName: "Acme Corp"}
+	hits := []censysSearchHit{makeHitFull(hitOpts{
+		ip:         "203.0.113.10",
+		certNames:  []string{"san.acme.com"},
+		cnNames:    []string{"cn.acme.com"},
+		reverseDNS: []string{"rdns.acme.com"},
+		whoisCIDRs: []string{"203.0.113.0/24"},
+		bgpPrefix:  "198.51.100.0/24",
+	})}
+
+	findings := p.extractFindings(input, hits)
+	tests := []struct {
+		asset  string
+		score  int
+		source string
+	}{
+		{asset: "san.acme.com", score: confCensysCertificateDomain, source: "TLS certificate SAN"},
+		{asset: "cn.acme.com", score: confCensysCertificateDomain, source: "TLS certificate Subject Common Name"},
+		{asset: "rdns.acme.com", score: confCensysReverseDNSDomain, source: "reverse DNS"},
+		{asset: "203.0.113.0/24", score: confCensysNetworkCIDR, source: "WHOIS network allocation"},
+		{asset: "198.51.100.0/24", score: confCensysNetworkCIDR, source: "BGP prefix announcement"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.asset, func(t *testing.T) {
+			finding := requireCensysFinding(t, findings, test.asset)
+			require.Len(t, finding.Confidences, 1)
+			assert.Equal(t, test.score, finding.Confidences[0].Score)
+			assert.Contains(t, finding.Confidences[0].Justification, test.asset)
+			assert.Contains(t, finding.Confidences[0].Justification, "203.0.113.10")
+			assert.Contains(t, finding.Confidences[0].Justification, test.source)
+			assert.Contains(t, finding.Confidences[0].Justification, "Acme Corp")
+			assert.NotContains(t, finding.Data, "confidence")
+			assert.NotContains(t, finding.Data, "confidences")
+			assert.NotContains(t, finding.Data, "justification")
+		})
+	}
+}
+
+func TestCensysOrgPlugin_ExtractFindings_KnownDomainUsesCautiousORSearchJustification(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	input := plugins.Input{OrgName: "Acme Corp", Domain: "acme.com"}
+	hits := []censysSearchHit{makeHitFull(hitOpts{
+		ip:        "203.0.113.10",
+		certNames: []string{"api.acme.com"},
+	})}
+
+	finding := requireCensysFinding(t, p.extractFindings(input, hits), "api.acme.com")
+	require.Len(t, finding.Confidences, 1)
+	justification := finding.Confidences[0].Justification
+	assert.Contains(t, justification, "Acme Corp")
+	assert.Contains(t, justification, "acme.com")
+	assert.Contains(t, justification, "OR search")
+	assert.Contains(t, justification, "does not identify which OR clause matched")
 }
 
 func TestCensysOrgPlugin_ExtractDomains_FieldLabels(t *testing.T) {
@@ -254,7 +316,7 @@ func TestCensysOrgPlugin_ExtractDomains_FieldLabels(t *testing.T) {
 		),
 	}
 
-	findings := p.extractFindings("Acme", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme"}, hits)
 	fieldMap := make(map[string]string)
 	for _, f := range findings {
 		fieldMap[f.Value] = f.Data["field"].(string)
@@ -273,7 +335,7 @@ func TestCensysOrgPlugin_ExtractCIDRs_FromWhoisNetwork(t *testing.T) {
 		makeHitFull(hitOpts{whoisCIDRs: []string{"203.0.113.0/24", "198.51.100.0/22"}}),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	var cidrs []string
 	for _, f := range findings {
@@ -294,7 +356,7 @@ func TestCensysOrgPlugin_ExtractCIDRs_FromBGPPrefix(t *testing.T) {
 		makeHitFull(hitOpts{bgpPrefix: "8.8.8.0/24"}),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	require.Len(t, findings, 1)
 	assert.Equal(t, plugins.FindingCIDR, findings[0].Type)
@@ -309,7 +371,7 @@ func TestCensysOrgPlugin_ExtractCIDRs_DeduplicatesAcrossHits(t *testing.T) {
 		makeHitFull(hitOpts{whoisCIDRs: []string{"10.0.0.0/8"}}),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	count := 0
 	for _, f := range findings {
@@ -330,7 +392,7 @@ func TestCensysOrgPlugin_ExtractFindings_MixedDomainsAndCIDRs(t *testing.T) {
 		}),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	var domains, cidrs []string
 	for _, f := range findings {
@@ -363,7 +425,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_MultiHostEmitsPreseed(t *testing.T) {
 		makeHitFull(hitOpts{ip: "21.22.23.24", certOrgNames: []string{"Different Corp"}}),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	var preseeds []plugins.Finding
 	for _, f := range findings {
@@ -385,7 +447,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_SingleHostNoPreseed(t *testing.T) {
 		makeHitFull(hitOpts{ip: "1.2.3.4", certOrgNames: []string{"Lonely Corp"}}),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	for _, f := range findings {
 		assert.NotEqual(t, plugins.FindingPreseed, f.Type, "single-host org must not emit preseed")
@@ -401,7 +463,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_SelfMatchExcluded(t *testing.T) {
 		makeHitFull(hitOpts{ip: "5.6.7.8", certOrgNames: []string{"Acme Corp"}}),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	for _, f := range findings {
 		assert.NotEqual(t, plugins.FindingPreseed, f.Type, "orgName itself must not be emitted as preseed")
@@ -420,7 +482,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_DataFields(t *testing.T) {
 		makeHitFull(hitOpts{ip: "17.18.19.20", certOrgNames: []string{"Subsidiary Inc"}}),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	var preseed *plugins.Finding
 	for i := range findings {
@@ -447,6 +509,10 @@ func TestCensysOrgPlugin_Cache_WriteAndRead(t *testing.T) {
 	key := "censys-org|acme corp|acme.com"
 	findings := []plugins.Finding{
 		{Type: plugins.FindingDomain, Value: "acme.com", Source: "censys-org",
+			Confidences: []plugins.Confidence{{
+				Score:         confCensysCertificateDomain,
+				Justification: "Censys certificate evidence for acme.com",
+			}},
 			Data: map[string]any{"org": "Acme Corp", "field": "certificate_names"}},
 	}
 
@@ -457,6 +523,11 @@ func TestCensysOrgPlugin_Cache_WriteAndRead(t *testing.T) {
 	require.True(t, ok, "cache should hit after Set")
 	require.Len(t, cached, 1)
 	assert.Equal(t, "acme.com", cached[0].Value)
+	require.Len(t, cached[0].Confidences, 1)
+	assert.Equal(t, confCensysCertificateDomain, cached[0].Confidences[0].Score)
+	assert.Equal(t, "Censys certificate evidence for acme.com", cached[0].Confidences[0].Justification)
+	assert.NotContains(t, cached[0].Data, "confidence")
+	assert.NotContains(t, cached[0].Data, "confidences")
 }
 
 func TestCensysOrgPlugin_Cache_MissForUnknownKey(t *testing.T) {
@@ -620,13 +691,26 @@ func TestCensysOrgPlugin_Run_EmptyResponseNoFindings(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
+func TestCensysOrgPlugin_Run_GracefulOnHTTPError(t *testing.T) {
+	t.Setenv("CENSYS_API_TOKEN", "test-token")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	p := newTestCensysPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
 func TestCensysOrgPlugin_Run_GracefulOnNetworkError(t *testing.T) {
 	t.Setenv("CENSYS_API_TOKEN", "test-token")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
-
-	p := newTestCensysPlugin(t, srv.URL)
+	c, err := piuscache.NewAPI(t.TempDir(), "censys-org")
+	require.NoError(t, err)
+	p := &CensysOrgPlugin{client: client.NewNoRetry(), baseURL: "http://127.0.0.1:1", apiCache: c}
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
 	assert.NoError(t, err)
 	assert.Empty(t, findings)
@@ -678,7 +762,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_DenyListBlocksCDN(t *testing.T) {
 		}))
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	for _, f := range findings {
 		assert.NotEqual(t, plugins.FindingPreseed, f.Type,
@@ -698,7 +782,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_DenyListCaseInsensitive(t *testing.T) {
 		}))
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	for _, f := range findings {
 		assert.NotEqual(t, plugins.FindingPreseed, f.Type,
@@ -717,7 +801,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_ThresholdBelowFiveNoPreseed(t *testing.
 		makeHitFull(hitOpts{ip: "10.0.0.3", certOrgNames: []string{"Widget LLC"}}),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	for _, f := range findings {
 		assert.NotEqual(t, plugins.FindingPreseed, f.Type,
@@ -737,7 +821,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_ThresholdAtFiveEmitsPreseed(t *testing.
 		makeHitFull(hitOpts{ip: "10.1.0.5", certOrgNames: []string{"Threshold Corp"}}),
 	}
 
-	findings := p.extractFindings("Acme Corp", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits)
 
 	var preseeds []plugins.Finding
 	for _, f := range findings {
@@ -769,7 +853,7 @@ func TestCensysOrgPlugin_ExtractPreseeds_CasingVariantsMerged(t *testing.T) {
 	}
 
 	// Input orgName is different so self-match exclusion does not apply.
-	findings := p.extractFindings("Different Org", hits)
+	findings := p.extractFindings(plugins.Input{OrgName: "Different Org"}, hits)
 
 	var preseeds []plugins.Finding
 	for _, f := range findings {
@@ -799,4 +883,100 @@ func TestCensysOrgPlugin_AppearsInList(t *testing.T) {
 		}
 	}
 	assert.True(t, found)
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_ThresholdScoresHighConfidence pins the
+// binary judgement: crossing censysMinHosts is the evidence, scored
+// plugins.ConfidenceHigh as one entry.
+func TestCensysOrgPlugin_ExtractPreseeds_ThresholdScoresHighConfidence(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	var hits []censysSearchHit
+	for i := 0; i < 5; i++ {
+		hits = append(hits, makeHitFull(hitOpts{
+			ip:           fmt.Sprintf("10.0.0.%d", i),
+			certOrgNames: []string{"Contoso Ltd"},
+		}))
+	}
+
+	preseeds := censysPreseeds(p.extractFindings(plugins.Input{OrgName: "Acme Corp", Domain: "acme.com"}, hits))
+	require.Len(t, preseeds, 1)
+
+	require.Len(t, preseeds[0].Confidences, 1, "crossing the threshold is one judgement")
+	assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]))
+	assert.False(t, plugins.NeedsReview(preseeds[0]))
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "Contoso Ltd")
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "Censys results")
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "Acme Corp")
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "acme.com")
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "5 distinct hosts")
+	assert.NotContains(t, preseeds[0].Data, "confidence")
+	assert.NotContains(t, preseeds[0].Data, "confidences")
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_MoreHostsDoNotRaiseScore: appearing on
+// more hosts past the threshold reflects how widely Censys scanned, not how
+// likely the organization is to belong to the target. Scoring per host would
+// have pushed this to the 1.0 cap on breadth alone.
+func TestCensysOrgPlugin_ExtractPreseeds_MoreHostsDoNotRaiseScore(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	var hits []censysSearchHit
+	for i := 0; i < 12; i++ {
+		hits = append(hits, makeHitFull(hitOpts{
+			ip:           fmt.Sprintf("10.0.1.%d", i),
+			certOrgNames: []string{"Contoso Ltd"},
+		}))
+	}
+
+	preseeds := censysPreseeds(p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits))
+	require.Len(t, preseeds, 1)
+
+	require.Len(t, preseeds[0].Confidences, 1)
+	assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]),
+		"twelve hosts score the same as five")
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "12 distinct hosts")
+}
+
+// TestCensysOrgPlugin_ExtractPreseeds_RepeatedHostCountedOnce guards the
+// threshold itself: a host observed on several ports or certificates must not
+// count twice toward censysMinHosts.
+func TestCensysOrgPlugin_ExtractPreseeds_RepeatedHostCountedOnce(t *testing.T) {
+	p := &CensysOrgPlugin{}
+	var hits []censysSearchHit
+	for i := 0; i < 5; i++ {
+		hits = append(hits, makeHitFull(hitOpts{
+			ip:           fmt.Sprintf("10.0.2.%d", i),
+			certOrgNames: []string{"Contoso Ltd"},
+		}))
+	}
+	// The first host shows up a second time — same IP, same Subject Organization.
+	hits = append(hits, makeHitFull(hitOpts{ip: "10.0.2.0", certOrgNames: []string{"Contoso Ltd"}}))
+
+	preseeds := censysPreseeds(p.extractFindings(plugins.Input{OrgName: "Acme Corp"}, hits))
+	require.Len(t, preseeds, 1)
+
+	require.Len(t, preseeds[0].Confidences, 1)
+	assert.Contains(t, preseeds[0].Confidences[0].Justification, "5 distinct hosts",
+		"the repeated host must not be counted twice")
+	assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(preseeds[0]))
+}
+
+func requireCensysFinding(t *testing.T, findings []plugins.Finding, value string) plugins.Finding {
+	t.Helper()
+	for _, finding := range findings {
+		if finding.Value == value {
+			return finding
+		}
+	}
+	require.FailNow(t, "Censys finding not found", value)
+	return plugins.Finding{}
+}
+
+func censysPreseeds(findings []plugins.Finding) []plugins.Finding {
+	var preseeds []plugins.Finding
+	for _, f := range findings {
+		if f.Type == plugins.FindingPreseed {
+			preseeds = append(preseeds, f)
+		}
+	}
+	return preseeds
 }

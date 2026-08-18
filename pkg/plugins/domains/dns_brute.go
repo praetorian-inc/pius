@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	_ "embed"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -17,7 +18,8 @@ import (
 var defaultWordlist string
 
 const (
-	dnsBruteConcurrency = 50
+	dnsBruteConcurrency  = 50
+	confDNSBruteResolved = 70
 )
 
 // dnsDefaultResolver is the DNS resolver used for wildcard detection and brute-force.
@@ -83,6 +85,7 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 
 	var (
 		mu       sync.Mutex
+		seen     = make(map[string]bool)
 		findings []plugins.Finding
 	)
 
@@ -115,7 +118,12 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 			}
 			if exists {
 				mu.Lock()
-				findings = append(findings, plugins.Finding{
+				defer mu.Unlock()
+				if seen[fqdn] {
+					return
+				}
+				seen[fqdn] = true
+				finding := plugins.Finding{
 					Type:   plugins.FindingDomain,
 					Value:  fqdn,
 					Source: p.Name(),
@@ -123,8 +131,11 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 						"method": "dns-brute",
 						"domain": input.Domain,
 					},
-				})
-				mu.Unlock()
+				}
+				plugins.AddConfidence(&finding, confDNSBruteResolved,
+					fmt.Sprintf("Discovered valid DNS subdomain record for %q (from base domain %q) via DNS brute force guessing",
+						fqdn, domain))
+				findings = append(findings, finding)
 			}
 		}(word)
 	}

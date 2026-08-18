@@ -40,14 +40,25 @@ func NewGoogleDorksPlugin() *GoogleDorksPlugin {
 //  4. Emit those domains as FindingDomain findings
 //
 // Phase 0 (independent): requires only Domain.
-// Confidence ~0.55: between ConfidenceLow and ConfidenceHigh — marks findings needs_review.
+// Confidence ~55: between ConfidenceLow and ConfidenceHigh — marks findings needs_review.
 type GoogleDorksPlugin struct {
-	baseURL       string // override for testing; default "https://www.google.com"
-	renderEnabled bool   // false for testing, true for production
+	baseURL       string        // override for testing; default "https://www.google.com"
+	renderEnabled bool          // false for testing, true for production
+	queryDelay    time.Duration // delay between subsidiary lookups; 0 uses random 1-3s
 }
 
-// googleDorksConfidence is between ConfidenceLow and ConfidenceHigh — flags as needs_review.
-const googleDorksConfidence = 0.55
+// The two evidence entries sum to googleDorksConfidence, which sits between
+// ConfidenceLow and ConfidenceHigh — so every finding here needs review.
+const (
+	// confGoogleDorksSubsidiary credits the Knowledge Graph naming the company
+	// as a subsidiary of the target.
+	confGoogleDorksSubsidiary = 30
+	// confGoogleDorksDomain credits the follow-up search resolving that
+	// subsidiary name to the emitted domain.
+	confGoogleDorksDomain = 25
+
+	googleDorksConfidence = confGoogleDorksSubsidiary + confGoogleDorksDomain
+)
 
 // maxSubsidiaries caps the number of carousel subsidiaries we resolve per run.
 const maxSubsidiaries = 30
@@ -72,6 +83,11 @@ func (p *GoogleDorksPlugin) googleBase() string {
 }
 
 // makeFinding constructs a FindingDomain finding for a discovered subsidiary domain.
+//
+// The two evidence entries are independent: the Knowledge Graph naming a
+// subsidiary is one observation, and a follow-up search resolving that
+// subsidiary to a domain is another. Either can be right while the other is
+// wrong, so they are scored and justified separately.
 func (p *GoogleDorksPlugin) makeFinding(subsidiaryName, domainValue, inputDomain string) plugins.Finding {
 	f := plugins.Finding{
 		Type:   plugins.FindingDomain,
@@ -82,7 +98,10 @@ func (p *GoogleDorksPlugin) makeFinding(subsidiaryName, domainValue, inputDomain
 			"domain":     inputDomain,
 		},
 	}
-	plugins.SetConfidence(&f, googleDorksConfidence)
+	plugins.AddConfidence(&f, confGoogleDorksSubsidiary,
+		fmt.Sprintf("Google Knowledge Graph identifies %q as a subsidiary of the target", subsidiaryName))
+	plugins.AddConfidence(&f, confGoogleDorksDomain,
+		fmt.Sprintf("A search for subsidiary %q resolves to the domain %q", subsidiaryName, domainValue))
 	return f
 }
 
@@ -151,8 +170,11 @@ func (p *GoogleDorksPlugin) Run(ctx context.Context, input plugins.Input) ([]plu
 			break
 		}
 
-		// Human-like delay between queries to avoid rate limiting.
-		delay := time.Duration(1000+rand.IntN(2000)) * time.Millisecond
+		// Delay between queries to avoid rate limiting.
+		delay := p.queryDelay
+		if delay == 0 {
+			delay = time.Duration(1000+rand.IntN(2000)) * time.Millisecond
+		}
 		t := time.NewTimer(delay)
 		select {
 		case <-t.C:

@@ -13,6 +13,22 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
+// censysMinHosts is the number of distinct hosts a certificate Subject
+// Organization must appear on before it is emitted as a preseed.
+//
+// Crossing it is a binary judgement, scored plugins.ConfidenceHigh: the
+// threshold is what the evidence rests on, and appearing on more hosts past it
+// does not make the organization more likely to belong to the target. Scoring
+// per host instead would push any organization on eight or more hosts to the
+// 100 cap purely on breadth of scanning.
+const censysMinHosts = 5
+
+const (
+	confCensysCertificateDomain = 65
+	confCensysReverseDNSDomain  = 55
+	confCensysNetworkCIDR       = 55
+)
+
 func init() {
 	plugins.Register("censys-org", func() plugins.Plugin {
 		return &CensysOrgPlugin{client: client.New()}
@@ -318,7 +334,7 @@ func (p *CensysOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 		return nil, nil
 	}
 
-	findings := p.extractFindings(input.OrgName, resp.Result.Hits)
+	findings := p.extractFindings(input, resp.Result.Hits)
 
 	if c != nil {
 		c.Set(cacheKey, findings)
@@ -342,7 +358,7 @@ func buildCensysQuery(orgName, domain string) string {
 // from search hits. A preseed is emitted for any TLS cert Subject Organization
 // name (other than the searched orgName itself) that appears across 5+ distinct
 // host IPs.
-func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit) []plugins.Finding {
+func (p *CensysOrgPlugin) extractFindings(input plugins.Input, hits []censysSearchHit) []plugins.Finding {
 	seenDomains := make(map[string]bool)
 	seenCIDRs := make(map[string]bool)
 	var findings []plugins.Finding
@@ -365,11 +381,15 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 				continue
 			}
 			for _, name := range svc.Cert.Names {
-				p.emitDomain(&findings, seenDomains, orgName, name, "certificate_names")
+				confidence := buildCensysDomainConfidence(input, res.IP, name,
+					"TLS certificate SAN", "host.services.cert.names", confCensysCertificateDomain)
+				p.emitDomain(&findings, seenDomains, input.OrgName, name, "certificate_names", confidence)
 			}
 			if svc.Cert.Parsed != nil && svc.Cert.Parsed.Subject != nil {
 				for _, cn := range svc.Cert.Parsed.Subject.CommonName {
-					p.emitDomain(&findings, seenDomains, orgName, cn, "subject_cn")
+					confidence := buildCensysDomainConfidence(input, res.IP, cn,
+						"TLS certificate Subject Common Name", "host.services.cert.parsed.subject.common_name", confCensysCertificateDomain)
+					p.emitDomain(&findings, seenDomains, input.OrgName, cn, "subject_cn", confidence)
 				}
 
 				// Collect org names from TLS cert Subject Organization fields.
@@ -377,7 +397,7 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 				// merge into the same bucket.
 				for _, org := range svc.Cert.Parsed.Subject.Organization {
 					org = strings.TrimSpace(org)
-					if org == "" || strings.EqualFold(org, orgName) {
+					if org == "" || strings.EqualFold(org, input.OrgName) {
 						continue // skip empty and self-match
 					}
 					orgKey := strings.ToLower(org)
@@ -396,27 +416,33 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 		// Domains from reverse DNS
 		if res.DNS != nil && res.DNS.ReverseDNS != nil {
 			for _, name := range res.DNS.ReverseDNS.Names {
-				p.emitDomain(&findings, seenDomains, orgName, name, "reverse_dns")
+				confidence := buildCensysDomainConfidence(input, res.IP, name,
+					"reverse DNS", "host.dns.reverse_dns.names", confCensysReverseDNSDomain)
+				p.emitDomain(&findings, seenDomains, input.OrgName, name, "reverse_dns", confidence)
 			}
 		}
 
 		// CIDRs from WHOIS network allocations
 		if res.Whois != nil && res.Whois.Network != nil {
 			for _, cidr := range res.Whois.Network.CIDRs {
-				p.emitCIDR(&findings, seenCIDRs, orgName, cidr, "whois_network")
+				confidence := buildCensysCIDRConfidence(input, res.IP, cidr,
+					"WHOIS network allocation", "host.whois.network.cidrs")
+				p.emitCIDR(&findings, seenCIDRs, input.OrgName, cidr, "whois_network", confidence)
 			}
 		}
 
 		// CIDRs from BGP prefix announcements
 		if res.AutonomousSystem != nil && res.AutonomousSystem.BGPPrefix != "" {
-			p.emitCIDR(&findings, seenCIDRs, orgName, res.AutonomousSystem.BGPPrefix, "bgp_prefix")
+			confidence := buildCensysCIDRConfidence(input, res.IP, res.AutonomousSystem.BGPPrefix,
+				"BGP prefix announcement", "host.autonomous_system.bgp_prefix")
+			p.emitCIDR(&findings, seenCIDRs, input.OrgName, res.AutonomousSystem.BGPPrefix, "bgp_prefix", confidence)
 		}
 	}
 
 	// Emit preseed for any org name that appears across 5+ distinct hosts.
 	// orgKey is the lowercase-normalized key; orgDisplay[orgKey] is the original casing.
 	for orgKey, hosts := range orgHosts {
-		if len(hosts) < 5 {
+		if len(hosts) < censysMinHosts {
 			continue
 		}
 		displayName := orgDisplay[orgKey]
@@ -427,26 +453,62 @@ func (p *CensysOrgPlugin) extractFindings(orgName string, hits []censysSearchHit
 			Data: map[string]any{
 				"preseed_type":  "whois+company",
 				"preseed_title": displayName,
-				"org":           orgName,
+				"org":           input.OrgName,
 				"field":         "subject_organization",
 				"host_count":    len(hosts),
 			},
 		}
-		plugins.SetConfidence(&f, plugins.ConfidenceHigh)
+		// The host count is the only detail in the justification — no certificate
+		// contents, and no host addresses.
+		plugins.AddConfidence(&f, plugins.ConfidenceHigh,
+			fmt.Sprintf("Certificate Subject Organization %q appeared within Censys results for %s on %d distinct hosts, at or above the %d-host threshold",
+				displayName, describeCensysSearchTarget(input), len(hosts), censysMinHosts))
 		findings = append(findings, f)
 	}
 
 	return findings
 }
 
+func buildCensysDomainConfidence(input plugins.Input, hostIP, rawDomain, source, field string, score int) plugins.Confidence {
+	domain := normalizeCensysDomain(rawDomain)
+	return plugins.Confidence{
+		Score: score,
+		Justification: fmt.Sprintf("Censys returned host %q for %s; the host's %s field (%s) contained domain %q%s",
+			hostIP, describeCensysSearchTarget(input), source, field, domain, describeCensysORQueryCaveat(input)),
+	}
+}
+
+func buildCensysCIDRConfidence(input plugins.Input, hostIP, rawCIDR, source, field string) plugins.Confidence {
+	cidr := strings.TrimSpace(rawCIDR)
+	return plugins.Confidence{
+		Score: confCensysNetworkCIDR,
+		Justification: fmt.Sprintf("Censys returned host %q for %s; the host's %s field (%s) contained CIDR %q%s",
+			hostIP, describeCensysSearchTarget(input), source, field, cidr, describeCensysORQueryCaveat(input)),
+	}
+}
+
+func describeCensysSearchTarget(input plugins.Input) string {
+	if input.Domain == "" {
+		return fmt.Sprintf("the target organization search %q", input.OrgName)
+	}
+	return fmt.Sprintf("the target OR search for organization %q or domain %q", input.OrgName, input.Domain)
+}
+
+func describeCensysORQueryCaveat(input plugins.Input) string {
+	if input.Domain == "" {
+		return ""
+	}
+	return "; Censys does not identify which OR clause matched this host"
+}
+
 // emitDomain normalizes and deduplicates a domain before appending to findings.
-func (p *CensysOrgPlugin) emitDomain(findings *[]plugins.Finding, seen map[string]bool, orgName, raw, field string) {
+func (p *CensysOrgPlugin) emitDomain(findings *[]plugins.Finding, seen map[string]bool, orgName, raw, field string, confidence plugins.Confidence) {
 	domain := normalizeCensysDomain(raw)
 	if domain == "" || seen[domain] {
 		return
 	}
 	seen[domain] = true
-	*findings = append(*findings, plugins.Finding{
+	newFinding := plugins.Finding{
 		Type:   plugins.FindingDomain,
 		Value:  domain,
 		Source: "censys-org",
@@ -454,17 +516,19 @@ func (p *CensysOrgPlugin) emitDomain(findings *[]plugins.Finding, seen map[strin
 			"org":   orgName,
 			"field": field,
 		},
-	})
+	}
+	plugins.AddConfidence(&newFinding, confidence.Score, confidence.Justification)
+	*findings = append(*findings, newFinding)
 }
 
 // emitCIDR deduplicates a CIDR before appending to findings.
-func (p *CensysOrgPlugin) emitCIDR(findings *[]plugins.Finding, seen map[string]bool, orgName, cidr, field string) {
+func (p *CensysOrgPlugin) emitCIDR(findings *[]plugins.Finding, seen map[string]bool, orgName, cidr, field string, confidence plugins.Confidence) {
 	cidr = strings.TrimSpace(cidr)
 	if cidr == "" || seen[cidr] {
 		return
 	}
 	seen[cidr] = true
-	*findings = append(*findings, plugins.Finding{
+	newFinding := plugins.Finding{
 		Type:   plugins.FindingCIDR,
 		Value:  cidr,
 		Source: "censys-org",
@@ -472,7 +536,9 @@ func (p *CensysOrgPlugin) emitCIDR(findings *[]plugins.Finding, seen map[string]
 			"org":   orgName,
 			"field": field,
 		},
-	})
+	}
+	plugins.AddConfidence(&newFinding, confidence.Score, confidence.Justification)
+	*findings = append(*findings, newFinding)
 }
 
 // normalizeCensysDomain extends normalizeDomain with Censys-specific cleanup:

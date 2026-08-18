@@ -153,6 +153,14 @@ func TestWaybackPlugin_ParsesWaybackDomains(t *testing.T) {
 	for _, f := range findings {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "wayback", f.Source)
+		require.Len(t, f.Confidences, 1)
+		assert.Equal(t, confWaybackArchiveObservation, f.Confidences[0].Score)
+		assert.NotEmpty(t, f.Confidences[0].Justification)
+		assert.Contains(t, f.Confidences[0].Justification, archiveSourceWayback)
+		assert.NotContains(t, f.Confidences[0].Justification, archiveSourceCommonCrawl)
+		assert.Contains(t, f.Confidences[0].Justification, f.Value)
+		assert.NotContains(t, f.Data, "confidence")
+		assert.NotContains(t, f.Data, "confidences")
 	}
 }
 
@@ -178,6 +186,13 @@ func TestWaybackPlugin_ParsesCommonCrawlDomains(t *testing.T) {
 	values := findingValues(findings)
 	assert.Contains(t, values, "cdn.example.com")
 	assert.Contains(t, values, "blog.example.com")
+	for _, f := range findings {
+		require.Len(t, f.Confidences, 1)
+		assert.Equal(t, confWaybackArchiveObservation, f.Confidences[0].Score)
+		assert.Contains(t, f.Confidences[0].Justification, archiveSourceCommonCrawl)
+		assert.NotContains(t, f.Confidences[0].Justification, archiveSourceWayback)
+		assert.Contains(t, f.Confidences[0].Justification, f.Value)
+	}
 }
 
 func TestWaybackPlugin_DeduplicatesAcrossSources(t *testing.T) {
@@ -203,9 +218,16 @@ func TestWaybackPlugin_DeduplicatesAcrossSources(t *testing.T) {
 	require.NoError(t, err)
 	count := 0
 	for _, f := range findings {
-		if f.Value == "api.example.com" {
-			count++
+		if f.Value != "api.example.com" {
+			continue
 		}
+		count++
+		require.Len(t, f.Confidences, 1, "both archives contribute one combined entry")
+		confidence := f.Confidences[0]
+		assert.Equal(t, confWaybackArchiveObservation, confidence.Score)
+		assert.Equal(t, `Archive evidence from Common Crawl and Wayback Machine records hostname "api.example.com" under base domain "example.com"`, confidence.Justification)
+		assert.NotContains(t, f.Data, "confidence")
+		assert.NotContains(t, f.Data, "confidences")
 	}
 	assert.Equal(t, 1, count, "api.example.com should appear exactly once")
 }
@@ -264,10 +286,11 @@ func TestWaybackPlugin_NormalizesDomains(t *testing.T) {
 	assert.Equal(t, "api.example.com", findings[0].Value)
 }
 
-func TestWaybackPlugin_GracefulOnWaybackError(t *testing.T) {
-	// Closed server = network error
-	wbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	wbSrv.Close()
+func TestWaybackPlugin_GracefulOnWaybackHTTPError(t *testing.T) {
+	wbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer wbSrv.Close()
 
 	ccSrv := mockCommonCrawlServer([]string{
 		"http://cdn.example.com/file",
@@ -287,11 +310,32 @@ func TestWaybackPlugin_GracefulOnWaybackError(t *testing.T) {
 	assert.Contains(t, values, "cdn.example.com")
 }
 
-func TestWaybackPlugin_GracefulOnBothErrors(t *testing.T) {
-	wbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	wbSrv.Close()
-	ccSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	ccSrv.Close()
+func TestWaybackPlugin_GracefulOnWaybackNetworkError(t *testing.T) {
+	ccSrv := mockCommonCrawlServer([]string{
+		"http://cdn.example.com/file",
+	})
+	defer ccSrv.Close()
+
+	p := &WaybackPlugin{
+		client:         client.NewNoRetry(),
+		waybackURL:     "http://127.0.0.1:1",
+		commoncrawlURL: ccSrv.URL,
+	}
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+	assert.NoError(t, err)
+	values := findingValues(findings)
+	assert.Contains(t, values, "cdn.example.com")
+}
+
+func TestWaybackPlugin_GracefulOnBothHTTPErrors(t *testing.T) {
+	wbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer wbSrv.Close()
+	ccSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer ccSrv.Close()
 
 	p := &WaybackPlugin{
 		client:         client.New(),
@@ -299,7 +343,17 @@ func TestWaybackPlugin_GracefulOnBothErrors(t *testing.T) {
 		commoncrawlURL: ccSrv.URL,
 	}
 	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
 
+func TestWaybackPlugin_GracefulOnBothNetworkErrors(t *testing.T) {
+	p := &WaybackPlugin{
+		client:         client.NewNoRetry(),
+		waybackURL:     "http://127.0.0.1:1",
+		commoncrawlURL: "http://127.0.0.1:1",
+	}
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
 	assert.NoError(t, err)
 	assert.Empty(t, findings)
 }

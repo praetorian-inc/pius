@@ -10,6 +10,7 @@ import (
 
 	piuscache "github.com/praetorian-inc/pius/pkg/cache"
 	"github.com/praetorian-inc/pius/pkg/client"
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -114,15 +115,15 @@ func TestTokenSimilarity(t *testing.T) {
 		min  float64
 	}{
 		{"Praetorian", "Praetorian", 1.0},
-		{"Praetorian", "Praetorian Security", 1.0},  // shorter (1 token) fully matches
-		{"Praetorian Security", "Praetorian Inc", 0.49},  // 1/2 = 0.50
-		{"Acme Corp", "Acme Corporation", 0.49}, // "acme" matches, "corp" != "corporation" = 1/2 = 0.50
+		{"Praetorian", "Praetorian Security", 1.0},      // shorter (1 token) fully matches
+		{"Praetorian Security", "Praetorian Inc", 0.49}, // 1/2 = 0.50
+		{"Acme Corp", "Acme Corporation", 0.49},         // "acme" matches, "corp" != "corporation" = 1/2 = 0.50
 		{"Google", "Apple", 0.0},
 		{"", "Google", 0.0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.a+"_vs_"+tt.b, func(t *testing.T) {
-			got := tokenSimilarity(tt.a, tt.b)
+			got := strutil.TokenSimilarity(tt.a, tt.b)
 			assert.GreaterOrEqual(t, got, tt.min, "similarity %q vs %q", tt.a, tt.b)
 		})
 	}
@@ -138,8 +139,19 @@ func TestGitHubOrgPlugin_Score_HighConfidenceWithDomain(t *testing.T) {
 		Blog:        "https://www.praetorian.com",
 		PublicRepos: 86,
 	}
-	score := p.score(org, plugins.Input{OrgName: "Praetorian Security", Domain: "praetorian.com"})
-	assert.GreaterOrEqual(t, score, githubEmitThreshold, "domain match should push above emit threshold")
+	var f plugins.Finding
+	p.score(&f, org, plugins.Input{OrgName: "Praetorian Security", Domain: "praetorian.com"})
+
+	assert.GreaterOrEqual(t, plugins.TotalConfidence(f), githubEmitThreshold,
+		"domain match should push above emit threshold")
+	// All four signals fire for this org: blog domain, name similarity, login
+	// token, and repo activity.
+	require.Len(t, f.Confidences, 4)
+	assert.Equal(t, 60, f.Confidences[0].Score)
+	assert.Contains(t, f.Confidences[0].Justification, "praetorian.com")
+	for _, c := range f.Confidences {
+		assert.NotEmpty(t, c.Justification, "every entry needs a justification")
+	}
 }
 
 func TestGitHubOrgPlugin_Score_BelowThresholdWithoutDomain(t *testing.T) {
@@ -151,8 +163,15 @@ func TestGitHubOrgPlugin_Score_BelowThresholdWithoutDomain(t *testing.T) {
 		PublicRepos: 2,
 	}
 	// No domain hint — relies on name similarity only
-	score := p.score(org, plugins.Input{OrgName: "Praetorian Security"})
-	assert.Less(t, score, githubEmitThreshold, "landscaping org without domain should be below emit threshold")
+	var f plugins.Finding
+	p.score(&f, org, plugins.Input{OrgName: "Praetorian Security"})
+
+	assert.Less(t, plugins.TotalConfidence(f), githubEmitThreshold,
+		"landscaping org without domain should be below emit threshold")
+	// No domain hint, so the blog-domain entry must be absent entirely.
+	for _, c := range f.Confidences {
+		assert.NotContains(t, c.Justification, "blog URL")
+	}
 }
 
 func TestGitHubOrgPlugin_Score_NoDomainInputReliesOnName(t *testing.T) {
@@ -164,9 +183,12 @@ func TestGitHubOrgPlugin_Score_NoDomainInputReliesOnName(t *testing.T) {
 		PublicRepos: 86,
 	}
 	// No domain provided — domain signal is 0
-	score := p.score(org, plugins.Input{OrgName: "Praetorian"})
+	var f plugins.Finding
+	p.score(&f, org, plugins.Input{OrgName: "Praetorian"})
+
 	// Should still be above review threshold via name + handle + activity
-	assert.GreaterOrEqual(t, score, githubReviewThreshold)
+	assert.GreaterOrEqual(t, plugins.TotalConfidence(f), githubReviewThreshold)
+	require.Len(t, f.Confidences, 3, "name, login token and activity — but not the blog domain")
 }
 
 // ── Run with mock server ──────────────────────────────────────────────────────
@@ -199,8 +221,8 @@ func TestGitHubOrgPlugin_Run_EmitsHighConfidenceMatch(t *testing.T) {
 	// High confidence should not need review
 	for _, f := range findings {
 		if f.Value == "github.com/praetorian-inc" {
-			assert.False(t, f.Data["needs_review"].(bool), "high-confidence match should not need review")
-			assert.GreaterOrEqual(t, f.Data["confidence"].(float64), githubEmitThreshold)
+			assert.False(t, plugins.NeedsReview(f), "high-confidence match should not need review")
+			assert.GreaterOrEqual(t, plugins.TotalConfidence(f), githubEmitThreshold)
 		}
 	}
 }
@@ -281,11 +303,12 @@ func TestGitHubOrgPlugin_Run_MarksReviewForBorderline(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	// May or may not emit depending on exact score, but if it does emit, needs_review should be set
+	// May or may not emit depending on exact score, but if it does emit it must
+	// carry evidence and be flagged for review.
 	for _, f := range findings {
-		conf := f.Data["confidence"].(float64)
-		if conf < githubEmitThreshold {
-			assert.True(t, f.Data["needs_review"].(bool), "borderline match must have needs_review:true")
+		require.NotEmpty(t, f.Confidences, "an emitted github-org finding is always scored")
+		if plugins.TotalConfidence(f) < githubEmitThreshold {
+			assert.True(t, plugins.NeedsReview(f), "borderline match must need review")
 		}
 	}
 }
@@ -313,11 +336,22 @@ func TestGitHubOrgPlugin_Run_UsesCacheOnSecondCall(t *testing.T) {
 	assert.Equal(t, calls1, callCount, "second call should use cache, not hit API")
 }
 
-func TestGitHubOrgPlugin_Run_GracefulOnNetworkError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
+func TestGitHubOrgPlugin_Run_GracefulOnHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
 
 	p := newGitHubTestPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
+func TestGitHubOrgPlugin_Run_GracefulOnNetworkError(t *testing.T) {
+	c, err := piuscache.NewAPI(t.TempDir(), "github-org")
+	require.NoError(t, err)
+	p := &GitHubOrgPlugin{client: client.NewNoRetry(), baseURL: "http://127.0.0.1:1", apiCache: c}
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
 	assert.NoError(t, err)
 	assert.Empty(t, findings)

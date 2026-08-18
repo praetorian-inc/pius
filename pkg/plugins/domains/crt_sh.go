@@ -11,6 +11,8 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
+const confCRTShCertificateTransparencyObservation = 65
+
 func init() {
 	plugins.Register("crt-sh", func() plugins.Plugin { return NewCRTShPlugin(client.New()) })
 }
@@ -80,7 +82,7 @@ func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 			}
 			if !seen[domain] {
 				seen[domain] = true
-				findings = append(findings, plugins.Finding{
+				finding := plugins.Finding{
 					Type:   plugins.FindingDomain,
 					Value:  domain,
 					Source: p.Name(),
@@ -88,7 +90,11 @@ func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 						"org":   input.OrgName,
 						"query": query,
 					},
-				})
+				}
+				plugins.AddConfidence(&finding, confCRTShCertificateTransparencyObservation,
+					fmt.Sprintf("crt.sh returned domain %q from Certificate Transparency data for query %q; query results: %s",
+						domain, query, urlStr))
+				findings = append(findings, finding)
 			}
 		}
 	}

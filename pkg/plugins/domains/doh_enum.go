@@ -26,6 +26,7 @@ const (
 	dohEnumConcurrency    = 50
 	dohEnumChannelBufSize = 1000
 	dohEnumMaxRetries     = 3
+	confDoHEnumResolved   = 70
 )
 
 // dohHTTPDoer abstracts HTTP operations for DoH queries (testability).
@@ -165,9 +166,14 @@ func (p *DoHEnumPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 		close(resultCh)
 	}()
 
+	seen := make(map[string]bool)
 	var findings []plugins.Finding
-	for f := range resultCh {
-		findings = append(findings, f)
+	for finding := range resultCh {
+		if seen[finding.Value] {
+			continue
+		}
+		seen[finding.Value] = true
+		findings = append(findings, finding)
 	}
 
 	return findings, nil
@@ -205,15 +211,19 @@ func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, fqdn string, rotatio
 		exists, err := p.queryDoH(ctx, fqdn, ep)
 		if err == nil {
 			if exists {
-				return plugins.Finding{
+				finding := plugins.Finding{
 					Type:   plugins.FindingDomain,
 					Value:  fqdn,
 					Source: "doh-enum",
 					Data: map[string]any{
 						"method":   "doh-enum",
-						"resolver": rotation[0].Name,
+						"resolver": ep.Name,
 					},
-				}, true
+				}
+				plugins.AddConfidence(&finding, confDoHEnumResolved,
+					fmt.Sprintf("Wordlist candidate %q resolved through DNS-over-HTTPS endpoint %q",
+						fqdn, ep.URL))
+				return finding, true
 			}
 			return plugins.Finding{}, false
 		}

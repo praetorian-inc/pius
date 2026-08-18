@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 
@@ -17,6 +18,18 @@ import (
 
 func init() {
 	plugins.Register("wayback", func() plugins.Plugin { return &WaybackPlugin{client: client.New()} })
+}
+
+const confWaybackArchiveObservation = 60
+
+const (
+	archiveSourceWayback     = "Wayback Machine"
+	archiveSourceCommonCrawl = "Common Crawl"
+)
+
+type archiveObservation struct {
+	hostname string
+	source   string
 }
 
 // WaybackPlugin discovers historical subdomains via Wayback Machine CDX API and Common Crawl index.
@@ -60,43 +73,61 @@ func (p *WaybackPlugin) Accepts(input plugins.Input) bool {
 }
 
 func (p *WaybackPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	seen := make(map[string]bool)
-	var findings []plugins.Finding
-
-	wbHosts, err := p.queryWayback(ctx, input.Domain)
+	waybackObservations, err := p.queryWayback(ctx, input.Domain)
 	if err != nil {
 		slog.Debug("wayback CDX query failed", "domain", input.Domain, "err", err)
 	}
 
-	ccHosts, err := p.queryCommonCrawl(ctx, input.Domain)
+	commonCrawlObservations, err := p.queryCommonCrawl(ctx, input.Domain)
 	if err != nil {
 		slog.Debug("common crawl query failed", "domain", input.Domain, "err", err)
 	}
 
-	allHosts := append(wbHosts, ccHosts...)
-	for _, host := range allHosts {
-		host = normalizeDomain(host)
-		if host == "" {
+	observations := append(waybackObservations, commonCrawlObservations...)
+	return p.findingsFromArchiveObservations(observations, input.Domain), nil
+}
+
+func (p *WaybackPlugin) findingsFromArchiveObservations(observations []archiveObservation, baseDomain string) []plugins.Finding {
+	sourcesByHostname := make(map[string]map[string]bool)
+	var hostnames []string
+	for _, observation := range observations {
+		hostname := normalizeDomain(observation.hostname)
+		if hostname == "" || !matchesDomain(hostname, baseDomain) {
 			continue
 		}
-		if !matchesDomain(host, input.Domain) {
-			continue
+		if sourcesByHostname[hostname] == nil {
+			sourcesByHostname[hostname] = make(map[string]bool)
+			hostnames = append(hostnames, hostname)
 		}
-		if seen[host] {
-			continue
-		}
-		seen[host] = true
-		findings = append(findings, plugins.Finding{
-			Type:   plugins.FindingDomain,
-			Value:  host,
-			Source: p.Name(),
-			Data: map[string]any{
-				"base_domain": input.Domain,
-			},
-		})
+		sourcesByHostname[hostname][observation.source] = true
 	}
 
-	return findings, nil
+	findings := make([]plugins.Finding, 0, len(hostnames))
+	for _, hostname := range hostnames {
+		sources := archiveSources(sourcesByHostname[hostname])
+		finding := plugins.Finding{
+			Type:   plugins.FindingDomain,
+			Value:  hostname,
+			Source: p.Name(),
+			Data: map[string]any{
+				"base_domain": baseDomain,
+			},
+		}
+		plugins.AddConfidence(&finding, confWaybackArchiveObservation,
+			fmt.Sprintf("Archive evidence from %s records hostname %q under base domain %q",
+				strings.Join(sources, " and "), hostname, baseDomain))
+		findings = append(findings, finding)
+	}
+	return findings
+}
+
+func archiveSources(sourceSet map[string]bool) []string {
+	sources := make([]string, 0, len(sourceSet))
+	for source := range sourceSet {
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+	return sources
 }
 
 const (
@@ -108,7 +139,7 @@ const (
 // (a-z, 0-9, plus apex domain). Each prefix query targets subdomains starting
 // with that character, avoiding the SURT ordering problem where large domains
 // consume all result slots before subdomains appear.
-func (p *WaybackPlugin) queryWayback(ctx context.Context, domain string) ([]string, error) {
+func (p *WaybackPlugin) queryWayback(ctx context.Context, domain string) ([]archiveObservation, error) {
 	// Build prefix list: a-z, 0-9, then empty string for apex domain
 	prefixes := make([]string, 0, 37)
 	for c := 'a'; c <= 'z'; c++ {
@@ -120,8 +151,8 @@ func (p *WaybackPlugin) queryWayback(ctx context.Context, domain string) ([]stri
 	prefixes = append(prefixes, "") // empty prefix = apex domain query
 
 	var (
-		mu       sync.Mutex
-		allHosts []string
+		mu              sync.Mutex
+		allObservations []archiveObservation
 	)
 	sem := make(chan struct{}, waybackFanoutConcurrency)
 
@@ -130,7 +161,7 @@ func (p *WaybackPlugin) queryWayback(ctx context.Context, domain string) ([]stri
 		select {
 		case <-ctx.Done():
 			wg.Wait()
-			return allHosts, nil
+			return allObservations, nil
 		default:
 		}
 
@@ -140,25 +171,25 @@ func (p *WaybackPlugin) queryWayback(ctx context.Context, domain string) ([]stri
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			hosts, err := p.queryWaybackPrefix(ctx, domain, pfx)
+			observations, err := p.queryWaybackPrefix(ctx, domain, pfx)
 			if err != nil {
 				slog.Debug("wayback prefix query failed", "prefix", pfx, "domain", domain, "error", err)
 				return
 			}
 			mu.Lock()
-			allHosts = append(allHosts, hosts...)
+			allObservations = append(allObservations, observations...)
 			mu.Unlock()
 		}(prefix)
 	}
 	wg.Wait()
 
-	return allHosts, nil
+	return allObservations, nil
 }
 
 // queryWaybackPrefix queries the CDX API for a single prefix pattern.
 // If prefix is empty, queries the apex domain directly.
 // The CDX API returns a JSON array of arrays: [["original"],["url1"],["url2"],...]
-func (p *WaybackPlugin) queryWaybackPrefix(ctx context.Context, domain, prefix string) ([]string, error) {
+func (p *WaybackPlugin) queryWaybackPrefix(ctx context.Context, domain, prefix string) ([]archiveObservation, error) {
 	var urlStr string
 	if prefix == "" {
 		// Apex domain query: url=domain.com (no wildcard)
@@ -179,7 +210,7 @@ func (p *WaybackPlugin) queryWaybackPrefix(ctx context.Context, domain, prefix s
 		return nil, fmt.Errorf("parse wayback CDX response: %w", err)
 	}
 
-	var hosts []string
+	var observations []archiveObservation
 	for i, row := range rows {
 		// Skip header row: [["original"]]
 		if i == 0 {
@@ -190,17 +221,17 @@ func (p *WaybackPlugin) queryWaybackPrefix(ctx context.Context, domain, prefix s
 		}
 		host := extractHost(row[0])
 		if host != "" {
-			hosts = append(hosts, host)
+			observations = append(observations, archiveObservation{hostname: host, source: archiveSourceWayback})
 		}
 	}
-	return hosts, nil
+	return observations, nil
 }
 
 // queryCommonCrawl fetches the latest Common Crawl index from collinfo.json and then
 // queries that index for archived URLs matching the domain.
 // The index endpoint returns NDJSON with a "url" field per line.
 // On error, returns nil (non-fatal).
-func (p *WaybackPlugin) queryCommonCrawl(ctx context.Context, domain string) ([]string, error) {
+func (p *WaybackPlugin) queryCommonCrawl(ctx context.Context, domain string) ([]archiveObservation, error) {
 	indexURL, err := p.fetchLatestCCIndex(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetch common crawl index list: %w", err)
@@ -213,7 +244,7 @@ func (p *WaybackPlugin) queryCommonCrawl(ctx context.Context, domain string) ([]
 		return nil, fmt.Errorf("common crawl CDX request: %w", err)
 	}
 
-	var hosts []string
+	var observations []archiveObservation
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -229,11 +260,11 @@ func (p *WaybackPlugin) queryCommonCrawl(ctx context.Context, domain string) ([]
 		}
 		host := extractHost(record.URL)
 		if host != "" {
-			hosts = append(hosts, host)
+			observations = append(observations, archiveObservation{hostname: host, source: archiveSourceCommonCrawl})
 		}
 	}
 
-	return hosts, nil
+	return observations, nil
 }
 
 // fetchLatestCCIndex fetches the Common Crawl collinfo.json to find the most recent CDX API URL.

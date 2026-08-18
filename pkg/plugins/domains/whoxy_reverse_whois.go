@@ -1,16 +1,17 @@
 package domains
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/praetorian-inc/pius/pkg/client"
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
@@ -20,24 +21,36 @@ func init() {
 	plugins.Register("whoxy-reverse-whois", func() plugins.Plugin { return &WhoxyReverseWhoisPlugin{client: client.New()} })
 }
 
+// WhoxyReverseWhoisPlugin discovers related domains via Whoxy reverse WHOIS.
+// Emits FindingDomain with Data["pivot_org"]. Verification happens when Guard
+// runs the whois capability on each discovered domain.
 type WhoxyReverseWhoisPlugin struct {
-	client   *client.Client
-	baseURL  string             // overridable for tests
-	resolver registrantResolver // overridable for tests; defaults to rdapWhoisResolver
+	client  *client.Client
+	baseURL string // overridable for tests
+}
+
+// NewWhoxyReverseWhoisPlugin creates a plugin with an injectable HTTP client.
+func NewWhoxyReverseWhoisPlugin(httpClient *client.Client) *WhoxyReverseWhoisPlugin {
+	return &WhoxyReverseWhoisPlugin{client: httpClient}
 }
 
 func (p *WhoxyReverseWhoisPlugin) Name() string { return "whoxy-reverse-whois" }
 func (p *WhoxyReverseWhoisPlugin) Description() string {
-	return "Reverse WHOIS via Whoxy API — discovers related domains by registrant organization name or email (paid, requires WHOXY_API_KEY)"
+	return "Reverse WHOIS via Whoxy API (requires WHOXY_API_KEY)"
 }
 func (p *WhoxyReverseWhoisPlugin) Category() string { return "domain" }
 func (p *WhoxyReverseWhoisPlugin) Phase() int       { return 0 }
 func (p *WhoxyReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
-// Accepts only runs if WHOXY_API_KEY is set and an org name or registrant
-// email seed is provided.
 func (p *WhoxyReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("WHOXY_API_KEY") != "" && (input.OrgName != "" || input.Email != "")
+	return os.Getenv("WHOXY_API_KEY") != "" && (input.OrgName != "" || input.PersonName != "" || input.Email != "")
+}
+
+func (p *WhoxyReverseWhoisPlugin) apiBase() string {
+	if p.baseURL != "" {
+		return p.baseURL
+	}
+	return "https://api.whoxy.com"
 }
 
 type whoxyResponse struct {
@@ -50,110 +63,94 @@ type whoxySearchResult struct {
 	QueryTime  string `json:"query_time"`
 }
 
-func (p *WhoxyReverseWhoisPlugin) apiBase() string {
-	if p.baseURL != "" {
-		return p.baseURL
-	}
-	return "https://api.whoxy.com"
+// whoxyQuery pairs a Whoxy API parameter name with the search value.
+type whoxyQuery struct {
+	param string // "company", "name", or "email"
+	value string
 }
 
 func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("WHOXY_API_KEY")
 
-	// Active seed: org name by default, registrant email when only Email is set.
-	query, byEmail := input.OrgName, false
-	if input.OrgName == "" && input.Email != "" {
-		query, byEmail = input.Email, true
-	}
-	queryType := "org"
-	if byEmail {
-		queryType = "email"
+	// Build the set of queries from the input. Whoxy distinguishes company
+	// names (&company=) from person names (&name=) from email (&email=).
+	queries := buildWhoxyQueries(input)
+	if len(queries) == 0 {
+		return nil, nil
 	}
 
+	pivotOrg := cmp.Or(input.OrgName, input.PersonName, input.Email)
+
+	var allDomains []string
+	for _, q := range queries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		domains, err := p.paginateQuery(ctx, apiKey, q)
+		if err != nil {
+			slog.Warn("whoxy-reverse-whois: query failed", "param", q.param, "value", q.value, "error", err)
+			continue
+		}
+		allDomains = append(allDomains, domains...)
+	}
+
+	return domainFindings(p.Name(), pivotOrg, allDomains), nil
+}
+
+// buildWhoxyQueries maps Input fields to the correct Whoxy API parameters.
+func buildWhoxyQueries(input plugins.Input) []whoxyQuery {
+	var queries []whoxyQuery
+	if input.OrgName != "" {
+		queries = append(queries, whoxyQuery{param: "company", value: input.OrgName})
+	}
+	if input.PersonName != "" {
+		queries = append(queries, whoxyQuery{param: "name", value: input.PersonName})
+	}
+	if input.Email != "" {
+		queries = append(queries, whoxyQuery{param: "email", value: input.Email})
+	}
+	return queries
+}
+
+func (p *WhoxyReverseWhoisPlugin) paginateQuery(ctx context.Context, apiKey string, q whoxyQuery) ([]string, error) {
+	var domains []string
 	page := 1
 	totalPages := 1
-	// Accumulate an ordered, deduped candidate list. Staleness filtering happens
-	// here, BEFORE verification, so stale records never trigger a lookup. Each
-	// Whoxy match is only a lead (registrant name/email match); corroboration
-	// against the candidate's own registrant happens in verifyCandidates
-	// (ENG-5123).
-	var cands []candidate
-	seen := make(map[string]struct{})
 
 	for {
-		resp, err := p.fetchPage(ctx, apiKey, query, byEmail, page)
+		resp, err := p.fetchPage(ctx, apiKey, q.param, q.value, page)
 		if err != nil {
-			slog.Warn("whoxy-reverse-whois: stopping pagination", "page", page, "query_type", queryType, "error", err)
+			if page == 1 {
+				return nil, err
+			}
+			slog.Warn("whoxy-reverse-whois: stopping pagination", "page", page, "error", err)
 			break
 		}
-
 		if resp.TotalPages > 0 {
 			totalPages = resp.TotalPages
 		}
-
 		for _, result := range resp.SearchResult {
-			if result.DomainName == "" {
-				continue
+			if result.DomainName != "" && !whoxyRecordStale(result.QueryTime) {
+				domains = append(domains, result.DomainName)
 			}
-			if whoxyRecordStale(result.QueryTime) {
-				continue
-			}
-			domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(result.DomainName), "."))
-			if domain == "" {
-				continue
-			}
-			if _, ok := seen[domain]; ok {
-				continue
-			}
-			seen[domain] = struct{}{}
-			cands = append(cands, candidate{
-				domain: domain,
-				finding: plugins.Finding{
-					Type:   plugins.FindingDomain,
-					Value:  domain,
-					Source: p.Name(),
-					Data: map[string]any{
-						"org": query,
-					},
-				},
-			})
 		}
-
 		if len(resp.SearchResult) == 0 || page >= totalPages || page >= maxWhoxyPages {
 			break
 		}
 		page++
 	}
 
-	// Resolve into a local rather than mutating p.resolver: writing shared plugin
-	// state inside Run() would be a data race if an instance were ever reused or
-	// run concurrently (Gemini review, ENG-5123).
-	resolver := p.resolver
-	if resolver == nil {
-		resolver = &rdapWhoisResolver{}
-	}
-	// input.OrgName drives corroboration; email-mode (OrgName == "") short-
-	// circuits inside verifyCandidates. Data["org"] provenance stays the query.
-	return verifyCandidates(ctx, resolver, input.OrgName, cands)
+	return strutil.Unique(domains), nil
 }
 
-func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, query string, byEmail bool, page int) (whoxyResponse, error) {
-	param := "name"
-	if byEmail {
-		param = "email"
-	}
+func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, param, value string, page int) (whoxyResponse, error) {
 	reqURL := fmt.Sprintf(
 		"%s/?key=%s&reverse=whois&%s=%s&mode=micro&page=%d",
-		p.apiBase(),
-		url.QueryEscape(apiKey),
-		param,
-		url.QueryEscape(query),
-		page,
+		p.apiBase(), url.QueryEscape(apiKey), param, url.QueryEscape(value), page,
 	)
 
 	body, err := p.client.Get(ctx, reqURL)
 	if err != nil {
-		// Do not propagate the URL — it contains the API key.
 		return whoxyResponse{}, fmt.Errorf("request failed")
 	}
 
@@ -161,13 +158,9 @@ func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, query s
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return whoxyResponse{}, fmt.Errorf("parse response: %w", err)
 	}
-
 	return resp, nil
 }
 
-// whoxyRecordStale filters out records where Whoxy's query_time (last cache
-// refresh) is older than 10 years. This is guard-core parity — note that
-// query_time is NOT the domain registration date but when Whoxy last crawled it.
 func whoxyRecordStale(queryTime string) bool {
 	t, err := time.Parse(time.DateTime, queryTime)
 	if err != nil {

@@ -1,6 +1,9 @@
 package plugins
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // FindingType categorizes what was discovered
 type FindingType string
@@ -20,6 +23,13 @@ const (
 	// Data["preseed_type"] carries the preseed classification (e.g., "whois+company").
 	// Data["preseed_title"] carries a human-readable label (often the same as Value).
 	FindingPreseed FindingType = "preseed"
+
+	// FindingWhoisResult carries structured WHOIS/RDAP registration data for a domain.
+	// Value is the domain name; Data includes registration dates, contacts, and source metadata.
+	FindingWhoisResult FindingType = "whois-result"
+
+	// FindingIPWhoisResult carries structured WHOIS/RDAP allocation data for an IP or CIDR.
+	FindingIPWhoisResult FindingType = "ip-whois-result"
 )
 
 // Mode constants for plugin classification.
@@ -33,8 +43,13 @@ const (
 
 // Input is the discovery request passed to each plugin.
 type Input struct {
-	// OrgName is the primary organization name to search for. Required.
+	// OrgName is a company/organization name to search for.
 	OrgName string
+
+	// PersonName is a registrant person name to search for.
+	// Whoxy and similar APIs distinguish person names from company names;
+	// callers should populate the appropriate field based on the data source.
+	PersonName string
 
 	// Domain is an optional known domain associated with the org.
 	Domain string
@@ -45,6 +60,9 @@ type Input struct {
 	// ASN is an optional known Autonomous System Number (e.g., "AS12345").
 	ASN string
 
+	// IP is an optional known IP address.
+	IP string
+
 	// CIDR is an optional known IP range (e.g., "192.0.2.0/24").
 	CIDR string
 
@@ -53,6 +71,18 @@ type Input struct {
 	// Meta["apnic_handles"], Meta["afrinic_handles"] with comma-separated handles.
 	// Phase 2 plugins read from Meta to know which handles to look up.
 	Meta map[string]string
+}
+
+// Confidence is a single piece of scored, explained evidence supporting a
+// finding. Entries are additive: a finding's total confidence is the sum of its
+// entry scores, capped at 100 (see TotalConfidence).
+type Confidence struct {
+	// Score is this evidence's contribution to the total confidence.
+	Score int `json:"score"`
+
+	// Justification explains, in human-readable terms, why this evidence
+	// supports the finding.
+	Justification string `json:"justification"`
 }
 
 // Finding represents a single discovered asset or intermediate result.
@@ -66,8 +96,53 @@ type Finding struct {
 	// Source is the name of the plugin that produced this finding.
 	Source string
 
-	// Data contains source-specific metadata.
+	// Confidences is the scored, justified evidence supporting this finding.
+	// An empty slice means the finding was never scored, which is distinct from
+	// a finding carrying an explicit zero-score entry. Append through
+	// AddConfidence; read the aggregate through TotalConfidence.
+	Confidences []Confidence
+
+	// Data contains source-specific metadata. It must never carry confidence
+	// state — that lives in Confidences.
 	Data map[string]any
+}
+
+// FindingData converts a typed result into Finding.Data.
+func FindingData(value any) map[string]any {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var data map[string]any
+	if err := json.Unmarshal(encoded, &data); err != nil {
+		return nil
+	}
+	return data
+}
+
+// findingFields aliases Finding so MarshalJSON can encode the plain struct
+// without re-entering itself. A defined type does not inherit Finding's
+// methods, which is exactly what breaks the recursion.
+type findingFields Finding
+
+// MarshalJSON emits a Finding's stored fields plus its two derived confidence
+// values, so a reader of `--output json` or `--output ndjson` can see the
+// aggregate and the review verdict without summing the entries by hand.
+//
+// TotalConfidence and NeedsReview are output-only: Confidences remains the sole
+// source of truth, so both are recomputed on demand and simply ignored when
+// findings are read back (the plugin caches round-trip through this encoding).
+// Nothing should ever populate them as stored state.
+func (f Finding) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		findingFields
+		TotalConfidence int
+		NeedsReview     bool
+	}{
+		findingFields:   findingFields(f),
+		TotalConfidence: TotalConfidence(f),
+		NeedsReview:     NeedsReview(f),
+	})
 }
 
 // Descriptor identifies and describes a plugin.
@@ -78,7 +153,7 @@ type Descriptor interface {
 	// Description returns a short human-readable description of what this plugin does.
 	Description() string
 
-	// Category returns the type of assets this plugin discovers: "cidr" or "domain".
+	// Category returns the type of assets this plugin discovers: "cidr", "domain", or "ip".
 	Category() string
 }
 

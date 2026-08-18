@@ -11,6 +11,8 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
+const confURLScanHistoryObservation = 60
+
 func init() {
 	plugins.Register("urlscan", func() plugins.Plugin { return &URLScanPlugin{client: client.New()} })
 }
@@ -124,14 +126,18 @@ func (p *URLScanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 				continue
 			}
 			seen[host] = true
-			findings = append(findings, plugins.Finding{
+			finding := plugins.Finding{
 				Type:   plugins.FindingDomain,
 				Value:  host,
 				Source: p.Name(),
 				Data: map[string]any{
 					"base_domain": input.Domain,
 				},
-			})
+			}
+			plugins.AddConfidence(&finding, confURLScanHistoryObservation,
+				fmt.Sprintf("URLScan scan history records hostname %q under queried base domain %q; query results: %s",
+					host, input.Domain, reqURL))
+			findings = append(findings, finding)
 		}
 	}
 

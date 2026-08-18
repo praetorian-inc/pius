@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/praetorian-inc/pius/pkg/client"
@@ -118,13 +119,16 @@ func TestParseShodanResponse_ExtractsIPsAndHostnames(t *testing.T) {
 		Matches: []shodanMatch{
 			{IPStr: "1.2.3.4", Hostnames: []string{"origin.example.com"}},
 			{IPStr: "5.6.7.8", Hostnames: []string{"staging.example.com", "INTERNAL.example.COM."}},
+			{IPStr: "2001:db8::1", Hostnames: []string{"ipv6.example.com"}},
 		},
 	}
 	body, _ := json.Marshal(resp)
 	input := plugins.Input{OrgName: "Acme", Domain: "example.com"}
 
-	findings, err := parseShodanResponse(body, -12345, input)
+	accumulator := make(faviconFindingMap)
+	err := parseShodanResponse(body, -12345, input, accumulator)
 	require.NoError(t, err)
+	findings := sortedFaviconFindings(accumulator)
 
 	var domains, cidrs []string
 	for _, f := range findings {
@@ -136,11 +140,20 @@ func TestParseShodanResponse_ExtractsIPsAndHostnames(t *testing.T) {
 		}
 		assert.Equal(t, "favicon-hash", f.Source)
 		assert.Equal(t, int32(-12345), f.Data["favicon_hash"])
-		assert.Equal(t, "shodan", f.Data["scanner"])
+		assert.Equal(t, "Acme", f.Data["org"])
+		assert.Equal(t, "example.com", f.Data["source_domain"])
+		assert.Equal(t, []string{"shodan"}, f.Data["scanners"])
+		assert.NotContains(t, f.Data, "confidence")
+		assert.NotContains(t, f.Data, "confidences")
+		require.Len(t, f.Confidences, 1)
+		assert.Equal(t, confFaviconScannerObservation, f.Confidences[0].Score)
+		assert.NotEmpty(t, f.Confidences[0].Justification)
+		assert.Contains(t, f.Confidences[0].Justification, f.Value[:strings.Index(f.Value+"/", "/")])
 	}
 
 	assert.Contains(t, cidrs, "1.2.3.4/32")
 	assert.Contains(t, cidrs, "5.6.7.8/32")
+	assert.Contains(t, cidrs, "2001:db8::1/128")
 	assert.Contains(t, domains, "origin.example.com")
 	assert.Contains(t, domains, "staging.example.com")
 	assert.Contains(t, domains, "internal.example.com") // normalized
@@ -148,14 +161,17 @@ func TestParseShodanResponse_ExtractsIPsAndHostnames(t *testing.T) {
 
 func TestParseShodanResponse_EmptyMatches(t *testing.T) {
 	body := []byte(`{"matches":[]}`)
-	findings, err := parseShodanResponse(body, 0, plugins.Input{})
+	findings := make(faviconFindingMap)
+	err := parseShodanResponse(body, 0, plugins.Input{}, findings)
 	require.NoError(t, err)
 	assert.Empty(t, findings)
 }
 
 func TestParseShodanResponse_InvalidJSON(t *testing.T) {
-	_, err := parseShodanResponse([]byte("not-json"), 0, plugins.Input{})
+	findings := make(faviconFindingMap)
+	err := parseShodanResponse([]byte("not-json"), 0, plugins.Input{}, findings)
 	assert.Error(t, err)
+	assert.Empty(t, findings)
 }
 
 // ── parseFOFAResponse ─────────────────────────────────────────────────────────
@@ -165,13 +181,16 @@ func TestParseFOFAResponse_ExtractsHostsAndIPs(t *testing.T) {
 		Results: [][]string{
 			{"origin.example.com", "10.0.0.1"},
 			{"https://staging.example.com", "10.0.0.2"},
+			{"ipv6.example.com", "2001:db8::2"},
 		},
 	}
 	body, _ := json.Marshal(resp)
 	input := plugins.Input{OrgName: "Acme", Domain: "example.com"}
 
-	findings, err := parseFOFAResponse(body, -99999, input)
+	accumulator := make(faviconFindingMap)
+	err := parseFOFAResponse(body, -99999, input, accumulator)
 	require.NoError(t, err)
+	findings := sortedFaviconFindings(accumulator)
 
 	var domains, cidrs []string
 	for _, f := range findings {
@@ -182,50 +201,131 @@ func TestParseFOFAResponse_ExtractsHostsAndIPs(t *testing.T) {
 			cidrs = append(cidrs, f.Value)
 		}
 		assert.Equal(t, "favicon-hash", f.Source)
-		assert.Equal(t, "fofa", f.Data["scanner"])
+		assert.Equal(t, int32(-99999), f.Data["favicon_hash"])
+		assert.Equal(t, "Acme", f.Data["org"])
+		assert.Equal(t, "example.com", f.Data["source_domain"])
+		assert.Equal(t, []string{"fofa"}, f.Data["scanners"])
+		assert.NotContains(t, f.Data, "confidence")
+		assert.NotContains(t, f.Data, "confidences")
+		require.Len(t, f.Confidences, 1)
+		assert.Equal(t, confFaviconScannerObservation, f.Confidences[0].Score)
+		assert.NotEmpty(t, f.Confidences[0].Justification)
+		assert.Contains(t, f.Confidences[0].Justification, f.Value[:strings.Index(f.Value+"/", "/")])
 	}
 
 	assert.Contains(t, cidrs, "10.0.0.1/32")
 	assert.Contains(t, cidrs, "10.0.0.2/32")
+	assert.Contains(t, cidrs, "2001:db8::2/128")
 	assert.Contains(t, domains, "origin.example.com")
 	assert.Contains(t, domains, "staging.example.com")
 }
 
 func TestParseFOFAResponse_ShortResult(t *testing.T) {
 	body := []byte(`{"results":[["only-host"]]}`)
-	findings, err := parseFOFAResponse(body, 0, plugins.Input{})
+	findings := make(faviconFindingMap)
+	err := parseFOFAResponse(body, 0, plugins.Input{}, findings)
 	require.NoError(t, err)
 	assert.Empty(t, findings)
 }
 
 func TestParseFOFAResponse_EmptyResults(t *testing.T) {
 	body := []byte(`{"results":[]}`)
-	findings, err := parseFOFAResponse(body, 0, plugins.Input{})
+	findings := make(faviconFindingMap)
+	err := parseFOFAResponse(body, 0, plugins.Input{}, findings)
 	require.NoError(t, err)
 	assert.Empty(t, findings)
 }
 
-// ── deduplicateFindings ───────────────────────────────────────────────────────
+// ── finding aggregation ───────────────────────────────────────────────────────
 
-func TestDeduplicateFindings_RemovesDuplicates(t *testing.T) {
-	findings := []plugins.Finding{
-		{Type: plugins.FindingDomain, Value: "a.com", Source: "favicon-hash"},
-		{Type: plugins.FindingDomain, Value: "a.com", Source: "favicon-hash"},
-		{Type: plugins.FindingCIDR, Value: "1.2.3.4/32", Source: "favicon-hash"},
-		{Type: plugins.FindingCIDR, Value: "1.2.3.4/32", Source: "favicon-hash"},
-		{Type: plugins.FindingDomain, Value: "b.com", Source: "favicon-hash"},
+func TestFaviconFindingAggregation_DeduplicatesIdenticalScannerRows(t *testing.T) {
+	body := []byte(`{"matches":[
+		{"ip_str":"1.2.3.4","hostnames":["same.example.com"]},
+		{"ip_str":"1.2.3.4","hostnames":["same.example.com"]}
+	]}`)
+	findings := make(faviconFindingMap)
+	require.NoError(t, parseShodanResponse(body, -12345, plugins.Input{Domain: "example.com"}, findings))
+
+	require.Len(t, findings, 2)
+	for _, finding := range findings {
+		require.Len(t, finding.Confidences, 1)
+		assert.Equal(t, confFaviconScannerObservation, plugins.TotalConfidence(finding))
 	}
-	result := deduplicateFindings(findings, "favicon-hash")
-	assert.Len(t, result, 3)
 }
 
-func TestDeduplicateFindings_SameValueDifferentType(t *testing.T) {
-	findings := []plugins.Finding{
-		{Type: plugins.FindingDomain, Value: "1.2.3.4/32", Source: "favicon-hash"},
-		{Type: plugins.FindingCIDR, Value: "1.2.3.4/32", Source: "favicon-hash"},
+func TestFaviconFindingAggregation_CorroboratesAcrossScanners(t *testing.T) {
+	findings := make(faviconFindingMap)
+	input := plugins.Input{OrgName: "Acme", Domain: "example.com"}
+	require.NoError(t, parseShodanResponse(
+		[]byte(`{"matches":[{"ip_str":"1.2.3.4","hostnames":["same.example.com"]}]}`),
+		-12345, input, findings))
+	require.NoError(t, parseFOFAResponse(
+		[]byte(`{"results":[["same.example.com","1.2.3.4"]]}`),
+		-12345, input, findings))
+
+	require.Len(t, findings, 2, "domain and CIDR findings must remain distinct")
+	for _, finding := range findings {
+		assert.Equal(t, []string{"fofa", "shodan"}, finding.Data["scanners"])
+		require.Len(t, finding.Confidences, 2)
+		assert.Equal(t, 100, plugins.TotalConfidence(finding))
+		assert.Contains(t, finding.Confidences[0].Justification, "Shodan")
+		assert.Contains(t, finding.Confidences[1].Justification, "FOFA")
 	}
-	result := deduplicateFindings(findings, "favicon-hash")
-	assert.Len(t, result, 2, "same value but different types should both be kept")
+}
+
+func TestFaviconFindingAggregation_KeepsSameValueForDifferentTypes(t *testing.T) {
+	findings := make(faviconFindingMap)
+	input := plugins.Input{Domain: "example.com"}
+	addFaviconEvidence(findings, faviconObservation{
+		scanner: "shodan", findingType: plugins.FindingDomain, value: "shared.example",
+	}, 1, input)
+	addFaviconEvidence(findings, faviconObservation{
+		scanner: "shodan", findingType: plugins.FindingCIDR, value: "shared.example",
+	}, 1, input)
+
+	assert.Len(t, findings, 2)
+}
+
+func TestFaviconFindingAggregation_OmitsUnavailableAssociatedIP(t *testing.T) {
+	findings := make(faviconFindingMap)
+	require.NoError(t, parseFOFAResponse(
+		[]byte(`{"results":[["origin.example.com",""]]}`),
+		-12345, plugins.Input{Domain: "example.com"}, findings))
+
+	domain := findings[faviconFindingKey{findingType: plugins.FindingDomain, value: "origin.example.com"}]
+	require.Len(t, domain.Confidences, 1)
+	assert.Equal(t,
+		`FOFA observed hostname "origin.example.com" with favicon hash -12345 matching the favicon fetched from domain "example.com"`,
+		domain.Confidences[0].Justification)
+	assert.NotContains(t, domain.Confidences[0].Justification, `IP ""`)
+}
+
+func TestFaviconFindingAggregation_PreservesDistinctAssociatedIPs(t *testing.T) {
+	body := []byte(`{"results":[
+		["origin.example.com","1.2.3.4"],
+		["origin.example.com","5.6.7.8"]
+	]}`)
+	findings := make(faviconFindingMap)
+	require.NoError(t, parseFOFAResponse(body, -12345, plugins.Input{Domain: "example.com"}, findings))
+
+	domain := findings[faviconFindingKey{findingType: plugins.FindingDomain, value: "origin.example.com"}]
+	require.Len(t, domain.Confidences, 2)
+	assert.Contains(t, domain.Confidences[0].Justification, `"1.2.3.4"`)
+	assert.Contains(t, domain.Confidences[1].Justification, `"5.6.7.8"`)
+}
+
+func TestSortedFaviconFindings_IsDeterministic(t *testing.T) {
+	findings := make(faviconFindingMap)
+	input := plugins.Input{Domain: "example.com"}
+	addFaviconEvidence(findings, faviconObservation{scanner: "shodan", findingType: plugins.FindingDomain, value: "z.example.com"}, 1, input)
+	addFaviconEvidence(findings, faviconObservation{scanner: "shodan", findingType: plugins.FindingCIDR, value: "2.2.2.2/32", associatedIP: "2.2.2.2"}, 1, input)
+	addFaviconEvidence(findings, faviconObservation{scanner: "shodan", findingType: plugins.FindingDomain, value: "a.example.com"}, 1, input)
+
+	ordered := sortedFaviconFindings(findings)
+	require.Len(t, ordered, 3)
+	assert.Equal(t, []string{"2.2.2.2/32", "a.example.com", "z.example.com"}, []string{
+		ordered[0].Value, ordered[1].Value, ordered[2].Value,
+	})
 }
 
 // ── normalizeDomain ───────────────────────────────────────────────────────────
@@ -309,6 +409,10 @@ func TestFaviconHashPlugin_Run_ShodanOnly(t *testing.T) {
 	var domains, cidrs []string
 	for _, f := range findings {
 		assert.Equal(t, "favicon-hash", f.Source)
+		require.Len(t, f.Confidences, 1)
+		assert.Equal(t, confFaviconScannerObservation, plugins.TotalConfidence(f))
+		assert.True(t, plugins.NeedsReview(f))
+		assert.Equal(t, []string{"shodan"}, f.Data["scanners"])
 		switch f.Type {
 		case plugins.FindingDomain:
 			domains = append(domains, f.Value)
@@ -347,11 +451,20 @@ func TestFaviconHashPlugin_Run_ShodanAndFOFA(t *testing.T) {
 
 	var domains, cidrs []string
 	for _, f := range findings {
+		require.Len(t, f.Confidences, 1)
+		assert.Equal(t, confFaviconScannerObservation, plugins.TotalConfidence(f))
 		switch f.Type {
 		case plugins.FindingDomain:
 			domains = append(domains, f.Value)
 		case plugins.FindingCIDR:
 			cidrs = append(cidrs, f.Value)
+		}
+		if strings.Contains(f.Value, "cdn.example.com") || strings.Contains(f.Value, "1.2.3.4") {
+			assert.Equal(t, []string{"shodan"}, f.Data["scanners"])
+			assert.Contains(t, f.Confidences[0].Justification, "Shodan")
+		} else {
+			assert.Equal(t, []string{"fofa"}, f.Data["scanners"])
+			assert.Contains(t, f.Confidences[0].Justification, "FOFA")
 		}
 	}
 	assert.Contains(t, cidrs, "1.2.3.4/32")
@@ -393,20 +506,79 @@ func TestFaviconHashPlugin_Run_DeduplicatesAcrossScanners(t *testing.T) {
 		if f.Type == plugins.FindingCIDR && f.Value == "1.2.3.4/32" {
 			cidrCount++
 		}
+		assert.Equal(t, []string{"fofa", "shodan"}, f.Data["scanners"])
+		require.Len(t, f.Confidences, 2)
+		assert.Equal(t, 100, plugins.TotalConfidence(f))
+		assert.Contains(t, f.Confidences[0].Justification, "Shodan")
+		assert.Contains(t, f.Confidences[1].Justification, "FOFA")
 	}
-	assert.Equal(t, 1, domainCount, "duplicate domain should be deduplicated")
-	assert.Equal(t, 1, cidrCount, "duplicate CIDR should be deduplicated")
+	assert.Equal(t, 1, domainCount, "duplicate domain should be aggregated")
+	assert.Equal(t, 1, cidrCount, "duplicate CIDR should be aggregated")
 }
 
-func TestFaviconHashPlugin_Run_GracefulOnFaviconFetchError(t *testing.T) {
+func TestFaviconHashPlugin_Run_IPv6ScannerResultsUseHostPrefixes(t *testing.T) {
+	t.Setenv("SHODAN_API_KEY", "test-key")
+	t.Setenv("FOFA_API_KEY", "test-fofa-key")
+
+	faviconSrv := mockFaviconServer([]byte("fake-favicon"), http.StatusOK)
+	defer faviconSrv.Close()
+	shodanSrv := mockShodanServer([]shodanMatch{
+		{IPStr: "2001:db8::1", Hostnames: []string{"ipv6.example.com"}},
+	})
+	defer shodanSrv.Close()
+	fofaSrv := mockFOFAServer([][]string{
+		{"ipv6.example.com", "2001:db8::1"},
+	})
+	defer fofaSrv.Close()
+
+	p := newFaviconTestPlugin(faviconSrv, shodanSrv, fofaSrv)
+	findings, err := p.Run(context.Background(), plugins.Input{
+		OrgName: "Acme",
+		Domain:  "example.com",
+	})
+	require.NoError(t, err)
+
+	var ipv6Finding plugins.Finding
+	for _, finding := range findings {
+		if finding.Type == plugins.FindingCIDR {
+			ipv6Finding = finding
+		}
+		assert.NotEqual(t, "2001:db8::/32", finding.Value)
+	}
+	require.Equal(t, "2001:db8::1/128", ipv6Finding.Value)
+	assert.Equal(t, []string{"fofa", "shodan"}, ipv6Finding.Data["scanners"])
+	require.Len(t, ipv6Finding.Confidences, 2)
+}
+
+func TestFaviconHashPlugin_Run_GracefulOnFaviconHTTPError(t *testing.T) {
+	t.Setenv("SHODAN_API_KEY", "test-key")
+	t.Setenv("FOFA_API_KEY", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	p := newFaviconTestPlugin(srv, nil, nil)
+	p.faviconURL = srv.URL
+	findings, err := p.Run(context.Background(), plugins.Input{
+		OrgName: "Acme",
+		Domain:  "example.com",
+	})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
+func TestFaviconHashPlugin_Run_GracefulOnFaviconNetworkError(t *testing.T) {
 	t.Setenv("SHODAN_API_KEY", "test-key")
 	t.Setenv("FOFA_API_KEY", "")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close() // close immediately to trigger error
+	defer srv.Close()
 
 	p := newFaviconTestPlugin(srv, nil, nil)
-	p.faviconURL = srv.URL
+	p.client = client.NewNoRetry()
+	p.faviconURL = "http://127.0.0.1:1" // connection refused
 	findings, err := p.Run(context.Background(), plugins.Input{
 		OrgName: "Acme",
 		Domain:  "example.com",

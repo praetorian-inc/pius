@@ -98,10 +98,10 @@ func TestEnrichWithHandles_PreservesExistingMeta(t *testing.T) {
 func TestEnrichWithHandles_IgnoresNonHandleFindings(t *testing.T) {
 	input := plugins.Input{OrgName: "Acme", Meta: make(map[string]string)}
 	findings := []plugins.Finding{
-		{Type: plugins.FindingCIDR, Value: "192.168.1.0/24"},   // ignored
-		{Type: plugins.FindingDomain, Value: "example.com"},    // ignored
+		{Type: plugins.FindingCIDR, Value: "192.168.1.0/24"}, // ignored
+		{Type: plugins.FindingDomain, Value: "example.com"},  // ignored
 		{Type: plugins.FindingCIDRHandle, Value: "ACME-1",
-			Data: map[string]any{"registry": "arin"}},          // processed
+			Data: map[string]any{"registry": "arin"}}, // processed
 	}
 	result := enrichWithHandles(input, findings)
 	assert.Equal(t, "ACME-1", result.Meta["arin_handles"])
@@ -349,6 +349,19 @@ func TestEnrichWithDomains_DeduplicatesDomains(t *testing.T) {
 	}
 	result := enrichWithDomains(input, findings)
 	assert.Equal(t, "api.example.com", result.Meta["discovered_domains"])
+}
+
+func TestEnrichWithDomains_ExcludesDomainsBelowConfidenceFloor(t *testing.T) {
+	input := plugins.Input{OrgName: "Acme", Meta: make(map[string]string)}
+	lowConfidence := plugins.Finding{Type: plugins.FindingDomain, Value: "former-subsidiary.example"}
+	plugins.AddConfidence(&lowConfidence, plugins.ConfidenceLow-1, "relationship ended")
+	findings := []plugins.Finding{
+		lowConfidence,
+		{Type: plugins.FindingDomain, Value: "unscored.example"},
+	}
+
+	result := enrichWithDomains(input, findings)
+	assert.Equal(t, "unscored.example", result.Meta["discovered_domains"])
 }
 
 func TestEnrichWithDomains_NoDomains(t *testing.T) {

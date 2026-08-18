@@ -13,8 +13,15 @@ import (
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-// handlePattern matches potential RIR org handles in SEC EDGAR entity names.
-var handlePattern = regexp.MustCompile(`\b([A-Z]{2,8}-[0-9A-Z]+)\b`)
+const confEDGARApparentHandle = 55
+
+var (
+	// handlePattern matches potential RIR org handles in SEC EDGAR entity names.
+	handlePattern    = regexp.MustCompile(`\b([A-Z]{2,8}-[0-9A-Z]+)\b`)
+	accessionPattern = regexp.MustCompile(`^\d{10}-\d{2}-\d{6}$`)
+	cikPattern       = regexp.MustCompile(`^\d+$`)
+	filenamePattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+)
 
 // nonRIRPrefixes are known SEC/government/financial prefixes that match
 // handlePattern but are not RIR org handles.
@@ -46,11 +53,13 @@ type EDGARPlugin struct {
 	client *client.Client
 }
 
-func (p *EDGARPlugin) Name() string        { return "edgar" }
-func (p *EDGARPlugin) Description() string { return "SEC EDGAR: discovers org handles from company filings" }
-func (p *EDGARPlugin) Category() string    { return "cidr" }
-func (p *EDGARPlugin) Phase() int          { return 1 }
-func (p *EDGARPlugin) Mode() string        { return plugins.ModePassive }
+func (p *EDGARPlugin) Name() string { return "edgar" }
+func (p *EDGARPlugin) Description() string {
+	return "SEC EDGAR: discovers org handles from company filings"
+}
+func (p *EDGARPlugin) Category() string { return "cidr" }
+func (p *EDGARPlugin) Phase() int       { return 1 }
+func (p *EDGARPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *EDGARPlugin) Accepts(input plugins.Input) bool {
 	return input.OrgName != ""
@@ -59,7 +68,7 @@ func (p *EDGARPlugin) Accepts(input plugins.Input) bool {
 func (p *EDGARPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	// EDGAR full-text search
 	apiURL := fmt.Sprintf(
-		"https://efts.sec.gov/LATEST/search-index?q=%%22%s%%22&dateRange=custom&startdt=2020-01-01&enddt=%s&_source=period_of_report,entity_name,file_num,form_type",
+		"https://efts.sec.gov/LATEST/search-index?q=%%22%s%%22&dateRange=custom&startdt=2020-01-01&enddt=%s&_source=period_of_report,display_names,file_num,form,ciks",
 		url.QueryEscape(input.OrgName),
 		time.Now().Format("2006-01-02"),
 	)
@@ -76,43 +85,93 @@ func (p *EDGARPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 		return nil, nil
 	}
 
+	return findingsFromEDGARResponse(input, resp), nil
+}
+
+func findingsFromEDGARResponse(input plugins.Input, resp EDGARResponse) []plugins.Finding {
 	var findings []plugins.Finding
 	seenHandles := make(map[string]bool)
 
 	for _, hit := range resp.Hits.Hits {
-		if hit.Source.EntityName == "" {
-			continue
-		}
+		for displayNameIndex, displayName := range hit.Source.DisplayNames {
+			matches := handlePattern.FindAllString(displayName, -1)
+			for _, handle := range matches {
+				if seenHandles[handle] || !isLikelyRIRHandle(handle) {
+					continue
+				}
+				seenHandles[handle] = true
 
-		matches := handlePattern.FindAllString(hit.Source.EntityName, -1)
-		for _, handle := range matches {
-			if seenHandles[handle] || !isLikelyRIRHandle(handle) {
-				continue
+				finding := plugins.Finding{
+					Type:   plugins.FindingCIDRHandle,
+					Value:  handle,
+					Source: "edgar",
+					Data: map[string]any{
+						"registry": "unknown", // Runner will try all RIRs
+						"org":      input.OrgName,
+					},
+				}
+				cik := cikForDisplayName(hit, displayNameIndex)
+				plugins.AddConfidence(&finding, confEDGARApparentHandle, edgarJustification(hit, displayName, cik, handle))
+				findings = append(findings, finding)
 			}
-			seenHandles[handle] = true
-
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingCIDRHandle,
-				Value:  handle,
-				Source: "edgar",
-				Data: map[string]any{
-					"registry": "unknown", // Runner will try all RIRs
-					"org":      input.OrgName,
-				},
-			})
 		}
 	}
 
-	return findings, nil
+	return findings
 }
 
-// EDGARResponse represents SEC EDGAR search results
+func cikForDisplayName(hit EDGARHit, displayNameIndex int) string {
+	if displayNameIndex >= len(hit.Source.CIKs) {
+		return ""
+	}
+	return hit.Source.CIKs[displayNameIndex]
+}
+
+func edgarJustification(hit EDGARHit, displayName, cik, handle string) string {
+	justification := "SEC EDGAR search result"
+	if hit.ID != "" {
+		justification = fmt.Sprintf("SEC EDGAR document %q", hit.ID)
+	}
+	if displayName != "" {
+		justification += fmt.Sprintf(" for entity %q", displayName)
+	}
+	justification += fmt.Sprintf(" contains apparent RIR organization handle %q", handle)
+	if documentURL := secDocumentURL(hit.ID, cik); documentURL != "" {
+		justification += fmt.Sprintf(" (%s)", documentURL)
+	}
+	return justification
+}
+
+func secDocumentURL(documentID, cik string) string {
+	if !cikPattern.MatchString(cik) {
+		return ""
+	}
+
+	idComponents := strings.Split(documentID, ":")
+	if len(idComponents) != 2 || !accessionPattern.MatchString(idComponents[0]) || !filenamePattern.MatchString(idComponents[1]) {
+		return ""
+	}
+
+	numericCIK := strings.TrimLeft(cik, "0")
+	if numericCIK == "" {
+		return ""
+	}
+	accession := strings.ReplaceAll(idComponents[0], "-", "")
+	return fmt.Sprintf("https://www.sec.gov/Archives/edgar/data/%s/%s/%s", numericCIK, accession, idComponents[1])
+}
+
+// EDGARResponse represents SEC EDGAR search results.
 type EDGARResponse struct {
 	Hits struct {
-		Hits []struct {
-			Source struct {
-				EntityName string `json:"entity_name"`
-			} `json:"_source"`
-		} `json:"hits"`
+		Hits []EDGARHit `json:"hits"`
 	} `json:"hits"`
+}
+
+type EDGARHit struct {
+	ID     string `json:"_id"`
+	Source struct {
+		CIKs         []string `json:"ciks"`
+		DisplayNames []string `json:"display_names"`
+		Form         string   `json:"form"`
+	} `json:"_source"`
 }

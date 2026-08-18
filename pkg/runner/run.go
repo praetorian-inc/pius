@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ func newRunCmd() *cobra.Command {
 		org               string
 		domain            string
 		asn               string
+		ip                string
 		cidr              string
 		pluginsList       string
 		disableList       string
@@ -50,6 +52,7 @@ func newRunCmd() *cobra.Command {
 				OrgName: org,
 				Domain:  domain,
 				ASN:     asn,
+				IP:      ip,
 				CIDR:    cidr,
 				Meta:    make(map[string]string),
 			}
@@ -91,7 +94,8 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&org, "org", "", "Organization name to search (required)")
 	cmd.Flags().StringVarP(&domain, "domain", "d", "", "Known domain hint (optional)")
 	cmd.Flags().StringVar(&asn, "asn", "", "Known ASN hint, e.g. AS12345 (optional)")
-	cmd.Flags().StringVar(&cidr, "cidr", "", "Known CIDR range, e.g. 192.0.2.0/24 (optional)")
+	cmd.Flags().StringVar(&ip, "ip", "", "Known IP address, e.g. 8.8.8.8 (optional)")
+	cmd.Flags().StringVar(&cidr, "cidr", "", "Known CIDR range, e.g. 8.8.8.0/24 (optional)")
 	cmd.Flags().StringVar(&pluginsList, "plugins", "", "Comma-separated plugin whitelist (default: all)")
 	cmd.Flags().StringVar(&disableList, "disable", "", "Comma-separated plugin blacklist")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Max concurrent plugins")
@@ -131,7 +135,7 @@ func selectPlugins(whitelist, blacklist, mode string) []plugins.Plugin {
 		result = plugins.All()
 		if blacklist != "" {
 			disabled := make(map[string]bool)
-			for _, name := range strings.Split(blacklist, ",") {
+			for name := range strings.SplitSeq(blacklist, ",") {
 				disabled[strings.TrimSpace(name)] = true
 			}
 			filtered := make([]plugins.Plugin, 0, len(result))
@@ -290,7 +294,6 @@ func runPlugins(ctx context.Context, pluginList []plugins.Plugin, input plugins.
 	group.SetLimit(concurrency)
 
 	for _, p := range pluginList {
-		p := p // capture loop variable
 		if !p.Accepts(input) {
 			continue
 		}
@@ -322,7 +325,6 @@ func runPhaseWithResults(ctx context.Context, pluginList []plugins.Plugin, input
 	group.SetLimit(concurrency)
 
 	for _, p := range pluginList {
-		p := p // capture loop variable
 		if !p.Accepts(input) {
 			continue
 		}
@@ -347,9 +349,7 @@ func runPhaseWithResults(ctx context.Context, pluginList []plugins.Plugin, input
 func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.Input {
 	enriched := input
 	enriched.Meta = make(map[string]string, len(input.Meta))
-	for k, v := range input.Meta {
-		enriched.Meta[k] = v
-	}
+	maps.Copy(enriched.Meta, input.Meta)
 
 	groups := make(map[string][]string)
 	for _, f := range findings {
@@ -382,9 +382,7 @@ func enrichWithHandles(input plugins.Input, findings []plugins.Finding) plugins.
 func enrichWithCIDRs(input plugins.Input, findings []plugins.Finding) plugins.Input {
 	enriched := input
 	enriched.Meta = make(map[string]string, len(input.Meta))
-	for k, v := range input.Meta {
-		enriched.Meta[k] = v
-	}
+	maps.Copy(enriched.Meta, input.Meta)
 
 	var cidrs []string
 	seen := make(map[string]bool)
@@ -409,14 +407,15 @@ func enrichWithCIDRs(input plugins.Input, findings []plugins.Finding) plugins.In
 func enrichWithDomains(input plugins.Input, findings []plugins.Finding) plugins.Input {
 	enriched := input
 	enriched.Meta = make(map[string]string, len(input.Meta))
-	for k, v := range input.Meta {
-		enriched.Meta[k] = v
-	}
+	maps.Copy(enriched.Meta, input.Meta)
 
 	seen := make(map[string]bool)
 	var domains []string
 	for _, f := range findings {
 		if f.Type != plugins.FindingDomain {
+			continue
+		}
+		if len(f.Confidences) > 0 && plugins.TotalConfidence(f) < plugins.ConfidenceLow {
 			continue
 		}
 		d := strings.ToLower(strings.TrimSpace(f.Value))
@@ -470,12 +469,16 @@ func printFindings(findings []plugins.Finding, format string) error {
 		}
 		for _, f := range findings {
 			line := fmt.Sprintf("[%s] %s (%s)", f.Type, f.Value, f.Source)
-			// Surface review flag and confidence for borderline findings
-			if plugins.NeedsReview(f) {
+			// Surface review flag and confidence for borderline findings.
+			// Only findings a plugin actually scored are annotated: most output
+			// comes from plugins that never score (crt.sh, wayback, RDAP CIDR
+			// expansion), and labelling those "needs-review [confidence:0]"
+			// would report an assessment that never happened on nearly every line.
+			if len(f.Confidences) > 0 && plugins.NeedsReview(f) {
 				if colorEnabled() {
-					line += fmt.Sprintf(" ⚠ needs-review [confidence:%.2f]", plugins.Confidence(f))
+					line += fmt.Sprintf(" ⚠ needs-review [confidence:%d]", plugins.TotalConfidence(f))
 				} else {
-					line += fmt.Sprintf(" [needs-review confidence:%.2f]", plugins.Confidence(f))
+					line += fmt.Sprintf(" [needs-review confidence:%d]", plugins.TotalConfidence(f))
 				}
 			}
 			fmt.Println(line)

@@ -3,14 +3,14 @@ package domains
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/praetorian-inc/pius/pkg/cache"
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
@@ -18,58 +18,251 @@ func init() {
 	plugins.Register("wikidata", func() plugins.Plugin {
 		return &WikidataPlugin{
 			httpClient: &http.Client{Timeout: 30 * time.Second},
-			baseURL:    "",
+			now:        time.Now,
 		}
 	})
 }
 
-// WikidataPlugin discovers subsidiary entities and corporate acquisitions via
-// Wikidata's SPARQL endpoint. It queries for:
-//   - P749 (parent organization): finds entities with target as parent
-//   - P355 (subsidiary): finds entities listed as subsidiaries of target
-//   - P127 (owned by): finds entities owned by target
-//   - P856 (official website): extracts domains directly when available
-//
-// Phase 0 (independent): requires only OrgName.
-// Free public endpoint — no API key required.
-// Results are cached in ~/.pius/cache/ with a 24-hour TTL.
+const (
+	wikidataEndpoint        = "https://query.wikidata.org/sparql"
+	wikidataEntityEndpoint  = "https://www.wikidata.org/w/api.php"
+	wikidataBatchSize       = 50
+	wikidataMaxCandidates   = 500
+	wikidataMaxResponse     = 10 * 1024 * 1024
+	wikidataMaxAttempts     = 3
+	wikidataOtherOwnerScore = 0
+	wikidataEndedScore      = 10
+	wikidataBaseScore       = 40
+	wikidataMaxScore        = 60
+	wikidataReferenceScore  = 5
+	wikidataReciprocalScore = 10
+)
+
+const (
+	wikidataMatchLabel        = "label"
+	wikidataMatchOfficialName = "official name"
+	wikidataMatchAlias        = "alias"
+)
+
+const (
+	wdPropertyStatedIn        = "P248"
+	wdPropertyOwner           = "P127"
+	wdPropertyOfficialName    = "P1448"
+	wdPropertyStartTime       = "P580"
+	wdPropertyEndTime         = "P582"
+	wdPropertyReferenceURL    = "P854"
+	wdPropertyOfficialWebsite = "P856"
+	wdPropertySubsidiary      = "P355"
+	wdPropertyParent          = "P749"
+)
+
 type WikidataPlugin struct {
-	httpClient httpDoer        // for testing
-	baseURL    string          // override for testing; default "https://query.wikidata.org/sparql"
-	apiCache   *cache.APICache // injected in tests; nil = lazy init on first Run
-	noCache    bool            // set by NewWikidataPlugin; skips the on-disk cache entirely
+	httpClient httpDoer
+	baseURL    string
+	entityURL  string
+	apiCache   *cache.APICache
+	noCache    bool
+	now        func() time.Time
 }
 
-func NewWikidataPlugin(hc *http.Client) *WikidataPlugin {
-	return &WikidataPlugin{httpClient: hc, noCache: true}
-}
-
-// httpDoer allows mocking HTTP requests in tests.
 type httpDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-func (p *WikidataPlugin) Name() string { return "wikidata" }
-func (p *WikidataPlugin) Description() string {
-	return "Wikidata SPARQL: discovers subsidiaries and acquisitions via structured corporate data (free, no API key)"
+func NewWikidataPlugin(httpClient *http.Client) *WikidataPlugin {
+	return &WikidataPlugin{
+		httpClient: httpClient,
+		noCache:    true,
+		now:        time.Now,
+	}
 }
+
+func (p *WikidataPlugin) Name() string { return "wikidata" }
+
+func (p *WikidataPlugin) Description() string {
+	return "Wikidata: discovers reviewable subsidiary websites from dated corporate relationship claims"
+}
+
 func (p *WikidataPlugin) Category() string { return "domain" }
 func (p *WikidataPlugin) Phase() int       { return 0 }
 func (p *WikidataPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *WikidataPlugin) Accepts(input plugins.Input) bool {
-	return input.OrgName != ""
+	return strings.TrimSpace(input.OrgName) != ""
+}
+
+// Run resolves the target, discovers related entities, and then evaluates each
+// candidate from its complete Wikidata statements. One failed discovery path
+// may reduce recall, but incomplete evidence never produces a finding.
+func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
+	orgName := strings.TrimSpace(input.OrgName)
+	if orgName == "" {
+		return nil, nil
+	}
+
+	cacheKey := wikidataCacheKey(orgName, input.Domain)
+	apiCache := p.getCache()
+	if findings, ok := cachedWikidataFindings(apiCache, cacheKey); ok {
+		return findings, nil
+	}
+
+	target, err := p.resolveCompany(ctx, orgName, input.Domain)
+	if err != nil {
+		slog.Debug("wikidata: company lookup failed", "org", orgName, "error", err)
+		return nil, nil
+	}
+	if target.id == "" {
+		slog.Debug("wikidata: no unambiguous company found", "org", orgName)
+		return nil, nil
+	}
+
+	evidence, err := p.collectEvidence(ctx, target.id)
+	if err != nil {
+		slog.Warn("wikidata: evidence collection failed", "org", orgName, "error", err)
+		return nil, nil
+	}
+
+	findings := p.buildFindings(orgName, target, evidence)
+	if apiCache != nil {
+		apiCache.Set(cacheKey, findings)
+	}
+	return findings, nil
+}
+
+func (p *WikidataPlugin) resolveCompany(
+	ctx context.Context,
+	orgName string,
+	knownDomain string,
+) (companyResolution, error) {
+	variants := companyNameVariants(orgName)
+	candidateIDs, err := p.searchEntityIDs(ctx, variants)
+	if err != nil || len(candidateIDs) == 0 {
+		return companyResolution{}, err
+	}
+
+	documents, err := p.fetchEntities(ctx, candidateIDs, "labels|aliases|claims")
+	if err != nil {
+		return companyResolution{}, err
+	}
+	return selectCompany(documents, variants, knownDomain), nil
+}
+
+func (p *WikidataPlugin) collectEvidence(
+	ctx context.Context,
+	targetID string,
+) ([]entityEvidence, error) {
+	entityIDs, err := p.discoverEntityIDs(ctx, targetID)
+	if err != nil {
+		return nil, err
+	}
+	if len(entityIDs) == 0 {
+		return []entityEvidence{}, nil
+	}
+
+	documentIDs := append([]string{targetID}, entityIDs...)
+	documents, err := p.fetchEntities(ctx, strutil.Unique(documentIDs), "labels|claims")
+	if err != nil {
+		return nil, err
+	}
+
+	relatedIDs := relatedEntityIDs(documents, entityIDs, targetID)
+	missingIDs := missingEntityIDs(documents, relatedIDs)
+	if len(missingIDs) > 0 {
+		labels, err := p.fetchEntities(ctx, missingIDs, "labels")
+		if err != nil {
+			return nil, err
+		}
+		for entityID, document := range labels {
+			documents[entityID] = document
+		}
+	}
+	return buildEntityEvidence(targetID, entityIDs, documents), nil
+}
+
+func (p *WikidataPlugin) buildFindings(
+	orgName string,
+	target companyResolution,
+	entities []entityEvidence,
+) []plugins.Finding {
+	bestByDomain := make(map[string]plugins.Finding)
+	for _, entity := range entities {
+		assessment := assessRelationship(entity, target.id, p.currentTime())
+		if !assessment.hasRelationship {
+			continue
+		}
+
+		for _, website := range bestWebsitesByDomain(entity.websites, p.currentTime()) {
+			finding := p.newFinding(orgName, target, entity, assessment, website)
+			current, exists := bestByDomain[finding.Value]
+			if !exists || betterWikidataFinding(finding, current) {
+				bestByDomain[finding.Value] = finding
+			}
+		}
+	}
+
+	domains := make([]string, 0, len(bestByDomain))
+	for domain := range bestByDomain {
+		domains = append(domains, domain)
+	}
+	slices.Sort(domains)
+
+	findings := make([]plugins.Finding, 0, len(domains))
+	for _, domain := range domains {
+		findings = append(findings, bestByDomain[domain])
+	}
+	return findings
+}
+
+func (p *WikidataPlugin) newFinding(
+	orgName string,
+	target companyResolution,
+	entity entityEvidence,
+	assessment relationshipAssessment,
+	website websiteClaim,
+) plugins.Finding {
+	finding := plugins.Finding{
+		Type:   plugins.FindingDomain,
+		Value:  website.domain,
+		Source: p.Name(),
+		Data: map[string]any{
+			"method":                  "wikidata",
+			"org":                     orgName,
+			"target_wikidata_id":      target.id,
+			"target_match":            target.matchKind,
+			"subsidiary":              entity.name,
+			"wikidata_id":             entity.id,
+			"website":                 website.url,
+			"relationship_properties": assessment.details,
+			"relationship_status":     assessment.status,
+		},
+	}
+
+	score := assessment.score
+	if assessment.status == "active" || assessment.status == "open_ended" {
+		score = min(score+websiteReferenceScore(website), wikidataMaxScore)
+	}
+	plugins.AddConfidence(
+		&finding,
+		score,
+		wikidataJustification(orgName, target.id, entity, assessment, website),
+	)
+	return finding
+}
+
+func (p *WikidataPlugin) currentTime() time.Time {
+	if p.now != nil {
+		return p.now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func (p *WikidataPlugin) sparqlEndpoint() string {
 	if p.baseURL != "" {
 		return p.baseURL
 	}
-	return "https://query.wikidata.org/sparql"
+	return wikidataEndpoint
 }
 
-// getCache returns the APICache, initializing it lazily on first use.
-// Returns nil if the cache directory cannot be created (non-fatal).
 func (p *WikidataPlugin) getCache() *cache.APICache {
 	if p.noCache {
 		return nil
@@ -77,27 +270,29 @@ func (p *WikidataPlugin) getCache() *cache.APICache {
 	if p.apiCache != nil {
 		return p.apiCache
 	}
-	c, err := cache.NewAPI("", "wikidata")
+
+	apiCache, err := cache.NewAPI("", "wikidata")
 	if err != nil {
 		slog.Debug("wikidata: cache init failed", "error", err)
 		return nil
 	}
-	p.apiCache = c
-	return c
+	p.apiCache = apiCache
+	return apiCache
 }
 
-// sparqlResponse represents the JSON response from Wikidata SPARQL endpoint.
-type sparqlResponse struct {
-	Results struct {
-		Bindings []sparqlBinding `json:"bindings"`
-	} `json:"results"`
+func wikidataCacheKey(orgName, domain string) string {
+	return strings.ToLower(strings.TrimSpace(orgName)) + "|" + normalizeKnownDomain(domain)
 }
 
-type sparqlBinding struct {
-	Entity      sparqlValue `json:"entity"`
-	EntityLabel sparqlValue `json:"entityLabel"`
-	Website     sparqlValue `json:"website"`
-	Relation    sparqlValue `json:"relation"`
+func cachedWikidataFindings(apiCache *cache.APICache, cacheKey string) ([]plugins.Finding, bool) {
+	if apiCache == nil {
+		return nil, false
+	}
+	findings := []plugins.Finding{}
+	if !apiCache.Get(cacheKey, &findings) {
+		return nil, false
+	}
+	return findings, true
 }
 
 type sparqlValue struct {
@@ -105,257 +300,118 @@ type sparqlValue struct {
 	Value string `json:"value"`
 }
 
-func (p *WikidataPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	if input.OrgName == "" {
-		return nil, nil
-	}
-
-	// Check cache first — reduce load on Wikidata public endpoint
-	cacheKey := strings.ToLower(input.OrgName)
-	c := p.getCache()
-	if c != nil {
-		var cached []plugins.Finding
-		if c.Get(cacheKey, &cached) {
-			slog.Debug("wikidata: cache hit", "org", input.OrgName)
-			return cached, nil
-		}
-	}
-
-	// First, find the Wikidata entity ID for the organization
-	companyID, err := p.findCompanyEntity(ctx, input.OrgName)
-	if err != nil {
-		slog.Debug("wikidata: company lookup failed", "org", input.OrgName, "error", err)
-		return nil, nil
-	}
-	if companyID == "" {
-		slog.Debug("wikidata: no entity found", "org", input.OrgName)
-		return nil, nil
-	}
-
-	// Query for subsidiaries and owned entities
-	results, err := p.querySubsidiaries(ctx, companyID)
-	if err != nil {
-		slog.Warn("wikidata: subsidiary query failed", "org", input.OrgName, "error", err)
-		return nil, nil
-	}
-
-	seen := make(map[string]bool)
-	var findings []plugins.Finding
-
-	for _, r := range results {
-		// Extract domain from website URL if available
-		if r.Website.Value != "" {
-			domain := extractDomainFromURL(r.Website.Value)
-			if domain != "" && !seen[domain] {
-				seen[domain] = true
-				f := plugins.Finding{
-					Type:   plugins.FindingDomain,
-					Value:  domain,
-					Source: p.Name(),
-					Data: map[string]any{
-						"org":          input.OrgName,
-						"subsidiary":   r.EntityLabel.Value,
-						"wikidata_id":  extractEntityID(r.Entity.Value),
-						"website":      r.Website.Value,
-						"relationship": r.Relation.Value,
-						"method":       "wikidata-sparql",
-					},
-				}
-				// Direct website from Wikidata is high confidence
-				plugins.SetConfidence(&f, plugins.ConfidenceHigh)
-				findings = append(findings, f)
-			}
-		}
-
-		entityName := r.EntityLabel.Value
-		if entityName != "" && !seen[entityName] && !strings.EqualFold(entityName, input.OrgName) {
-			seen[entityName] = true
-			f := plugins.Finding{
-				Type:   plugins.FindingPreseed,
-				Value:  entityName,
-				Source: p.Name(),
-				Data: map[string]any{
-					"preseed_type":  "whois+company",
-					"preseed_title": entityName,
-					"org":           input.OrgName,
-					"wikidata_id":   extractEntityID(r.Entity.Value),
-					"relationship":  r.Relation.Value,
-					"method":        "wikidata-sparql",
-				},
-			}
-			plugins.SetConfidence(&f, 0.55)
-			findings = append(findings, f)
-		}
-	}
-
-	// Cache results for 24 hours
-	if c != nil {
-		c.Set(cacheKey, findings)
-	}
-
-	return findings, nil
+type sparqlResponse[T any] struct {
+	Results struct {
+		Bindings []T `json:"bindings"`
+	} `json:"results"`
 }
 
-// findCompanyEntity searches for a Wikidata entity matching the organization name.
-// Returns the entity ID (e.g., "Q312") or empty string if not found.
-func (p *WikidataPlugin) findCompanyEntity(ctx context.Context, orgName string) (string, error) {
-	// SPARQL query to find company entity by label
-	// Filters for instances of company (Q783794), business (Q4830453), or organization (Q43229)
-	query := fmt.Sprintf(`
-SELECT ?entity WHERE {
-  ?entity rdfs:label "%s"@en .
-  { ?entity wdt:P31/wdt:P279* wd:Q783794 }  # instance of company
-  UNION
-  { ?entity wdt:P31/wdt:P279* wd:Q4830453 } # instance of business
-  UNION
-  { ?entity wdt:P31/wdt:P279* wd:Q43229 }   # instance of organization
-}
-LIMIT 1
-`, escapeSPARQL(orgName))
-
-	body, err := p.executeSPARQL(ctx, query)
-	if err != nil {
-		return "", err
-	}
-
-	var resp sparqlResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
-	}
-
-	if len(resp.Results.Bindings) == 0 {
-		return "", nil
-	}
-
-	return extractEntityID(resp.Results.Bindings[0].Entity.Value), nil
+type entitySearchResponse struct {
+	Search []entitySearchResult `json:"search"`
 }
 
-// querySubsidiaries finds all entities related to the company via P749, P355, or P127.
-func (p *WikidataPlugin) querySubsidiaries(ctx context.Context, companyID string) ([]sparqlBinding, error) {
-	// SPARQL query for subsidiaries, owned entities, and their websites
-	// P749 = parent organization (inverse: entity has companyID as parent)
-	// P355 = subsidiary (companyID lists entity as subsidiary)
-	// P127 = owned by (inverse: entity is owned by companyID)
-	// P856 = official website
-	query := fmt.Sprintf(`
-SELECT DISTINCT ?entity ?entityLabel ?website ?relation WHERE {
-  {
-    ?entity wdt:P749 wd:%s .
-    BIND("subsidiary (P749)" AS ?relation)
-  }
-  UNION
-  {
-    wd:%s wdt:P355 ?entity .
-    BIND("subsidiary (P355)" AS ?relation)
-  }
-  UNION
-  {
-    ?entity wdt:P127 wd:%s .
-    BIND("owned-by (P127)" AS ?relation)
-  }
-  OPTIONAL { ?entity wdt:P856 ?website }
-  SERVICE wikibase:label { bd:serviceParam wikibase:language "en" }
-}
-LIMIT 500
-`, companyID, companyID, companyID)
-
-	body, err := p.executeSPARQL(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp sparqlResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-
-	return resp.Results.Bindings, nil
+type entitySearchResult struct {
+	ID string `json:"id"`
 }
 
-// executeSPARQL sends a SPARQL query to the Wikidata endpoint.
-func (p *WikidataPlugin) executeSPARQL(ctx context.Context, query string) ([]byte, error) {
-	reqURL := p.sparqlEndpoint() + "?query=" + url.QueryEscape(query) + "&format=json"
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	req.Header.Set("Accept", "application/sparql-results+json")
-	req.Header.Set("User-Agent", "Pius/1.0 (https://github.com/praetorian-inc/pius)")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("execute request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
-	}
-
-	// Read response body with size limit
-	const maxResponseSize = 10 * 1024 * 1024 // 10MB
-	body := make([]byte, 0, 64*1024)
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			body = append(body, buf[:n]...)
-			if len(body) > maxResponseSize {
-				return nil, fmt.Errorf("response too large (>10MB)")
-			}
-		}
-		if err != nil {
-			break
-		}
-	}
-
-	return body, nil
+type companyCandidate struct {
+	id         string
+	matchKind  string
+	matchScore int
 }
 
-// extractEntityID extracts the Wikidata entity ID from a full URI.
-// e.g., "http://www.wikidata.org/entity/Q312" -> "Q312"
-func extractEntityID(uri string) string {
-	if idx := strings.LastIndex(uri, "/"); idx >= 0 {
-		return uri[idx+1:]
-	}
-	return uri
+type companyResolution struct {
+	id        string
+	matchKind string
 }
 
-// extractDomainFromURL extracts the domain from a URL.
-// e.g., "https://www.example.com/path" -> "example.com"
-func extractDomainFromURL(rawURL string) string {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-
-	host := parsed.Hostname()
-	if host == "" {
-		return ""
-	}
-
-	// Normalize to lowercase first
-	host = strings.ToLower(host)
-
-	// Remove www. prefix
-	host = strings.TrimPrefix(host, "www.")
-
-	// Basic validation
-	if !strings.Contains(host, ".") {
-		return ""
-	}
-
-	return host
+type discoveryBinding struct {
+	Entity sparqlValue `json:"entity"`
 }
 
-// escapeSPARQL escapes special characters in SPARQL string literals.
-func escapeSPARQL(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "\"", "\\\"")
-	s = strings.ReplaceAll(s, "\n", "\\n")
-	s = strings.ReplaceAll(s, "\r", "\\r")
-	s = strings.ReplaceAll(s, "\t", "\\t")
-	return s
+type entityResponse struct {
+	Entities map[string]entityDocument `json:"entities"`
+}
+
+type entityDocument struct {
+	ID      string                       `json:"id"`
+	Labels  map[string]entityLabel       `json:"labels"`
+	Aliases map[string][]entityLabel     `json:"aliases"`
+	Claims  map[string][]entityStatement `json:"claims"`
+}
+
+type entityLabel struct {
+	Value string `json:"value"`
+}
+
+type entityStatement struct {
+	ID         string                  `json:"id"`
+	Rank       string                  `json:"rank"`
+	MainSnak   entitySnak              `json:"mainsnak"`
+	Qualifiers map[string][]entitySnak `json:"qualifiers"`
+	References []entityReference       `json:"references"`
+}
+
+type entityReference struct {
+	Snaks map[string][]entitySnak `json:"snaks"`
+}
+
+type entitySnak struct {
+	DataValue entityDataValue `json:"datavalue"`
+}
+
+type entityDataValue struct {
+	Value json.RawMessage `json:"value"`
+}
+
+type entityIDValue struct {
+	ID string `json:"id"`
+}
+
+type entityTimeValue struct {
+	Time string `json:"time"`
+}
+
+type datedClaim struct {
+	statement  string
+	rank       string
+	start      time.Time
+	end        time.Time
+	referenced bool
+}
+
+type relationshipClaim struct {
+	datedClaim
+	property string
+}
+
+type affiliationClaim struct {
+	datedClaim
+	property string
+	entityID string
+	name     string
+}
+
+type websiteClaim struct {
+	datedClaim
+	url    string
+	domain string
+}
+
+type entityEvidence struct {
+	id            string
+	name          string
+	relationships []relationshipClaim
+	affiliations  []affiliationClaim
+	websites      []websiteClaim
+}
+
+type relationshipAssessment struct {
+	score           int
+	status          string
+	details         []string
+	note            string
+	referenced      bool
+	reciprocal      bool
+	hasRelationship bool
 }

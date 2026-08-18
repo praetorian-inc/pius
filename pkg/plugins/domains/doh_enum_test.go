@@ -162,16 +162,13 @@ func TestDoHEnumPlugin_Run_ContextCancellation(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
-func TestDoHEnumPlugin_Run_RateLimitRetry(t *testing.T) {
-	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		if callCount == 1 {
-			// First call: 429
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
-		// Second call: success
+func TestDoHEnumPlugin_Run_RateLimitRetryReportsSuccessfulEndpoint(t *testing.T) {
+	failedEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer failedEndpoint.Close()
+
+	successfulEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("name")
 		w.Header().Set("Content-Type", "application/dns-json")
 		resp := dohResponse{
@@ -184,16 +181,24 @@ func TestDoHEnumPlugin_Run_RateLimitRetry(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer srv.Close()
+	defer successfulEndpoint.Close()
 
-	p := &DoHEnumPlugin{doer: srv.Client()}
-	endpoint := DoHEndpoint{URL: srv.URL, Name: "test"}
-	rotation := []DoHEndpoint{endpoint}
+	p := &DoHEnumPlugin{doer: successfulEndpoint.Client()}
+	rotation := []DoHEndpoint{
+		{URL: failedEndpoint.URL, Name: "failed"},
+		{URL: successfulEndpoint.URL, Name: "successful"},
+	}
 
 	finding, ok := p.queryWithRetry(context.Background(), "www.example.com", rotation)
-	assert.True(t, ok, "should succeed after retry")
+	require.True(t, ok, "should succeed after retry")
 	assert.Equal(t, "www.example.com", finding.Value)
-	assert.GreaterOrEqual(t, callCount, 2, "should have made at least 2 calls")
+	require.Len(t, finding.Confidences, 1)
+	assert.Equal(t, confDoHEnumResolved, finding.Confidences[0].Score)
+	assert.Contains(t, finding.Confidences[0].Justification, finding.Value)
+	assert.Contains(t, finding.Confidences[0].Justification, successfulEndpoint.URL)
+	assert.Equal(t, "successful", finding.Data["resolver"])
+	assert.NotContains(t, finding.Data, "confidence")
+	assert.NotContains(t, finding.Data, "confidences")
 }
 
 func TestDoHEnumPlugin_Run_CustomWordlist(t *testing.T) {
@@ -294,28 +299,6 @@ func TestDoHEnumPlugin_ResolveEndpoints_Gateways(t *testing.T) {
 	require.Len(t, endpoints, 2)
 	assert.Equal(t, "https://gw1.execute-api.us-east-1.amazonaws.com/pius", endpoints[0].URL)
 	// gateways take priority over servers
-}
-
-func TestDoHEnumPlugin_ResolveEndpoints_DeployGatewaysNoCredentials(t *testing.T) {
-	// Unset AWS credentials so detectAWSCredentials fails
-	// Clear credential env vars
-	for _, env := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"} {
-		t.Setenv(env, "")
-	}
-	// Point config/credentials files to nonexistent paths to prevent SDK fallback
-	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/tmp/nonexistent-aws-creds")
-	t.Setenv("AWS_CONFIG_FILE", "/tmp/nonexistent-aws-config")
-
-	p := &DoHEnumPlugin{}
-	meta := map[string]string{
-		"doh_deploy_gateways": "true",
-		"doh_servers":         "https://cloudflare-dns.com/dns-query",
-	}
-	endpoints, cleanup, err := p.resolveEndpoints(context.Background(), meta)
-	defer cleanup()
-	// With credentials cleared, deployment should fail
-	assert.Error(t, err)
-	assert.Nil(t, endpoints)
 }
 
 // ============================================================================

@@ -37,6 +37,15 @@ func NewWithHTTPClient(hc *http.Client) *Client {
 	}
 }
 
+// NewNoRetry creates a Client that never retries. Use in tests where retry
+// backoff would make the test slow.
+func NewNoRetry() *Client {
+	return &Client{
+		http:    &http.Client{Timeout: 5 * time.Second},
+		retries: 1,
+	}
+}
+
 // sanitizeURL redacts sensitive query parameters (API keys, tokens) from URLs
 // to prevent accidental credential exposure in error messages and logs.
 func sanitizeURL(rawURL string) string {

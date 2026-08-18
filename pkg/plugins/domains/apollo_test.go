@@ -335,13 +335,26 @@ func TestApolloPlugin_Run_EmptyResponseNoFindings(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
+func TestApolloPlugin_Run_GracefulOnHTTPError(t *testing.T) {
+	t.Setenv("APOLLO_API_KEY", "test-key")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	p := newTestPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
 func TestApolloPlugin_Run_GracefulOnNetworkError(t *testing.T) {
 	t.Setenv("APOLLO_API_KEY", "test-key")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
-
-	p := newTestPlugin(t, srv.URL)
+	c, err := piuscache.NewAPI(t.TempDir(), "apollo")
+	require.NoError(t, err)
+	p := &ApolloPlugin{client: client.NewNoRetry(), baseURL: "http://127.0.0.1:1", apiCache: c}
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
 	assert.NoError(t, err)
 	assert.Empty(t, findings)
@@ -389,4 +402,53 @@ func TestStripScheme_URLWithPath(t *testing.T) {
 
 func TestStripScheme_PlainDomain(t *testing.T) {
 	assert.Equal(t, "acme-corp.com", stripScheme("acme-corp.com"))
+}
+
+// TestApolloPlugin_Run_DomainQueryJustification and its org-name counterpart pin
+// which query actually resolved the organization — the one thing that separates
+// a precise Apollo answer from an ambiguous one.
+func TestApolloPlugin_Run_DomainQueryJustification(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"organization":{"primary_domain":"acme.com"}}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("APOLLO_API_KEY", "test-key")
+	p := newTestPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp", Domain: "acme.com"})
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+
+	for _, f := range findings {
+		require.Len(t, f.Confidences, 1, "one query, one piece of evidence")
+		assert.Equal(t, 85, f.Confidences[0].Score)
+		assert.Contains(t, f.Confidences[0].Justification, "known domain")
+		assert.Contains(t, f.Confidences[0].Justification, "acme.com")
+		assert.False(t, plugins.NeedsReview(f))
+	}
+}
+
+func TestApolloPlugin_Run_OrgNameQueryJustification(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"organization":{"primary_domain":"acme.com"}}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("APOLLO_API_KEY", "test-key")
+	p := newTestPlugin(t, srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+
+	for _, f := range findings {
+		require.Len(t, f.Confidences, 1)
+		assert.Equal(t, 70, f.Confidences[0].Score)
+		assert.Contains(t, f.Confidences[0].Justification, "organization-name query")
+		assert.Contains(t, f.Confidences[0].Justification, "Acme Corp")
+		// 0.70 still clears ConfidenceHigh — the org-name query is de-ranked
+		// relative to a domain query, not pushed into the review band.
+		assert.False(t, plugins.NeedsReview(f))
+	}
 }

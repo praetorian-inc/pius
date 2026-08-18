@@ -6,16 +6,30 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
+const confReverseRIRHandle = 60
+
 func init() {
 	plugins.Register("reverse-rir", func() plugins.Plugin {
-		return &ReverseRIRPlugin{client: client.New()}
+		return NewReverseRIRPlugin(client.New())
 	})
+}
+
+// NewReverseRIRPlugin builds the plugin around a caller-supplied client, for
+// embedders that must route pius egress through their own transport rather than
+// the package default. A nil client takes the default, which is what the
+// self-registering plugin uses.
+func NewReverseRIRPlugin(c *client.Client) *ReverseRIRPlugin {
+	if c == nil {
+		c = client.New()
+	}
+	return &ReverseRIRPlugin{client: c}
 }
 
 // ReverseRIRPlugin discovers RIR org handles from company names.
@@ -25,11 +39,13 @@ type ReverseRIRPlugin struct {
 	client *client.Client
 }
 
-func (p *ReverseRIRPlugin) Name() string        { return "reverse-rir" }
-func (p *ReverseRIRPlugin) Description() string { return "Reverse RIR lookup: discovers org handles from company name via ARIN/RIPE/APNIC/AFRINIC/LACNIC" }
-func (p *ReverseRIRPlugin) Category() string    { return "cidr" }
-func (p *ReverseRIRPlugin) Phase() int          { return 1 }
-func (p *ReverseRIRPlugin) Mode() string        { return plugins.ModePassive }
+func (p *ReverseRIRPlugin) Name() string { return "reverse-rir" }
+func (p *ReverseRIRPlugin) Description() string {
+	return "Reverse RIR lookup: discovers org handles from company name via ARIN/RIPE/APNIC/AFRINIC/LACNIC"
+}
+func (p *ReverseRIRPlugin) Category() string { return "cidr" }
+func (p *ReverseRIRPlugin) Phase() int       { return 1 }
+func (p *ReverseRIRPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *ReverseRIRPlugin) Accepts(input plugins.Input) bool {
 	return input.OrgName != ""
@@ -150,18 +166,11 @@ func (p *ReverseRIRPlugin) queryArinEntity(ctx context.Context, entity, org stri
 		}
 	}
 
-	// Convert to findings
 	var findings []plugins.Finding
 	for _, handle := range handles {
-		findings = append(findings, plugins.Finding{
-			Type:   plugins.FindingCIDRHandle,
-			Value:  handle,
-			Source: "reverse-rir",
-			Data: map[string]any{
-				"registry": "arin",
-				"org":      org,
-			},
-		})
+		if finding, ok := newReverseRIRFinding(handle, "arin", "ARIN "+entity+" database", org); ok {
+			findings = append(findings, finding)
+		}
 	}
 
 	return findings
@@ -193,15 +202,9 @@ func (p *ReverseRIRPlugin) queryRIPE(ctx context.Context, org string) ([]plugins
 		value := obj.PrimaryKey.Attribute[0].Value
 
 		if name == "organisation" {
-			findings = append(findings, plugins.Finding{
-				Type:   plugins.FindingCIDRHandle,
-				Value:  value,
-				Source: "reverse-rir",
-				Data: map[string]any{
-					"registry": "ripe",
-					"org":      org,
-				},
-			})
+			if finding, ok := newReverseRIRFinding(value, "ripe", "RIPE database", org); ok {
+				findings = append(findings, finding)
+			}
 		}
 	}
 
@@ -232,15 +235,9 @@ func (p *ReverseRIRPlugin) queryAPNIC(ctx context.Context, org string) ([]plugin
 		if item.ObjectType != "organisation" || item.PrimaryKey == "" {
 			continue
 		}
-		findings = append(findings, plugins.Finding{
-			Type:   plugins.FindingCIDRHandle,
-			Value:  item.PrimaryKey,
-			Source: "reverse-rir",
-			Data: map[string]any{
-				"registry": "apnic",
-				"org":      org,
-			},
-		})
+		if finding, ok := newReverseRIRFinding(item.PrimaryKey, "apnic", "APNIC WHOIS database", org); ok {
+			findings = append(findings, finding)
+		}
 	}
 
 	return findings, nil
@@ -273,15 +270,9 @@ func (p *ReverseRIRPlugin) queryAFRINIC(ctx context.Context, org string) ([]plug
 		if handle == "" || !strings.HasPrefix(strings.ToUpper(handle), "ORG-") {
 			continue
 		}
-		findings = append(findings, plugins.Finding{
-			Type:   plugins.FindingCIDRHandle,
-			Value:  handle,
-			Source: "reverse-rir",
-			Data: map[string]any{
-				"registry": "afrinic",
-				"org":      org,
-			},
-		})
+		if finding, ok := newReverseRIRFinding(handle, "afrinic", "AFRINIC RDAP database", org); ok {
+			findings = append(findings, finding)
+		}
 	}
 
 	return findings, nil
@@ -312,18 +303,46 @@ func (p *ReverseRIRPlugin) queryLACNIC(ctx context.Context, org string) ([]plugi
 		if entity.Handle == "" {
 			continue
 		}
-		findings = append(findings, plugins.Finding{
-			Type:   plugins.FindingCIDRHandle,
-			Value:  entity.Handle,
-			Source: "reverse-rir",
-			Data: map[string]any{
-				"registry": "lacnic",
-				"org":      org,
-			},
-		})
+		if finding, ok := newReverseRIRFinding(entity.Handle, "lacnic", "LACNIC RDAP database", org); ok {
+			findings = append(findings, finding)
+		}
 	}
 
 	return findings, nil
+}
+
+// newReverseRIRFinding builds a handle finding, reporting !ok for anything a
+// phase-two plugin could not act on.
+//
+// The validation lives here rather than at each call site because the registries
+// disagree about what an empty result looks like — RIPE and LACNIC will hand
+// back a record whose handle field is simply blank — and because a consumer
+// cannot repair any of it. A handle with no value addresses nothing, one with no
+// organization is unattributable, and one from a registry this package cannot
+// resolve is a dead end. Emitting any of the three just pushes the same filter
+// onto every embedder.
+func newReverseRIRFinding(handle, registry, database, org string) (plugins.Finding, bool) {
+	handle = strings.TrimSpace(handle)
+	org = strings.TrimSpace(org)
+
+	if handle == "" || org == "" || !resolvableRegistry(registry) {
+		slog.Debug("reverse-rir: dropping unusable handle",
+			"handle", handle, "org", org, "registry", registry, "database", database)
+		return plugins.Finding{}, false
+	}
+
+	finding := plugins.Finding{
+		Type:   plugins.FindingCIDRHandle,
+		Value:  handle,
+		Source: "reverse-rir",
+		Data: map[string]any{
+			"registry": registry,
+			"org":      org,
+		},
+	}
+	plugins.AddConfidence(&finding, confReverseRIRHandle, fmt.Sprintf(
+		"%s returned organization handle %q for organization search %q", database, handle, org))
+	return finding, true
 }
 
 // ── ARIN response types ───────────────────────────────────────────────────────
@@ -418,4 +437,14 @@ type LacnicSearchResponse struct {
 	Entities []struct {
 		Handle string `json:"handle"`
 	} `json:"entities"`
+}
+
+var knownRIRs = []string{
+	"arin", "lacnic", "apnic", "afrinic", "ripe",
+}
+
+// resolvableRegistry reports whether a phase-two plugin in this package can
+// resolve a handle at one of the five regional internet registries.
+func resolvableRegistry(registry string) bool {
+	return slices.Contains(knownRIRs, strings.ToLower(registry))
 }

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -15,7 +16,7 @@ import (
 )
 
 func newGoogleDorksPlugin(baseURL string) *GoogleDorksPlugin {
-	return &GoogleDorksPlugin{baseURL: baseURL, renderEnabled: false}
+	return &GoogleDorksPlugin{baseURL: baseURL, renderEnabled: false, queryDelay: time.Millisecond}
 }
 
 // carouselHTML returns HTML with <a data-entityname="Name"> elements for each name provided.
@@ -137,7 +138,7 @@ func TestGoogleDorksPlugin_Run_FindsSubsidiaries(t *testing.T) {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "google-dorks", f.Source)
 		assert.NotEmpty(t, f.Value)
-		assert.InDelta(t, googleDorksConfidence, plugins.Confidence(f), 0.001)
+		assert.Equal(t, googleDorksConfidence, plugins.TotalConfidence(f))
 		assert.True(t, plugins.NeedsReview(f))
 		// Verify subsidiary name is in finding data
 		assert.NotEmpty(t, f.Data["subsidiary"])
@@ -462,4 +463,31 @@ func TestBuildQuery_MultiSegmentDomain(t *testing.T) {
 	p := newGoogleDorksPlugin("")
 	q := p.buildQuery(plugins.Input{Domain: "sub.qualcomm.com"})
 	assert.Equal(t, "subsidiaries:qualcomm", q)
+}
+
+// TestGoogleDorks_Run_TwoEvidenceEntries pins the decomposition: the carousel
+// naming a subsidiary and the follow-up search resolving its domain are separate
+// claims, and together they still total the original 0.55.
+func TestGoogleDorks_Run_TwoEvidenceEntries(t *testing.T) {
+	subsidiaries := map[string]string{"Acme Widgets": "acmewidgets.com"}
+	srv := subsidiaryServer(subsidiaries)
+	defer srv.Close()
+
+	p := newGoogleDorksPlugin(srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "acme.com"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+
+	f := findings[0]
+	require.Len(t, f.Confidences, 2)
+	assert.Equal(t, confGoogleDorksSubsidiary, f.Confidences[0].Score)
+	assert.Contains(t, f.Confidences[0].Justification, "Acme Widgets")
+	assert.Contains(t, f.Confidences[0].Justification, "subsidiary")
+
+	assert.Equal(t, confGoogleDorksDomain, f.Confidences[1].Score)
+	assert.Contains(t, f.Confidences[1].Justification, "Acme Widgets")
+	assert.Contains(t, f.Confidences[1].Justification, "acmewidgets.com")
+
+	assert.Equal(t, 55, plugins.TotalConfidence(f))
+	assert.True(t, plugins.NeedsReview(f))
 }
