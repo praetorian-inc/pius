@@ -34,6 +34,17 @@ func TestExtractPreseeds_JustificationNamesWhoisServer(t *testing.T) {
 
 // An RDAP-only lookup has no WHOIS server to cite, so the justification falls
 // back to the unattributed wording rather than naming an empty server.
+func TestExtractPreseeds_FiltersAnonymisedEmail(t *testing.T) {
+	r := whois.Result{
+		Domain: "texture.com",
+		Tech: whois.Contact{
+			Email: "texture.com-tech@anonymised.email",
+		},
+	}
+
+	assert.Empty(t, extractPreseeds(r))
+}
+
 func TestExtractPreseeds_JustificationOmitsUnknownWhoisServer(t *testing.T) {
 	r := whois.Result{
 		Domain:     "example.com",

@@ -29,6 +29,7 @@ func TestIsPrivacy(t *testing.T) {
 
 		// Email suffixes — must be flagged.
 		{"proxy email", "abc123@withheldforprivacy.com", true},
+		{"anonymised email", "texture.com-tech@anonymised.email", true},
 		{"markmonitor email", "domains@markmonitor.com", true},
 		{"bluehost privacy", "user@bluehostprivatename.com", true},
 
