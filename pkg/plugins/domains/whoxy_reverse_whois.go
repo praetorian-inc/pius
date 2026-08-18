@@ -26,12 +26,13 @@ func init() {
 // runs the whois capability on each discovered domain.
 type WhoxyReverseWhoisPlugin struct {
 	client  *client.Client
+	apiKey  string
 	baseURL string // overridable for tests
 }
 
-// NewWhoxyReverseWhoisPlugin creates a plugin with an injectable HTTP client.
-func NewWhoxyReverseWhoisPlugin(httpClient *client.Client) *WhoxyReverseWhoisPlugin {
-	return &WhoxyReverseWhoisPlugin{client: httpClient}
+// NewWhoxyReverseWhoisPlugin creates a plugin with an injectable HTTP client and API key.
+func NewWhoxyReverseWhoisPlugin(httpClient *client.Client, apiKey string) *WhoxyReverseWhoisPlugin {
+	return &WhoxyReverseWhoisPlugin{client: httpClient, apiKey: apiKey}
 }
 
 func (p *WhoxyReverseWhoisPlugin) Name() string { return "whoxy-reverse-whois" }
@@ -43,7 +44,11 @@ func (p *WhoxyReverseWhoisPlugin) Phase() int       { return 0 }
 func (p *WhoxyReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *WhoxyReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("WHOXY_API_KEY") != "" && (input.OrgName != "" || input.PersonName != "" || input.Email != "")
+	return p.resolveAPIKey() != "" && (input.OrgName != "" || input.PersonName != "" || input.Email != "")
+}
+
+func (p *WhoxyReverseWhoisPlugin) resolveAPIKey() string {
+	return cmp.Or(p.apiKey, os.Getenv("WHOXY_API_KEY"))
 }
 
 func (p *WhoxyReverseWhoisPlugin) apiBase() string {
@@ -70,7 +75,7 @@ type whoxyQuery struct {
 }
 
 func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	apiKey := os.Getenv("WHOXY_API_KEY")
+	apiKey := p.resolveAPIKey()
 
 	// Build the set of queries from the input. Whoxy distinguishes company
 	// names (&company=) from person names (&name=) from email (&email=).

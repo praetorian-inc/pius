@@ -65,9 +65,10 @@ func mockWhoxyPage(domains []string, totalPages int) []byte {
 }
 
 func TestWhoxyReverseWhois_Run_EmitsFindings(t *testing.T) {
-	t.Setenv("WHOXY_API_KEY", "test-key")
+	t.Setenv("WHOXY_API_KEY", "env-key")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "constructor-key", r.URL.Query().Get("key"))
 		assert.Contains(t, r.URL.RawQuery, "reverse=whois")
 		assert.Contains(t, r.URL.RawQuery, "company=")
 		w.Header().Set("Content-Type", "application/json")
@@ -75,7 +76,8 @@ func TestWhoxyReverseWhois_Run_EmitsFindings(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &WhoxyReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	p := NewWhoxyReverseWhoisPlugin(client.New(), "constructor-key")
+	p.baseURL = srv.URL
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 	require.Len(t, findings, 2)
