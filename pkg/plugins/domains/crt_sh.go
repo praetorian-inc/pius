@@ -91,7 +91,7 @@ func (p *CRTShPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 						"query": query,
 					},
 				}
-				plugins.AddConfidenceWithReference(&finding, confCRTShCertificateTransparencyObservation,
+				plugins.AddConfidence(&finding, confCRTShCertificateTransparencyObservation,
 					fmt.Sprintf("crt.sh returned domain %q from Certificate Transparency data for query %q", domain, query),
 					plugins.URLReference("crt.sh query results", urlStr))
 				findings = append(findings, finding)

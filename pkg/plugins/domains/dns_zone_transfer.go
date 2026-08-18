@@ -84,9 +84,9 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 					"domain":     input.Domain,
 				},
 			}
-			plugins.AddConfidence(&finding, confDNSZoneTransferAXFR,
-				fmt.Sprintf("Hostname %q was disclosed by authoritative nameserver %q in response to an AXFR request for base domain %q",
-					hostname, ns, domain))
+			plugins.AddConfidence(&finding, confDNSZoneTransferAXFR, fmt.Sprintf("Hostname %q was disclosed by authoritative nameserver %q in response to an AXFR request for base domain %q",
+				hostname, ns, domain), nil)
+
 			findings = append(findings, finding)
 		}
 	}

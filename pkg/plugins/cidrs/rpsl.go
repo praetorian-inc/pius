@@ -141,7 +141,7 @@ func (p *rpslPlugin) findings(input plugins.Input, netblocks []rpslNetblock) []p
 					"description": netblock.description,
 				},
 			}
-			plugins.AddConfidenceWithReference(&finding, confRPSLHandleInetnum, justification, plugins.Reference{
+			plugins.AddConfidence(&finding, confRPSLHandleInetnum, justification, &plugins.Reference{
 				Label: strings.ToUpper(p.Name()) + " RPSL netblock",
 				Type:  plugins.ReferenceTypeRPSL,
 				Data: plugins.RPSLReferenceData{

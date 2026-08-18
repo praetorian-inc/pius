@@ -80,11 +80,11 @@ func (p *rdapPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 			}
 			for _, confidence := range result.confidences {
 				if confidence.Reference == nil {
-					plugins.AddConfidence(&finding, confidence.Score, confidence.Justification)
+					plugins.AddConfidence(&finding, confidence.Score, confidence.Justification, nil)
 					continue
 				}
-				plugins.AddConfidenceWithReference(&finding, confidence.Score,
-					confidence.Justification, *confidence.Reference)
+				plugins.AddConfidence(&finding, confidence.Score,
+					confidence.Justification, confidence.Reference)
 			}
 			findings = append(findings, finding)
 		}

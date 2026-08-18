@@ -333,8 +333,8 @@ func addFaviconEvidence(
 	}
 
 	finding.Data["scanners"] = appendFaviconScanner(finding.Data["scanners"], observation.scanner)
-	plugins.AddConfidence(&finding, confFaviconScannerObservation,
-		faviconJustification(observation, value, hash, input.Domain))
+	plugins.AddConfidence(&finding, confFaviconScannerObservation, faviconJustification(observation, value, hash, input.Domain), nil)
+
 	findings[key] = finding
 }
 

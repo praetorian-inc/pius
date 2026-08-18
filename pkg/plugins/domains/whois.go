@@ -166,10 +166,10 @@ func addDomainRegistrationConfidence(finding *plugins.Finding, result whois.Resu
 
 	justification := domainRegistrationJustification(source, result, contact)
 	if reference == nil {
-		plugins.AddConfidence(finding, confWhoisServerRecord, justification)
+		plugins.AddConfidence(finding, confWhoisServerRecord, justification, nil)
 		return
 	}
-	plugins.AddConfidenceWithReference(finding, confWhoisServerRecord, justification, *reference)
+	plugins.AddConfidence(finding, confWhoisServerRecord, justification, reference)
 }
 
 func domainRegistrationJustification(source string, result whois.Result, contact domainContact) string {

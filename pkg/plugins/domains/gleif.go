@@ -340,11 +340,11 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation, primaryRelatio
 		resolutionReferences = append(resolutionReferences, plugins.LabeledURLReferenceData{Label: "Resolved GLEIF entity", URL: recordURL})
 	}
 	if p.candidateRank == 0 {
-		plugins.AddConfidenceWithReference(&f, 15,
+		plugins.AddConfidence(&f, 15,
 			fmt.Sprintf("Resolved %q to GLEIF entity %q (top candidate)", p.orgName, p.primaryName),
 			plugins.URLCollectionReference("GLEIF resolution records", resolutionReferences))
 	} else {
-		plugins.AddConfidenceWithReference(&f, 10,
+		plugins.AddConfidence(&f, 10,
 			fmt.Sprintf("Resolved %q to GLEIF entity %q (candidate #%d, skipped %d leaf entities)",
 				p.orgName, p.primaryName, p.candidateRank+1, p.candidateRank),
 			plugins.URLCollectionReference("GLEIF resolution records", resolutionReferences))
@@ -356,19 +356,19 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation, primaryRelatio
 	references := p.relationshipReferences(record.ID, relation, primaryRelationship)
 	switch relation {
 	case "direct-parent":
-		plugins.AddConfidenceWithReference(&f, 50,
+		plugins.AddConfidence(&f, 50,
 			fmt.Sprintf("GLEIF lists %q as direct parent of %q", name, p.primaryName),
 			plugins.URLCollectionReference("GLEIF relationship records", references))
 	case "ultimate-parent":
-		plugins.AddConfidenceWithReference(&f, 50,
+		plugins.AddConfidence(&f, 50,
 			fmt.Sprintf("GLEIF lists %q as ultimate parent of %q", name, p.primaryName),
 			plugins.URLCollectionReference("GLEIF relationship records", references))
 	case "subsidiary":
-		plugins.AddConfidenceWithReference(&f, 50,
+		plugins.AddConfidence(&f, 50,
 			fmt.Sprintf("GLEIF lists %q as direct subsidiary of %q", name, p.primaryName),
 			plugins.URLCollectionReference("GLEIF relationship records", references))
 	case "sibling":
-		plugins.AddConfidenceWithReference(&f, 30,
+		plugins.AddConfidence(&f, 30,
 			fmt.Sprintf("GLEIF entity %q shares a corporate parent with %q", name, p.primaryName),
 			plugins.URLCollectionReference("GLEIF relationship records", references))
 	}

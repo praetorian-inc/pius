@@ -203,7 +203,7 @@ func (p *GitHubOrgPlugin) fetchOrg(ctx context.Context, login string, headers ma
 func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input plugins.Input) {
 	// Domain cross-reference: blog URL contains the known domain (strongest signal)
 	if input.Domain != "" && domainContains(org.Blog, input.Domain) {
-		plugins.AddConfidenceWithReference(finding, 60,
+		plugins.AddConfidence(finding, 60,
 			fmt.Sprintf("GitHub organization blog URL %q matches the known domain %q", org.Blog, input.Domain),
 			githubOrgReference(org))
 	}
@@ -219,7 +219,7 @@ func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input 
 	// name is genuinely the signal we want to reward at full weight, and Jaccard
 	// would penalize it for length asymmetry alone.
 	if similarity := strutil.TokenSimilarity(org.Name, input.OrgName); similarity > 0 {
-		plugins.AddConfidenceWithReference(finding, int(math.Round(25*similarity)),
+		plugins.AddConfidence(finding, int(math.Round(25*similarity)),
 			fmt.Sprintf("GitHub organization name %q matches the target organization %q with %.0f%% token similarity",
 				org.Name, input.OrgName, similarity*100), githubOrgReference(org))
 	}
@@ -228,7 +228,7 @@ func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input 
 	if fields := strings.Fields(input.OrgName); len(fields) > 0 {
 		firstWord := strings.ToLower(fields[0])
 		if strings.Contains(strings.ToLower(org.Login), firstWord) {
-			plugins.AddConfidenceWithReference(finding, 10,
+			plugins.AddConfidence(finding, 10,
 				fmt.Sprintf("GitHub organization login %q contains target organization token %q",
 					org.Login, firstWord), githubOrgReference(org))
 		}
@@ -236,13 +236,13 @@ func (p *GitHubOrgPlugin) score(finding *plugins.Finding, org *githubOrg, input 
 
 	// Activity signal: active org (not a squatter or placeholder)
 	if org.PublicRepos > 5 {
-		plugins.AddConfidenceWithReference(finding, 5,
+		plugins.AddConfidence(finding, 5,
 			fmt.Sprintf("GitHub organization has %d public repositories, indicating an active organization", org.PublicRepos),
 			githubOrgReference(org))
 	}
 }
 
-func githubOrgReference(org *githubOrg) plugins.Reference {
+func githubOrgReference(org *githubOrg) *plugins.Reference {
 	profileURL := org.HTMLURL
 	if profileURL == "" {
 		profileURL = "https://github.com/" + url.PathEscape(org.Login)

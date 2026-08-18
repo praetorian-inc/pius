@@ -134,17 +134,17 @@ type WHOISReferenceData struct {
 }
 
 // URLReference constructs a reference to a public source record.
-func URLReference(label, url string) Reference {
-	return Reference{Label: label, Type: ReferenceTypeURL, Data: URLReferenceData{URL: url}}
+func URLReference(label, url string) *Reference {
+	return &Reference{Label: label, Type: ReferenceTypeURL, Data: URLReferenceData{URL: url}}
 }
 
-func URLCollectionReference(label string, urls []LabeledURLReferenceData) Reference {
-	return Reference{Label: label, Type: ReferenceTypeJSON, Data: URLCollectionReferenceData{URLs: urls}}
+func URLCollectionReference(label string, urls []LabeledURLReferenceData) *Reference {
+	return &Reference{Label: label, Type: ReferenceTypeJSON, Data: URLCollectionReferenceData{URLs: urls}}
 }
 
 // NewHTTPExchangeReference constructs a credential-free HTTP exchange reference.
-func NewHTTPExchangeReference(label, method, url string, requestBody, response any) Reference {
-	return Reference{
+func NewHTTPExchangeReference(label, method, url string, requestBody, response any) *Reference {
+	return &Reference{
 		Label: label,
 		Type:  ReferenceTypeHTTPExchange,
 		Data: HTTPExchangeReference{

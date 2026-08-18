@@ -10,28 +10,28 @@ import (
 
 func TestAddConfidence_AppendsEntry(t *testing.T) {
 	var f Finding
-	AddConfidence(&f, 60, "blog URL matches the known domain")
+	AddConfidence(&f, 60, "blog URL matches the known domain", nil)
 
 	require.Len(t, f.Confidences, 1)
 	assert.Equal(t, 60, f.Confidences[0].Score)
 	assert.Equal(t, "blog URL matches the known domain", f.Confidences[0].Justification)
 }
 
-func TestAddConfidenceWithReference_AppendsReference(t *testing.T) {
+func TestAddConfidence_AppendsReference(t *testing.T) {
 	var finding Finding
 	reference := URLReference("source", "https://example.com/evidence")
 
-	AddConfidenceWithReference(&finding, 60, "source supports finding", reference)
+	AddConfidence(&finding, 60, "source supports finding", reference)
 
 	require.Len(t, finding.Confidences, 1)
 	require.NotNil(t, finding.Confidences[0].Reference)
-	assert.Equal(t, reference, *finding.Confidences[0].Reference)
+	assert.Equal(t, reference, finding.Confidences[0].Reference)
 }
 
 func TestAddConfidence_ClampsScore(t *testing.T) {
 	var f Finding
-	AddConfidence(&f, -1, "below range")
-	AddConfidence(&f, 101, "above range")
+	AddConfidence(&f, -1, "below range", nil)
+	AddConfidence(&f, 101, "above range", nil)
 
 	require.Len(t, f.Confidences, 2)
 	assert.Equal(t, 0, f.Confidences[0].Score)
@@ -40,9 +40,9 @@ func TestAddConfidence_ClampsScore(t *testing.T) {
 
 func TestAddConfidence_PreservesOrder(t *testing.T) {
 	var f Finding
-	AddConfidence(&f, 10, "first")
-	AddConfidence(&f, 20, "second")
-	AddConfidence(&f, 30, "third")
+	AddConfidence(&f, 10, "first", nil)
+	AddConfidence(&f, 20, "second", nil)
+	AddConfidence(&f, 30, "third", nil)
 
 	require.Len(t, f.Confidences, 3)
 	assert.Equal(t, []string{"first", "second", "third"}, []string{
@@ -57,7 +57,7 @@ func TestAddConfidence_PreservesOrder(t *testing.T) {
 // never again read a stale scalar out of the metadata map.
 func TestAddConfidence_NeverWritesData(t *testing.T) {
 	f := Finding{Data: map[string]any{"org": "Acme Corp"}}
-	AddConfidence(&f, 42, "some evidence")
+	AddConfidence(&f, 42, "some evidence", nil)
 
 	assert.Equal(t, map[string]any{"org": "Acme Corp"}, f.Data)
 	assert.NotContains(t, f.Data, "confidence")
@@ -70,8 +70,8 @@ func TestAddConfidence_FindingsDoNotShareBacking(t *testing.T) {
 	template := Finding{Type: FindingDomain, Value: "example.com"}
 
 	a, b := template, template
-	AddConfidence(&a, 30, "evidence for a")
-	AddConfidence(&b, 70, "evidence for b")
+	AddConfidence(&a, 30, "evidence for a", nil)
+	AddConfidence(&b, 70, "evidence for b", nil)
 
 	require.Len(t, a.Confidences, 1)
 	require.Len(t, b.Confidences, 1)
@@ -86,7 +86,7 @@ func TestTotalConfidence_NoEntriesIsZero(t *testing.T) {
 
 func TestTotalConfidence_ExplicitZeroEntryIsZero(t *testing.T) {
 	var f Finding
-	AddConfidence(&f, 0, "the candidate could not be substantiated at all")
+	AddConfidence(&f, 0, "the candidate could not be substantiated at all", nil)
 
 	assert.Equal(t, 0, TotalConfidence(f))
 }
@@ -98,7 +98,7 @@ func TestTotalConfidence_EmptyAndExplicitZeroDifferByLength(t *testing.T) {
 	unscored := Finding{}
 
 	var explicitZero Finding
-	AddConfidence(&explicitZero, 0, "explicitly scored zero")
+	AddConfidence(&explicitZero, 0, "explicitly scored zero", nil)
 
 	assert.Equal(t, TotalConfidence(unscored), TotalConfidence(explicitZero),
 		"the two are indistinguishable by score alone")
@@ -108,17 +108,17 @@ func TestTotalConfidence_EmptyAndExplicitZeroDifferByLength(t *testing.T) {
 
 func TestTotalConfidence_SumsEntries(t *testing.T) {
 	var f Finding
-	AddConfidence(&f, 25, "first")
-	AddConfidence(&f, 30, "second")
-	AddConfidence(&f, 20, "third")
+	AddConfidence(&f, 25, "first", nil)
+	AddConfidence(&f, 30, "second", nil)
+	AddConfidence(&f, 20, "third", nil)
 
 	assert.Equal(t, 75, TotalConfidence(f))
 }
 
 func TestTotalConfidence_CapsAtHundred(t *testing.T) {
 	var f Finding
-	AddConfidence(&f, 60, "first")
-	AddConfidence(&f, 65, "second")
+	AddConfidence(&f, 60, "first", nil)
+	AddConfidence(&f, 65, "second", nil)
 
 	assert.Equal(t, 100, TotalConfidence(f), "125 of evidence caps at 100")
 }
@@ -161,7 +161,7 @@ func TestNeedsReview_DoesNotSeparateUnscoredFromExplicitZero(t *testing.T) {
 	unscored := Finding{}
 
 	var explicitZero Finding
-	AddConfidence(&explicitZero, 0, "explicitly scored zero")
+	AddConfidence(&explicitZero, 0, "explicitly scored zero", nil)
 
 	assert.Equal(t, NeedsReview(unscored), NeedsReview(explicitZero),
 		"the predicate alone cannot separate them")
@@ -171,29 +171,29 @@ func TestNeedsReview_DoesNotSeparateUnscoredFromExplicitZero(t *testing.T) {
 
 func TestNeedsReview_TrueForExplicitZero(t *testing.T) {
 	var f Finding
-	AddConfidence(&f, 0, "explicitly scored zero")
+	AddConfidence(&f, 0, "explicitly scored zero", nil)
 
 	assert.True(t, NeedsReview(f), "an explicit zero IS a judgement, and it needs review")
 }
 
 func TestNeedsReview_TrueBelowConfidenceHigh(t *testing.T) {
 	var f Finding
-	AddConfidence(&f, 55, "borderline evidence")
+	AddConfidence(&f, 55, "borderline evidence", nil)
 
 	assert.True(t, NeedsReview(f))
 }
 
 func TestNeedsReview_FalseAtConfidenceHigh(t *testing.T) {
 	var f Finding
-	AddConfidence(&f, ConfidenceHigh, "authoritative evidence")
+	AddConfidence(&f, ConfidenceHigh, "authoritative evidence", nil)
 
 	assert.False(t, NeedsReview(f))
 }
 
 func TestNeedsReview_FalseWhenCappedSumClears(t *testing.T) {
 	var f Finding
-	AddConfidence(&f, 40, "first")
-	AddConfidence(&f, 40, "second")
+	AddConfidence(&f, 40, "first", nil)
+	AddConfidence(&f, 40, "second", nil)
 
 	assert.Equal(t, 80, TotalConfidence(f))
 	assert.False(t, NeedsReview(f), "independent signals can aggregate past the review bar")
@@ -203,9 +203,9 @@ func TestNeedsReview_FalseWhenCappedSumClears(t *testing.T) {
 // modes, which encode a Finding directly.
 func TestFinding_JSONIncludesConfidences(t *testing.T) {
 	f := Finding{Type: FindingDomain, Value: "example.com", Source: "github-org"}
-	AddConfidenceWithReference(&f, 60, "blog URL matches the known domain",
+	AddConfidence(&f, 60, "blog URL matches the known domain",
 		URLReference("Organization profile", "https://github.com/acme"))
-	AddConfidence(&f, 5, "organization has 86 public repositories")
+	AddConfidence(&f, 5, "organization has 86 public repositories", nil)
 
 	encoded, err := json.Marshal(f)
 	require.NoError(t, err)
@@ -229,8 +229,8 @@ func TestFinding_JSONIncludesConfidences(t *testing.T) {
 
 func TestTotalConfidence_NormalizesFloatAccumulation(t *testing.T) {
 	var f Finding
-	AddConfidence(&f, 30, "relationship evidence")
-	AddConfidence(&f, 35, "website evidence")
+	AddConfidence(&f, 30, "relationship evidence", nil)
+	AddConfidence(&f, 35, "website evidence", nil)
 
 	assert.Equal(t, ConfidenceHigh, TotalConfidence(f))
 	assert.False(t, NeedsReview(f))
@@ -238,7 +238,7 @@ func TestTotalConfidence_NormalizesFloatAccumulation(t *testing.T) {
 
 func TestNeedsReview_TrueOnePointBelowConfidenceHigh(t *testing.T) {
 	var f Finding
-	AddConfidence(&f, 64, "just short of the bar")
+	AddConfidence(&f, 64, "just short of the bar", nil)
 
 	assert.True(t, NeedsReview(f))
 }
@@ -248,8 +248,8 @@ func TestNeedsReview_TrueOnePointBelowConfidenceHigh(t *testing.T) {
 // a reader does not have to sum the entries.
 func TestFinding_JSONIncludesDerivedValues(t *testing.T) {
 	f := Finding{Type: FindingDomain, Value: "example.com", Source: "github-org"}
-	AddConfidence(&f, 60, "blog URL matches the known domain")
-	AddConfidence(&f, 5, "organization has 86 public repositories")
+	AddConfidence(&f, 60, "blog URL matches the known domain", nil)
+	AddConfidence(&f, 5, "organization has 86 public repositories", nil)
 
 	encoded, err := json.Marshal(f)
 	require.NoError(t, err)
@@ -270,7 +270,7 @@ func TestFinding_JSONIncludesDerivedValues(t *testing.T) {
 
 func TestFinding_JSONDerivedValuesReflectReviewState(t *testing.T) {
 	f := Finding{Type: FindingDomain, Value: "example.com", Source: "gleif"}
-	AddConfidence(&f, ConfidenceLow, "secondary legal-name search match")
+	AddConfidence(&f, ConfidenceLow, "secondary legal-name search match", nil)
 
 	encoded, err := json.Marshal(f)
 	require.NoError(t, err)
@@ -292,8 +292,8 @@ func TestFinding_JSONDerivedValuesReflectReviewState(t *testing.T) {
 // disagrees with its own evidence.
 func TestFinding_JSONRoundTripIgnoresDerivedValues(t *testing.T) {
 	original := Finding{Type: FindingDomain, Value: "example.com", Source: "github-org"}
-	AddConfidence(&original, 30, "first")
-	AddConfidence(&original, 25, "second")
+	AddConfidence(&original, 30, "first", nil)
+	AddConfidence(&original, 25, "second", nil)
 
 	encoded, err := json.Marshal(original)
 	require.NoError(t, err)

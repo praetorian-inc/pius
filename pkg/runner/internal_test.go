@@ -354,7 +354,7 @@ func TestEnrichWithDomains_DeduplicatesDomains(t *testing.T) {
 func TestEnrichWithDomains_ExcludesDomainsBelowConfidenceFloor(t *testing.T) {
 	input := plugins.Input{OrgName: "Acme", Meta: make(map[string]string)}
 	lowConfidence := plugins.Finding{Type: plugins.FindingDomain, Value: "former-subsidiary.example"}
-	plugins.AddConfidence(&lowConfidence, plugins.ConfidenceLow-1, "relationship ended")
+	plugins.AddConfidence(&lowConfidence, plugins.ConfidenceLow-1, "relationship ended", nil)
 	findings := []plugins.Finding{
 		lowConfidence,
 		{Type: plugins.FindingDomain, Value: "unscored.example"},

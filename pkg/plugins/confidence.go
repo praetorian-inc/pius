@@ -17,19 +17,12 @@ const (
 	ConfidenceLow = 35
 )
 
-// AddConfidence appends one piece of scored, justified evidence to f.
-func AddConfidence(f *Finding, score int, justification string) {
+// AddConfidence appends one piece of scored, justified evidence to f. Reference may be nil.
+func AddConfidence(f *Finding, score int, justification string, reference *Reference) {
 	f.Confidences = append(f.Confidences, Confidence{
 		Score:         max(0, min(score, 100)),
 		Justification: justification,
-	})
-}
-
-func AddConfidenceWithReference(f *Finding, score int, justification string, reference Reference) {
-	f.Confidences = append(f.Confidences, Confidence{
-		Score:         max(0, min(score, 100)),
-		Justification: justification,
-		Reference:     &reference,
+		Reference:     reference,
 	})
 }
 

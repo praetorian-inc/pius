@@ -294,7 +294,7 @@ func (p *CensysOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	if c != nil {
 		var cached censysCacheEntry
 		if c.Get(cacheKey, &cached) {
-			attachCensysReference(cached.Findings, cached.Reference)
+			attachCensysReference(cached.Findings, &cached.Reference)
 			return cached.Findings, nil
 		}
 	}
@@ -344,17 +344,17 @@ func (p *CensysOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	findings := p.extractFindings(input, resp.Result.Hits)
 	reference := plugins.NewHTTPExchangeReference("Censys search response", "POST", searchURL, reqBody, json.RawMessage(respBody))
 	if c != nil {
-		c.Set(cacheKey, censysCacheEntry{Findings: findings, Reference: reference})
+		c.Set(cacheKey, censysCacheEntry{Findings: findings, Reference: *reference})
 	}
 	attachCensysReference(findings, reference)
 
 	return findings, nil
 }
 
-func attachCensysReference(findings []plugins.Finding, reference plugins.Reference) {
+func attachCensysReference(findings []plugins.Finding, reference *plugins.Reference) {
 	for i := range findings {
 		for j := range findings[i].Confidences {
-			findings[i].Confidences[j].Reference = &reference
+			findings[i].Confidences[j].Reference = reference
 		}
 	}
 }
@@ -476,7 +476,7 @@ func (p *CensysOrgPlugin) extractFindings(input plugins.Input, hits []censysSear
 		}
 		justification := fmt.Sprintf("Certificate Subject Organization %q appeared within Censys results for %s on %d distinct hosts, at or above the %d-host threshold",
 			displayName, describeCensysSearchTarget(input), len(hosts), censysMinHosts)
-		plugins.AddConfidenceWithReference(&f, plugins.ConfidenceHigh, justification,
+		plugins.AddConfidence(&f, plugins.ConfidenceHigh, justification,
 			plugins.URLCollectionReference("Censys hosts containing the organization", censysHostReferences(hosts)))
 		findings = append(findings, f)
 	}
@@ -491,7 +491,7 @@ func buildCensysDomainConfidence(input plugins.Input, hostIP, rawDomain, source,
 		Score: score,
 		Justification: fmt.Sprintf("Censys returned host %q for %s; the host's %s field (%s) contained domain %q%s",
 			hostIP, describeCensysSearchTarget(input), source, field, domain, describeCensysORQueryCaveat(input)),
-		Reference: &reference,
+		Reference: reference,
 	}
 }
 
@@ -502,7 +502,7 @@ func buildCensysCIDRConfidence(input plugins.Input, hostIP, rawCIDR, source, fie
 		Score: confCensysNetworkCIDR,
 		Justification: fmt.Sprintf("Censys returned host %q for %s; the host's %s field (%s) contained CIDR %q%s",
 			hostIP, describeCensysSearchTarget(input), source, field, cidr, describeCensysORQueryCaveat(input)),
-		Reference: &reference,
+		Reference: reference,
 	}
 }
 
@@ -583,10 +583,10 @@ func (p *CensysOrgPlugin) emitCIDR(findings *[]plugins.Finding, seen map[string]
 
 func addCensysConfidence(finding *plugins.Finding, confidence plugins.Confidence) {
 	if confidence.Reference == nil {
-		plugins.AddConfidence(finding, confidence.Score, confidence.Justification)
+		plugins.AddConfidence(finding, confidence.Score, confidence.Justification, nil)
 		return
 	}
-	plugins.AddConfidenceWithReference(finding, confidence.Score, confidence.Justification, *confidence.Reference)
+	plugins.AddConfidence(finding, confidence.Score, confidence.Justification, confidence.Reference)
 }
 
 // normalizeCensysDomain extends normalizeDomain with Censys-specific cleanup:

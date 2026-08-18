@@ -245,7 +245,7 @@ func (p *WikidataPlugin) newFinding(
 		{Label: "Target Wikidata item", URL: "https://www.wikidata.org/wiki/" + target.id},
 		{Label: "Subsidiary Wikidata item", URL: "https://www.wikidata.org/wiki/" + entity.id},
 	}
-	plugins.AddConfidenceWithReference(&finding, score,
+	plugins.AddConfidence(&finding, score,
 		wikidataJustification(orgName, target.id, entity, assessment, website),
 		plugins.URLCollectionReference("Wikidata relationship records", references))
 	return finding

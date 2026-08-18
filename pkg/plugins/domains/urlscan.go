@@ -138,9 +138,9 @@ func (p *URLScanPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 			justification := fmt.Sprintf("URLScan scan history records hostname %q under queried base domain %q",
 				host, input.Domain)
 			if result.Task.UUID == "" {
-				plugins.AddConfidence(&finding, confURLScanHistoryObservation, justification)
+				plugins.AddConfidence(&finding, confURLScanHistoryObservation, justification, nil)
 			} else {
-				plugins.AddConfidenceWithReference(&finding, confURLScanHistoryObservation, justification,
+				plugins.AddConfidence(&finding, confURLScanHistoryObservation, justification,
 					plugins.URLReference("URLScan result", p.urlscanBase()+"/result/"+url.PathEscape(result.Task.UUID)+"/"))
 			}
 			findings = append(findings, finding)

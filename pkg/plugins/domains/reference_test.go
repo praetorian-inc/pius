@@ -24,7 +24,7 @@ func confidenceReferences(t *testing.T, confidence plugins.Confidence) []plugins
 	require.True(t, ok)
 	references := make([]plugins.Reference, len(collection.URLs))
 	for i, item := range collection.URLs {
-		references[i] = plugins.URLReference(item.Label, item.URL)
+		references[i] = *plugins.URLReference(item.Label, item.URL)
 	}
 	return references
 }

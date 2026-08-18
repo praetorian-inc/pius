@@ -60,7 +60,7 @@ func (p *ASNBGPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 				"org": input.OrgName,
 			},
 		}
-		plugins.AddConfidenceWithReference(&finding, confASNBGPAnnouncedPrefix, fmt.Sprintf(
+		plugins.AddConfidence(&finding, confASNBGPAnnouncedPrefix, fmt.Sprintf(
 			"RIPE RIS returned CIDR %q for queried ASN %q", prefix, input.ASN),
 			plugins.NewHTTPExchangeReference("RIPE RIS announced-prefixes response", "GET", apiURL, nil, response))
 		findings = append(findings, finding)

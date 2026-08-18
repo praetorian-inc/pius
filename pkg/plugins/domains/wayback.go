@@ -118,7 +118,7 @@ func (p *WaybackPlugin) findingsFromArchiveObservations(observations []archiveOb
 		}
 		justification := fmt.Sprintf("Archive evidence from %s records hostname %q under base domain %q",
 			strings.Join(sources, " and "), hostname, baseDomain)
-		plugins.AddConfidenceWithReference(&finding, confWaybackArchiveObservation, justification,
+		plugins.AddConfidence(&finding, confWaybackArchiveObservation, justification,
 			plugins.URLCollectionReference("Archive query records", archiveReferences(sourcesByHostname[hostname])))
 		findings = append(findings, finding)
 	}

@@ -405,24 +405,24 @@ func scoreReverseIP(f *plugins.Finding, hostname, baseDomain, orgName, ip, metho
 	justification := fmt.Sprintf("%s associated hostname %q with discovered IP %s",
 		reverseIPMethodName(method), hostname, ip)
 	if reference := reverseIPReference(method, ip); reference != nil {
-		plugins.AddConfidenceWithReference(f, confReverseIPAssociated, justification, *reference)
+		plugins.AddConfidence(f, confReverseIPAssociated, justification, reference)
 	} else {
-		plugins.AddConfidence(f, confReverseIPAssociated, justification)
+		plugins.AddConfidence(f, confReverseIPAssociated, justification, nil)
 	}
 
 	if !isCDN {
-		plugins.AddConfidence(f, confReverseIPNonCDN,
-			fmt.Sprintf("IP %s did not match Pius's built-in CDN prefix list, reducing the likelihood that this is shared CDN infrastructure", ip))
+		plugins.AddConfidence(f, confReverseIPNonCDN, fmt.Sprintf("IP %s did not match Pius's built-in CDN prefix list, reducing the likelihood that this is shared CDN infrastructure", ip), nil)
+
 	}
 
 	normalizedOrg := strings.ReplaceAll(orgName, " ", "")
 
 	if baseDomain != "" && (hostname == baseDomain || strings.HasSuffix(hostname, "."+baseDomain)) {
-		plugins.AddConfidence(f, confReverseIPKnownDomain,
-			fmt.Sprintf("Hostname %q matches the known target domain %q", hostname, baseDomain))
+		plugins.AddConfidence(f, confReverseIPKnownDomain, fmt.Sprintf("Hostname %q matches the known target domain %q", hostname, baseDomain), nil)
+
 	} else if normalizedOrg != "" && strings.Contains(hostname, normalizedOrg) {
-		plugins.AddConfidence(f, confReverseIPOrgName,
-			fmt.Sprintf("Hostname %q contains the normalized organization name %q", hostname, normalizedOrg))
+		plugins.AddConfidence(f, confReverseIPOrgName, fmt.Sprintf("Hostname %q contains the normalized organization name %q", hostname, normalizedOrg), nil)
+
 	}
 }
 
@@ -446,7 +446,7 @@ func reverseIPReference(method, ip string) *plugins.Reference {
 	reference := plugins.URLReference(
 		"HackerTarget reverse-IP request",
 		"https://api.hackertarget.com/reverseiplookup/?"+url.Values{"q": {ip}}.Encode())
-	return &reference
+	return reference
 }
 
 // Known CDN/cloud provider IP ranges (simplified - common prefixes)

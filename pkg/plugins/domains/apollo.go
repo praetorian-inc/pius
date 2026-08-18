@@ -171,7 +171,7 @@ func (p *ApolloPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 			queryDescription, findings[i].Value, field)
 		reference := plugins.NewHTTPExchangeReference(
 			"Apollo organization enrichment response", "GET", apiURL, nil, json.RawMessage(body))
-		plugins.AddConfidenceWithReference(&findings[i], score, justification, reference)
+		plugins.AddConfidence(&findings[i], score, justification, reference)
 	}
 
 	if c != nil {

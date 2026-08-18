@@ -108,8 +108,8 @@ func (p *BuiltWithPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 		// One entry naming every identifier that reached this domain. The nested
 		// set deduplicates repeated domain/identifier pairs across lookups, and
 		// sorting keeps the justification stable rather than map-order dependent.
-		plugins.AddConfidence(&f, confBuiltWithSharedAnalytics,
-			builtWithJustification(slices.Sorted(maps.Keys(analyticsIDs))))
+		plugins.AddConfidence(&f, confBuiltWithSharedAnalytics, builtWithJustification(slices.Sorted(maps.Keys(analyticsIDs))), nil)
+
 		findings = append(findings, f)
 	}
 	return findings, nil

@@ -210,8 +210,8 @@ func networkReference(result whois.NetworkResult, value string) *plugins.Referen
 func addNetworkConfidence(finding *plugins.Finding, result whois.NetworkResult, candidate networkPreseedCandidate) {
 	reference := networkReference(result, candidate.value)
 	if reference == nil {
-		plugins.AddConfidence(finding, confIPWhoisContact,
-			networkPreseedJustification(result, candidate))
+		plugins.AddConfidence(finding, confIPWhoisContact, networkPreseedJustification(result, candidate), nil)
+
 		return
 	}
 
@@ -219,8 +219,8 @@ func addNetworkConfidence(finding *plugins.Finding, result whois.NetworkResult, 
 	if reference.Type == plugins.ReferenceTypeWHOIS {
 		source = protocolServer("IP WHOIS", cmp.Or(result.WhoisServer, result.Server))
 	}
-	plugins.AddConfidenceWithReference(finding, confIPWhoisContact,
-		networkPreseedJustificationForSource(source, result, candidate), *reference)
+	plugins.AddConfidence(finding, confIPWhoisContact,
+		networkPreseedJustificationForSource(source, result, candidate), reference)
 }
 
 func networkPreseedJustification(result whois.NetworkResult, candidate networkPreseedCandidate) string {

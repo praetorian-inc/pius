@@ -345,9 +345,9 @@ func newReverseRIRFinding(handle, registry, database, org string) (plugins.Findi
 		database, handle, org)
 	referenceURL := reverseRIRQueryURL(registry, database, org)
 	if referenceURL == "" {
-		plugins.AddConfidence(&finding, confReverseRIRHandle, justification)
+		plugins.AddConfidence(&finding, confReverseRIRHandle, justification, nil)
 	} else {
-		plugins.AddConfidenceWithReference(&finding, confReverseRIRHandle, justification,
+		plugins.AddConfidence(&finding, confReverseRIRHandle, justification,
 			plugins.URLReference(database+" query", referenceURL))
 	}
 	return finding, true
