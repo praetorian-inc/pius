@@ -117,6 +117,27 @@ func defaultResolvers(httpClient *http.Client) []Resolver {
 	return resolvers
 }
 
+// fillGapsFromFallback consults the route when the free-protocol result lacks
+// registrant identity, merging in the first usable answer.
+//
+// An Unregistered verdict is discarded here rather than acted on. RDAP or TCP-43
+// already returned a record for this domain, so a provider claiming it does not
+// exist is contradicting better evidence — and because Merge would not undo a
+// resolved record anyway, acting on it could only mislead. The both-legs-failed
+// path in Lookup does believe that verdict, because there nothing else resolved
+// the domain at all.
+func fillGapsFromFallback(ctx context.Context, resolvers []Resolver, domain string, result *Result) {
+	if result.HasRegistrant() {
+		return
+	}
+	fbResult, ok, _ := runFallbacks(ctx, resolvers, domain)
+	if !ok || fbResult.Unregistered {
+		return
+	}
+	fbResult.ScrubContacts()
+	result.Merge(fbResult)
+}
+
 // runFallbacks tries each resolver in order and returns the first usable
 // record. "Usable" is deliberately a low bar: returned without an error, and
 // naming a domain.

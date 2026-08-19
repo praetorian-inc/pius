@@ -145,10 +145,14 @@ func TestWhoisXMLResolver_RecordMentioningErrorCodeIsNotAFailure(t *testing.T) {
 	assert.Equal(t, "AUTHENTICATE_06 Holdings", result.Registrant.Organization)
 }
 
-// TestWhoisXMLResolver_MissingDataIsNotUnregistered: absent data is weaker
-// evidence than a registry saying the domain does not exist. Reporting it as
-// unregistered would mark a live domain dead.
-func TestWhoisXMLResolver_MissingDataIsNotUnregistered(t *testing.T) {
+// TestWhoisXMLResolver_MissingDataMeansUnregistered: WhoisXML documents
+// MISSING_WHOIS_DATA as "domain is not registered; no need to retry fetching the
+// data", so it is a verdict rather than a gap.
+//
+// Safe to believe despite coming from a fallback, because Lookup discards an
+// Unregistered result from the route whenever RDAP or TCP-43 already returned a
+// record — see TestFallbackUnregisteredNeverOverwritesAResolvedRecord.
+func TestWhoisXMLResolver_MissingDataMeansUnregistered(t *testing.T) {
 	r := newWhoisXMLTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"WhoisRecord":{"domainName":"example.com","dataError":"MISSING_WHOIS_DATA"}}`))
 	})
@@ -156,8 +160,92 @@ func TestWhoisXMLResolver_MissingDataIsNotUnregistered(t *testing.T) {
 	result, err := r.Lookup(context.Background(), "example.com")
 
 	require.NoError(t, err)
-	assert.Empty(t, result.Domain, "no usable record, so the route should continue")
+	assert.True(t, result.Unregistered)
+	assert.Equal(t, "example.com", result.Domain)
+}
+
+// TestWhoisXMLResolver_EmptyRecordIsNotAnAnswer: no domain name anywhere and no
+// verdict either. That is a gap, not a verdict, so the route must continue.
+func TestWhoisXMLResolver_EmptyRecordIsNotAnAnswer(t *testing.T) {
+	r := newWhoisXMLTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"WhoisRecord":{}}`))
+	})
+
+	result, err := r.Lookup(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Empty(t, result.Domain)
 	assert.False(t, result.Unregistered)
+}
+
+// TestWhoisXMLResolver_TakesContactsFromRegistryData is the ccTLD case, and the
+// one that matters most for this fallback: WhoisXML documents that "most
+// country-code TLDs contain only registryData", and ccTLDs are the bulk of the
+// coverage gap the route exists to close. Since the route is entered precisely
+// because registrant identity is missing, dropping contacts held only in
+// registryData would mean paying a provider and still failing at the one job it
+// was called for.
+func TestWhoisXMLResolver_TakesContactsFromRegistryData(t *testing.T) {
+	r := newWhoisXMLTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+		  "WhoisRecord": {
+		    "registryData": {
+		      "domainName": "example.co.kr",
+		      "createdDate": "2003-04-17T00:00:00Z",
+		      "registrarName": "Registry Registrar",
+		      "nameServers": {"hostNames": ["NS1.EXAMPLE.CO.KR"]},
+		      "registrant": {
+		        "name": "Registry Registrant",
+		        "organization": "Registry Org",
+		        "email": "reg@example.co.kr",
+		        "countryCode": "KR"
+		      },
+		      "administrativeContact": {"organization": "Registry Admin Org"}
+		    }
+		  }
+		}`))
+	})
+
+	result, err := r.Lookup(context.Background(), "example.co.kr")
+	require.NoError(t, err)
+
+	assert.Equal(t, "Registry Org", result.Registrant.Organization,
+		"the registrant must be taken from registryData when the top-level record has none")
+	assert.Equal(t, "Registry Registrant", result.Registrant.Name)
+	assert.Equal(t, "reg@example.co.kr", result.Registrant.Email)
+	assert.Equal(t, "KR", result.Registrant.Country)
+	assert.Equal(t, "Registry Admin Org", result.Admin.Organization)
+	assert.True(t, result.HasRegistrant(),
+		"a record satisfying the trigger condition is the point of the fallback")
+
+	assert.Equal(t, "Registry Registrar", result.Registrar)
+	assert.Equal(t, "2003-04-17T00:00:00Z", result.Created)
+	assert.Equal(t, []string{"NS1.EXAMPLE.CO.KR"}, result.NameServers)
+	assert.Equal(t, []string{ProviderWhoisXML}, result.Sources,
+		"both halves came from one provider, so Sources must not double up")
+}
+
+// TestWhoisXMLResolver_TopLevelContactsWinOverRegistryData: registrar-level data
+// is the more specific record, so registryData only fills gaps.
+func TestWhoisXMLResolver_TopLevelContactsWinOverRegistryData(t *testing.T) {
+	r := newWhoisXMLTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+		  "WhoisRecord": {
+		    "domainName": "example.com",
+		    "registrant": {"organization": "Registrar Level Org"},
+		    "registryData": {
+		      "domainName": "example.com",
+		      "registrant": {"organization": "Registry Level Org", "email": "fill@example.com"}
+		    }
+		  }
+		}`))
+	})
+
+	result, err := r.Lookup(context.Background(), "example.com")
+	require.NoError(t, err)
+
+	assert.Equal(t, "Registrar Level Org", result.Registrant.Organization)
+	assert.Equal(t, "fill@example.com", result.Registrant.Email, "gaps are still filled")
 }
 
 // TestWhoisXMLResolver_FillsFromRegistryData: reserved and thin-registry

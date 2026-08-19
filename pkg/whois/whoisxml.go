@@ -167,34 +167,49 @@ func (r *WhoisXMLResolver) Lookup(ctx context.Context, domain string) (Result, e
 	}
 
 	rec := wx.WhoisRecord
-	if rec.RegistryData != nil {
-		rec.fillFrom(*rec.RegistryData)
+	registry := rec.RegistryData
+
+	// Both records may carry the verdict and the domain name, so read them
+	// across the pair.
+	recordedDomain, dataErr := rec.DomainName, rec.DataError
+	if registry != nil {
+		recordedDomain = cmp.Or(recordedDomain, registry.DomainName)
+		dataErr = cmp.Or(dataErr, registry.DataError)
 	}
 
-	if rec.DataError == dataErrorMissingWhois || rec.DomainName == "" {
-		// Answered, but holds nothing usable. Deliberately not reported as
-		// Unregistered: absent data is weaker evidence than a registry saying
-		// the domain does not exist, and a wrong Unregistered would mark a live
-		// domain dead.
+	if dataErr == dataErrorMissingWhois {
+		// WhoisXML documents this as "domain is not registered; no need to retry
+		// fetching the data", so it is a verdict rather than a gap.
+		//
+		// Reporting it is safe despite coming from a fallback: Lookup discards an
+		// Unregistered result from the route whenever RDAP or TCP-43 already
+		// returned a record, so this cannot overwrite better evidence. It is only
+		// believed when nothing else resolved the domain at all.
+		return Result{Domain: domain, Unregistered: true}, nil
+	}
+
+	if recordedDomain == "" {
+		// Answered, but holds nothing usable — the route should continue.
 		return Result{}, nil
 	}
 
-	return mapWhoisXMLToResult(domain, rec), nil
-}
-
-// fillFrom copies fields from the registry-level record into any the
-// registrar-level record left empty.
-func (rec *whoisXMLRecord) fillFrom(other whoisXMLRecord) {
-	rec.DomainName = cmp.Or(rec.DomainName, other.DomainName)
-	rec.CreatedDate = cmp.Or(rec.CreatedDate, other.CreatedDate)
-	rec.UpdatedDate = cmp.Or(rec.UpdatedDate, other.UpdatedDate)
-	rec.ExpiresDate = cmp.Or(rec.ExpiresDate, other.ExpiresDate)
-	rec.RegistrarName = cmp.Or(rec.RegistrarName, other.RegistrarName)
-	rec.WhoisServer = cmp.Or(rec.WhoisServer, other.WhoisServer)
-	rec.Status = cmp.Or(rec.Status, other.Status)
-	if len(rec.NameServers.HostNames) == 0 {
-		rec.NameServers = other.NameServers
+	// WhoisXML splits data across the registrar-level record and the
+	// registry-level one, documents them as having "almost identical data
+	// structures", and recommends looking "under both WhoisRecord and
+	// registryData when searching for a piece of information (e.g. registrant,
+	// createdDate)". Most ccTLDs populate only registryData — and ccTLDs are the
+	// bulk of the coverage gap this fallback exists to close — so both are mapped
+	// and merged. Merging whole Results rather than copying selected fields also
+	// means contacts are carried across, which is the reason the fallback was
+	// consulted in the first place.
+	result := mapWhoisXMLToResult(domain, rec)
+	if registry != nil {
+		result.Merge(mapWhoisXMLToResult(domain, *registry))
 	}
+	// Merge accumulates Sources, but both halves came from one provider.
+	result.Sources = []string{ProviderWhoisXML}
+
+	return result, nil
 }
 
 func mapWhoisXMLToResult(domain string, rec whoisXMLRecord) Result {

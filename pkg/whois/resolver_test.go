@@ -290,3 +290,67 @@ func TestDefaultFallbackOrder(t *testing.T) {
 		[]string{ProviderWhoxy, ProviderWhoisFreaks, ProviderWhoisXML},
 		DefaultFallbackOrder())
 }
+
+// TestFillGapsFromFallback_SkipsWhenRegistrantPresent is the cost guarantee for
+// the gap-fill path: a result that already identifies its registrant must not
+// consult a paid provider at all.
+func TestFillGapsFromFallback_SkipsWhenRegistrantPresent(t *testing.T) {
+	provider := answering(ProviderWhoxy)
+	result := Result{Domain: "example.com", Registrant: Contact{Organization: "Example Corp"}}
+
+	fillGapsFromFallback(context.Background(), []Resolver{provider}, "example.com", &result)
+
+	assert.Zero(t, provider.calls, "no provider should be billed when nothing is missing")
+	assert.Equal(t, "Example Corp", result.Registrant.Organization)
+}
+
+func TestFillGapsFromFallback_FillsMissingRegistrant(t *testing.T) {
+	provider := &fakeResolver{
+		name: ProviderWhoisXML,
+		result: Result{
+			Domain:     "example.com",
+			Registrant: Contact{Organization: "Found By Fallback"},
+			Expiration: "2027-08-13T04:00:00Z",
+			Sources:    []string{ProviderWhoisXML},
+		},
+	}
+	result := Result{Domain: "example.com", Registrar: "Original", Sources: []string{"rdap"}}
+
+	fillGapsFromFallback(context.Background(), []Resolver{provider}, "example.com", &result)
+
+	assert.Equal(t, 1, provider.calls)
+	assert.Equal(t, "Found By Fallback", result.Registrant.Organization)
+	assert.Equal(t, "2027-08-13T04:00:00Z", result.Expiration)
+	assert.Equal(t, "Original", result.Registrar, "existing fields survive")
+	assert.Equal(t, []string{"rdap", ProviderWhoisXML}, result.Sources)
+}
+
+// TestFallbackUnregisteredNeverOverwritesAResolvedRecord: RDAP or TCP-43 already
+// returned a record, so a fallback provider reporting the domain as unregistered
+// is contradicting better evidence. Believing it would mark a live domain dead —
+// and in Guard that verdict is persisted as a cacheable success, so it sticks.
+func TestFallbackUnregisteredNeverOverwritesAResolvedRecord(t *testing.T) {
+	provider := &fakeResolver{
+		name:   ProviderWhoisXML,
+		result: Result{Domain: "example.com", Unregistered: true},
+	}
+	result := Result{Domain: "example.com", Registrar: "Original", Sources: []string{"rdap"}}
+
+	fillGapsFromFallback(context.Background(), []Resolver{provider}, "example.com", &result)
+
+	assert.Equal(t, 1, provider.calls)
+	assert.False(t, result.Unregistered, "a resolved record must not be marked unregistered")
+	assert.Equal(t, "Original", result.Registrar)
+	assert.Equal(t, []string{"rdap"}, result.Sources, "a discarded verdict adds no provenance")
+}
+
+// TestFillGapsFromFallback_EmptyRouteIsSafe: with no commercial fallback
+// configured, a registrant-less result is returned as-is rather than erroring.
+func TestFillGapsFromFallback_EmptyRouteIsSafe(t *testing.T) {
+	result := Result{Domain: "example.com", Registrar: "Original"}
+
+	fillGapsFromFallback(context.Background(), nil, "example.com", &result)
+
+	assert.Equal(t, "Original", result.Registrar)
+	assert.False(t, result.HasRegistrant())
+}

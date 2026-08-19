@@ -110,16 +110,7 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 	applyISOCILFallback(&result, tcp43Raw)
 	result.ScrubContacts()
 
-	// If prior sources left registrant gaps, walk the route to fill them. An
-	// "unregistered" verdict is ignored here: RDAP or TCP-43 already returned a
-	// record, so a provider claiming the domain does not exist is contradicting
-	// better evidence and must not overwrite it.
-	if !result.HasRegistrant() {
-		if fbResult, ok, _ := runFallbacks(ctx, resolvers, domain); ok && !fbResult.Unregistered {
-			fbResult.ScrubContacts()
-			result.Merge(fbResult)
-		}
-	}
+	fillGapsFromFallback(ctx, resolvers, domain, &result)
 
 	return result, nil
 }
