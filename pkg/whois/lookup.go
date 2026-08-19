@@ -97,9 +97,8 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 
 	// If both prior legs failed, walk the fallback route before giving up.
 	if rdapErr != nil && tcp43Err != nil {
-		fbResult, ok, fbErr := runFallbacks(ctx, resolvers, domain)
+		fbResult, ok, fbErr := resolveViaFallbackOnly(ctx, resolvers, domain)
 		if ok {
-			fbResult.ScrubContacts()
 			return fbResult, nil
 		}
 		return Result{}, fmt.Errorf("whois: all methods failed for %s: %w", domain,

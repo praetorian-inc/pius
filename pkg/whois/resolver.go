@@ -117,6 +117,20 @@ func defaultResolvers(httpClient *http.Client) []Resolver {
 	return resolvers
 }
 
+// resolveViaFallbackOnly walks the route when neither free protocol produced
+// anything, so the answer has to come from a commercial provider or not at all.
+//
+// Unlike fillGapsFromFallback this does believe an Unregistered verdict: nothing
+// else resolved the domain, so there is no better evidence to contradict.
+func resolveViaFallbackOnly(ctx context.Context, resolvers []Resolver, domain string) (Result, bool, error) {
+	res, ok, err := runFallbacks(ctx, resolvers, domain)
+	if !ok {
+		return Result{}, false, err
+	}
+	res.ScrubContacts()
+	return res, true, nil
+}
+
 // fillGapsFromFallback consults the route when the free-protocol result lacks
 // registrant identity, merging in the first usable answer.
 //
@@ -159,6 +173,13 @@ func fillGapsFromFallback(ctx context.Context, resolvers []Resolver, domain stri
 func runFallbacks(ctx context.Context, resolvers []Resolver, domain string) (Result, bool, error) {
 	var errs []error
 	for _, r := range resolvers {
+		// A cancelled context will fail every remaining provider for the same
+		// reason, so stop rather than generating one identical error per provider.
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+
 		res, err := r.Lookup(ctx, domain)
 		if err != nil {
 			if errors.Is(err, ErrNoCredential) {

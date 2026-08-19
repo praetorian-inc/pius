@@ -329,3 +329,21 @@ func TestSplitWhoisXMLStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestWhoisXMLResolver_OtherErrorCodesAreReported: WhoisXML reports every API
+// error the same way — an ErrorMessage envelope with HTTP 200. Checking the
+// decoded envelope rather than one known code means an invalid key surfaces as a
+// failure instead of unmarshalling into an empty record and being silently
+// skipped as "this provider has nothing".
+func TestWhoisXMLResolver_OtherErrorCodesAreReported(t *testing.T) {
+	r := newWhoisXMLTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ErrorMessage":{"errorCode":"AUTHENTICATE_01","msg":"Invalid API key"}}`))
+	})
+
+	_, err := r.Lookup(context.Background(), "example.com")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "AUTHENTICATE_01")
+	assert.Contains(t, err.Error(), "Invalid API key")
+}

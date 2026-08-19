@@ -354,3 +354,77 @@ func TestFillGapsFromFallback_EmptyRouteIsSafe(t *testing.T) {
 	assert.Equal(t, "Original", result.Registrar)
 	assert.False(t, result.HasRegistrant())
 }
+
+// TestResolveViaFallbackOnly covers the branch taken when neither RDAP nor
+// TCP-43 produced anything, so the route is the only remaining source.
+func TestResolveViaFallbackOnly(t *testing.T) {
+	t.Run("returns the first answer with contacts scrubbed", func(t *testing.T) {
+		provider := &fakeResolver{
+			name: ProviderWhoisFreaks,
+			result: Result{
+				Domain: "example.com",
+				// A privacy placeholder must not survive into the result.
+				Registrant: Contact{Organization: "REDACTED FOR PRIVACY", Name: "Jane Doe"},
+				Sources:    []string{ProviderWhoisFreaks},
+			},
+		}
+
+		res, ok, err := resolveViaFallbackOnly(context.Background(),
+			[]Resolver{provider}, "example.com")
+
+		require.True(t, ok)
+		require.NoError(t, err)
+		assert.Empty(t, res.Registrant.Organization, "privacy placeholders should be scrubbed")
+		assert.Equal(t, "Jane Doe", res.Registrant.Name, "real values survive scrubbing")
+	})
+
+	t.Run("believes an unregistered verdict when nothing else resolved", func(t *testing.T) {
+		provider := &fakeResolver{
+			name:   ProviderWhoisXML,
+			result: Result{Domain: "gone.example", Unregistered: true},
+		}
+
+		res, ok, err := resolveViaFallbackOnly(context.Background(),
+			[]Resolver{provider}, "gone.example")
+
+		require.True(t, ok)
+		require.NoError(t, err)
+		assert.True(t, res.Unregistered,
+			"with no competing evidence, a provider's verdict stands")
+	})
+
+	t.Run("reports every reason when the route is exhausted", func(t *testing.T) {
+		res, ok, err := resolveViaFallbackOnly(context.Background(),
+			[]Resolver{failing(ProviderWhoxy), unkeyed(ProviderWhoisXML)}, "example.com")
+
+		assert.False(t, ok)
+		assert.Equal(t, Result{}, res)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "whoxy unavailable")
+		assert.ErrorIs(t, err, ErrNoCredential)
+	})
+
+	t.Run("is a no-op with no route configured", func(t *testing.T) {
+		_, ok, err := resolveViaFallbackOnly(context.Background(), nil, "example.com")
+		assert.False(t, ok)
+		assert.NoError(t, err)
+	})
+}
+
+// TestRunFallbacks_StopsOnCancelledContext: a cancelled context fails every
+// remaining provider identically, so continuing only produces duplicate errors
+// and log noise.
+func TestRunFallbacks_StopsOnCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	first := answering(ProviderWhoxy)
+	second := answering(ProviderWhoisFreaks)
+
+	_, ok, err := runFallbacks(ctx, []Resolver{first, second}, "example.com")
+
+	assert.False(t, ok)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, first.calls, "no provider should be consulted once the context is done")
+	assert.Zero(t, second.calls)
+}

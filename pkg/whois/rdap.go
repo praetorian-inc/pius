@@ -176,4 +176,3 @@ func extractAddressFromVCard(vcard *rdap.VCard) (country, province, city string)
 	}
 	return country, province, city
 }
-
