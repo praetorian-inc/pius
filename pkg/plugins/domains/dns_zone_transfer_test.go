@@ -56,6 +56,10 @@ func TestDNSZoneTransferPlugin_Run_Success(t *testing.T) {
 					Hdr: dns.RR_Header{Name: "mail.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
 					A:   net.ParseIP("93.184.216.35"),
 				},
+				&dns.A{
+					Hdr: dns.RR_Header{Name: "outside.example.net.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+					A:   net.ParseIP("192.0.2.1"),
+				},
 				&dns.NS{
 					Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 3600},
 					Ns:  "ns1.example.com.",
@@ -126,6 +130,7 @@ func TestDNSZoneTransferPlugin_Run_Success(t *testing.T) {
 	}
 	assert.True(t, names["www.example.com"])
 	assert.True(t, names["mail.example.com"])
+	assert.False(t, names["outside.example.net"])
 }
 
 func TestExtractHostname_AllRecordTypes(t *testing.T) {

@@ -73,6 +73,87 @@ type Input struct {
 	Meta map[string]string
 }
 
+// Reference is display-only source data supporting confidence evidence. Type
+// tells consumers how to render Data without requiring every plugin to share a
+// source-specific schema.
+type Reference struct {
+	Label string `json:"label"`
+	Type  string `json:"type"`
+	Data  any    `json:"data"`
+}
+
+const (
+	ReferenceTypeURL          = "url"
+	ReferenceTypeJSON         = "json"
+	ReferenceTypeHTTPExchange = "http_exchange"
+	ReferenceTypeRDAP         = "rdap"
+	ReferenceTypeRPSL         = "rpsl"
+	ReferenceTypeTLS          = "tls_certificate"
+	ReferenceTypeWHOIS        = "whois"
+)
+
+type URLReferenceData struct {
+	URL string `json:"url"`
+}
+
+type LabeledURLReferenceData struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
+type URLCollectionReferenceData struct {
+	URLs []LabeledURLReferenceData `json:"urls"`
+}
+
+type HTTPRequestReference struct {
+	Method string `json:"method"`
+	URL    string `json:"url"`
+	Body   any    `json:"body,omitempty"`
+}
+
+type HTTPExchangeReference struct {
+	Request  HTTPRequestReference `json:"request"`
+	Response any                  `json:"response"`
+}
+
+type RDAPReferenceData struct {
+	Domain   string `json:"domain,omitempty"`
+	Response any    `json:"response"`
+}
+
+type RPSLReferenceData struct {
+	Record     string `json:"record"`
+	NetworkURL string `json:"network_url,omitempty"`
+}
+
+type WHOISReferenceData struct {
+	Query         string `json:"query,omitempty"`
+	Domain        string `json:"domain,omitempty"`
+	WHOISServer   string `json:"whois_server,omitempty"`
+	WHOISResponse string `json:"whois_response"`
+}
+
+// URLReference constructs a reference to a public source record.
+func URLReference(label, url string) *Reference {
+	return &Reference{Label: label, Type: ReferenceTypeURL, Data: URLReferenceData{URL: url}}
+}
+
+func URLCollectionReference(label string, urls []LabeledURLReferenceData) *Reference {
+	return &Reference{Label: label, Type: ReferenceTypeJSON, Data: URLCollectionReferenceData{URLs: urls}}
+}
+
+// NewHTTPExchangeReference constructs a credential-free HTTP exchange reference.
+func NewHTTPExchangeReference(label, method, url string, requestBody, response any) *Reference {
+	return &Reference{
+		Label: label,
+		Type:  ReferenceTypeHTTPExchange,
+		Data: HTTPExchangeReference{
+			Request:  HTTPRequestReference{Method: method, URL: url, Body: requestBody},
+			Response: response,
+		},
+	}
+}
+
 // Confidence is a single piece of scored, explained evidence supporting a
 // finding. Entries are additive: a finding's total confidence is the sum of its
 // entry scores, capped at 100 (see TotalConfidence).
@@ -83,6 +164,10 @@ type Confidence struct {
 	// Justification explains, in human-readable terms, why this evidence
 	// supports the finding.
 	Justification string `json:"justification"`
+
+	// Reference contains the source material a user can inspect to verify the
+	// justification. Evidence without useful source material leaves this nil.
+	Reference *Reference `json:"reference,omitempty"`
 }
 
 // Finding represents a single discovered asset or intermediate result.

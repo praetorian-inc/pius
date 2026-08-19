@@ -42,6 +42,7 @@ func tcp43Lookup(ctx context.Context, domain string) (Result, string, error) {
 
 	result := mapParsedToResult(domain, parsed)
 	result.WhoisServer = server
+	result.WHOISResponse = raw
 	return result, raw, nil
 }
 

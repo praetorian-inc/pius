@@ -18,7 +18,9 @@ import (
 const maxWhoxyPages = 100
 
 func init() {
-	plugins.Register("whoxy-reverse-whois", func() plugins.Plugin { return &WhoxyReverseWhoisPlugin{client: client.New()} })
+	plugins.Register("whoxy-reverse-whois", func() plugins.Plugin {
+		return NewWhoxyReverseWhoisPlugin(client.New(), os.Getenv("WHOXY_API_KEY"))
+	})
 }
 
 // WhoxyReverseWhoisPlugin discovers related domains via Whoxy reverse WHOIS.
@@ -75,8 +77,6 @@ type whoxyQuery struct {
 }
 
 func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	apiKey := p.resolveAPIKey()
-
 	// Build the set of queries from the input. Whoxy distinguishes company
 	// names (&company=) from person names (&name=) from email (&email=).
 	queries := buildWhoxyQueries(input)
@@ -91,7 +91,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		domains, err := p.paginateQuery(ctx, apiKey, q)
+		domains, err := p.paginateQuery(ctx, p.resolveAPIKey(), q)
 		if err != nil {
 			slog.Warn("whoxy-reverse-whois: query failed", "param", q.param, "value", q.value, "error", err)
 			continue

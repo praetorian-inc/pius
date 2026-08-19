@@ -213,6 +213,7 @@ org:            ORG-ACME1-AP
 `)
 	p := newRPSLPlugin(rpslConfig{
 		name: "apnic", cacheURL: cacheURL, metaKey: "apnic_handles", registry: "apnic",
+		networkReferenceBaseURL: "https://rdap.apnic.net/ip/",
 	}, pluginCache)
 
 	findings, err := p.Run(context.Background(), plugins.Input{
@@ -250,6 +251,8 @@ org:            ORG-ACME1-AP
 	assert.Contains(t, justification, "198.51.100.0 - 198.51.100.255")
 	assert.NotContains(t, justification, "netname")
 	assert.Equal(t, `APNIC RPSL records range "198.51.100.0 - 198.51.100.255" under organization handle "ORG-ACME1-AP"; the range contains CIDR "198.51.100.0/24"`, justification)
+	assertRPSLReference(t, withoutNetname.Confidences[0],
+		"https://rdap.apnic.net/ip/198.51.100.0/24")
 }
 
 // ── Local-file construction (the embedded path) ───────────────────────────────
@@ -318,6 +321,8 @@ func TestNewAPNICPlugin_ReadsIPv6FromLocalFile(t *testing.T) {
 	assert.Equal(t, "2001:db8::/32", findings[0].Value)
 	assert.Equal(t, `APNIC RPSL records prefix "2001:db8::/32" under organization handle "ORG-ACME1-AP" with netname "ACME-AP-V6"; the prefix contains CIDR "2001:db8::/32"`,
 		findings[0].Confidences[0].Justification)
+	assertRPSLReference(t, findings[0].Confidences[0],
+		"https://rdap.apnic.net/ip/2001:db8::/32")
 }
 
 // APNIC publishes the two address families as separate files, so covering IPv6
@@ -361,9 +366,24 @@ org:            ORG-ACME1-AFRINIC
 	require.Len(t, findings, 2)
 	assert.Equal(t, "196.216.2.0/24", findings[0].Value)
 	assert.Equal(t, "2c0f:fb50::/32", findings[1].Value)
-	for _, finding := range findings {
-		assert.Equal(t, "afrinic", finding.Data["registry"])
+	expectedReferences := []string{
+		"https://rdap.afrinic.net/rdap/ip/196.216.2.0/24",
+		"https://rdap.afrinic.net/rdap/ip/2c0f:fb50::/32",
 	}
+	for i, finding := range findings {
+		assert.Equal(t, "afrinic", finding.Data["registry"])
+		assertRPSLReference(t, finding.Confidences[0], expectedReferences[i])
+	}
+}
+
+func assertRPSLReference(t *testing.T, confidence plugins.Confidence, expectedURL string) {
+	t.Helper()
+	require.NotNil(t, confidence.Reference)
+	assert.Equal(t, plugins.ReferenceTypeRPSL, confidence.Reference.Type)
+	data, ok := confidence.Reference.Data.(plugins.RPSLReferenceData)
+	require.True(t, ok)
+	assert.Equal(t, expectedURL, data.NetworkURL)
+	assert.NotEmpty(t, data.Record)
 }
 
 // The whole point of the injected-path mode: a missing file is an error, never

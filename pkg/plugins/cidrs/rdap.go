@@ -79,7 +79,12 @@ func (p *rdapPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Fi
 				},
 			}
 			for _, confidence := range result.confidences {
-				plugins.AddConfidence(&finding, confidence.Score, confidence.Justification)
+				if confidence.Reference == nil {
+					plugins.AddConfidence(&finding, confidence.Score, confidence.Justification, nil)
+					continue
+				}
+				plugins.AddConfidence(&finding, confidence.Score,
+					confidence.Justification, confidence.Reference)
 			}
 			findings = append(findings, finding)
 		}
@@ -105,23 +110,33 @@ func (p *rdapPlugin) fetchCIDRs(ctx context.Context, handle string) ([]rdapCIDR,
 	for _, network := range resp.Networks {
 		for _, cidr0 := range network.Cidr0Cidrs {
 			if cidr0.V4Prefix != "" && cidr0.Length > 0 {
-				cidrs = append(cidrs, p.newRDAPCIDR(handle, fmt.Sprintf("%s/%d", cidr0.V4Prefix, cidr0.Length)))
+				cidrs = append(cidrs, p.newRDAPCIDR(handle,
+					fmt.Sprintf("%s/%d", cidr0.V4Prefix, cidr0.Length), reqURL, body))
 			}
 			if cidr0.V6Prefix != "" && cidr0.Length > 0 {
-				cidrs = append(cidrs, p.newRDAPCIDR(handle, fmt.Sprintf("%s/%d", cidr0.V6Prefix, cidr0.Length)))
+				cidrs = append(cidrs, p.newRDAPCIDR(handle,
+					fmt.Sprintf("%s/%d", cidr0.V6Prefix, cidr0.Length), reqURL, body))
 			}
 		}
 	}
 	return cidrs, nil
 }
 
-func (p *rdapPlugin) newRDAPCIDR(handle, value string) rdapCIDR {
+func (p *rdapPlugin) newRDAPCIDR(handle, value, reqURL string, response json.RawMessage) rdapCIDR {
 	return rdapCIDR{
 		value: value,
 		confidences: []plugins.Confidence{{
 			Score: confRDAPHandleNetwork,
 			Justification: fmt.Sprintf("%s RDAP records CIDR %q under organization handle %q",
 				strings.ToUpper(p.Name()), value, handle),
+			Reference: &plugins.Reference{
+				Label: "RDAP entity response",
+				Type:  plugins.ReferenceTypeRDAP,
+				Data: plugins.HTTPExchangeReference{
+					Request:  plugins.HTTPRequestReference{Method: "GET", URL: reqURL},
+					Response: response,
+				},
+			},
 		}},
 	}
 }

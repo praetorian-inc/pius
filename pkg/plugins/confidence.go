@@ -17,21 +17,12 @@ const (
 	ConfidenceLow = 35
 )
 
-// AddConfidence appends one piece of scored, justified evidence to f.
-//
-// Use this in plugins that perform name-to-identifier resolution where the
-// mapping might be ambiguous (e.g., org name → GitHub org, org name → WHOIS
-// registrant). Deterministic lookups (RDAP handle → CIDRs) should not use this.
-//
-// Call it once per independently observed signal rather than once with a
-// pre-summed score: the evidence list is what Guard surfaces to a human, so a
-// single opaque entry throws away exactly the information it exists to carry.
-// AddConfidence clamps score to 0-100, always appends, and never materializes
-// the total.
-func AddConfidence(f *Finding, score int, justification string) {
+// AddConfidence appends one piece of scored, justified evidence to f. Reference may be nil.
+func AddConfidence(f *Finding, score int, justification string, reference *Reference) {
 	f.Confidences = append(f.Confidences, Confidence{
 		Score:         max(0, min(score, 100)),
 		Justification: justification,
+		Reference:     reference,
 	})
 }
 

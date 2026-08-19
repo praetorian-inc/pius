@@ -425,6 +425,9 @@ func TestApolloPlugin_Run_DomainQueryJustification(t *testing.T) {
 		assert.Equal(t, 85, f.Confidences[0].Score)
 		assert.Contains(t, f.Confidences[0].Justification, "known domain")
 		assert.Contains(t, f.Confidences[0].Justification, "acme.com")
+		assert.Contains(t, f.Confidences[0].Justification, `response field "primary_domain"`)
+		require.NotNil(t, f.Confidences[0].Reference)
+		assert.Equal(t, plugins.ReferenceTypeHTTPExchange, f.Confidences[0].Reference.Type)
 		assert.False(t, plugins.NeedsReview(f))
 	}
 }
@@ -447,6 +450,8 @@ func TestApolloPlugin_Run_OrgNameQueryJustification(t *testing.T) {
 		assert.Equal(t, 70, f.Confidences[0].Score)
 		assert.Contains(t, f.Confidences[0].Justification, "organization-name query")
 		assert.Contains(t, f.Confidences[0].Justification, "Acme Corp")
+		require.NotNil(t, f.Confidences[0].Reference)
+		assert.Equal(t, plugins.ReferenceTypeHTTPExchange, f.Confidences[0].Reference.Type)
 		// 0.70 still clears ConfidenceHigh — the org-name query is de-ranked
 		// relative to a domain query, not pushed into the review band.
 		assert.False(t, plugins.NeedsReview(f))

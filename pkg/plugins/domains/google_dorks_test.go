@@ -483,10 +483,12 @@ func TestGoogleDorks_Run_TwoEvidenceEntries(t *testing.T) {
 	assert.Equal(t, confGoogleDorksSubsidiary, f.Confidences[0].Score)
 	assert.Contains(t, f.Confidences[0].Justification, "Acme Widgets")
 	assert.Contains(t, f.Confidences[0].Justification, "subsidiary")
+	assert.Contains(t, confidenceURL(t, f.Confidences[0]), srv.URL+"/search?")
 
 	assert.Equal(t, confGoogleDorksDomain, f.Confidences[1].Score)
 	assert.Contains(t, f.Confidences[1].Justification, "Acme Widgets")
 	assert.Contains(t, f.Confidences[1].Justification, "acmewidgets.com")
+	assert.Contains(t, confidenceURL(t, f.Confidences[1]), srv.URL+"/search?")
 
 	assert.Equal(t, 55, plugins.TotalConfidence(f))
 	assert.True(t, plugins.NeedsReview(f))

@@ -88,7 +88,7 @@ func (p *GoogleDorksPlugin) googleBase() string {
 // subsidiary is one observation, and a follow-up search resolving that
 // subsidiary to a domain is another. Either can be right while the other is
 // wrong, so they are scored and justified separately.
-func (p *GoogleDorksPlugin) makeFinding(subsidiaryName, domainValue, inputDomain string) plugins.Finding {
+func (p *GoogleDorksPlugin) makeFinding(subsidiaryName, domainValue, inputDomain, discoveryURL, resolveURL string) plugins.Finding {
 	f := plugins.Finding{
 		Type:   plugins.FindingDomain,
 		Value:  domainValue,
@@ -99,9 +99,11 @@ func (p *GoogleDorksPlugin) makeFinding(subsidiaryName, domainValue, inputDomain
 		},
 	}
 	plugins.AddConfidence(&f, confGoogleDorksSubsidiary,
-		fmt.Sprintf("Google Knowledge Graph identifies %q as a subsidiary of the target", subsidiaryName))
+		fmt.Sprintf("Google Knowledge Graph identifies %q as a subsidiary of the target", subsidiaryName),
+		plugins.URLReference("Subsidiary search results", discoveryURL))
 	plugins.AddConfidence(&f, confGoogleDorksDomain,
-		fmt.Sprintf("A search for subsidiary %q resolves to the domain %q", subsidiaryName, domainValue))
+		fmt.Sprintf("A search for subsidiary %q resolves to the domain %q", subsidiaryName, domainValue),
+		plugins.URLReference("Domain search results", resolveURL))
 	return f
 }
 
@@ -203,7 +205,7 @@ func (p *GoogleDorksPlugin) Run(ctx context.Context, input plugins.Input) ([]plu
 		if d := extractOfficialDomain(rDoc.Selection); d != "" {
 			if !seen[d] && !matchesInputDomain(d, inputDomainLower) && !isExcludedDomain(d) {
 				seen[d] = true
-				findings = append(findings, p.makeFinding(name, d, input.Domain))
+				findings = append(findings, p.makeFinding(name, d, input.Domain, searchURL, resolveURL))
 				continue // next subsidiary
 			}
 		}
@@ -216,7 +218,7 @@ func (p *GoogleDorksPlugin) Run(ctx context.Context, input plugins.Input) ([]plu
 				continue
 			}
 			seen[d] = true
-			findings = append(findings, p.makeFinding(name, d, input.Domain))
+			findings = append(findings, p.makeFinding(name, d, input.Domain, searchURL, resolveURL))
 			break // one domain per subsidiary
 		}
 	}

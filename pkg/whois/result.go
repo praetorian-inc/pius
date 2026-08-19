@@ -1,27 +1,32 @@
 // Package whois provides domain and IP registration lookups via RDAP and TCP port 43.
 package whois
 
-import "cmp"
+import (
+	"cmp"
+	"encoding/json"
+)
 
 // Result is the structured WHOIS record for a domain. It is serialized as JSON
 // to the whois/<domain> file in Guard and is designed to be incrementally
 // filled by multiple providers (RDAP, TCP-43, Whoxy, WhoisFreaks, etc.).
 type Result struct {
-	Domain       string   `json:"domain"`
-	Registrar    string   `json:"registrar,omitempty"`
-	Registrant   Contact  `json:"registrant"`
-	Admin        Contact  `json:"admin"`
-	Tech         Contact  `json:"tech"`
-	Billing      Contact  `json:"billing"`
-	Created      string   `json:"created,omitempty"`
-	Updated      string   `json:"updated,omitempty"`
-	Expiration   string   `json:"expiration,omitempty"`
-	NameServers  []string `json:"nameservers,omitempty"`
-	Status       []string `json:"status,omitempty"`
-	DNSSEC       string   `json:"dnssec,omitempty"`
-	WhoisServer  string   `json:"whois_server,omitempty"`
-	Sources      []string `json:"sources,omitempty"`
-	Unregistered bool     `json:"unregistered,omitempty"`
+	Domain        string          `json:"domain"`
+	Registrar     string          `json:"registrar,omitempty"`
+	Registrant    Contact         `json:"registrant"`
+	Admin         Contact         `json:"admin"`
+	Tech          Contact         `json:"tech"`
+	Billing       Contact         `json:"billing"`
+	Created       string          `json:"created,omitempty"`
+	Updated       string          `json:"updated,omitempty"`
+	Expiration    string          `json:"expiration,omitempty"`
+	NameServers   []string        `json:"nameservers,omitempty"`
+	Status        []string        `json:"status,omitempty"`
+	DNSSEC        string          `json:"dnssec,omitempty"`
+	WhoisServer   string          `json:"whois_server,omitempty"`
+	Sources       []string        `json:"sources,omitempty"`
+	RDAPResponse  json.RawMessage `json:"rdap_response,omitempty"`
+	WHOISResponse string          `json:"whois_response,omitempty"`
+	Unregistered  bool            `json:"unregistered,omitempty"`
 }
 
 // Contact holds registration contact information for a single role.
@@ -62,6 +67,10 @@ func (r *Result) Merge(other Result) {
 	r.Expiration = cmp.Or(r.Expiration, other.Expiration)
 	r.DNSSEC = cmp.Or(r.DNSSEC, other.DNSSEC)
 	r.WhoisServer = cmp.Or(r.WhoisServer, other.WhoisServer)
+	if len(r.RDAPResponse) == 0 {
+		r.RDAPResponse = other.RDAPResponse
+	}
+	r.WHOISResponse = cmp.Or(r.WHOISResponse, other.WHOISResponse)
 
 	if len(r.NameServers) == 0 {
 		r.NameServers = other.NameServers

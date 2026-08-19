@@ -178,12 +178,56 @@ func networkPreseedFinding(result whois.NetworkResult, candidate networkPreseedC
 	if len(result.Status) > 0 {
 		finding.Data["allocation_status"] = result.Status
 	}
-	plugins.AddConfidence(&finding, confIPWhoisContact, networkPreseedJustification(result, candidate))
+	addNetworkConfidence(&finding, result, candidate)
 	return finding
 }
 
+func networkReference(result whois.NetworkResult, value string) *plugins.Reference {
+	if len(result.RDAPResponse) > 0 && strutil.ContainsFold(string(result.RDAPResponse), value) {
+		return &plugins.Reference{
+			Label: "Observed IP RDAP response",
+			Type:  plugins.ReferenceTypeRDAP,
+			Data: plugins.HTTPExchangeReference{
+				Request:  plugins.HTTPRequestReference{Method: http.MethodGet, URL: result.RDAPURL},
+				Response: result.RDAPResponse,
+			},
+		}
+	}
+	if !strutil.ContainsFold(result.Raw, value) {
+		return nil
+	}
+	return &plugins.Reference{
+		Label: "Observed IP WHOIS response",
+		Type:  plugins.ReferenceTypeWHOIS,
+		Data: plugins.WHOISReferenceData{
+			Query:         result.Query,
+			WHOISServer:   result.WhoisServer,
+			WHOISResponse: result.Raw,
+		},
+	}
+}
+
+func addNetworkConfidence(finding *plugins.Finding, result whois.NetworkResult, candidate networkPreseedCandidate) {
+	reference := networkReference(result, candidate.value)
+	if reference == nil {
+		plugins.AddConfidence(finding, confIPWhoisContact, networkPreseedJustification(result, candidate), nil)
+
+		return
+	}
+
+	source := protocolServer("IP RDAP", cmp.Or(result.RDAPServer, result.Server))
+	if reference.Type == plugins.ReferenceTypeWHOIS {
+		source = protocolServer("IP WHOIS", cmp.Or(result.WhoisServer, result.Server))
+	}
+	plugins.AddConfidence(finding, confIPWhoisContact,
+		networkPreseedJustificationForSource(source, result, candidate), reference)
+}
+
 func networkPreseedJustification(result whois.NetworkResult, candidate networkPreseedCandidate) string {
-	source := networkResultSource(result)
+	return networkPreseedJustificationForSource(networkResultSource(result), result, candidate)
+}
+
+func networkPreseedJustificationForSource(source string, result whois.NetworkResult, candidate networkPreseedCandidate) string {
 	status := ""
 	if len(candidate.status) > 0 {
 		status = fmt.Sprintf(" with entity status %q", strings.Join(candidate.status, ","))

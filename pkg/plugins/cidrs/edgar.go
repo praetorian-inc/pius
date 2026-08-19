@@ -111,7 +111,16 @@ func findingsFromEDGARResponse(input plugins.Input, resp EDGARResponse) []plugin
 					},
 				}
 				cik := cikForDisplayName(hit, displayNameIndex)
-				plugins.AddConfidence(&finding, confEDGARApparentHandle, edgarJustification(hit, displayName, cik, handle))
+				var references []*plugins.Reference
+				if documentURL := secDocumentURL(hit.ID, cik); documentURL != "" {
+					references = append(references, plugins.URLReference("SEC EDGAR document", documentURL))
+				}
+				justification := edgarJustification(hit, displayName, handle)
+				if len(references) == 0 {
+					plugins.AddConfidence(&finding, confEDGARApparentHandle, justification, nil)
+				} else {
+					plugins.AddConfidence(&finding, confEDGARApparentHandle, justification, references[0])
+				}
 				findings = append(findings, finding)
 			}
 		}
@@ -127,7 +136,7 @@ func cikForDisplayName(hit EDGARHit, displayNameIndex int) string {
 	return hit.Source.CIKs[displayNameIndex]
 }
 
-func edgarJustification(hit EDGARHit, displayName, cik, handle string) string {
+func edgarJustification(hit EDGARHit, displayName, handle string) string {
 	justification := "SEC EDGAR search result"
 	if hit.ID != "" {
 		justification = fmt.Sprintf("SEC EDGAR document %q", hit.ID)
@@ -136,9 +145,6 @@ func edgarJustification(hit EDGARHit, displayName, cik, handle string) string {
 		justification += fmt.Sprintf(" for entity %q", displayName)
 	}
 	justification += fmt.Sprintf(" contains apparent RIR organization handle %q", handle)
-	if documentURL := secDocumentURL(hit.ID, cik); documentURL != "" {
-		justification += fmt.Sprintf(" (%s)", documentURL)
-	}
 	return justification
 }
 

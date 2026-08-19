@@ -38,11 +38,17 @@ type GLEIFPlugin struct {
 	// Per-run enrichment state, set in Run().
 	orgName       string
 	primaryName   string
+	primaryLEI    string
 	candidateRank int
 }
 
 var gleifHeaders = map[string]string{
 	"Accept": "application/json",
+}
+
+type gleifParent struct {
+	lei          string
+	relationship string
 }
 
 func (p *GLEIFPlugin) Name() string { return "gleif" }
@@ -82,17 +88,18 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 
 	p.orgName = input.OrgName
 	p.primaryName = primary.Attributes.Entity.LegalName.Name
+	p.primaryLEI = primary.ID
 	p.candidateRank = candidateRank
 
 	var findings []plugins.Finding
 
 	parentLEIs := p.enrichParents(ctx, primary, &findings)
 
-	if err := p.enrichChildren(ctx, primary.ID, "", "subsidiary", &findings); err != nil {
+	if err := p.enrichChildren(ctx, primary.ID, "", "subsidiary", "direct-parent", &findings); err != nil {
 		return uniqueFindings(findings), err
 	}
-	for _, parentLEI := range parentLEIs {
-		if err := p.enrichChildren(ctx, parentLEI, primary.ID, "sibling", &findings); err != nil {
+	for _, parent := range parentLEIs {
+		if err := p.enrichChildren(ctx, parent.lei, primary.ID, "sibling", parent.relationship, &findings); err != nil {
 			return uniqueFindings(findings), err
 		}
 	}
@@ -103,7 +110,7 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 // enrichParents fetches direct and ultimate parent entities, emits findings for
 // each, and returns their LEIs for sibling discovery. Best-effort: errors log
 // and continue.
-func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, findings *[]plugins.Finding) []string {
+func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, findings *[]plugins.Finding) []gleifParent {
 	if !hasParent(primary) {
 		return nil
 	}
@@ -117,18 +124,18 @@ func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, fin
 		return nil
 	}
 
-	parentLEIs := []string{directLEI}
+	parents := []gleifParent{{lei: directLEI, relationship: "direct-parent"}}
 	p.emitRelated(ctx, directLEI, "direct-parent", findings)
 
 	ultimateLEI, err := p.getUltimateParent(ctx, primary.ID)
 	if err != nil {
 		log.Printf("[gleif] ultimate parent failed for %s: %v", primary.ID, err)
 	} else if ultimateLEI != "" && ultimateLEI != directLEI {
-		parentLEIs = append(parentLEIs, ultimateLEI)
+		parents = append(parents, gleifParent{lei: ultimateLEI, relationship: "ultimate-parent"})
 		p.emitRelated(ctx, ultimateLEI, "ultimate-parent", findings)
 	}
 
-	return parentLEIs
+	return parents
 }
 
 // emitRelated fetches a single LEI record and emits a preseed finding.
@@ -138,7 +145,7 @@ func (p *GLEIFPlugin) emitRelated(ctx context.Context, lei, relation string, fin
 		log.Printf("[gleif] %s record failed for %s: %v", relation, lei, err)
 		return
 	}
-	finding := p.recordToPreseed(*record, relation)
+	finding := p.recordToPreseed(*record, relation, relation)
 	if finding.Value != "" {
 		*findings = append(*findings, finding)
 	}
@@ -146,7 +153,7 @@ func (p *GLEIFPlugin) emitRelated(ctx context.Context, lei, relation string, fin
 
 // enrichChildren fetches children of lei, emits findings for each (skipping
 // excludeLEI), and returns a context error if the context is cancelled.
-func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relation string, findings *[]plugins.Finding) error {
+func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relation, primaryRelationship string, findings *[]plugins.Finding) error {
 	children, err := p.getChildren(ctx, lei)
 	if err != nil && ctx.Err() != nil {
 		return ctx.Err()
@@ -155,7 +162,7 @@ func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relat
 		if child.ID == excludeLEI || child.Attributes.Entity.LegalName.Name == "" {
 			continue
 		}
-		*findings = append(*findings, p.recordToPreseed(child, relation))
+		*findings = append(*findings, p.recordToPreseed(child, relation, primaryRelationship))
 	}
 	return nil
 }
@@ -309,7 +316,7 @@ func hasParent(record *leiRecord) bool {
 
 // recordToPreseed converts a GLEIF LEI record to a FindingPreseed with
 // decomposed confidence signals. Reads enrichment state from p.
-func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins.Finding {
+func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation, primaryRelationship string) plugins.Finding {
 	name := record.Attributes.Entity.LegalName.Name
 	f := plugins.Finding{
 		Type:   plugins.FindingPreseed,
@@ -326,34 +333,82 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins
 	}
 
 	// Signal 1: Name resolution quality — how well fuzzycompletions matched.
+	resolutionURL := fmt.Sprintf("%s/fuzzycompletions?field=entity.legalName&q=%s",
+		p.gleifBase(), url.QueryEscape(p.orgName))
+	resolutionReferences := []plugins.LabeledURLReferenceData{{Label: "GLEIF resolution request", URL: resolutionURL}}
+	if recordURL := p.gleifRecordURL(p.primaryLEI); recordURL != "" {
+		resolutionReferences = append(resolutionReferences, plugins.LabeledURLReferenceData{Label: "Resolved GLEIF entity", URL: recordURL})
+	}
 	if p.candidateRank == 0 {
 		plugins.AddConfidence(&f, 15,
-			fmt.Sprintf("Resolved %q to GLEIF entity %q (top candidate)", p.orgName, p.primaryName))
+			fmt.Sprintf("Resolved %q to GLEIF entity %q (top candidate)", p.orgName, p.primaryName),
+			plugins.URLCollectionReference("GLEIF resolution records", resolutionReferences))
 	} else {
 		plugins.AddConfidence(&f, 10,
 			fmt.Sprintf("Resolved %q to GLEIF entity %q (candidate #%d, skipped %d leaf entities)",
-				p.orgName, p.primaryName, p.candidateRank+1, p.candidateRank))
+				p.orgName, p.primaryName, p.candidateRank+1, p.candidateRank),
+			plugins.URLCollectionReference("GLEIF resolution records", resolutionReferences))
 	}
 
 	// Signal 2: Relationship provenance. A top-ranked resolution plus a
 	// registered direct relationship reaches the high-confidence threshold;
 	// indirect siblings and later resolution candidates remain reviewable.
+	references := p.relationshipReferences(record.ID, relation, primaryRelationship)
 	switch relation {
 	case "direct-parent":
 		plugins.AddConfidence(&f, 50,
-			fmt.Sprintf("LEI registry lists %q as direct parent of %q", name, p.primaryName))
+			fmt.Sprintf("GLEIF lists %q as direct parent of %q", name, p.primaryName),
+			plugins.URLCollectionReference("GLEIF relationship records", references))
 	case "ultimate-parent":
 		plugins.AddConfidence(&f, 50,
-			fmt.Sprintf("LEI registry lists %q as ultimate parent of %q", name, p.primaryName))
+			fmt.Sprintf("GLEIF lists %q as ultimate parent of %q", name, p.primaryName),
+			plugins.URLCollectionReference("GLEIF relationship records", references))
 	case "subsidiary":
 		plugins.AddConfidence(&f, 50,
-			fmt.Sprintf("LEI registry lists %q as direct subsidiary of %q", name, p.primaryName))
+			fmt.Sprintf("GLEIF lists %q as direct subsidiary of %q", name, p.primaryName),
+			plugins.URLCollectionReference("GLEIF relationship records", references))
 	case "sibling":
 		plugins.AddConfidence(&f, 30,
-			fmt.Sprintf("Shares corporate parent with %q (discovered via LEI hierarchy)", p.primaryName))
+			fmt.Sprintf("GLEIF entity %q shares a corporate parent with %q", name, p.primaryName),
+			plugins.URLCollectionReference("GLEIF relationship records", references))
 	}
 
 	return f
+}
+
+func (p *GLEIFPlugin) relationshipReferences(relatedLEI, relation, primaryRelationship string) []plugins.LabeledURLReferenceData {
+	references := []plugins.LabeledURLReferenceData{{Label: "Related GLEIF entity", URL: p.gleifRecordURL(relatedLEI)}}
+
+	var relationshipLEI, relationship string
+	switch relation {
+	case "direct-parent", "ultimate-parent":
+		relationshipLEI = p.primaryLEI
+		relationship = relation
+	case "subsidiary", "sibling":
+		relationshipLEI = relatedLEI
+		relationship = "direct-parent"
+	}
+	if relationshipLEI != "" {
+		references = append(references, plugins.LabeledURLReferenceData{
+			Label: "GLEIF relationship record", URL: p.gleifRelationshipURL(relationshipLEI, relationship)})
+	}
+	if relation == "sibling" {
+		references = append(references, plugins.LabeledURLReferenceData{
+			Label: "Target GLEIF relationship record", URL: p.gleifRelationshipURL(p.primaryLEI, primaryRelationship)})
+	}
+	return references
+}
+
+func (p *GLEIFPlugin) gleifRecordURL(lei string) string {
+	if lei == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/lei-records/%s", p.gleifBase(), url.PathEscape(lei))
+}
+
+func (p *GLEIFPlugin) gleifRelationshipURL(lei, relationship string) string {
+	return fmt.Sprintf("%s/lei-records/%s/%s-relationship",
+		p.gleifBase(), url.PathEscape(lei), relationship)
 }
 
 // ── API response types ─────────────────────────────────────────────────────────

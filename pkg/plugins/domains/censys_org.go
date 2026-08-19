@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/cache"
@@ -279,6 +280,11 @@ type censysReverseDNS struct {
 	Names []string `json:"names,omitempty"`
 }
 
+type censysCacheEntry struct {
+	Findings  []plugins.Finding `json:"findings"`
+	Reference plugins.Reference `json:"reference"`
+}
+
 func (p *CensysOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	token := p.token()
 	cacheKey := strings.ToLower("censys-org|" + input.OrgName + "|" + input.Domain)
@@ -286,9 +292,10 @@ func (p *CensysOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	// Check cache first
 	c := p.getCache()
 	if c != nil {
-		var cached []plugins.Finding
+		var cached censysCacheEntry
 		if c.Get(cacheKey, &cached) {
-			return cached, nil
+			attachCensysReference(cached.Findings, &cached.Reference)
+			return cached.Findings, nil
 		}
 	}
 
@@ -335,12 +342,21 @@ func (p *CensysOrgPlugin) Run(ctx context.Context, input plugins.Input) ([]plugi
 	}
 
 	findings := p.extractFindings(input, resp.Result.Hits)
-
+	reference := plugins.NewHTTPExchangeReference("Censys search response", "POST", searchURL, reqBody, json.RawMessage(respBody))
 	if c != nil {
-		c.Set(cacheKey, findings)
+		c.Set(cacheKey, censysCacheEntry{Findings: findings, Reference: *reference})
 	}
+	attachCensysReference(findings, reference)
 
 	return findings, nil
+}
+
+func attachCensysReference(findings []plugins.Finding, reference *plugins.Reference) {
+	for i := range findings {
+		for j := range findings[i].Confidences {
+			findings[i].Confidences[j].Reference = reference
+		}
+	}
 }
 
 // buildCensysQuery constructs a CenQL query searching for hosts whose TLS
@@ -458,11 +474,10 @@ func (p *CensysOrgPlugin) extractFindings(input plugins.Input, hits []censysSear
 				"host_count":    len(hosts),
 			},
 		}
-		// The host count is the only detail in the justification — no certificate
-		// contents, and no host addresses.
-		plugins.AddConfidence(&f, plugins.ConfidenceHigh,
-			fmt.Sprintf("Certificate Subject Organization %q appeared within Censys results for %s on %d distinct hosts, at or above the %d-host threshold",
-				displayName, describeCensysSearchTarget(input), len(hosts), censysMinHosts))
+		justification := fmt.Sprintf("Certificate Subject Organization %q appeared within Censys results for %s on %d distinct hosts, at or above the %d-host threshold",
+			displayName, describeCensysSearchTarget(input), len(hosts), censysMinHosts)
+		plugins.AddConfidence(&f, plugins.ConfidenceHigh, justification,
+			plugins.URLCollectionReference("Censys hosts containing the organization", censysHostReferences(hosts)))
 		findings = append(findings, f)
 	}
 
@@ -471,20 +486,45 @@ func (p *CensysOrgPlugin) extractFindings(input plugins.Input, hits []censysSear
 
 func buildCensysDomainConfidence(input plugins.Input, hostIP, rawDomain, source, field string, score int) plugins.Confidence {
 	domain := normalizeCensysDomain(rawDomain)
+	reference := plugins.URLReference("Censys host record", censysHostURL(hostIP))
 	return plugins.Confidence{
 		Score: score,
 		Justification: fmt.Sprintf("Censys returned host %q for %s; the host's %s field (%s) contained domain %q%s",
 			hostIP, describeCensysSearchTarget(input), source, field, domain, describeCensysORQueryCaveat(input)),
+		Reference: reference,
 	}
 }
 
 func buildCensysCIDRConfidence(input plugins.Input, hostIP, rawCIDR, source, field string) plugins.Confidence {
 	cidr := strings.TrimSpace(rawCIDR)
+	reference := plugins.URLReference("Censys host record", censysHostURL(hostIP))
 	return plugins.Confidence{
 		Score: confCensysNetworkCIDR,
 		Justification: fmt.Sprintf("Censys returned host %q for %s; the host's %s field (%s) contained CIDR %q%s",
 			hostIP, describeCensysSearchTarget(input), source, field, cidr, describeCensysORQueryCaveat(input)),
+		Reference: reference,
 	}
+}
+
+func censysHostURL(hostIP string) string {
+	return "https://search.censys.io/hosts/" + hostIP
+}
+
+func censysHostReferences(hosts map[string]bool) []plugins.LabeledURLReferenceData {
+	ips := make([]string, 0, len(hosts))
+	for ip := range hosts {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+	if len(ips) > censysMinHosts {
+		ips = ips[:censysMinHosts]
+	}
+
+	references := make([]plugins.LabeledURLReferenceData, len(ips))
+	for i, ip := range ips {
+		references[i] = plugins.LabeledURLReferenceData{Label: "Censys host " + ip, URL: censysHostURL(ip)}
+	}
+	return references
 }
 
 func describeCensysSearchTarget(input plugins.Input) string {
@@ -517,7 +557,7 @@ func (p *CensysOrgPlugin) emitDomain(findings *[]plugins.Finding, seen map[strin
 			"field": field,
 		},
 	}
-	plugins.AddConfidence(&newFinding, confidence.Score, confidence.Justification)
+	addCensysConfidence(&newFinding, confidence)
 	*findings = append(*findings, newFinding)
 }
 
@@ -537,8 +577,16 @@ func (p *CensysOrgPlugin) emitCIDR(findings *[]plugins.Finding, seen map[string]
 			"field": field,
 		},
 	}
-	plugins.AddConfidence(&newFinding, confidence.Score, confidence.Justification)
+	addCensysConfidence(&newFinding, confidence)
 	*findings = append(*findings, newFinding)
+}
+
+func addCensysConfidence(finding *plugins.Finding, confidence plugins.Confidence) {
+	if confidence.Reference == nil {
+		plugins.AddConfidence(finding, confidence.Score, confidence.Justification, nil)
+		return
+	}
+	plugins.AddConfidence(finding, confidence.Score, confidence.Justification, confidence.Reference)
 }
 
 // normalizeCensysDomain extends normalizeDomain with Censys-specific cleanup:

@@ -24,6 +24,22 @@ func TestEDGARResponse_ParsesLiveDocumentProvenance(t *testing.T) {
 	assert.Equal(t, "10-K", hit.Source.Form)
 }
 
+func TestEDGARResponse_UsesDisplayNameCIKForArchivePath(t *testing.T) {
+	hit := EDGARHit{ID: "0001968582-26-000713:primary_doc.xml"}
+	hit.Source.DisplayNames = []string{
+		"Alphabet Inc.  (GOOG, GOOGL, GOOGM, GOOGN)  (CIK 0001652044)",
+		"LAWRENCE PAGE TRUST III  (CIK 0001983744)",
+	}
+	hit.Source.CIKs = []string{"0001652044", "0001983744"}
+
+	assert.Equal(t,
+		"https://www.sec.gov/Archives/edgar/data/1652044/000196858226000713/primary_doc.xml",
+		secDocumentURL(hit.ID, cikForDisplayName(hit, 0)))
+	assert.Equal(t,
+		"https://www.sec.gov/Archives/edgar/data/1983744/000196858226000713/primary_doc.xml",
+		secDocumentURL(hit.ID, cikForDisplayName(hit, 1)))
+}
+
 func TestSECDocumentURL_ConstructsDirectArchiveURL(t *testing.T) {
 	assert.Equal(t,
 		"https://www.sec.gov/Archives/edgar/data/1234567/000123456724001234/filing.htm",
@@ -62,8 +78,12 @@ func TestFindingsFromEDGARResponse_AddsScoredLiveDocumentEvidence(t *testing.T) 
 	require.Len(t, finding.Confidences, 1)
 	assert.Equal(t, 55, finding.Confidences[0].Score)
 	assert.Equal(t,
-		`SEC EDGAR document "0001234567-24-001234:filing.htm" for entity "Acme Corp ACME-1  (CIK 0001234567)" contains apparent RIR organization handle "ACME-1" (https://www.sec.gov/Archives/edgar/data/1234567/000123456724001234/filing.htm)`,
+		`SEC EDGAR document "0001234567-24-001234:filing.htm" for entity "Acme Corp ACME-1  (CIK 0001234567)" contains apparent RIR organization handle "ACME-1"`,
 		finding.Confidences[0].Justification)
+	require.NotNil(t, finding.Confidences[0].Reference)
+	assert.Equal(t, "SEC EDGAR document", finding.Confidences[0].Reference.Label)
+	assert.Equal(t, "https://www.sec.gov/Archives/edgar/data/1234567/000123456724001234/filing.htm",
+		confidenceURL(t, finding.Confidences[0]))
 	assert.NotContains(t, finding.Data, "confidence")
 	assert.NotContains(t, finding.Data, "confidences")
 }
@@ -81,6 +101,7 @@ func TestFindingsFromEDGARResponse_IncompleteMetadataOmitsURL(t *testing.T) {
 	assert.Contains(t, justification, "0001234567-24-001234:filing.htm")
 	assert.Contains(t, justification, "Acme Corp ACME-1")
 	assert.NotContains(t, justification, "https://")
+	assert.Nil(t, findings[0].Confidences[0].Reference)
 }
 
 func TestFindingsFromEDGARResponse_DeduplicatesHandlesUsingFirstDocument(t *testing.T) {

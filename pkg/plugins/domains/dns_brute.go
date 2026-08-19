@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	_ "embed"
-	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -17,10 +16,7 @@ import (
 //go:embed wordlists/subdomains.txt
 var defaultWordlist string
 
-const (
-	dnsBruteConcurrency  = 50
-	confDNSBruteResolved = 70
-)
+const dnsBruteConcurrency = 50
 
 // dnsDefaultResolver is the DNS resolver used for wildcard detection and brute-force.
 // It is a var (not const) to allow test overrides.
@@ -132,9 +128,6 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 						"domain": input.Domain,
 					},
 				}
-				plugins.AddConfidence(&finding, confDNSBruteResolved,
-					fmt.Sprintf("Discovered valid DNS subdomain record for %q (from base domain %q) via DNS brute force guessing",
-						fqdn, domain))
 				findings = append(findings, finding)
 			}
 		}(word)

@@ -255,7 +255,9 @@ func TestRDAPResponseServer(t *testing.T) {
 		URL: "https://rdap.example.test/ip/8.8.8.8",
 	}}}
 
-	assert.Equal(t, "rdap.example.test", rdapResponseServer(response))
+	responseURL := rdapResponseURL(response)
+	assert.Equal(t, "https://rdap.example.test/ip/8.8.8.8", responseURL)
+	assert.Equal(t, "rdap.example.test", rdapResponseServer(responseURL))
 }
 
 func TestNetworkContactFromVCard_UsesAddressLabelFallback(t *testing.T) {

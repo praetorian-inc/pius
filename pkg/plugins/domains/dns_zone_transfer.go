@@ -67,8 +67,9 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 		for _, hostname := range records {
 			hostname = normalizeDomain(hostname)
 
-			// Skip the base domain itself, empty, and already-seen
-			if hostname == "" || hostname == domain || seen[hostname] {
+			// AXFR records may point outside the transferred zone. Only record
+			// owners within the requested boundary are discoveries.
+			if hostname == "" || hostname == domain || !matchesDomain(hostname, domain) || seen[hostname] {
 				continue
 			}
 			seen[hostname] = true
@@ -83,9 +84,9 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 					"domain":     input.Domain,
 				},
 			}
-			plugins.AddConfidence(&finding, confDNSZoneTransferAXFR,
-				fmt.Sprintf("Hostname %q was disclosed by authoritative nameserver %q in response to an AXFR request for base domain %q",
-					hostname, ns, domain))
+			plugins.AddConfidence(&finding, confDNSZoneTransferAXFR, fmt.Sprintf("Hostname %q was disclosed by authoritative nameserver %q in response to an AXFR request for base domain %q",
+				hostname, ns, domain), nil)
+
 			findings = append(findings, finding)
 		}
 	}

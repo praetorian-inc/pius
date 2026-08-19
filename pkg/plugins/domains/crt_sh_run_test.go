@@ -42,7 +42,7 @@ func TestCRTShPlugin_ParsesDomains(t *testing.T) {
 		assert.Contains(t, f.Confidences[0].Justification, f.Value)
 		assert.Contains(t, f.Confidences[0].Justification, "example.com")
 		assert.Contains(t, f.Confidences[0].Justification, "Certificate Transparency")
-		assert.Contains(t, f.Confidences[0].Justification, srv.URL+"/?q=example.com&output=json")
+		assert.Equal(t, srv.URL+"/?q=example.com&output=json", confidenceURL(t, f.Confidences[0]))
 		assert.NotContains(t, f.Data, "confidence")
 		assert.NotContains(t, f.Data, "confidences")
 		values = append(values, f.Value)

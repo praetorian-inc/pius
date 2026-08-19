@@ -189,13 +189,11 @@ func TestDoHEnumPlugin_Run_RateLimitRetryReportsSuccessfulEndpoint(t *testing.T)
 		{URL: successfulEndpoint.URL, Name: "successful"},
 	}
 
-	finding, ok := p.queryWithRetry(context.Background(), "www.example.com", rotation)
+	finding, ok := p.queryWithRetry(context.Background(), "example.com", "www.example.com", rotation)
 	require.True(t, ok, "should succeed after retry")
 	assert.Equal(t, "www.example.com", finding.Value)
-	require.Len(t, finding.Confidences, 1)
-	assert.Equal(t, confDoHEnumResolved, finding.Confidences[0].Score)
-	assert.Contains(t, finding.Confidences[0].Justification, finding.Value)
-	assert.Contains(t, finding.Confidences[0].Justification, successfulEndpoint.URL)
+	assert.Equal(t, "example.com", finding.Data["domain"])
+	assert.Empty(t, finding.Confidences)
 	assert.Equal(t, "successful", finding.Data["resolver"])
 	assert.NotContains(t, finding.Data, "confidence")
 	assert.NotContains(t, finding.Data, "confidences")

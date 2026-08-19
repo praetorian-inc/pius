@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -388,7 +389,7 @@ func scoredReverseIPFinding(source, host, ip, method string, input plugins.Input
 			"is_cdn":      isCDN,
 		},
 	}
-	scoreReverseIP(&f, host, input.Domain, input.OrgName, ip, isCDN)
+	scoreReverseIP(&f, host, input.Domain, input.OrgName, ip, method, isCDN)
 	return f, plugins.TotalConfidence(f) >= confReverseIPDiscardFloor
 }
 
@@ -396,28 +397,56 @@ func scoredReverseIPFinding(source, host, ip, method string, input plugins.Input
 // reverse-IP hostname. The known-domain and org-name entries are mutually
 // exclusive: a hostname under the known domain is the same "belongs to the
 // target" claim in a stronger form, so crediting both would double-count it.
-func scoreReverseIP(f *plugins.Finding, hostname, baseDomain, orgName, ip string, isCDN bool) {
+func scoreReverseIP(f *plugins.Finding, hostname, baseDomain, orgName, ip, method string, isCDN bool) {
 	hostname = strings.ToLower(hostname)
 	baseDomain = strings.ToLower(baseDomain)
 	orgName = strings.ToLower(orgName)
 
-	plugins.AddConfidence(f, confReverseIPAssociated,
-		fmt.Sprintf("Hostname %q was associated with the discovered IP %s", hostname, ip))
+	justification := fmt.Sprintf("%s associated hostname %q with discovered IP %s",
+		reverseIPMethodName(method), hostname, ip)
+	if reference := reverseIPReference(method, ip); reference != nil {
+		plugins.AddConfidence(f, confReverseIPAssociated, justification, reference)
+	} else {
+		plugins.AddConfidence(f, confReverseIPAssociated, justification, nil)
+	}
 
 	if !isCDN {
-		plugins.AddConfidence(f, confReverseIPNonCDN,
-			fmt.Sprintf("IP %s is not associated with a known CDN, so the hostname is unlikely to be shared infrastructure", ip))
+		plugins.AddConfidence(f, confReverseIPNonCDN, fmt.Sprintf("IP %s did not match Pius's built-in CDN prefix list, reducing the likelihood that this is shared CDN infrastructure", ip), nil)
+
 	}
 
 	normalizedOrg := strings.ReplaceAll(orgName, " ", "")
 
 	if baseDomain != "" && (hostname == baseDomain || strings.HasSuffix(hostname, "."+baseDomain)) {
-		plugins.AddConfidence(f, confReverseIPKnownDomain,
-			fmt.Sprintf("Hostname %q matches the known target domain %q", hostname, baseDomain))
+		plugins.AddConfidence(f, confReverseIPKnownDomain, fmt.Sprintf("Hostname %q matches the known target domain %q", hostname, baseDomain), nil)
+
 	} else if normalizedOrg != "" && strings.Contains(hostname, normalizedOrg) {
-		plugins.AddConfidence(f, confReverseIPOrgName,
-			fmt.Sprintf("Hostname %q contains the normalized organization name %q", hostname, normalizedOrg))
+		plugins.AddConfidence(f, confReverseIPOrgName, fmt.Sprintf("Hostname %q contains the normalized organization name %q", hostname, normalizedOrg), nil)
+
 	}
+}
+
+func reverseIPMethodName(method string) string {
+	switch method {
+	case "ptr":
+		return "DNS PTR lookup"
+	case "hackertarget":
+		return "HackerTarget reverse-IP lookup"
+	case "viewdns":
+		return "ViewDNS reverse-IP lookup"
+	default:
+		return "Reverse-IP lookup"
+	}
+}
+
+func reverseIPReference(method, ip string) *plugins.Reference {
+	if method != "hackertarget" {
+		return nil
+	}
+	reference := plugins.URLReference(
+		"HackerTarget reverse-IP request",
+		"https://api.hackertarget.com/reverseiplookup/?"+url.Values{"q": {ip}}.Encode())
+	return reference
 }
 
 // Known CDN/cloud provider IP ranges (simplified - common prefixes)

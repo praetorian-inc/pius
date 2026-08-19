@@ -17,12 +17,13 @@ const confRPSLHandleInetnum = 85
 
 // rpslConfig holds per-registry configuration for RPSL plugins.
 type rpslConfig struct {
-	name        string // "apnic" or "afrinic"
-	description string
-	cacheURL    string // cache.APNICInetURL or cache.AFRINICAllURL
-	metaKey     string // "apnic_handles" or "afrinic_handles"
-	registry    string // "apnic" or "afrinic"
-	mode        string // plugins.ModePassive or plugins.ModeActive
+	name                    string // "apnic" or "afrinic"
+	description             string
+	cacheURL                string // cache.APNICInetURL or cache.AFRINICAllURL
+	metaKey                 string // "apnic_handles" or "afrinic_handles"
+	registry                string // "apnic" or "afrinic"
+	networkReferenceBaseURL string
+	mode                    string // plugins.ModePassive or plugins.ModeActive
 }
 
 // rpslPlugin is a Phase 2 CIDR plugin that resolves RIR org handles to CIDR
@@ -140,11 +141,25 @@ func (p *rpslPlugin) findings(input plugins.Input, netblocks []rpslNetblock) []p
 					"description": netblock.description,
 				},
 			}
-			plugins.AddConfidence(&finding, confRPSLHandleInetnum, justification)
+			plugins.AddConfidence(&finding, confRPSLHandleInetnum, justification, &plugins.Reference{
+				Label: strings.ToUpper(p.Name()) + " RPSL netblock",
+				Type:  plugins.ReferenceTypeRPSL,
+				Data: plugins.RPSLReferenceData{
+					Record:     strings.TrimSpace(netblock.record),
+					NetworkURL: p.networkReferenceURL(c),
+				},
+			})
 			findings = append(findings, finding)
 		}
 	}
 	return findings
+}
+
+func (p *rpslPlugin) networkReferenceURL(cidr string) string {
+	if p.cfg.networkReferenceBaseURL == "" {
+		return ""
+	}
+	return p.cfg.networkReferenceBaseURL + cidr
 }
 
 // rpslNetblock is one matched inetnum or inet6num record. A match carries either
@@ -164,6 +179,7 @@ type rpslNetblock struct {
 	netname      string
 	description  string
 	descriptions []string
+	record       string
 }
 
 func (n rpslNetblock) isPrefix() bool { return n.prefix != "" }
@@ -242,6 +258,7 @@ func parseRPSLNetblocks(filePath string, handles []string, organizationName stri
 			keep()
 			continue
 		}
+		current.record += line + "\n"
 
 		switch {
 		case strings.HasPrefix(line, "inetnum:"):

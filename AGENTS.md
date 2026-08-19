@@ -77,7 +77,7 @@ The runner (`pkg/runner/run.go`) executes plugins in phases:
 
 **Domain plugins** (`pkg/plugins/domains/`): Independent (Phase 0) plugins querying various sources (crt.sh, passive DNS, etc.).
 
-**IP plugins** (`pkg/plugins/ips/`): Independent (Phase 0) plugins enriching IP and CIDR inputs from public registration services. IP WHOIS uses RDAP first and falls back to TCP-43 using the original IP when RDAP lacks a useful direct identity.
+**IP plugins** (`pkg/plugins/ips/`): Independent (Phase 0) plugins enriching IP and CIDR inputs from public registration services. IP WHOIS queries both RDAP and TCP-43 using the original IP or CIDR and merges both protocol responses when available.
 
 **Active plugins**: Set `Mode()` to "active". Run only with `--mode active` or `--mode all`.
 
@@ -98,13 +98,15 @@ Use `pkg/client.Client` for HTTP requests. Provides:
 
 ### Confidence Scoring
 
-For name-resolution plugins where mapping may be ambiguous, attach evidence with `plugins.AddConfidence(finding, score, justification)` — **one call per independently observed signal**, never one call carrying a pre-summed score. The evidence list is what Guard surfaces to a human, so a single opaque entry throws away exactly the information it exists to carry.
+For name-resolution plugins where mapping may be ambiguous, attach evidence with `plugins.AddConfidence(finding, score, justification, reference)` — **one call per independently observed signal**, never one call carrying a pre-summed score. The evidence list is what Guard surfaces to a human, so a single opaque entry throws away exactly the information it exists to carry.
 
 **What counts as a separate entry.** The test is whether the signals are independent evidence *of ownership*, not whether they are countable occurrences. `github-org` decomposes into four entries because a blog-domain match, a name-similarity match, a login-token match and repo activity can each be right while the others are wrong. Repeats of one observation do not: `censys-org` scores crossing its 5-host threshold as a single `ConfidenceHigh` entry, and `builtwith` emits one entry listing every matching analytics identifier, because a certificate seen on more hosts and a second tracker on the same marketing stack are more of the same sighting rather than corroboration from a new direction. Watch the arithmetic when deciding — additive entries reach the 100 cap fast (two BuiltWith identifiers would have summed to 120), and capping to full certainty on a repeated signal is worse than one honest entry.
 
 - Confidence scores are integers from 0 to 100. `plugins.AddConfidence` clamps each entry to that range, and `plugins.TotalConfidence(f)` clamps their sum to the same range. **No entries means 0**, not 100 — absence of evidence is not confidence.
 - `plugins.NeedsReview(f)` is derived, never stored: `len(f.Confidences) == 0 || TotalConfidence(f) < ConfidenceHigh`. It reads off the total, so an unscored finding needs review just like an explicitly-zero one. **It therefore cannot distinguish "never assessed" from "assessed and found wanting"** — anything that must test `len(f.Confidences)` directly. The Guard adapter does, because only an unscored finding may fall back to a downstream default. So does terminal output in `run.go`, which annotates only scored findings: most output comes from plugins that never score, and labelling those `needs-review [confidence:0]` would report an assessment that never happened.
 - Confidence never lives in `Finding.Data`. `Data` is source-specific metadata only.
+- Pass one `*Reference` to `plugins.AddConfidence`, or `nil` when source material is unavailable. Each confidence has at most one serialized reference: a human label, a renderer type, and strongly typed JSON-compatible data.
+- Prefer raw source records or credential-free request/response exchanges over vague links. Never put API keys, authorization headers, cookies, or other credentials in reference data.
 - Entries are summed as integers, so threshold comparisons are exact; `30 + 35` always lands on `ConfidenceHigh` (`65`).
 
 ### Reverse-WHOIS Corroborate-After-Retrieve

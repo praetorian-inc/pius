@@ -6,6 +6,11 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestContainsFold(t *testing.T) {
+	assert.True(t, ContainsFold("Registrant Organization: ACME-CORP", "acme-corp"))
+	assert.False(t, ContainsFold("Registrant Organization: OTHER", "acme-corp"))
+}
+
 // TestJaccardTokenSets pins the Jaccard metric (|A ∩ B| / |A ∪ B|) that org-name
 // corroboration uses (ENG-5172). The load-bearing difference from
 // TokenSimilarity is the containment case: "Praetorian" vs "Praetorian Security"

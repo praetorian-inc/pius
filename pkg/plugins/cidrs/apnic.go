@@ -23,11 +23,12 @@ func init() {
 // caches APNIC's published database. Passing neither source disables the plugin.
 func NewAPNICPlugin(c *cache.Cache, databases ...string) plugins.Plugin {
 	return newRPSLPlugin(rpslConfig{
-		name:        "apnic",
-		description: "APNIC RPSL: resolves org handles to CIDR blocks",
-		cacheURL:    cache.APNICInetURL,
-		metaKey:     "apnic_handles",
-		registry:    "apnic",
-		mode:        plugins.ModePassive,
+		name:                    "apnic",
+		description:             "APNIC RPSL: resolves org handles to CIDR blocks",
+		cacheURL:                cache.APNICInetURL,
+		metaKey:                 "apnic_handles",
+		registry:                "apnic",
+		networkReferenceBaseURL: "https://rdap.apnic.net/ip/",
+		mode:                    plugins.ModePassive,
 	}, c, databases...)
 }

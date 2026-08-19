@@ -282,6 +282,8 @@ func TestCensysOrgPlugin_ExtractFindings_ConfidenceBySource(t *testing.T) {
 			assert.Contains(t, finding.Confidences[0].Justification, "203.0.113.10")
 			assert.Contains(t, finding.Confidences[0].Justification, test.source)
 			assert.Contains(t, finding.Confidences[0].Justification, "Acme Corp")
+			assert.Equal(t, "https://search.censys.io/hosts/203.0.113.10",
+				confidenceURL(t, finding.Confidences[0]))
 			assert.NotContains(t, finding.Data, "confidence")
 			assert.NotContains(t, finding.Data, "confidences")
 			assert.NotContains(t, finding.Data, "justification")
@@ -589,6 +591,15 @@ func TestCensysOrgPlugin_Run_ExtractsDomains(t *testing.T) {
 	var domains, cidrs []string
 	for _, f := range findings {
 		assert.Equal(t, "censys-org", f.Source)
+		for _, confidence := range f.Confidences {
+			require.NotNil(t, confidence.Reference)
+			assert.Equal(t, plugins.ReferenceTypeHTTPExchange, confidence.Reference.Type)
+			encoded, err := json.Marshal(confidence.Reference)
+			require.NoError(t, err)
+			assert.NotContains(t, string(encoded), "test-token")
+			assert.NotContains(t, string(encoded), "Authorization")
+			assert.NotContains(t, string(encoded), "Bearer")
+		}
 		switch f.Type {
 		case plugins.FindingDomain:
 			domains = append(domains, f.Value)
@@ -909,6 +920,10 @@ func TestCensysOrgPlugin_ExtractPreseeds_ThresholdScoresHighConfidence(t *testin
 	assert.Contains(t, preseeds[0].Confidences[0].Justification, "Acme Corp")
 	assert.Contains(t, preseeds[0].Confidences[0].Justification, "acme.com")
 	assert.Contains(t, preseeds[0].Confidences[0].Justification, "5 distinct hosts")
+	references := confidenceReferences(t, preseeds[0].Confidences[0])
+	require.Len(t, references, 5)
+	assert.Equal(t, "https://search.censys.io/hosts/10.0.0.0",
+		referenceURL(t, references[0]))
 	assert.NotContains(t, preseeds[0].Data, "confidence")
 	assert.NotContains(t, preseeds[0].Data, "confidences")
 }

@@ -23,11 +23,12 @@ func init() {
 // caches AFRINIC's published database. Passing neither source disables the plugin.
 func NewAFRINICPlugin(c *cache.Cache, databases ...string) plugins.Plugin {
 	return newRPSLPlugin(rpslConfig{
-		name:        "afrinic",
-		description: "AFRINIC RPSL: resolves org handles to CIDR blocks",
-		cacheURL:    cache.AFRINICAllURL,
-		metaKey:     "afrinic_handles",
-		registry:    "afrinic",
-		mode:        plugins.ModePassive,
+		name:                    "afrinic",
+		description:             "AFRINIC RPSL: resolves org handles to CIDR blocks",
+		cacheURL:                cache.AFRINICAllURL,
+		metaKey:                 "afrinic_handles",
+		registry:                "afrinic",
+		networkReferenceBaseURL: "https://rdap.afrinic.net/rdap/ip/",
+		mode:                    plugins.ModePassive,
 	}, c, databases...)
 }

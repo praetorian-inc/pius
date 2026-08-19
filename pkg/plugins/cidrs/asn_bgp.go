@@ -12,11 +12,6 @@ import (
 
 const confASNBGPAnnouncedPrefix = 85
 
-type ripeRISPrefix struct {
-	cidr     string
-	queryURL string
-}
-
 func init() {
 	plugins.Register("asn-bgp", func() plugins.Plugin {
 		return &ASNBGPPlugin{client: client.New()}
@@ -47,7 +42,9 @@ func (p *ASNBGPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 		return nil, nil
 	}
 
-	prefixes, err := p.fetchFromRIPERIS(ctx, input.ASN)
+	apiURL := fmt.Sprintf("https://stat.ripe.net/data/announced-prefixes/data.json?resource=%s",
+		url.PathEscape(input.ASN))
+	prefixes, response, err := p.fetchFromRIPERIS(ctx, apiURL)
 	if err != nil {
 		return nil, nil // Graceful degradation
 	}
@@ -56,7 +53,7 @@ func (p *ASNBGPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 	for _, prefix := range prefixes {
 		finding := plugins.Finding{
 			Type:   plugins.FindingCIDR,
-			Value:  prefix.cidr,
+			Value:  prefix,
 			Source: "asn-bgp",
 			Data: map[string]any{
 				"asn": input.ASN,
@@ -64,35 +61,34 @@ func (p *ASNBGPPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 			},
 		}
 		plugins.AddConfidence(&finding, confASNBGPAnnouncedPrefix, fmt.Sprintf(
-			"RIPE RIS returned CIDR %q for queried ASN %q (%s)", prefix.cidr, input.ASN, prefix.queryURL))
+			"RIPE RIS returned CIDR %q for queried ASN %q", prefix, input.ASN),
+			plugins.NewHTTPExchangeReference("RIPE RIS announced-prefixes response", "GET", apiURL, nil, response))
 		findings = append(findings, finding)
 	}
 
 	return findings, nil
 }
 
-// fetchFromRIPERIS queries RIPE RIS announced-prefixes API
-func (p *ASNBGPPlugin) fetchFromRIPERIS(ctx context.Context, asn string) ([]ripeRISPrefix, error) {
-	apiURL := fmt.Sprintf("https://stat.ripe.net/data/announced-prefixes/data.json?resource=%s", url.PathEscape(asn))
-
+// fetchFromRIPERIS queries RIPE RIS announced-prefixes API.
+func (p *ASNBGPPlugin) fetchFromRIPERIS(ctx context.Context, apiURL string) ([]string, json.RawMessage, error) {
 	body, err := p.client.Get(ctx, apiURL)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var resp RIPERISResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	var prefixes []ripeRISPrefix
+	var prefixes []string
 	for _, prefix := range resp.Data.Prefixes {
 		if prefix.Prefix != "" {
-			prefixes = append(prefixes, ripeRISPrefix{cidr: prefix.Prefix, queryURL: apiURL})
+			prefixes = append(prefixes, prefix.Prefix)
 		}
 	}
 
-	return prefixes, nil
+	return prefixes, json.RawMessage(body), nil
 }
 
 // RIPERISResponse represents RIPE RIS announced-prefixes API response

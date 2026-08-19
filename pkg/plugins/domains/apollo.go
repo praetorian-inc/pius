@@ -158,14 +158,20 @@ func (p *ApolloPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.
 	// whole response, so every finding carries the same single entry — there is
 	// no second, independent signal here to decompose into.
 	score := 85
-	justification := fmt.Sprintf("Apollo resolved the organization through the known domain %q", input.Domain)
+	queryDescription := fmt.Sprintf("known domain query for %q", input.Domain)
 	if input.Domain == "" {
 		score = 70
-		justification = fmt.Sprintf("Apollo resolved the organization through an organization-name query for %q, which can match a similarly-named company", input.OrgName)
+		queryDescription = fmt.Sprintf("organization-name query for %q, which can match a similarly-named company", input.OrgName)
 	}
 
 	for i := range findings {
-		plugins.AddConfidence(&findings[i], score, justification)
+		field, _ := findings[i].Data["field"].(string)
+		justification := fmt.Sprintf(
+			"Apollo organization enrichment for %s returned %q in response field %q",
+			queryDescription, findings[i].Value, field)
+		reference := plugins.NewHTTPExchangeReference(
+			"Apollo organization enrichment response", "GET", apiURL, nil, json.RawMessage(body))
+		plugins.AddConfidence(&findings[i], score, justification, reference)
 	}
 
 	if c != nil {

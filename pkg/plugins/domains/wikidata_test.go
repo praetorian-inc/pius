@@ -443,6 +443,10 @@ func TestWikidataPlugin_Run_EmitsPlainLanguageEvidence(t *testing.T) {
 			wdPropertySubsidiary,
 		),
 		finding.Confidences[0].Justification)
+	references := confidenceReferences(t, finding.Confidences[0])
+	require.Len(t, references, 2)
+	assert.Equal(t, "https://www.wikidata.org/wiki/Q1", referenceURL(t, references[0]))
+	assert.Equal(t, "https://www.wikidata.org/wiki/Q2", referenceURL(t, references[1]))
 	assert.Equal(t, 5, *requestCount)
 }
 
@@ -616,7 +620,17 @@ func TestWikidataPlugin_Run_CachesCompleteResults(t *testing.T) {
 	require.Len(t, first, 1)
 	require.Len(t, second, 1)
 	assert.Equal(t, first[0].Value, second[0].Value)
-	assert.Equal(t, first[0].Confidences, second[0].Confidences)
+	require.Len(t, first[0].Confidences, 1)
+	require.Len(t, second[0].Confidences, 1)
+	assert.Equal(t, first[0].Confidences[0].Score, second[0].Confidences[0].Score)
+	assert.Equal(t, first[0].Confidences[0].Justification, second[0].Confidences[0].Justification)
+	require.NotNil(t, first[0].Confidences[0].Reference)
+	require.NotNil(t, second[0].Confidences[0].Reference)
+	firstReference, err := json.Marshal(first[0].Confidences[0].Reference)
+	require.NoError(t, err)
+	secondReference, err := json.Marshal(second[0].Confidences[0].Reference)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(firstReference), string(secondReference))
 	assert.Equal(t, first[0].Data["wikidata_id"], second[0].Data["wikidata_id"])
 	assert.Equal(t, 5, *requestCount)
 }

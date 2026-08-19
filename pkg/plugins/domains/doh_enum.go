@@ -26,7 +26,6 @@ const (
 	dohEnumConcurrency    = 50
 	dohEnumChannelBufSize = 1000
 	dohEnumMaxRetries     = 3
-	confDoHEnumResolved   = 70
 )
 
 // dohHTTPDoer abstracts HTTP operations for DoH queries (testability).
@@ -148,7 +147,7 @@ func (p *DoHEnumPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				if finding, ok := p.queryWithRetry(ctx, fqdn, rot); ok {
+				if finding, ok := p.queryWithRetry(ctx, domain, fqdn, rot); ok {
 					select {
 					case resultCh <- finding:
 					case <-ctx.Done():
@@ -205,7 +204,7 @@ func (p *DoHEnumPlugin) detectWildcardDoH(ctx context.Context, domain string, en
 // endpoints on rate-limit (429) or server errors (5xx). Returns (finding, true)
 // when the subdomain exists. rotation[0] is the primary endpoint; subsequent
 // entries are used for retries in order.
-func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, fqdn string, rotation []DoHEndpoint) (plugins.Finding, bool) {
+func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, domain, fqdn string, rotation []DoHEndpoint) (plugins.Finding, bool) {
 	for attempt := 0; attempt < dohEnumMaxRetries; attempt++ {
 		ep := rotation[attempt%len(rotation)]
 		exists, err := p.queryDoH(ctx, fqdn, ep)
@@ -217,12 +216,10 @@ func (p *DoHEnumPlugin) queryWithRetry(ctx context.Context, fqdn string, rotatio
 					Source: "doh-enum",
 					Data: map[string]any{
 						"method":   "doh-enum",
+						"domain":   domain,
 						"resolver": ep.Name,
 					},
 				}
-				plugins.AddConfidence(&finding, confDoHEnumResolved,
-					fmt.Sprintf("Wordlist candidate %q resolved through DNS-over-HTTPS endpoint %q",
-						fqdn, ep.URL))
 				return finding, true
 			}
 			return plugins.Finding{}, false
@@ -283,7 +280,7 @@ func isRetryableDoHError(err error) bool {
 // Returns (false, nil) for NXDOMAIN.
 // Returns (false, err) on HTTP errors.
 func (p *DoHEnumPlugin) queryDoH(ctx context.Context, fqdn string, endpoint DoHEndpoint) (bool, error) {
-	reqURL := endpoint.URL + "?" + url.Values{"name": {fqdn}, "type": {"A"}}.Encode()
+	reqURL := dohQueryURL(fqdn, endpoint)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -319,6 +316,10 @@ func (p *DoHEnumPlugin) queryDoH(ctx context.Context, fqdn string, endpoint DoHE
 
 	// NOERROR (0) with at least one answer means the domain exists
 	return result.Status == 0 && len(result.Answer) > 0, nil
+}
+
+func dohQueryURL(fqdn string, endpoint DoHEndpoint) string {
+	return endpoint.URL + "?" + url.Values{"name": {fqdn}, "type": {"A"}}.Encode()
 }
 
 // resolveEndpoints determines which DoH endpoints to use based on Meta configuration.
