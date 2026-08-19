@@ -15,6 +15,70 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNetworkResult_Clean(t *testing.T) {
+	result := NetworkResult{
+		Query:        " 8.8.8.8 ",
+		StartAddress: " 8.8.8.0 ",
+		EndAddress:   " 8.8.8.255 ",
+		Handle:       " NET-8-8-8-0-1 ",
+		Name:         " EXAMPLE-NET ",
+		Type:         " DIRECT ALLOCATION ",
+		Status:       []string{" active ", " "},
+		Country:      " US ",
+		ParentHandle: " PARENT-1 ",
+		Registry:     " whois.example.com ",
+		Server:       " rdap.example.com ",
+		RDAPServer:   " rdap.example.com ",
+		WhoisServer:  " whois.example.com ",
+		Contacts: []NetworkContact{
+			{
+				Handle:       " CONTACT-1 ",
+				Roles:        []string{" registrant ", " "},
+				Status:       []string{" validated ", " "},
+				Kind:         " org ",
+				Direct:       true,
+				Organization: " Example Networks ",
+				Name:         " ",
+				Email:        " admin@example.com ",
+				Country:      " US ",
+			},
+			{Name: " "},
+		},
+		Sources: []string{" rdap ", " ", " whois "},
+		Raw:     " raw response \n",
+	}
+
+	result.Clean()
+
+	assert.Equal(t, NetworkResult{
+		Query:        "8.8.8.8",
+		StartAddress: "8.8.8.0",
+		EndAddress:   "8.8.8.255",
+		Handle:       "NET-8-8-8-0-1",
+		Name:         "EXAMPLE-NET",
+		Type:         "DIRECT ALLOCATION",
+		Status:       []string{"active"},
+		Country:      "US",
+		ParentHandle: "PARENT-1",
+		Registry:     "whois.example.com",
+		Server:       "rdap.example.com",
+		RDAPServer:   "rdap.example.com",
+		WhoisServer:  "whois.example.com",
+		Contacts: []NetworkContact{{
+			Handle:       "CONTACT-1",
+			Roles:        []string{"registrant"},
+			Status:       []string{"validated"},
+			Kind:         "org",
+			Direct:       true,
+			Organization: "Example Networks",
+			Email:        "admin@example.com",
+			Country:      "US",
+		}},
+		Sources: []string{"rdap", "whois"},
+		Raw:     " raw response \n",
+	}, result)
+}
+
 func TestValidateNetworkTarget(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -157,9 +221,15 @@ func TestLookupNetwork_SuccessfulRDAPWithoutUsefulIdentityFallsBackToTCP43(t *te
 	assert.Equal(t, []string{"rdap", "whois"}, result.Sources)
 	assert.Equal(t, "rdap.arin.net", result.RDAPServer)
 	assert.Equal(t, "whois.example.test", result.WhoisServer)
+	assert.Equal(t, "NET-8-8-8-0-1", result.Handle)
 	assert.Equal(t, []string{"active"}, result.Status)
 	require.Len(t, result.Contacts, 2)
+	assert.Equal(t, "ABUSE-1", result.Contacts[0].Handle)
+	assert.Equal(t, []string{"abuse"}, result.Contacts[0].Roles)
 	assert.Equal(t, []string{"validated"}, result.Contacts[0].Status)
+	assert.Equal(t, "group", result.Contacts[0].Kind)
+	assert.Equal(t, "Abuse Desk", result.Contacts[0].Name)
+	assert.Equal(t, "abuse@example.com", result.Contacts[0].Email)
 	assert.Equal(t, "Example Networks", result.Contacts[1].Organization)
 }
 
@@ -169,22 +239,22 @@ func (rdapResponseRoundTripper) RoundTrip(request *http.Request) (*http.Response
 	const response = `{
 		"rdapConformance":["rdap_level_0"],
 		"objectClassName":"ip network",
-		"handle":"NET-8-8-8-0-1",
-		"port43":"whois.example.test",
-		"startAddress":"8.8.8.0",
-		"endAddress":"8.8.8.255",
+		"handle":" NET-8-8-8-0-1 ",
+		"port43":" whois.example.test ",
+		"startAddress":" 8.8.8.0 ",
+		"endAddress":" 8.8.8.255 ",
 		"ipVersion":"v4",
-		"status":["active"],
+		"status":[" active "," "],
 		"entities":[{
 			"objectClassName":"entity",
-			"handle":"ABUSE-1",
-			"roles":["abuse"],
-			"status":["validated"],
+			"handle":" ABUSE-1 ",
+			"roles":[" abuse "," "],
+			"status":[" validated "," "],
 			"vcardArray":["vcard",[
 				["version",{},"text","4.0"],
-				["kind",{},"text","group"],
-				["fn",{},"text","Abuse Desk"],
-				["email",{},"text","abuse@example.com"]
+				["kind",{},"text"," group "],
+				["fn",{},"text"," Abuse Desk "],
+				["email",{},"text"," abuse@example.com "]
 			]]
 		}]
 	}`
@@ -200,10 +270,12 @@ func TestParseTCP43NetworkResult_AcceptsCIDRFormInetnum(t *testing.T) {
 	target, err := parseNetworkTarget("200.0.0.1")
 	require.NoError(t, err)
 
-	result, err := parseTCP43NetworkResult(target, "inetnum: 200.0.0.0/21\nowner: HOCOL S.A.\n", "whois.lacnic.net")
+	result, err := parseTCP43NetworkResult(target, "inetnum: 200.0.0.0/21\nowner: HOCOL S.A.\n", " whois.lacnic.net ")
 	require.NoError(t, err)
 	assert.Equal(t, "200.0.0.0", result.StartAddress)
 	assert.Equal(t, "200.0.7.255", result.EndAddress)
+	assert.Equal(t, "whois.lacnic.net", result.Registry)
+	assert.Equal(t, "whois.lacnic.net", result.WhoisServer)
 }
 
 func TestTCP43NetworkContacts_OmitsPrivacyEmail(t *testing.T) {

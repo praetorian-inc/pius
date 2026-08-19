@@ -41,6 +41,7 @@ func rdapLookup(ctx context.Context, httpClient *http.Client, domain string) (Re
 	if result.Registrant.IsEmpty() {
 		enrichFromRegistrar(ctx, client, &result, domainResp)
 	}
+	result.Clean()
 
 	return result, nil
 }
@@ -78,7 +79,6 @@ func mapRDAPToResult(domain string, resp *rdap.Domain) Result {
 	r.Admin = extractContact(resp.Entities, "administrative")
 	r.Tech = extractContact(resp.Entities, "technical")
 	r.Billing = extractContact(resp.Entities, "billing")
-
 	return r
 }
 
@@ -144,7 +144,7 @@ func contactFromVCard(vcard *rdap.VCard) Contact {
 	if contact.Street == "" && contact.City == "" && contact.Province == "" && contact.PostalCode == "" {
 		contact.Street = addressLabelFromVCard(vcard)
 	}
-	return contact
+	return contact.Scrub()
 }
 
 func addressLabelFromVCard(vcard *rdap.VCard) string {

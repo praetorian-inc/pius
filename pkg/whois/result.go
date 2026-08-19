@@ -1,7 +1,10 @@
 // Package whois provides domain and IP registration lookups via RDAP and TCP port 43.
 package whois
 
-import "cmp"
+import (
+	"cmp"
+	"strings"
+)
 
 // Result is the structured WHOIS record for a domain. It is serialized as JSON
 // to the whois/<domain> file in Guard and is designed to be incrementally
@@ -80,6 +83,7 @@ func (r *Result) Merge(other Result) {
 
 // clearIfPrivacy returns "" if the value is a known WHOIS privacy placeholder.
 func clearIfPrivacy(v string) string {
+	v = strings.TrimSpace(v)
 	if IsPrivacy(v) {
 		return ""
 	}
@@ -108,6 +112,31 @@ func (r *Result) ScrubContacts() {
 	r.Admin = r.Admin.Scrub()
 	r.Tech = r.Tech.Scrub()
 	r.Billing = r.Billing.Scrub()
+}
+
+func (r *Result) Clean() {
+	r.Domain = strings.TrimSpace(r.Domain)
+	r.Registrar = strings.TrimSpace(r.Registrar)
+	r.Created = strings.TrimSpace(r.Created)
+	r.Updated = strings.TrimSpace(r.Updated)
+	r.Expiration = strings.TrimSpace(r.Expiration)
+	r.DNSSEC = strings.TrimSpace(r.DNSSEC)
+	r.WhoisServer = strings.TrimSpace(r.WhoisServer)
+	r.Status = trimStrings(r.Status)
+	r.NameServers = trimStrings(r.NameServers)
+	r.Sources = trimStrings(r.Sources)
+	r.ScrubContacts()
+}
+
+func trimStrings(arr []string) []string {
+	res := make([]string, 0, len(arr))
+	for i := range arr {
+		v := strings.TrimSpace(arr[i])
+		if v != "" {
+			res = append(res, v)
+		}
+	}
+	return res
 }
 
 func mergeContact(base, other Contact) Contact {
