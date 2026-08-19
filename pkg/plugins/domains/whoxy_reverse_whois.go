@@ -32,12 +32,8 @@ type WhoxyReverseWhoisPlugin struct {
 	baseURL string // overridable for tests
 }
 
-// NewWhoxyReverseWhoisPlugin creates a plugin with an injectable HTTP client.
-func NewWhoxyReverseWhoisPlugin(httpClient *client.Client, apiKeys ...string) *WhoxyReverseWhoisPlugin {
-	apiKey := os.Getenv("WHOXY_API_KEY")
-	if len(apiKeys) > 0 {
-		apiKey = apiKeys[0]
-	}
+// NewWhoxyReverseWhoisPlugin creates a plugin with an injectable HTTP client and API key.
+func NewWhoxyReverseWhoisPlugin(httpClient *client.Client, apiKey string) *WhoxyReverseWhoisPlugin {
 	return &WhoxyReverseWhoisPlugin{client: httpClient, apiKey: apiKey}
 }
 
@@ -50,14 +46,11 @@ func (p *WhoxyReverseWhoisPlugin) Phase() int       { return 0 }
 func (p *WhoxyReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *WhoxyReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return p.credential() != "" && (input.OrgName != "" || input.PersonName != "" || input.Email != "")
+	return p.resolveAPIKey() != "" && (input.OrgName != "" || input.PersonName != "" || input.Email != "")
 }
 
-func (p *WhoxyReverseWhoisPlugin) credential() string {
-	if p.apiKey != "" {
-		return p.apiKey
-	}
-	return os.Getenv("WHOXY_API_KEY")
+func (p *WhoxyReverseWhoisPlugin) resolveAPIKey() string {
+	return cmp.Or(p.apiKey, os.Getenv("WHOXY_API_KEY"))
 }
 
 func (p *WhoxyReverseWhoisPlugin) apiBase() string {
@@ -98,7 +91,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		domains, err := p.paginateQuery(ctx, p.credential(), q)
+		domains, err := p.paginateQuery(ctx, p.resolveAPIKey(), q)
 		if err != nil {
 			slog.Warn("whoxy-reverse-whois: query failed", "param", q.param, "value", q.value, "error", err)
 			continue
