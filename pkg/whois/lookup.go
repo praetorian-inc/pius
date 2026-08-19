@@ -17,6 +17,9 @@ type Option func(*config)
 
 type config struct {
 	httpClient *http.Client
+
+	fallbacks    []Resolver
+	fallbacksSet bool
 }
 
 // WithHTTPClient sets the HTTP client used for RDAP requests.
@@ -24,15 +27,45 @@ func WithHTTPClient(c *http.Client) Option {
 	return func(cfg *config) { cfg.httpClient = c }
 }
 
-// Lookup resolves domain registration data by trying RDAP first (structured,
-// standardized dates), then TCP-43 (better email coverage, raw text), and
-// finally WhoisFreaks as a fallback, merging the best fields from each source.
+// WithFallbackResolvers sets the ordered commercial fallback route, replacing
+// DefaultFallbackOrder. Build it from operator configuration with
+// ResolversByName.
 //
-// RDAP and TCP-43 are always attempted unless one definitively says the domain
-// is unregistered. RDAP provides clean metadata but rarely has email (GDPR),
-// while TCP-43 has email but fragile referral chains. WhoisFreaks is tried
-// when both prior legs fail, or when their merged result lacks registrant
-// identity. The merge gives callers the best of all sources.
+// Calling this with no resolvers disables the commercial fallback entirely,
+// leaving RDAP and TCP-43. That is a supported configuration, distinct from not
+// calling it at all, which uses the default route.
+func WithFallbackResolvers(resolvers ...Resolver) Option {
+	return func(cfg *config) {
+		cfg.fallbacks = resolvers
+		cfg.fallbacksSet = true
+	}
+}
+
+// resolvers returns the configured route, or the default when the caller did
+// not set one.
+func (cfg *config) resolvers() []Resolver {
+	if cfg.fallbacksSet {
+		return cfg.fallbacks
+	}
+	return defaultResolvers(cfg.httpClient)
+}
+
+// Lookup resolves domain registration data by trying RDAP first (structured,
+// standardized dates), then TCP-43 (better email coverage, raw text), then an
+// operator-configurable route of commercial providers, merging the best fields
+// from each source.
+//
+// RDAP and TCP-43 are a fixed prefix and are always attempted unless one
+// definitively says the domain is unregistered. RDAP provides clean metadata
+// but rarely has email (GDPR), while TCP-43 has email but fragile referral
+// chains. Only the commercial tail is reorderable, which keeps a paid provider
+// from ever being consulted ahead of data the free protocols already return.
+//
+// The commercial route is tried when both prior legs fail, or when their merged
+// result lacks registrant identity. Providers are consulted in order until one
+// returns a usable record, and the first that answers ends the route — there is
+// no "keep going until the record is complete" pass, so at most one commercial
+// provider is billed per lookup. See runFallbacks and WithFallbackResolvers.
 func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) {
 	cfg := config{}
 	for _, o := range opts {
@@ -60,32 +93,31 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 		slog.Debug("TCP-43 lookup failed", "domain", domain, "error", tcp43Err)
 	}
 
-	// If both prior legs failed, try WhoisFreaks before giving up.
+	resolvers := cfg.resolvers()
+
+	// If both prior legs failed, walk the fallback route before giving up.
 	if rdapErr != nil && tcp43Err != nil {
-		wfResult, wfErr := whoisFreaksLookup(ctx, cfg.httpClient, domain)
-		if wfErr != nil {
-			slog.Debug("WhoisFreaks fallback failed", "domain", domain, "error", wfErr)
-		}
-		if wfErr == nil && wfResult.Domain != "" {
-			wfResult.ScrubContacts()
-			return wfResult, nil
+		fbResult, ok, fbErr := runFallbacks(ctx, resolvers, domain)
+		if ok {
+			fbResult.ScrubContacts()
+			return fbResult, nil
 		}
 		return Result{}, fmt.Errorf("whois: all methods failed for %s: %w", domain,
-			errors.Join(rdapErr, tcp43Err, wfErr))
+			errors.Join(rdapErr, tcp43Err, fbErr))
 	}
 
 	result := mergeResults(domain, rdapResult, rdapErr, tcp43Result, tcp43Err)
 	applyISOCILFallback(&result, tcp43Raw)
 	result.ScrubContacts()
 
-	// If prior sources left registrant gaps, try WhoisFreaks to fill them.
+	// If prior sources left registrant gaps, walk the route to fill them. An
+	// "unregistered" verdict is ignored here: RDAP or TCP-43 already returned a
+	// record, so a provider claiming the domain does not exist is contradicting
+	// better evidence and must not overwrite it.
 	if !result.HasRegistrant() {
-		wfResult, wfErr := whoisFreaksLookup(ctx, cfg.httpClient, domain)
-		if wfErr != nil {
-			slog.Debug("WhoisFreaks fallback failed", "domain", domain, "error", wfErr)
-		} else if wfResult.Domain != "" && !wfResult.Unregistered {
-			wfResult.ScrubContacts()
-			result.Merge(wfResult)
+		if fbResult, ok, _ := runFallbacks(ctx, resolvers, domain); ok && !fbResult.Unregistered {
+			fbResult.ScrubContacts()
+			result.Merge(fbResult)
 		}
 	}
 

@@ -52,9 +52,19 @@ type whoisFreaksContact struct {
 
 // whoisFreaksLookup queries the WhoisFreaks v2.0 Live WHOIS API for domain
 // registration data. If WHOISFREAKS_API_KEY is unset, it returns a zero Result
-// with nil error (no-op). This is the third fallback leg after RDAP and TCP-43.
+// with nil error (no-op).
+//
+// Prefer WhoisFreaksResolver, which participates in the configurable fallback
+// route and reports a missing key as ErrNoCredential rather than silently
+// doing nothing.
 func whoisFreaksLookup(ctx context.Context, httpClient *http.Client, domain string) (Result, error) {
-	apiKey := os.Getenv("WHOISFREAKS_API_KEY")
+	return whoisFreaksLookupWithKey(ctx, httpClient, os.Getenv("WHOISFREAKS_API_KEY"), domain)
+}
+
+// whoisFreaksLookupWithKey is whoisFreaksLookup with the credential supplied by
+// the caller, so a resolver configured with an explicit key does not have to go
+// through the environment.
+func whoisFreaksLookupWithKey(ctx context.Context, httpClient *http.Client, apiKey, domain string) (Result, error) {
 	if apiKey == "" {
 		return Result{}, nil
 	}
