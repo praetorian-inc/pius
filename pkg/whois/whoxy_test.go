@@ -2,6 +2,7 @@ package whois
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -53,7 +54,7 @@ func TestWhoxyResolver_Success(t *testing.T) {
 	r := newWhoxyTestResolver(t, func(w http.ResponseWriter, req *http.Request) {
 		gotQuery = req.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":1,"raw_whois":` + jsonQuote(whoxyRawRecord) + `}`))
+		_, _ = w.Write([]byte(`{"status":1,"raw_whois":` + jsonQuote(t, whoxyRawRecord) + `}`))
 	})
 
 	result, err := r.Lookup(context.Background(), "example.com")
@@ -144,23 +145,9 @@ func TestWhoxyResolver_ErrorsDoNotLeakAPIKey(t *testing.T) {
 }
 
 // jsonQuote renders s as a JSON string literal.
-func jsonQuote(s string) string {
-	out := []byte{'"'}
-	for _, r := range s {
-		switch r {
-		case '"':
-			out = append(out, '\\', '"')
-		case '\\':
-			out = append(out, '\\', '\\')
-		case '\n':
-			out = append(out, '\\', 'n')
-		case '\r':
-			out = append(out, '\\', 'r')
-		case '\t':
-			out = append(out, '\\', 't')
-		default:
-			out = append(out, string(r)...)
-		}
-	}
-	return string(append(out, '"'))
+func jsonQuote(t *testing.T, s string) string {
+	t.Helper()
+	quoted, err := json.Marshal(s)
+	require.NoError(t, err)
+	return string(quoted)
 }

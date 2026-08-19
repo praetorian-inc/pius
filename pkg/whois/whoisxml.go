@@ -57,7 +57,16 @@ func (r *WhoisXMLResolver) hasCredential() bool { return r.resolveAPIKey() != ""
 func (r *WhoisXMLResolver) apiBase() string { return cmp.Or(r.baseURL, whoisXMLBaseURL) }
 
 type whoisXMLResponse struct {
-	WhoisRecord whoisXMLRecord `json:"WhoisRecord"`
+	WhoisRecord  whoisXMLRecord `json:"WhoisRecord"`
+	ErrorMessage *whoisXMLError `json:"ErrorMessage,omitempty"`
+}
+
+// whoisXMLError is WhoisXML's error envelope. It arrives with HTTP 200, so the
+// status code alone cannot be trusted to mean success — AUTHENTICATE_06
+// (exhausted or unauthorized account) is reported this way.
+type whoisXMLError struct {
+	ErrorCode string `json:"errorCode"`
+	Msg       string `json:"msg"`
 }
 
 // whoisXMLRecord is one WHOIS record. RegistryData carries the registry's own
@@ -144,15 +153,17 @@ func (r *WhoisXMLResolver) Lookup(ctx context.Context, domain string) (Result, e
 		return Result{}, fmt.Errorf("whoisxml: reading response for %s: %w", domain, err)
 	}
 
-	// WhoisXML reports credit exhaustion as AUTHENTICATE_06 in an HTTP 200
-	// body, so the status code alone cannot be trusted to mean success.
-	if bytes := string(body); strings.Contains(bytes, "AUTHENTICATE_06") {
-		return Result{}, fmt.Errorf("whoisxml: account exhausted or unauthorized for %s", domain)
-	}
-
 	var wx whoisXMLResponse
 	if err := json.Unmarshal(body, &wx); err != nil {
 		return Result{}, fmt.Errorf("whoisxml: decoding response for %s: %w", domain, err)
+	}
+
+	// Checked on the decoded envelope rather than by scanning the payload for a
+	// marker string: a WHOIS record is attacker-influenced text, and matching
+	// loose substrings against a successful body is how a valid record gets
+	// misread as a failure.
+	if e := wx.ErrorMessage; e != nil && e.ErrorCode != "" {
+		return Result{}, fmt.Errorf("whoisxml: %s for %s: %s", e.ErrorCode, domain, e.Msg)
 	}
 
 	rec := wx.WhoisRecord

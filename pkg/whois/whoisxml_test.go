@@ -120,7 +120,29 @@ func TestWhoisXMLResolver_CreditExhaustionOnHTTP200(t *testing.T) {
 	_, err := r.Lookup(context.Background(), "example.com")
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exhausted")
+	assert.Contains(t, err.Error(), "AUTHENTICATE_06")
+	assert.Contains(t, err.Error(), "Access restricted")
+}
+
+// TestWhoisXMLResolver_RecordMentioningErrorCodeIsNotAFailure: the exhaustion
+// check reads the decoded error envelope, not the raw payload. A registry that
+// happens to echo the marker inside a legitimate record must still parse — the
+// same class of false positive that once produced a fabricated throttle verdict
+// in the GATE 1 harness.
+func TestWhoisXMLResolver_RecordMentioningErrorCodeIsNotAFailure(t *testing.T) {
+	r := newWhoisXMLTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"WhoisRecord":{
+		  "domainName":"example.com",
+		  "registrarName":"Example Registrar, Inc.",
+		  "registrant":{"organization":"AUTHENTICATE_06 Holdings"}
+		}}`))
+	})
+
+	result, err := r.Lookup(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, "example.com", result.Domain)
+	assert.Equal(t, "AUTHENTICATE_06 Holdings", result.Registrant.Organization)
 }
 
 // TestWhoisXMLResolver_MissingDataIsNotUnregistered: absent data is weaker

@@ -131,8 +131,10 @@ func defaultResolvers(httpClient *http.Client) []Resolver {
 // fields are absent from every provider and the chain would call all of them on
 // every redacted domain, forever.
 //
-// Errors are collected rather than returned early, so a caller that exhausts
-// the route can report why each provider declined.
+// Errors are collected rather than returned early so that a caller which
+// exhausts the route can report why every provider declined. They are returned
+// only when no provider answered: a non-nil error alongside a usable result
+// would invite callers to treat a satisfied lookup as a failure.
 func runFallbacks(ctx context.Context, resolvers []Resolver, domain string) (Result, bool, error) {
 	var errs []error
 	for _, r := range resolvers {
@@ -153,7 +155,7 @@ func runFallbacks(ctx context.Context, resolvers []Resolver, domain string) (Res
 				"provider", r.Name(), "domain", domain)
 			continue
 		}
-		return res, true, errors.Join(errs...)
+		return res, true, nil
 	}
 	return Result{}, false, errors.Join(errs...)
 }
