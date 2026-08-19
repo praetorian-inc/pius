@@ -8,6 +8,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestExtractPreseeds_DropsMonikerPrivacyServices(t *testing.T) {
+	contact := whois.Contact{
+		Name:         "Moniker Privacy Services",
+		Organization: "Moniker Privacy Services",
+		Email:        "676db20f21af0a0a9ccb7d19f72c34238d63e06ceb66bf94ec7f7ce203093358@randommedia.com.whoisproxy.org",
+	}
+	r := whois.Result{
+		Domain:     "randommedia.com",
+		Registrant: contact,
+		Admin:      contact,
+		Tech:       contact,
+		Billing:    contact,
+	}
+
+	assert.Empty(t, extractPreseeds(r))
+}
+
 // A preseed justification names the server that answered the WHOIS query, so a
 // reviewer can retrace the claim to the record it came from.
 func TestExtractPreseeds_JustificationNamesWhoisServer(t *testing.T) {

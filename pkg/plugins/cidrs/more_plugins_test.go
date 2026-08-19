@@ -17,6 +17,7 @@ func TestReverseRIRPlugin_Accepts(t *testing.T) {
 	}
 	assert.True(t, p.Accepts(plugins.Input{OrgName: "Acme Corp"}))
 	assert.False(t, p.Accepts(plugins.Input{OrgName: ""}))
+	assert.False(t, p.Accepts(plugins.Input{OrgName: " \t\n"}))
 	assert.False(t, p.Accepts(plugins.Input{}))
 }
 
