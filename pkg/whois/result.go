@@ -90,9 +90,9 @@ func clearIfPrivacy(v string) string {
 	return v
 }
 
-// Scrub clears privacy/redaction placeholder values from all fields,
+// Clean clears privacy/redaction placeholder values from all fields,
 // leaving only real data. Returns the scrubbed contact.
-func (c Contact) Scrub() Contact {
+func (c Contact) Clean() Contact {
 	return Contact{
 		Organization: clearIfPrivacy(c.Organization),
 		Name:         clearIfPrivacy(c.Name),
@@ -108,10 +108,10 @@ func (c Contact) Scrub() Contact {
 
 // ScrubContacts scrubs all four contact roles on a Result.
 func (r *Result) ScrubContacts() {
-	r.Registrant = r.Registrant.Scrub()
-	r.Admin = r.Admin.Scrub()
-	r.Tech = r.Tech.Scrub()
-	r.Billing = r.Billing.Scrub()
+	r.Registrant = r.Registrant.Clean()
+	r.Admin = r.Admin.Clean()
+	r.Tech = r.Tech.Clean()
+	r.Billing = r.Billing.Clean()
 }
 
 func (r *Result) Clean() {
