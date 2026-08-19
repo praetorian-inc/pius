@@ -46,9 +46,12 @@ func unkeyed(name string) *fakeResolver {
 	return &fakeResolver{name: name, err: ErrNoCredential}
 }
 
-// TestRunFallbacks_StopsAtFirstAnswer is the cost guarantee: once a provider
-// answers, no later provider is consulted, so at most one commercial provider
-// is billed per lookup.
+// TestRunFallbacks_StopsAtFirstAnswer: once a provider answers, no later
+// provider is consulted.
+//
+// This bounds how many providers ANSWER, not how many are BILLED. A provider
+// consulted before the winner may already have been charged -- see
+// TestRunFallbacks_EveryConsultedProviderMayBeBilled.
 func TestRunFallbacks_StopsAtFirstAnswer(t *testing.T) {
 	first := answering(ProviderWhoxy)
 	second := answering(ProviderWhoisFreaks)
@@ -62,8 +65,8 @@ func TestRunFallbacks_StopsAtFirstAnswer(t *testing.T) {
 	assert.Equal(t, ProviderWhoxy, res.Registrar, "the first provider's record should win")
 
 	assert.Equal(t, 1, first.calls)
-	assert.Zero(t, second.calls, "second provider must not be billed once the first answered")
-	assert.Zero(t, third.calls, "third provider must not be billed once the first answered")
+	assert.Zero(t, second.calls, "no later provider is consulted once the first answered")
+	assert.Zero(t, third.calls, "no later provider is consulted once the first answered")
 }
 
 // TestRunFallbacks_OrderIsHonoured proves the route is the operator's, not a
@@ -427,4 +430,46 @@ func TestRunFallbacks_StopsOnCancelledContext(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Zero(t, first.calls, "no provider should be consulted once the context is done")
 	assert.Zero(t, second.calls)
+}
+
+// TestRunFallbacks_EveryConsultedProviderMayBeBilled documents the real cost
+// shape of a fallback route, so nobody reads "stops at the first answer" as
+// "only ever pays one provider".
+//
+// A provider that returns an error, an unparseable body, or an acknowledged-but-
+// empty record has usually already incurred a charge. The route then moves on,
+// so the worst case is one billable request per configured provider. That is
+// inherent to a fallback -- "A has nothing, ask B" is the point -- and it is why
+// a short default route matters.
+func TestRunFallbacks_EveryConsultedProviderMayBeBilled(t *testing.T) {
+	billed := failing(ProviderWhoxy)          // request made, then failed
+	alsoBilled := silent(ProviderWhoisFreaks) // request made, no record
+	answered := answering(ProviderWhoisXML)
+
+	_, ok, _ := runFallbacks(context.Background(),
+		[]Resolver{billed, alsoBilled, answered}, "example.com")
+
+	require.True(t, ok)
+	assert.Equal(t, 1, billed.calls, "a failed request was still sent, and still charged")
+	assert.Equal(t, 1, alsoBilled.calls, "an empty answer was still a billable request")
+	assert.Equal(t, 1, answered.calls)
+}
+
+// TestRunFallbacks_MissingCredentialCostsNothing is the one failure mode that is
+// free: no key means no request, so it is worth distinguishing from a provider
+// that was consulted and declined.
+func TestRunFallbacks_MissingCredentialCostsNothing(t *testing.T) {
+	free := unkeyed(ProviderWhoxy)
+	answered := answering(ProviderWhoisXML)
+
+	_, ok, _ := runFallbacks(context.Background(),
+		[]Resolver{free, answered}, "example.com")
+
+	require.True(t, ok)
+
+	// The fake counts calls, so assert on the contract instead: an unkeyed real
+	// resolver reports ErrNoCredential before building a request.
+	t.Setenv("WHOISXML_API_KEY", "")
+	_, err := NewWhoisXMLResolver(nil, "").Lookup(context.Background(), "example.com")
+	assert.ErrorIs(t, err, ErrNoCredential)
 }

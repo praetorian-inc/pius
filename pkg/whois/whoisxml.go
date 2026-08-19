@@ -169,28 +169,10 @@ func (r *WhoisXMLResolver) Lookup(ctx context.Context, domain string) (Result, e
 	rec := wx.WhoisRecord
 	registry := rec.RegistryData
 
-	// Both records may carry the verdict and the domain name, so read them
-	// across the pair.
-	recordedDomain, dataErr := rec.DomainName, rec.DataError
+	// Either record may carry the verdict, so read dataError across the pair.
+	dataErr := rec.DataError
 	if registry != nil {
-		recordedDomain = cmp.Or(recordedDomain, registry.DomainName)
 		dataErr = cmp.Or(dataErr, registry.DataError)
-	}
-
-	if dataErr == dataErrorMissingWhois {
-		// WhoisXML documents this as "domain is not registered; no need to retry
-		// fetching the data", so it is a verdict rather than a gap.
-		//
-		// Reporting it is safe despite coming from a fallback: Lookup discards an
-		// Unregistered result from the route whenever RDAP or TCP-43 already
-		// returned a record, so this cannot overwrite better evidence. It is only
-		// believed when nothing else resolved the domain at all.
-		return Result{Domain: domain, Unregistered: true}, nil
-	}
-
-	if recordedDomain == "" {
-		// Answered, but holds nothing usable — the route should continue.
-		return Result{}, nil
 	}
 
 	// WhoisXML splits data across the registrar-level record and the
@@ -209,7 +191,27 @@ func (r *WhoisXMLResolver) Lookup(ctx context.Context, domain string) (Result, e
 	// Merge accumulates Sources, but both halves came from one provider.
 	result.Sources = []string{ProviderWhoisXML}
 
-	return result, nil
+	// Judged on the merged record, not on the registrar-level marker alone. A
+	// thin registry sets dataError at the registrar level while registryData
+	// carries the actual record, so testing dataError first would throw away a
+	// usable answer — and worse, report a live domain as unregistered.
+	if result.hasSubstance() {
+		return result, nil
+	}
+
+	if dataErr == dataErrorMissingWhois {
+		// Documented as "domain is not registered; no need to retry fetching the
+		// data", so with no substance anywhere this is a verdict, not a gap.
+		//
+		// Safe to report despite coming from a fallback: Lookup discards an
+		// Unregistered result from the route whenever RDAP or TCP-43 already
+		// returned a record, so it is only believed when nothing else resolved
+		// the domain at all.
+		return Result{Domain: domain, Unregistered: true}, nil
+	}
+
+	// Answered, but holds nothing usable — the route should continue.
+	return Result{}, nil
 }
 
 func mapWhoisXMLToResult(domain string, rec whoisXMLRecord) Result {

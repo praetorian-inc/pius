@@ -347,3 +347,36 @@ func TestWhoisXMLResolver_OtherErrorCodesAreReported(t *testing.T) {
 	assert.Contains(t, err.Error(), "AUTHENTICATE_01")
 	assert.Contains(t, err.Error(), "Invalid API key")
 }
+
+// TestWhoisXMLResolver_RegistryDataSurvivesRegistrarLevelMissingData is the thin-
+// registry case: the registrar-level record carries dataError MISSING_WHOIS_DATA
+// while registryData holds the actual record.
+//
+// Judging the marker before the merged record would discard a usable answer and,
+// worse, report a live domain as unregistered — a verdict Guard persists as a
+// cacheable success, so it would stick.
+func TestWhoisXMLResolver_RegistryDataSurvivesRegistrarLevelMissingData(t *testing.T) {
+	r := newWhoisXMLTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+		  "WhoisRecord": {
+		    "domainName": "example.co.kr",
+		    "dataError": "MISSING_WHOIS_DATA",
+		    "registryData": {
+		      "domainName": "example.co.kr",
+		      "createdDate": "2003-04-17T00:00:00Z",
+		      "registrarName": "Registry Registrar",
+		      "registrant": {"organization": "Registry Org"}
+		    }
+		  }
+		}`))
+	})
+
+	result, err := r.Lookup(context.Background(), "example.co.kr")
+	require.NoError(t, err)
+
+	assert.False(t, result.Unregistered,
+		"a usable registry record must not be discarded for a registrar-level marker")
+	assert.Equal(t, "Registry Org", result.Registrant.Organization)
+	assert.Equal(t, "Registry Registrar", result.Registrar)
+	assert.Equal(t, "2003-04-17T00:00:00Z", result.Created)
+}

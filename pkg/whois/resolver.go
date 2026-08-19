@@ -157,14 +157,26 @@ func fillGapsFromFallback(ctx context.Context, resolvers []Resolver, domain stri
 // naming a domain.
 //
 // There is no completeness test. A provider that answers ends the chain even if
-// its record is partial, and that bound is the cost guarantee — at most one
-// commercial provider is billed per lookup, enforced by control flow rather
-// than by a predicate that must stay correct as Result grows fields.
+// its record is partial, enforced by control flow rather than by a predicate
+// that must stay correct as Result grows fields. A completeness test would also
+// be unreachable in practice: GDPR and privacy-proxy redaction strip registrant
+// identity at the registry, so those fields are absent from every provider and
+// the chain would call all of them on every redacted domain, forever.
 //
-// A completeness test would also be unreachable in practice: GDPR and
-// privacy-proxy redaction strip registrant identity at the registry, so those
-// fields are absent from every provider and the chain would call all of them on
-// every redacted domain, forever.
+// # What this does and does not bound
+//
+// Stopping at the first answer bounds how many providers *answer*, which is one.
+// It does NOT bound how many are *billed*. A provider that is consulted and
+// returns an error, an unparseable body, or an acknowledged-but-empty record has
+// usually already incurred a charge, and the route then moves on to the next
+// paid provider. So the worst case is one billable request per configured
+// provider, per lookup.
+//
+// That is inherent to a fallback route rather than a defect — "provider A has
+// nothing, ask B" is the entire point — but it is the reason a short default
+// route matters, and the reason ErrNoCredential is worth distinguishing: an
+// unkeyed provider is skipped without a request, so it is the one failure mode
+// that costs nothing.
 //
 // Errors are collected rather than returned early so that a caller which
 // exhausts the route can report why every provider declined. They are returned

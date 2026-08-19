@@ -57,6 +57,19 @@ func (r Result) HasRegistrant() bool {
 	return r.Registrant.Organization != "" || r.Registrant.Name != ""
 }
 
+// hasSubstance reports whether the record carries actual registration data
+// rather than just a domain name echoed back by the provider. It is what
+// distinguishes "this source has an answer" from "this source acknowledged the
+// query and had nothing", which decides whether a fallback route continues.
+func (r Result) hasSubstance() bool {
+	return r.Registrar != "" ||
+		r.Created != "" || r.Updated != "" || r.Expiration != "" ||
+		r.WhoisServer != "" || r.DNSSEC != "" ||
+		len(r.NameServers) > 0 || len(r.Status) > 0 ||
+		!r.Registrant.IsEmpty() || !r.Admin.IsEmpty() ||
+		!r.Tech.IsEmpty() || !r.Billing.IsEmpty()
+}
+
 // Merge fills empty fields on r from other, used to chain providers.
 // Non-empty fields on r are never overwritten. Sources are accumulated.
 func (r *Result) Merge(other Result) {
