@@ -60,6 +60,8 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 	}
 
 	if rdapErr != nil && tcp43Err != nil {
+		slog.Error("RDAP error", "err", rdapErr)
+		slog.Error("TCP43 error", "err", tcp43Err)
 		return Result{}, fmt.Errorf("whois: all methods failed for %s", domain)
 	}
 

@@ -9,8 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) {
-	const org = "Acme Corp"
+func TestReverseRIRPlugin_RegistryFindingsUseReturnedOrgSimilarity(t *testing.T) {
+	const (
+		queriedOrg  = "Acme Corp"
+		returnedOrg = "Acme Corp Holdings"
+	)
 	tests := []struct {
 		name          string
 		response      string
@@ -21,9 +24,9 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 	}{
 		{
 			name:     "ARIN organization entity",
-			response: `{"orgs":{"orgRef":{"@handle":"ACME-ARIN"}}}`,
+			response: `{"orgs":{"orgRef":{"@handle":"ACME-ARIN","@name":"Acme Corp Holdings"}}}`,
 			query: func(plugin *ReverseRIRPlugin) []plugins.Finding {
-				return plugin.queryArinEntity(context.Background(), "orgs", org)
+				return plugin.queryArinEntity(context.Background(), "orgs", queriedOrg)
 			},
 			handle:        "ACME-ARIN",
 			registry:      "arin",
@@ -31,9 +34,9 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 		},
 		{
 			name:     "RIPE",
-			response: `{"objects":{"object":[{"primary-key":{"attribute":[{"name":"organisation","value":"ORG-ACME-RIPE"}]}}]}}`,
+			response: `{"objects":{"object":[{"primary-key":{"attribute":[{"name":"organisation","value":"ORG-ACME-RIPE"}]},"attributes":{"attribute":[{"name":"org-name","value":"Acme Corp Holdings"}]}}]}}`,
 			query: func(plugin *ReverseRIRPlugin) []plugins.Finding {
-				findings, _ := plugin.queryRIPE(context.Background(), org)
+				findings, _ := plugin.queryRIPE(context.Background(), queriedOrg)
 				return findings
 			},
 			handle:        "ORG-ACME-RIPE",
@@ -42,9 +45,9 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 		},
 		{
 			name:     "APNIC",
-			response: `[{"objectType":"organisation","primaryKey":"ORG-ACME-AP"}]`,
+			response: `[{"objectType":"organisation","primaryKey":"ORG-ACME-AP","attributes":[{"name":"org-name","values":["Acme Corp Holdings"]}]}]`,
 			query: func(plugin *ReverseRIRPlugin) []plugins.Finding {
-				findings, _ := plugin.queryAPNIC(context.Background(), org)
+				findings, _ := plugin.queryAPNIC(context.Background(), queriedOrg)
 				return findings
 			},
 			handle:        "ORG-ACME-AP",
@@ -53,9 +56,9 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 		},
 		{
 			name:     "AFRINIC",
-			response: `{"entitySearchResults":[{"handle":"ORG-ACME-AFRINIC"}]}`,
+			response: `{"entitySearchResults":[{"handle":"ORG-ACME-AFRINIC","vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Acme Corp Holdings"]]]}]}`,
 			query: func(plugin *ReverseRIRPlugin) []plugins.Finding {
-				findings, _ := plugin.queryAFRINIC(context.Background(), org)
+				findings, _ := plugin.queryAFRINIC(context.Background(), queriedOrg)
 				return findings
 			},
 			handle:        "ORG-ACME-AFRINIC",
@@ -64,9 +67,9 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 		},
 		{
 			name:     "LACNIC",
-			response: `{"entities":[{"handle":"BR-ACME-LACNIC"}]}`,
+			response: `{"entities":[{"handle":"BR-ACME-LACNIC","vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Acme Corp Holdings"]]]}]}`,
 			query: func(plugin *ReverseRIRPlugin) []plugins.Finding {
-				findings, _ := plugin.queryLACNIC(context.Background(), org)
+				findings, _ := plugin.queryLACNIC(context.Background(), queriedOrg)
 				return findings
 			},
 			handle:        "BR-ACME-LACNIC",
@@ -85,11 +88,43 @@ func TestReverseRIRPlugin_RegistryFindingsUseConsistentConfidence(t *testing.T) 
 			finding := findings[0]
 			assert.Equal(t, tt.handle, finding.Value)
 			assert.Equal(t, tt.registry, finding.Data["registry"])
-			require.Len(t, finding.Confidences, 1)
+			assert.Equal(t, returnedOrg, finding.Data["org"])
+			require.Len(t, finding.Confidences, 2)
 			assert.Equal(t, confReverseRIRHandle, finding.Confidences[0].Score)
 			assert.Equal(t, tt.justification, finding.Confidences[0].Justification)
+			assert.Equal(t, confReverseRIROrgSimilarity, finding.Confidences[1].Score)
+			assert.Equal(t,
+				`RIR organization name "Acme Corp Holdings" matches the queried organization "Acme Corp"`,
+				finding.Confidences[1].Justification)
+			assert.Equal(t, 85, plugins.TotalConfidence(finding))
 			assert.NotContains(t, finding.Data, "confidence")
 			assert.NotContains(t, finding.Data, "confidences")
+		})
+	}
+}
+
+func TestReverseRIRPlugin_OrgSimilarityThreshold(t *testing.T) {
+	tests := []struct {
+		name        string
+		returnedOrg string
+		wantBonus   bool
+	}{
+		{name: "at threshold", returnedOrg: "Acme Holdings", wantBonus: true},
+		{name: "below threshold", returnedOrg: "Acme Network Holdings", wantBonus: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			finding, ok := newReverseRIRFinding(
+				"ACME-1", "arin", "ARIN orgs database", "Acme Global Corp", tt.returnedOrg,
+			)
+			require.True(t, ok)
+
+			wantConfidenceEntries := 1
+			if tt.wantBonus {
+				wantConfidenceEntries = 2
+			}
+			assert.Len(t, finding.Confidences, wantConfidenceEntries)
 		})
 	}
 }
@@ -112,6 +147,17 @@ func TestARINNamePattern(t *testing.T) {
 	}
 }
 
+func TestReverseRIRPlugin_MissingReturnedOrgKeepsBaseConfidence(t *testing.T) {
+	finding, ok := newReverseRIRFinding(
+		"ACME-1", "arin", "ARIN orgs database", "Acme Corp", "",
+	)
+	require.True(t, ok)
+
+	assert.Equal(t, "", finding.Data["org"])
+	require.Len(t, finding.Confidences, 1)
+	assert.Equal(t, confReverseRIRHandle, finding.Confidences[0].Score)
+}
+
 func TestReverseRIRPlugin_ARINRequestUsesWhitespaceTolerantPattern(t *testing.T) {
 	c, transport := newStubClient([]byte(`{"orgs":{"orgRef":{"@handle":"ACME-ARIN"}}}`))
 	plugin := &ReverseRIRPlugin{client: c}
@@ -127,33 +173,37 @@ func TestReverseRIRPlugin_ARINRequestUsesWhitespaceTolerantPattern(t *testing.T)
 // it happens once rather than in every embedder.
 func TestReverseRIRPlugin_DropsUnusableHandles(t *testing.T) {
 	tests := map[string]struct {
-		handle   string
-		registry string
-		org      string
+		handle     string
+		registry   string
+		queriedOrg string
 	}{
-		"empty handle":          {"", "arin", "Acme Corp"},
-		"whitespace handle":     {"   ", "arin", "Acme Corp"},
-		"empty org":             {"ACME-1", "arin", ""},
-		"whitespace org":        {"ACME-1", "arin", "  "},
-		"unknown registry":      {"ACME-1", "unknown", "Acme Corp"},
-		"unresolvable registry": {"ACME-1", "twnic", "Acme Corp"},
-		"empty registry":        {"ACME-1", "", "Acme Corp"},
+		"empty handle":           {"", "arin", "Acme Corp"},
+		"whitespace handle":      {"   ", "arin", "Acme Corp"},
+		"empty queried org":      {"ACME-1", "arin", ""},
+		"whitespace queried org": {"ACME-1", "arin", "  "},
+		"unknown registry":       {"ACME-1", "unknown", "Acme Corp"},
+		"unresolvable registry":  {"ACME-1", "twnic", "Acme Corp"},
+		"empty registry":         {"ACME-1", "", "Acme Corp"},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, ok := newReverseRIRFinding(tt.handle, tt.registry, "test database", tt.org)
+			_, ok := newReverseRIRFinding(
+				tt.handle, tt.registry, "test database", tt.queriedOrg, "Returned Org",
+			)
 			assert.False(t, ok)
 		})
 	}
 }
 
 func TestReverseRIRPlugin_TrimsHandleAndOrg(t *testing.T) {
-	finding, ok := newReverseRIRFinding("  ACME-1  ", "arin", "ARIN orgs database", "  Acme Corp  ")
+	finding, ok := newReverseRIRFinding(
+		"  ACME-1  ", "arin", "ARIN orgs database", "  Acme Corp  ", "  Acme Corporation  ",
+	)
 	require.True(t, ok)
 
 	assert.Equal(t, "ACME-1", finding.Value)
-	assert.Equal(t, "Acme Corp", finding.Data["org"])
+	assert.Equal(t, "Acme Corporation", finding.Data["org"])
 }
 
 // Every registry reverse-rir queries must be one a phase-two plugin can resolve,
