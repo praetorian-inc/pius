@@ -10,9 +10,14 @@ import (
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
+	"github.com/praetorian-inc/pius/pkg/whois"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func emptyViewDNSWhoisLookup(_ context.Context, domain string) (whois.Result, error) {
+	return whois.Result{Domain: domain}, nil
+}
 
 func TestViewDNSReverseWhoisPlugin_Accepts(t *testing.T) {
 	originalKey := os.Getenv("VIEWDNS_API_KEY")
@@ -74,7 +79,11 @@ func TestViewDNSReverseWhois_Run_OrgMode(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &ViewDNSReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	p := &ViewDNSReverseWhoisPlugin{
+		client:      client.New(),
+		baseURL:     srv.URL,
+		lookupWhois: emptyViewDNSWhoisLookup,
+	}
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 	require.Len(t, findings, 2)
@@ -94,7 +103,11 @@ func TestViewDNSReverseWhois_Run_Dedup(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &ViewDNSReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	p := &ViewDNSReverseWhoisPlugin{
+		client:      client.New(),
+		baseURL:     srv.URL,
+		lookupWhois: emptyViewDNSWhoisLookup,
+	}
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
 	require.NoError(t, err)
 	require.Len(t, findings, 1, "duplicates should be deduped")
@@ -115,7 +128,11 @@ func TestViewDNSReverseWhois_Run_EmailMode(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &ViewDNSReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	p := &ViewDNSReverseWhoisPlugin{
+		client:      client.New(),
+		baseURL:     srv.URL,
+		lookupWhois: emptyViewDNSWhoisLookup,
+	}
 	findings, err := p.Run(context.Background(), plugins.Input{Email: "admin@acme.com"})
 	require.NoError(t, err)
 	require.Len(t, findings, 1)

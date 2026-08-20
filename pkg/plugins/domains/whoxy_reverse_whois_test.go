@@ -9,9 +9,14 @@ import (
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
+	"github.com/praetorian-inc/pius/pkg/whois"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func emptyWhoxyWhoisLookup(_ context.Context, domain string) (whois.Result, error) {
+	return whois.Result{Domain: domain}, nil
+}
 
 func TestWhoxyReverseWhois_Accepts_WithKeyAndOrg(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "test-key")
@@ -78,6 +83,7 @@ func TestWhoxyReverseWhois_Run_EmitsFindings(t *testing.T) {
 
 	p := NewWhoxyReverseWhoisPlugin(client.New(), "constructor-key")
 	p.baseURL = srv.URL
+	p.lookupWhois = emptyWhoxyWhoisLookup
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 	require.Len(t, findings, 2)
@@ -116,7 +122,9 @@ func TestWhoxyReverseWhois_Run_FiltersTenYearOldDomains(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &WhoxyReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	p := &WhoxyReverseWhoisPlugin{
+		client: client.New(), baseURL: srv.URL, lookupWhois: emptyWhoxyWhoisLookup,
+	}
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
@@ -139,7 +147,9 @@ func TestWhoxyReverseWhois_Run_PaginatesResults(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &WhoxyReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	p := &WhoxyReverseWhoisPlugin{
+		client: client.New(), baseURL: srv.URL, lookupWhois: emptyWhoxyWhoisLookup,
+	}
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme"})
 	require.NoError(t, err)
 	assert.Equal(t, 2, pageCount, "must fetch both pages")
@@ -183,7 +193,9 @@ func TestWhoxyReverseWhois_Run_EmailMode(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &WhoxyReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	p := &WhoxyReverseWhoisPlugin{
+		client: client.New(), baseURL: srv.URL, lookupWhois: emptyWhoxyWhoisLookup,
+	}
 	findings, err := p.Run(context.Background(), plugins.Input{Email: "admin@acme.com"})
 	require.NoError(t, err)
 	require.Len(t, findings, 1)

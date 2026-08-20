@@ -17,11 +17,12 @@ func init() {
 }
 
 // ViewDNSReverseWhoisPlugin discovers related domains via ViewDNS reverse WHOIS.
-// Emits FindingDomain with Data["pivot_org"]. Verification happens when Guard
-// runs the whois capability on each discovered domain.
+// It emits scored FindingDomain results with Data["pivot_org"], corroborating
+// each candidate against a fresh WHOIS response.
 type ViewDNSReverseWhoisPlugin struct {
-	client  *client.Client
-	baseURL string // overridable for tests
+	client      *client.Client
+	baseURL     string // overridable for tests
+	lookupWhois domainWhoisLookup
 }
 
 // NewViewDNSReverseWhoisPlugin creates a plugin with an injectable HTTP client.
@@ -81,5 +82,5 @@ func (p *ViewDNSReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input
 		rawDomains = append(rawDomains, d.Domain)
 	}
 
-	return domainFindings(p.Name(), query, rawDomains), nil
+	return domainFindings(ctx, p.Name(), input, rawDomains, p.lookupWhois), nil
 }

@@ -22,12 +22,13 @@ func init() {
 }
 
 // WhoxyReverseWhoisPlugin discovers related domains via Whoxy reverse WHOIS.
-// Emits FindingDomain with Data["pivot_org"]. Verification happens when Guard
-// runs the whois capability on each discovered domain.
+// It emits scored FindingDomain results with Data["pivot_org"], corroborating
+// each candidate against a fresh WHOIS response.
 type WhoxyReverseWhoisPlugin struct {
-	client  *client.Client
-	apiKey  string
-	baseURL string // overridable for tests
+	client      *client.Client
+	apiKey      string
+	baseURL     string // overridable for tests
+	lookupWhois domainWhoisLookup
 }
 
 // NewWhoxyReverseWhoisPlugin creates a plugin with an injectable HTTP client and API key.
@@ -84,8 +85,6 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		return nil, nil
 	}
 
-	pivotOrg := cmp.Or(input.OrgName, input.PersonName, input.Email)
-
 	var allDomains []string
 	for _, q := range queries {
 		if err := ctx.Err(); err != nil {
@@ -99,7 +98,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		allDomains = append(allDomains, domains...)
 	}
 
-	return domainFindings(p.Name(), pivotOrg, allDomains), nil
+	return domainFindings(ctx, p.Name(), input, allDomains, p.lookupWhois), nil
 }
 
 // buildWhoxyQueries maps Input fields to the correct Whoxy API parameters.
