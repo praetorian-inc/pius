@@ -195,7 +195,7 @@ func TestNewReverseRIRPlugin_EveryRegistryUsesTheInjectedClient(t *testing.T) {
 	for _, finding := range findings {
 		assert.Equal(t, plugins.FindingCIDRHandle, finding.Type)
 		assert.Equal(t, "reverse-rir", finding.Source)
-		assert.Equal(t, "Acme Corp", finding.Data["org"])
+		assert.Equal(t, "", finding.Data["org"])
 		require.Len(t, finding.Confidences, 1)
 		assert.Equal(t, confReverseRIRHandle, finding.Confidences[0].Score)
 		assert.NotEmpty(t, finding.Confidences[0].Justification)

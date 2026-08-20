@@ -9,11 +9,17 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/openrdap/rdap"
 	"github.com/praetorian-inc/pius/pkg/client"
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confReverseRIRHandle = 60
+const (
+	confReverseRIRHandle        = 60
+	confReverseRIROrgSimilarity = 25
+	minReverseRIROrgSimilarity  = 0.5
+)
 
 func init() {
 	plugins.Register("reverse-rir", func() plugins.Plugin {
@@ -122,53 +128,39 @@ func (p *ReverseRIRPlugin) queryArinEntity(ctx context.Context, entity, org stri
 	}
 
 	// Parse response based on entity type
-	var handles []string
+	var refs []ArinRef
 	switch entity {
 	case "orgs":
 		var resp ArinOrgsResponse
 		if err := json.Unmarshal(body, &resp); err != nil {
 			return nil
 		}
-		for _, ref := range resp.Orgs.OrgRef {
-			if ref.Handle != "" {
-				handles = append(handles, ref.Handle)
-			}
-		}
+		refs = resp.Orgs.OrgRef
 	case "customers":
 		var resp ArinCustomersResponse
 		if err := json.Unmarshal(body, &resp); err != nil {
 			return nil
 		}
-		for _, ref := range resp.Customers.CustomerRef {
-			if ref.Handle != "" {
-				handles = append(handles, ref.Handle)
-			}
-		}
+		refs = resp.Customers.CustomerRef
 	case "nets":
 		var resp ArinNetsResponse
 		if err := json.Unmarshal(body, &resp); err != nil {
 			return nil
 		}
-		for _, ref := range resp.Nets.NetRef {
-			if ref.Handle != "" {
-				handles = append(handles, ref.Handle)
-			}
-		}
+		refs = resp.Nets.NetRef
 	case "asns":
 		var resp ArinAsnsResponse
 		if err := json.Unmarshal(body, &resp); err != nil {
 			return nil
 		}
-		for _, ref := range resp.Asns.AsnRef {
-			if ref.Handle != "" {
-				handles = append(handles, ref.Handle)
-			}
-		}
+		refs = resp.Asns.AsnRef
 	}
 
 	var findings []plugins.Finding
-	for _, handle := range handles {
-		if finding, ok := newReverseRIRFinding(handle, "arin", "ARIN "+entity+" database", org); ok {
+	for _, ref := range refs {
+		if finding, ok := newReverseRIRFinding(
+			ref.Handle, "arin", "ARIN "+entity+" database", org, ref.Name,
+		); ok {
 			findings = append(findings, finding)
 		}
 	}
@@ -202,7 +194,8 @@ func (p *ReverseRIRPlugin) queryRIPE(ctx context.Context, org string) ([]plugins
 		value := obj.PrimaryKey.Attribute[0].Value
 
 		if name == "organisation" {
-			if finding, ok := newReverseRIRFinding(value, "ripe", "RIPE database", org); ok {
+			orgName := ripeAttributeValue(obj.Attributes.Attribute, "org-name")
+			if finding, ok := newReverseRIRFinding(value, "ripe", "RIPE database", org, orgName); ok {
 				findings = append(findings, finding)
 			}
 		}
@@ -235,7 +228,10 @@ func (p *ReverseRIRPlugin) queryAPNIC(ctx context.Context, org string) ([]plugin
 		if item.ObjectType != "organisation" || item.PrimaryKey == "" {
 			continue
 		}
-		if finding, ok := newReverseRIRFinding(item.PrimaryKey, "apnic", "APNIC WHOIS database", org); ok {
+		orgName := apnicAttributeValue(item.Attributes, "org-name")
+		if finding, ok := newReverseRIRFinding(
+			item.PrimaryKey, "apnic", "APNIC WHOIS database", org, orgName,
+		); ok {
 			findings = append(findings, finding)
 		}
 	}
@@ -270,7 +266,9 @@ func (p *ReverseRIRPlugin) queryAFRINIC(ctx context.Context, org string) ([]plug
 		if handle == "" || !strings.HasPrefix(strings.ToUpper(handle), "ORG-") {
 			continue
 		}
-		if finding, ok := newReverseRIRFinding(handle, "afrinic", "AFRINIC RDAP database", org); ok {
+		if finding, ok := newReverseRIRFinding(
+			handle, "afrinic", "AFRINIC RDAP database", org, rdapEntityName(entity),
+		); ok {
 			findings = append(findings, finding)
 		}
 	}
@@ -303,7 +301,9 @@ func (p *ReverseRIRPlugin) queryLACNIC(ctx context.Context, org string) ([]plugi
 		if entity.Handle == "" {
 			continue
 		}
-		if finding, ok := newReverseRIRFinding(entity.Handle, "lacnic", "LACNIC RDAP database", org); ok {
+		if finding, ok := newReverseRIRFinding(
+			entity.Handle, "lacnic", "LACNIC RDAP database", org, rdapEntityName(entity),
+		); ok {
 			findings = append(findings, finding)
 		}
 	}
@@ -311,23 +311,20 @@ func (p *ReverseRIRPlugin) queryLACNIC(ctx context.Context, org string) ([]plugi
 	return findings, nil
 }
 
-// newReverseRIRFinding builds a handle finding, reporting !ok for anything a
-// phase-two plugin could not act on.
-//
-// The validation lives here rather than at each call site because the registries
-// disagree about what an empty result looks like — RIPE and LACNIC will hand
-// back a record whose handle field is simply blank — and because a consumer
-// cannot repair any of it. A handle with no value addresses nothing, one with no
-// organization is unattributable, and one from a registry this package cannot
-// resolve is a dead end. Emitting any of the three just pushes the same filter
-// onto every embedder.
-func newReverseRIRFinding(handle, registry, database, org string) (plugins.Finding, bool) {
+// newReverseRIRFinding builds and scores a handle finding, reporting !ok for
+// anything a phase-two plugin could not act on. A missing registry-returned
+// organization name does not make the handle unusable; it only prevents the
+// additional organization-similarity confidence signal.
+func newReverseRIRFinding(
+	handle, registry, database, queriedOrg, returnedOrg string,
+) (plugins.Finding, bool) {
 	handle = strings.TrimSpace(handle)
-	org = strings.TrimSpace(org)
+	queriedOrg = strings.TrimSpace(queriedOrg)
+	returnedOrg = strings.TrimSpace(returnedOrg)
 
-	if handle == "" || org == "" || !resolvableRegistry(registry) {
+	if handle == "" || queriedOrg == "" || !resolvableRegistry(registry) {
 		slog.Debug("reverse-rir: dropping unusable handle",
-			"handle", handle, "org", org, "registry", registry, "database", database)
+			"handle", handle, "org", queriedOrg, "registry", registry, "database", database)
 		return plugins.Finding{}, false
 	}
 
@@ -337,11 +334,18 @@ func newReverseRIRFinding(handle, registry, database, org string) (plugins.Findi
 		Source: "reverse-rir",
 		Data: map[string]any{
 			"registry": registry,
-			"org":      org,
+			"org":      returnedOrg,
 		},
 	}
 	plugins.AddConfidence(&finding, confReverseRIRHandle, fmt.Sprintf(
-		"%s returned organization handle %q for organization search %q", database, handle, org))
+		"%s returned organization handle %q for organization search %q", database, handle, queriedOrg))
+
+	if similarity := strutil.TokenSimilarity(queriedOrg, returnedOrg); similarity >= minReverseRIROrgSimilarity {
+		plugins.AddConfidence(&finding, confReverseRIROrgSimilarity, fmt.Sprintf(
+			"RIR organization name %q matches the queried organization %q",
+			returnedOrg, queriedOrg))
+	}
+
 	return finding, true
 }
 
@@ -399,44 +403,85 @@ type ArinAsnsResponse struct {
 
 // ── RIPE response types ───────────────────────────────────────────────────────
 
+type RipeAttribute struct {
+	Name  string `json:"name,omitempty"`
+	Value string `json:"value,omitempty"`
+}
+
 type RipeWhoisResponse struct {
 	Objects struct {
 		Object []struct {
 			Type       string `json:"type,omitempty"`
 			PrimaryKey struct {
-				Attribute []struct {
-					Name  string `json:"name,omitempty"`
-					Value string `json:"value,omitempty"`
-				} `json:"attribute,omitempty"`
+				Attribute []RipeAttribute `json:"attribute,omitempty"`
 			} `json:"primary-key,omitempty"`
+			Attributes struct {
+				Attribute []RipeAttribute `json:"attribute,omitempty"`
+			} `json:"attributes,omitempty"`
 		} `json:"object,omitempty"`
 	} `json:"objects,omitempty"`
+}
+
+func ripeAttributeValue(attributes []RipeAttribute, name string) string {
+	for _, attribute := range attributes {
+		if attribute.Name == name {
+			return attribute.Value
+		}
+	}
+	return ""
 }
 
 // ── APNIC response types ──────────────────────────────────────────────────────
 // wq.apnic.net returns a top-level JSON array of mixed object types.
 
+type ApnicAttribute struct {
+	Name   string   `json:"name"`
+	Values []string `json:"values"`
+}
+
 type ApnicQueryItem struct {
-	ObjectType string `json:"objectType"`
-	PrimaryKey string `json:"primaryKey"`
+	ObjectType string           `json:"objectType"`
+	PrimaryKey string           `json:"primaryKey"`
+	Attributes []ApnicAttribute `json:"attributes"`
+}
+
+func apnicAttributeValue(attributes []ApnicAttribute, name string) string {
+	for _, attribute := range attributes {
+		if attribute.Name == name && len(attribute.Values) > 0 {
+			return attribute.Values[0]
+		}
+	}
+	return ""
 }
 
 // ── AFRINIC response types ────────────────────────────────────────────────────
 // Standard RDAP entitySearchResults (used by AFRINIC and APNIC RDAP).
 
+type RdapEntity struct {
+	Handle     string          `json:"handle"`
+	VCardArray json.RawMessage `json:"vcardArray"`
+}
+
 type RdapEntitySearchResponse struct {
-	EntitySearchResults []struct {
-		Handle string `json:"handle"`
-	} `json:"entitySearchResults"`
+	EntitySearchResults []RdapEntity `json:"entitySearchResults"`
+}
+
+func rdapEntityName(entity RdapEntity) string {
+	if len(entity.VCardArray) == 0 {
+		return ""
+	}
+	vcard, err := rdap.NewVCard(entity.VCardArray)
+	if err != nil {
+		return ""
+	}
+	return vcard.Name()
 }
 
 // ── LACNIC response types ─────────────────────────────────────────────────────
 // LACNIC uses non-standard "entities" key (not "entitySearchResults").
 
 type LacnicSearchResponse struct {
-	Entities []struct {
-		Handle string `json:"handle"`
-	} `json:"entities"`
+	Entities []RdapEntity `json:"entities"`
 }
 
 var knownRIRs = []string{
