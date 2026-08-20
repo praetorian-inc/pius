@@ -84,10 +84,57 @@ func TestSanitizeURL_EdgeCases(t *testing.T) {
 			excludes: []string{"OAUTH_SECRET"},
 		},
 		{
-			name:     "case sensitivity - KEY vs key",
-			input:    "https://api.example.com/search?KEY=UPPERCASE_SECRET&query=test",
-			// KEY (uppercase) is NOT in our list, so should be preserved
-			contains: []string{"KEY=UPPERCASE_SECRET", "query=test"},
+			name:  "case sensitivity - uppercase KEY redacted case-insensitively",
+			input: "https://api.example.com/search?KEY=UPPERCASE_SECRET&query=test",
+			// Intended behavior change (OFFSEC-2444 / T013): matching is now
+			// case-insensitive whole-key, so an uppercase KEY normalizes to "key"
+			// and its value is redacted. The original key NAME is preserved.
+			contains: []string{"REDACTED", "query=test"},
+			excludes: []string{"UPPERCASE_SECRET"},
+		},
+		{
+			name:     "camelCase apiKey (WhoisFreaks style) redacted",
+			input:    "https://api.whoisfreaks.com/v1.0/whois/ssl/live?apiKey=WF_SECRET&whois=live&domain=example.com",
+			contains: []string{"REDACTED", "whois=live", "domain=example.com"},
+			excludes: []string{"WF_SECRET"},
+		},
+		{
+			name:     "case-insensitive ApiKey mixed case",
+			input:    "https://api.example.com/x?ApiKey=Sc1&q=1",
+			contains: []string{"REDACTED", "q=1"},
+			excludes: []string{"Sc1"},
+		},
+		{
+			name:     "case-insensitive APIKEY upper",
+			input:    "https://api.example.com/x?APIKEY=Sc2&q=1",
+			contains: []string{"REDACTED", "q=1"},
+			excludes: []string{"Sc2"},
+		},
+		{
+			name:     "case-insensitive Api_Key snake mixed",
+			input:    "https://api.example.com/x?Api_Key=Sc3&q=1",
+			contains: []string{"REDACTED", "q=1"},
+			excludes: []string{"Sc3"},
+		},
+		{
+			name:     "case-insensitive Token mixed case",
+			input:    "https://api.example.com/x?Token=Sc4&q=1",
+			contains: []string{"REDACTED", "q=1"},
+			excludes: []string{"Sc4"},
+		},
+		{
+			name:     "case-insensitive Access_Token mixed case",
+			input:    "https://api.example.com/x?Access_Token=Sc5&q=1",
+			contains: []string{"REDACTED", "q=1"},
+			excludes: []string{"Sc5"},
+		},
+		{
+			name:  "substring guard - keyword/monkey/pubkey/query all preserved",
+			input: "https://api.example.com/search?keyword=k1&monkey=m1&pubkey=p1&query=test",
+			// Whole-key (not substring) match: none of these is a sensitive whole key,
+			// so all are preserved and nothing is redacted (source returns input verbatim).
+			expected: "https://api.example.com/search?keyword=k1&monkey=m1&pubkey=p1&query=test",
+			excludes: []string{"REDACTED"},
 		},
 		{
 			name:     "invalid URL returns marker",
