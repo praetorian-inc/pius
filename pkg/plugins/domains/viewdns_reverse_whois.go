@@ -82,5 +82,7 @@ func (p *ViewDNSReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input
 		rawDomains = append(rawDomains, d.Domain)
 	}
 
-	return domainFindings(ctx, p.Name(), input, rawDomains, p.lookupWhois), nil
+	findings := domainFindings(p.Name(), query, rawDomains)
+	addReverseWhoisConfidences(ctx, input, findings, p.lookupWhois)
+	return findings, nil
 }

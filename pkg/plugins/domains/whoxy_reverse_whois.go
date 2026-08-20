@@ -85,6 +85,8 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		return nil, nil
 	}
 
+	pivotOrg := cmp.Or(input.OrgName, input.PersonName, input.Email)
+
 	var allDomains []string
 	for _, q := range queries {
 		if err := ctx.Err(); err != nil {
@@ -98,7 +100,9 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		allDomains = append(allDomains, domains...)
 	}
 
-	return domainFindings(ctx, p.Name(), input, allDomains, p.lookupWhois), nil
+	findings := domainFindings(p.Name(), pivotOrg, allDomains)
+	addReverseWhoisConfidences(ctx, input, findings, p.lookupWhois)
+	return findings, nil
 }
 
 // buildWhoxyQueries maps Input fields to the correct Whoxy API parameters.

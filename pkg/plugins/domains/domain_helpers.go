@@ -20,32 +20,62 @@ const (
 type domainWhoisLookup func(context.Context, string) (whois.Result, error)
 
 // domainFindings normalizes, deduplicates, and filters a raw list of domain
-// strings into plausible FindingDomain entries with the pivot attached. Each
-// candidate receives a base score and is then corroborated against fresh WHOIS.
-func domainFindings(
-	ctx context.Context,
-	source string,
-	input plugins.Input,
-	rawDomains []string,
-	lookup domainWhoisLookup,
-) []plugins.Finding {
-	queryField, queryValue := reverseWhoisQuery(input)
-	normalized := normalizeDomains(rawDomains)
+// strings into plausible FindingDomain entries with the pivot attached.
+func domainFindings(source, pivotOrg string, rawDomains []string) []plugins.Finding {
+	normalized := make([]string, 0, len(rawDomains))
+	for _, raw := range rawDomains {
+		domain := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
+		if domain != "" && whois.IsPlausibleDomain(domain) {
+			normalized = append(normalized, domain)
+		}
+	}
 
 	var findings []plugins.Finding
 	for _, domain := range strutil.Unique(normalized) {
-		finding := plugins.Finding{
+		findings = append(findings, plugins.Finding{
 			Type:   plugins.FindingDomain,
 			Value:  domain,
 			Source: source,
-			Data:   map[string]any{"pivot_org": queryValue},
-		}
-		plugins.AddConfidence(&finding, confReverseWhoisResult,
-			fmt.Sprintf("%s returned %q for reverse WHOIS %s query %q", source, domain, queryField, queryValue))
-		corroborateReverseWhois(ctx, &finding, queryField, queryValue, lookup)
-		findings = append(findings, finding)
+			Data:   map[string]any{"pivot_org": pivotOrg},
+		})
 	}
 	return findings
+}
+
+func addReverseWhoisConfidences(
+	ctx context.Context,
+	input plugins.Input,
+	findings []plugins.Finding,
+	lookup domainWhoisLookup,
+) {
+	if lookup == nil {
+		lookup = lookupDomainWhois
+	}
+
+	queryField, queryValue := reverseWhoisQuery(input)
+	for i := range findings {
+		finding := &findings[i]
+		plugins.AddConfidence(finding, confReverseWhoisResult,
+			fmt.Sprintf("%s returned %q for reverse WHOIS %s query %q",
+				finding.Source, finding.Value, queryField, queryValue))
+
+		result, err := lookup(ctx, finding.Value)
+		if err != nil || result.Unregistered {
+			continue
+		}
+
+		whoisValue := queriedWhoisValue(result, queryField, finding.Value)
+		similarity := strutil.TokenSimilarity(queryValue, whoisValue)
+		switch {
+		case similarity == 1:
+			plugins.AddConfidence(finding, confReverseWhoisFullMatch,
+				fmt.Sprintf("fresh WHOIS %s %q fully matches the queried value %q", queryField, whoisValue, queryValue))
+		case similarity >= minReverseWhoisPartialMatch:
+			plugins.AddConfidence(finding, confReverseWhoisPartialMatch,
+				fmt.Sprintf("fresh WHOIS %s %q partially matches the queried value %q with %.0f%% token similarity",
+					queryField, whoisValue, queryValue, similarity*100))
+		}
+	}
 }
 
 func reverseWhoisQuery(input plugins.Input) (field, value string) {
@@ -56,44 +86,6 @@ func reverseWhoisQuery(input plugins.Input) (field, value string) {
 		return "name", input.PersonName
 	default:
 		return "email", input.Email
-	}
-}
-
-func normalizeDomains(rawDomains []string) []string {
-	normalized := make([]string, 0, len(rawDomains))
-	for _, raw := range rawDomains {
-		domain := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
-		if domain != "" && whois.IsPlausibleDomain(domain) {
-			normalized = append(normalized, domain)
-		}
-	}
-	return normalized
-}
-
-func corroborateReverseWhois(
-	ctx context.Context,
-	finding *plugins.Finding,
-	queryField, queryValue string,
-	lookup domainWhoisLookup,
-) {
-	if lookup == nil {
-		lookup = lookupDomainWhois
-	}
-	result, err := lookup(ctx, finding.Value)
-	if err != nil || result.Unregistered {
-		return
-	}
-
-	whoisValue := queriedWhoisValue(result, queryField, finding.Value)
-	similarity := strutil.TokenSimilarity(queryValue, whoisValue)
-	switch {
-	case similarity == 1:
-		plugins.AddConfidence(finding, confReverseWhoisFullMatch,
-			fmt.Sprintf("fresh WHOIS %s %q fully matches the queried value %q", queryField, whoisValue, queryValue))
-	case similarity >= minReverseWhoisPartialMatch:
-		plugins.AddConfidence(finding, confReverseWhoisPartialMatch,
-			fmt.Sprintf("fresh WHOIS %s %q partially matches the queried value %q with %.0f%% token similarity",
-				queryField, whoisValue, queryValue, similarity*100))
 	}
 }
 
