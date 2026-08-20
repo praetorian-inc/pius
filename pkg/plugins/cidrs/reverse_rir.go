@@ -54,7 +54,7 @@ func (p *ReverseRIRPlugin) Phase() int       { return 1 }
 func (p *ReverseRIRPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *ReverseRIRPlugin) Accepts(input plugins.Input) bool {
-	return input.OrgName != ""
+	return strings.TrimSpace(input.OrgName) != ""
 }
 
 func (p *ReverseRIRPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
@@ -103,8 +103,8 @@ func (p *ReverseRIRPlugin) queryARIN(ctx context.Context, org string) ([]plugins
 	seen := make(map[string]bool)
 	var findings []plugins.Finding
 
-	// Query all entity types, deduplicating by handle value
-	for _, entity := range []string{"orgs", "customers", "nets", "asns"} {
+	// TODO:debt add in net and asn once the arin plugin can support those handles
+	for _, entity := range []string{"orgs", "customers"} {
 		for _, f := range p.queryArinEntity(ctx, entity, org) {
 			if !seen[f.Value] {
 				seen[f.Value] = true
@@ -118,7 +118,7 @@ func (p *ReverseRIRPlugin) queryARIN(ctx context.Context, org string) ([]plugins
 
 // queryArinEntity queries a specific ARIN entity type
 func (p *ReverseRIRPlugin) queryArinEntity(ctx context.Context, entity, org string) []plugins.Finding {
-	apiURL := fmt.Sprintf("https://whois.arin.net/rest/%s;name=*%s*", entity, url.PathEscape(org))
+	apiURL := fmt.Sprintf("https://whois.arin.net/rest/%s;name=%s", entity, arinNamePattern(org))
 
 	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
 		"Accept": "application/json",
@@ -347,6 +347,14 @@ func newReverseRIRFinding(
 	}
 
 	return finding, true
+}
+
+func arinNamePattern(s string) string {
+	tokens := strings.Fields(s)
+	for i, token := range tokens {
+		tokens[i] = url.PathEscape(token)
+	}
+	return "*" + strings.Join(tokens, "*") + "*"
 }
 
 // ── ARIN response types ───────────────────────────────────────────────────────

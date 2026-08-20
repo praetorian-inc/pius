@@ -156,10 +156,8 @@ func TestNewReverseRIRPlugin_NilClientTakesTheDefault(t *testing.T) {
 // embedder's client, or Guard would silently egress around its collector.
 func TestNewReverseRIRPlugin_EveryRegistryUsesTheInjectedClient(t *testing.T) {
 	bodies := map[string]string{
-		"/rest/orgs;name=*Acme Corp*":      `{"orgs":{"orgRef":{"@handle":"ACME-ARIN"}}}`,
-		"/rest/customers;name=*Acme Corp*": `{}`,
-		"/rest/nets;name=*Acme Corp*":      `{}`,
-		"/rest/asns;name=*Acme Corp*":      `{}`,
+		"/rest/orgs;name=*Acme*Corp*":      `{"orgs":{"orgRef":{"@handle":"ACME-ARIN"}}}`,
+		"/rest/customers;name=*Acme*Corp*": `{}`,
 		"/search":                          `{"objects":{"object":[{"primary-key":{"attribute":[{"name":"organisation","value":"ORG-ACME-RIPE"}]}}]}}`,
 		"/query":                           `[{"objectType":"organisation","primaryKey":"ORG-ACME-AP"}]`,
 		"/rdap/entities":                   `{"entitySearchResults":[{"handle":"ORG-ACME-AFRINIC"}],"entities":[{"handle":"BR-ACME-LACNIC"}]}`,
@@ -178,13 +176,11 @@ func TestNewReverseRIRPlugin_EveryRegistryUsesTheInjectedClient(t *testing.T) {
 	findings, err := NewReverseRIRPlugin(c).Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	// Four ARIN entity types plus one query each for RIPE, APNIC, AFRINIC, and
-	// LACNIC. AFRINIC and LACNIC share a path here; both are still queried.
+	// Two resolvable ARIN entity types plus one query each for RIPE, APNIC,
+	// AFRINIC, and LACNIC. AFRINIC and LACNIC share a path here; both are still queried.
 	assert.Equal(t, []string{
-		"/rest/orgs;name=*Acme Corp*",
-		"/rest/customers;name=*Acme Corp*",
-		"/rest/nets;name=*Acme Corp*",
-		"/rest/asns;name=*Acme Corp*",
+		"/rest/orgs;name=*Acme*Corp*",
+		"/rest/customers;name=*Acme*Corp*",
 		"/search",
 		"/query",
 		"/rdap/entities",

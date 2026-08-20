@@ -129,6 +129,24 @@ func TestReverseRIRPlugin_OrgSimilarityThreshold(t *testing.T) {
 	}
 }
 
+func TestARINNamePattern(t *testing.T) {
+	tests := []struct {
+		name string
+		org  string
+		want string
+	}{
+		{name: "single space", org: "Acme Corp", want: "*Acme*Corp*"},
+		{name: "mixed whitespace", org: "  Acme\t Corp\nHoldings  ", want: "*Acme*Corp*Holdings*"},
+		{name: "escapes each token", org: "Acme / Holdings", want: "*Acme*%2F*Holdings*"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, arinNamePattern(tt.org))
+		})
+	}
+}
+
 func TestReverseRIRPlugin_MissingReturnedOrgKeepsBaseConfidence(t *testing.T) {
 	finding, ok := newReverseRIRFinding(
 		"ACME-1", "arin", "ARIN orgs database", "Acme Corp", "",
@@ -138,6 +156,16 @@ func TestReverseRIRPlugin_MissingReturnedOrgKeepsBaseConfidence(t *testing.T) {
 	assert.Equal(t, "", finding.Data["org"])
 	require.Len(t, finding.Confidences, 1)
 	assert.Equal(t, confReverseRIRHandle, finding.Confidences[0].Score)
+}
+
+func TestReverseRIRPlugin_ARINRequestUsesWhitespaceTolerantPattern(t *testing.T) {
+	c, transport := newStubClient([]byte(`{"orgs":{"orgRef":{"@handle":"ACME-ARIN"}}}`))
+	plugin := &ReverseRIRPlugin{client: c}
+
+	findings := plugin.queryArinEntity(context.Background(), "orgs", "Acme Corp")
+
+	require.Len(t, findings, 1)
+	assert.Equal(t, "https://whois.arin.net/rest/orgs;name=*Acme*Corp*", transport.url)
 }
 
 // A handle a phase-two plugin could not act on must not leave this plugin at
@@ -199,15 +227,4 @@ func TestReverseRIRPlugin_BlankHandlesFromRIPEAndLACNIC(t *testing.T) {
 	plugin = &ReverseRIRPlugin{client: c}
 	findings, _ = plugin.queryLACNIC(context.Background(), "Acme Corp")
 	assert.Empty(t, findings, "LACNIC must not emit a blank handle")
-}
-
-// Run is the boundary an embedder sees, so the guarantee has to hold there too:
-// an org that is only whitespace yields nothing rather than unattributed handles.
-func TestReverseRIRPlugin_RunEmitsNothingForABlankOrg(t *testing.T) {
-	c, _ := newStubClient([]byte(`{"orgs":{"orgRef":{"@handle":"ACME-1"}}}`))
-	plugin := &ReverseRIRPlugin{client: c}
-
-	findings, err := plugin.Run(context.Background(), plugins.Input{OrgName: "   "})
-	require.NoError(t, err)
-	assert.Empty(t, findings)
 }

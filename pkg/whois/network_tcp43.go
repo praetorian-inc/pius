@@ -42,6 +42,7 @@ func parseTCP43NetworkResult(target networkTarget, raw, server string) (NetworkR
 		Sources:      []string{"whois"},
 		Raw:          raw,
 	}
+	result.Clean()
 	if err := requireContainingAllocation(result, target); err != nil {
 		return NetworkResult{}, err
 	}
