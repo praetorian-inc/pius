@@ -51,6 +51,46 @@ type NetworkContact struct {
 	PostalCode   string   `json:"postal_code,omitempty"`
 }
 
+func (r *NetworkResult) Clean() {
+	r.Query = strings.TrimSpace(r.Query)
+	r.StartAddress = strings.TrimSpace(r.StartAddress)
+	r.EndAddress = strings.TrimSpace(r.EndAddress)
+	r.Handle = strings.TrimSpace(r.Handle)
+	r.Name = strings.TrimSpace(r.Name)
+	r.Type = strings.TrimSpace(r.Type)
+	r.Status = trimStrings(r.Status)
+	r.Country = strings.TrimSpace(r.Country)
+	r.ParentHandle = strings.TrimSpace(r.ParentHandle)
+	r.Registry = strings.TrimSpace(r.Registry)
+	r.Server = strings.TrimSpace(r.Server)
+	r.RDAPServer = strings.TrimSpace(r.RDAPServer)
+	r.WhoisServer = strings.TrimSpace(r.WhoisServer)
+	r.Sources = trimStrings(r.Sources)
+
+	contacts := make([]NetworkContact, 0, len(r.Contacts))
+	for _, contact := range r.Contacts {
+		contacts = append(contacts, contact.Clean())
+	}
+	r.Contacts = mergeNetworkContacts(nil, contacts)
+}
+
+func (c NetworkContact) Clean() NetworkContact {
+	c.Handle = strings.TrimSpace(c.Handle)
+	c.Roles = trimStrings(c.Roles)
+	c.Status = trimStrings(c.Status)
+	c.Kind = strings.TrimSpace(c.Kind)
+	c.Organization = clearIfPrivacy(c.Organization)
+	c.Name = clearIfPrivacy(c.Name)
+	c.Email = clearIfPrivacy(c.Email)
+	c.Phone = clearIfPrivacy(c.Phone)
+	c.Country = clearIfPrivacy(c.Country)
+	c.Province = clearIfPrivacy(c.Province)
+	c.City = clearIfPrivacy(c.City)
+	c.Street = clearIfPrivacy(c.Street)
+	c.PostalCode = clearIfPrivacy(c.PostalCode)
+	return c
+}
+
 func (c NetworkContact) IsEmpty() bool {
 	return c.Organization == "" && c.Name == "" && c.Email == "" && len(c.Status) == 0
 }
