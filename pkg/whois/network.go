@@ -69,12 +69,12 @@ func (r *NetworkResult) Clean() {
 
 	contacts := make([]NetworkContact, 0, len(r.Contacts))
 	for _, contact := range r.Contacts {
-		contacts = append(contacts, contact.Scrub())
+		contacts = append(contacts, contact.Clean())
 	}
 	r.Contacts = mergeNetworkContacts(nil, contacts)
 }
 
-func (c NetworkContact) Scrub() NetworkContact {
+func (c NetworkContact) Clean() NetworkContact {
 	c.Handle = strings.TrimSpace(c.Handle)
 	c.Roles = trimStrings(c.Roles)
 	c.Status = trimStrings(c.Status)
