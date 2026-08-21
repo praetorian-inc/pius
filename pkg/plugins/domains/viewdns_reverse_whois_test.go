@@ -146,6 +146,25 @@ func TestViewDNSReverseWhois_Run_NameMode(t *testing.T) {
 		findingReverseWhoisParameters(t, findings[0]))
 }
 
+func TestViewDNSReverseWhois_Run_SkipsInvalidHigherPriorityParameter(t *testing.T) {
+	t.Setenv("VIEWDNS_API_KEY", "test-key")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "admin@acme.com", r.URL.Query().Get("q"))
+		_, _ = w.Write([]byte(`{"response":{"matches":[{"domain":"example.com"}]}}`))
+	}))
+	defer srv.Close()
+
+	p := &ViewDNSReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	findings, err := p.Run(context.Background(), plugins.Input{
+		OrgName: "Privacy Redaction",
+		Email:   "admin@acme.com",
+	})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, []ReverseWhoisParameter{{Field: "email", Value: "admin@acme.com"}},
+		findingReverseWhoisParameters(t, findings[0]))
+}
+
 func TestViewDNSReverseWhois_Run_ErrorOmitsURL(t *testing.T) {
 	t.Setenv("VIEWDNS_API_KEY", "test-key")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -91,18 +91,27 @@ func (p *ViewDNSReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input
 }
 
 func viewDNSReverseWhoisParameter(input plugins.Input) (ReverseWhoisParameter, bool) {
-	query := cmp.Or(input.OrgName, input.PersonName, input.Email)
-	field := "email"
-	switch query {
-	case input.OrgName:
-		field = "company"
-	case input.PersonName:
-		field = "name"
-	}
-
-	parameters := validReverseWhoisParameters([]ReverseWhoisParameter{{Field: field, Value: query}})
+	parameters := reverseWhoisParameters(input)
 	if len(parameters) == 0 {
 		return ReverseWhoisParameter{}, false
 	}
-	return parameters[0], true
+
+	var company, name, email string
+	for _, parameter := range parameters {
+		switch parameter.Field {
+		case "company":
+			company = parameter.Value
+		case "name":
+			name = parameter.Value
+		case "email":
+			email = parameter.Value
+		}
+	}
+	selectedValue := cmp.Or(company, name, email)
+	for _, parameter := range parameters {
+		if parameter.Value == selectedValue {
+			return parameter, true
+		}
+	}
+	return ReverseWhoisParameter{}, false
 }
