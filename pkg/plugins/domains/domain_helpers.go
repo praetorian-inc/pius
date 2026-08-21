@@ -43,16 +43,21 @@ func reverseWhoisFindings(source string, rawDomains []WhoisDomain) []plugins.Fin
 
 	findings := []plugins.Finding{}
 	for _, domain := range domains {
+		params := parametersByDomain[domain]
 		finding := plugins.Finding{
 			Type:   plugins.FindingDomain,
 			Value:  domain,
 			Source: source,
 			Data: map[string]any{
-				WhoisParametersKey: parametersByDomain[domain],
+				WhoisParametersKey: params,
 			},
 		}
+
+		firstParam := params[0]
 		plugins.AddConfidence(&finding, reverseWhoisBaselineConfidence,
-			fmt.Sprintf("%s reverse-WHOIS API returned domain %q", source, domain))
+			fmt.Sprintf("Queried %s and discovered domain %q was previously registered with registrant %q of %q",
+				source, domain, firstParam.Field, firstParam.Value),
+		)
 		findings = append(findings, finding)
 	}
 

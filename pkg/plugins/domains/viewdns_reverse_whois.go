@@ -76,7 +76,7 @@ func (p *ViewDNSReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input
 		}
 	}
 
-	return reverseWhoisFindings(p.Name(), rawDomains), nil
+	return reverseWhoisFindings("https://viewdns.info/", rawDomains), nil
 }
 
 func (p *ViewDNSReverseWhoisPlugin) query(ctx context.Context, apiKey, value string) ([]string, error) {

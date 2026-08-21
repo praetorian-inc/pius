@@ -106,7 +106,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		}
 	}
 
-	return reverseWhoisFindings(p.Name(), rawDomains), nil
+	return reverseWhoisFindings("https://www.whoxy.com/", rawDomains), nil
 }
 
 // buildWhoxyQueries maps Input fields to the correct Whoxy API parameters.
