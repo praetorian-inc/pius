@@ -17,8 +17,7 @@ func init() {
 }
 
 // ViewDNSReverseWhoisPlugin discovers related domains via ViewDNS reverse WHOIS.
-// Emits FindingDomain with Data["pivot_org"]. Verification happens when Guard
-// runs the whois capability on each discovered domain.
+// Findings retain the typed pivot for deferred WHOIS corroboration in Guard.
 type ViewDNSReverseWhoisPlugin struct {
 	client  *client.Client
 	baseURL string // overridable for tests
@@ -45,7 +44,8 @@ func (p *ViewDNSReverseWhoisPlugin) Phase() int       { return 0 }
 func (p *ViewDNSReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *ViewDNSReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("VIEWDNS_API_KEY") != "" && (input.OrgName != "" || input.PersonName != "" || input.Email != "")
+	_, ok := viewDNSReverseWhoisParameter(input)
+	return os.Getenv("VIEWDNS_API_KEY") != "" && ok
 }
 
 type viewDNSResponse struct {
@@ -59,11 +59,14 @@ type viewDNSResponse struct {
 func (p *ViewDNSReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("VIEWDNS_API_KEY")
 
-	query := cmp.Or(input.OrgName, input.PersonName, input.Email)
+	parameter, ok := viewDNSReverseWhoisParameter(input)
+	if !ok {
+		return nil, nil
+	}
 
 	reqURL := fmt.Sprintf(
 		"%s/reversewhois/?q=%s&apikey=%s&output=json",
-		p.apiBase(), url.QueryEscape(query), apiKey,
+		p.apiBase(), url.QueryEscape(parameter.Value), apiKey,
 	)
 
 	body, err := p.client.Get(ctx, reqURL)
@@ -76,10 +79,30 @@ func (p *ViewDNSReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input
 		return nil, fmt.Errorf("viewdns-reverse-whois: parse response: %w", err)
 	}
 
-	var rawDomains []string
-	for _, d := range response.Response.Matches {
-		rawDomains = append(rawDomains, d.Domain)
+	rawDomains := make([]reverseWhoisDomain, 0, len(response.Response.Matches))
+	for _, match := range response.Response.Matches {
+		rawDomains = append(rawDomains, reverseWhoisDomain{
+			value:      match.Domain,
+			parameters: []ReverseWhoisParameter{parameter},
+		})
 	}
 
-	return domainFindings(p.Name(), query, rawDomains), nil
+	return domainFindings(p.Name(), rawDomains), nil
+}
+
+func viewDNSReverseWhoisParameter(input plugins.Input) (ReverseWhoisParameter, bool) {
+	query := cmp.Or(input.OrgName, input.PersonName, input.Email)
+	field := "email"
+	switch query {
+	case input.OrgName:
+		field = "company"
+	case input.PersonName:
+		field = "name"
+	}
+
+	parameters := validReverseWhoisParameters([]ReverseWhoisParameter{{Field: field, Value: query}})
+	if len(parameters) == 0 {
+		return ReverseWhoisParameter{}, false
+	}
+	return parameters[0], true
 }
