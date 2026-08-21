@@ -54,9 +54,14 @@ func reverseWhoisFindings(source string, rawDomains []WhoisDomain) []plugins.Fin
 		}
 
 		firstParam := params[0]
+		fieldName := firstParam.Field
+		if fieldName == "company" {
+			fieldName = "organization"
+		}
+
 		plugins.AddConfidence(&finding, reverseWhoisBaselineConfidence,
-			fmt.Sprintf("Queried %s and discovered domain %q was previously registered with registrant %q of %q",
-				source, domain, firstParam.Field, firstParam.Value),
+			fmt.Sprintf("Queried %s and discovered domain %q was previously registered with registrant %v of %q",
+				source, domain, fieldName, firstParam.Value),
 		)
 		findings = append(findings, finding)
 	}
