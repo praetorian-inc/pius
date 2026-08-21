@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"time"
 
 	whoisparser "github.com/likexian/whois-parser"
 )
@@ -57,7 +58,9 @@ type whoxyLiveResponse struct {
 	StatusReason string `json:"status_reason"`
 }
 
-func (r *WhoxyResolver) Lookup(ctx context.Context, domain string) (Result, error) {
+func (r *WhoxyResolver) Lookup(ctx context.Context, domain string) (result Result, err error) {
+	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
+
 	apiKey := r.resolveAPIKey()
 	if apiKey == "" {
 		return Result{}, ErrNoCredential
@@ -118,7 +121,7 @@ func (r *WhoxyResolver) Lookup(ctx context.Context, domain string) (Result, erro
 		return Result{}, fmt.Errorf("whoxy: parsing record for %s: %w", domain, err)
 	}
 
-	result := mapParsedToResult(domain, parsed)
+	result = mapParsedToResult(domain, parsed)
 	result.Sources = []string{ProviderWhoxy}
 	return result, nil
 }

@@ -6,9 +6,40 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"time"
 
 	"github.com/openrdap/rdap"
 )
+
+// RDAPResolver is the RDAP leg of the cascade, expressed as a Resolver so the
+// whole chain — free protocols included — is one uniform list that a test can
+// substitute a fake into.
+//
+// RDAP leads the cascade because it returns structured fields and standardized
+// dates. It rarely carries registrant email, which is what the later legs are
+// for.
+type RDAPResolver struct {
+	httpClient *http.Client
+}
+
+// NewRDAPResolver returns an RDAP resolver. A nil httpClient uses the rdap
+// package's default.
+func NewRDAPResolver(httpClient *http.Client) *RDAPResolver {
+	return &RDAPResolver{httpClient: httpClient}
+}
+
+func (r *RDAPResolver) Name() string { return SourceRDAP }
+
+func (r *RDAPResolver) Lookup(ctx context.Context, domain string) (result Result, err error) {
+	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
+
+	result, err = rdapLookup(ctx, r.httpClient, domain)
+	if err != nil {
+		return Result{}, err
+	}
+	result.Sources = []string{SourceRDAP}
+	return result, nil
+}
 
 // rdapLookup performs an RDAP domain lookup, following registrar "related"
 // links when the registry response lacks registrant data (common under GDPR).

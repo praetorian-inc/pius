@@ -10,34 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestWhoisFreaksResolver_Name(t *testing.T) {
-	assert.Equal(t, ProviderWhoisFreaks, NewWhoisFreaksResolver(nil, "k").Name())
-}
-
-// TestWhoisFreaksResolver_NoCredentialIsDistinguishable is the behavioural
-// difference between the resolver and the bare lookup it wraps. The bare
-// function returns an empty result and a nil error when the key is missing,
-// which reads identically to "this provider has no record" — so a route could
-// never tell an operator that a configured provider was doing nothing.
-func TestWhoisFreaksResolver_NoCredentialIsDistinguishable(t *testing.T) {
-	t.Setenv("WHOISFREAKS_API_KEY", "")
-
-	bare, bareErr := whoisFreaksLookup(context.Background(), http.DefaultClient, "example.com")
-	require.NoError(t, bareErr, "the bare lookup keeps its no-op contract")
-	assert.Equal(t, Result{}, bare)
-
-	_, resolverErr := NewWhoisFreaksResolver(nil, "").Lookup(context.Background(), "example.com")
-	assert.ErrorIs(t, resolverErr, ErrNoCredential, "the resolver reports it instead")
-}
-
-func TestWhoisFreaksResolver_EnvFallback(t *testing.T) {
-	t.Setenv("WHOISFREAKS_API_KEY", "from-env")
-
-	assert.True(t, NewWhoisFreaksResolver(nil, "").hasCredential())
-	assert.Equal(t, "from-env", NewWhoisFreaksResolver(nil, "").resolveAPIKey())
-	assert.Equal(t, "explicit", NewWhoisFreaksResolver(nil, "explicit").resolveAPIKey())
-}
-
 // TestWhoxyResolver_Integration queries the real Whoxy API. Skipped unless
 // WHOXY_API_KEY is set.
 //

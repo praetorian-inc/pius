@@ -57,6 +57,28 @@ func (r Result) HasRegistrant() bool {
 	return r.Registrant.Organization != "" || r.Registrant.Name != ""
 }
 
+// isComplete reports whether the record needs no further leg — the stop
+// condition for the cascade.
+//
+// The field set is named explicitly rather than derived from "every field on
+// Result", because "every field" is unsatisfiable: DNSSEC, Province and Street
+// are absent from most registries, so requiring them would guarantee every
+// lookup walks the entire route and bills every paid provider, every time.
+// These five are the fields Guard actually consumes — registrant identity and a
+// contact address to reach it at, plus the registrar, expiry and nameservers
+// that make the record actionable.
+//
+// This predicate is a cost dial. Widening it bills more providers per lookup;
+// narrowing it bills fewer and returns sparser records. Change it deliberately,
+// with the per-provider outcome rates from logLookup in hand.
+func (r Result) isComplete() bool {
+	return r.HasRegistrant() &&
+		r.Registrant.Email != "" &&
+		r.Registrar != "" &&
+		r.Expiration != "" &&
+		len(r.NameServers) > 0
+}
+
 // hasSubstance reports whether the record carries actual registration data
 // rather than just a domain name echoed back by the provider. It is what
 // distinguishes "this source has an answer" from "this source acknowledged the

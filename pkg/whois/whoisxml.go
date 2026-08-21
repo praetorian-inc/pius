@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 // whoisXMLBaseURL is the WhoisXML API v1 Live WHOIS endpoint. It is a var so
@@ -110,7 +111,9 @@ type whoisXMLContact struct {
 // dataErrorMissingWhois is WhoisXML's marker for "no WHOIS data available".
 const dataErrorMissingWhois = "MISSING_WHOIS_DATA"
 
-func (r *WhoisXMLResolver) Lookup(ctx context.Context, domain string) (Result, error) {
+func (r *WhoisXMLResolver) Lookup(ctx context.Context, domain string) (result Result, err error) {
+	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
+
 	apiKey := r.resolveAPIKey()
 	if apiKey == "" {
 		return Result{}, ErrNoCredential
@@ -184,7 +187,7 @@ func (r *WhoisXMLResolver) Lookup(ctx context.Context, domain string) (Result, e
 	// and merged. Merging whole Results rather than copying selected fields also
 	// means contacts are carried across, which is the reason the fallback was
 	// consulted in the first place.
-	result := mapWhoisXMLToResult(domain, rec)
+	result = mapWhoisXMLToResult(domain, rec)
 	if registry != nil {
 		result.Merge(mapWhoisXMLToResult(domain, *registry))
 	}

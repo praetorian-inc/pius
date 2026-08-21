@@ -1,21 +1,59 @@
 package whois
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"time"
 )
 
 // whoisFreaksBaseURL is the WhoisFreaks v2.0 Live WHOIS API endpoint.
 // It is a var so tests can point it at httptest.Server.
 var whoisFreaksBaseURL = "https://api.whoisfreaks.com/v2.0/whois/live"
 
+// WhoisFreaksResolver looks up live WHOIS through the WhoisFreaks v2.0 API.
+//
+// WhoisFreaks has the cheapest marginal live rate of the three commercial legs,
+// but GATE 1 measured its free tier throttling at concurrency 1 on a per-minute
+// limit shared across its products, so it sits behind the incumbent rather than
+// ahead of it.
+type WhoisFreaksResolver struct {
+	httpClient *http.Client
+	apiKey     string
+	baseURL    string
+}
+
+// NewWhoisFreaksResolver returns a WhoisFreaks resolver. An empty apiKey falls
+// back to WHOISFREAKS_API_KEY.
+//
+// The key is a constructor parameter rather than an environment read at call
+// time because Guard injects credentials rather than exporting them, matching
+// the fix made on main to WhoxyReverseWHOIS.
+func NewWhoisFreaksResolver(httpClient *http.Client, apiKey string) *WhoisFreaksResolver {
+	return &WhoisFreaksResolver{httpClient: httpClient, apiKey: apiKey}
+}
+
+func (r *WhoisFreaksResolver) Name() string { return ProviderWhoisFreaks }
+
+func (r *WhoisFreaksResolver) resolveAPIKey() string {
+	return cmp.Or(r.apiKey, os.Getenv("WHOISFREAKS_API_KEY"))
+}
+
+func (r *WhoisFreaksResolver) hasCredential() bool { return r.resolveAPIKey() != "" }
+
+func (r *WhoisFreaksResolver) apiBase() string { return cmp.Or(r.baseURL, whoisFreaksBaseURL) }
+
 // whoisFreaksResponse mirrors the WhoisFreaks v2.0 Live WHOIS JSON response.
+//
+// Status is reported in the body rather than the status code, so an
+// unsuccessful payload arrives as an HTTP 200 and the status field — not the
+// status code — decides.
 type whoisFreaksResponse struct {
 	Status           bool                 `json:"status"`
 	DomainName       string               `json:"domain_name"`
@@ -50,50 +88,45 @@ type whoisFreaksContact struct {
 	Phone        string `json:"phone"`
 }
 
-// whoisFreaksLookup queries the WhoisFreaks v2.0 Live WHOIS API for domain
-// registration data. If WHOISFREAKS_API_KEY is unset, it returns a zero Result
-// with nil error (no-op).
+// Lookup queries the WhoisFreaks v2.0 Live WHOIS API for domain registration
+// data.
 //
-// Prefer WhoisFreaksResolver, which participates in the configurable fallback
-// route and reports a missing key as ErrNoCredential rather than silently
-// doing nothing.
-func whoisFreaksLookup(ctx context.Context, httpClient *http.Client, domain string) (Result, error) {
-	return whoisFreaksLookupWithKey(ctx, httpClient, os.Getenv("WHOISFREAKS_API_KEY"), domain)
-}
+// A missing key is ErrNoCredential, not a silent empty result: the two are
+// indistinguishable to a caller, and an operator who configured this provider
+// needs to find out it is not actually serving traffic.
+func (r *WhoisFreaksResolver) Lookup(ctx context.Context, domain string) (result Result, err error) {
+	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
-// whoisFreaksLookupWithKey is whoisFreaksLookup with the credential supplied by
-// the caller, so a resolver configured with an explicit key does not have to go
-// through the environment.
-func whoisFreaksLookupWithKey(ctx context.Context, httpClient *http.Client, apiKey, domain string) (Result, error) {
+	apiKey := r.resolveAPIKey()
 	if apiKey == "" {
-		return Result{}, nil
-	}
-
-	if httpClient == nil {
-		httpClient = http.DefaultClient
+		return Result{}, ErrNoCredential
 	}
 
 	params := url.Values{}
 	params.Set("apiKey", apiKey)
 	params.Set("domainName", domain)
-	reqURL := whoisFreaksBaseURL + "?" + params.Encode()
+	reqURL := r.apiBase() + "?" + params.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return Result{}, fmt.Errorf("whoisfreaks: building request: %w", err)
+		return Result{}, fmt.Errorf("whoisfreaks: building request for %s: %w", domain, err)
 	}
 
+	httpClient := cmp.Or(r.httpClient, http.DefaultClient)
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		if urlErr, ok := err.(*url.Error); ok {
+		// Unwrap *url.Error before reporting. WhoisFreaks authenticates with a
+		// query parameter, so Go renders a transport failure as
+		// `Get "<full url>": <cause>` — with the API key embedded in it.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
 			return Result{}, fmt.Errorf("whoisfreaks: request failed for %s: %w", domain, urlErr.Err)
 		}
-		return Result{}, fmt.Errorf("whoisfreaks: request failed for %s: %w", domain, err)
+		return Result{}, fmt.Errorf("whoisfreaks: request failed for %s", domain)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		slog.Debug("WhoisFreaks API returned non-200", "domain", domain, "status", resp.StatusCode)
 		return Result{}, fmt.Errorf("whoisfreaks: API returned HTTP %d for %s", resp.StatusCode, domain)
 	}
 
@@ -107,6 +140,8 @@ func whoisFreaksLookupWithKey(ctx context.Context, httpClient *http.Client, apiK
 		return Result{}, fmt.Errorf("whoisfreaks: decoding response for %s: %w", domain, err)
 	}
 
+	// Reported inside an HTTP 200. Trusting the status code here would record a
+	// provider-side failure as "this domain has no data".
 	if !wfResp.Status {
 		return Result{}, fmt.Errorf("whoisfreaks: API returned unsuccessful status for %s", domain)
 	}
@@ -128,7 +163,7 @@ func mapWhoisFreaksToResult(domain string, wf whoisFreaksResponse) Result {
 		WhoisServer: wf.WhoisServer,
 		NameServers: wf.NameServers,
 		Status:      wf.DomainStatus,
-		Sources:     []string{"whoisfreaks"},
+		Sources:     []string{ProviderWhoisFreaks},
 		Registrant:  mapWhoisFreaksContact(wf.Registrant),
 		Admin:       mapWhoisFreaksContact(wf.Admin),
 		Tech:        mapWhoisFreaksContact(wf.Tech),

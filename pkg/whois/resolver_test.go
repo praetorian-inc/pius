@@ -10,8 +10,8 @@ import (
 )
 
 // fakeResolver is a Resolver whose answer is fixed by the test, and which
-// counts how many times it was consulted. The count is what proves the route
-// stopped where it was supposed to.
+// counts how many times it was consulted. The count is what proves the cascade
+// stopped, or continued, where it was supposed to.
 type fakeResolver struct {
 	name   string
 	result Result
@@ -26,10 +26,30 @@ func (f *fakeResolver) Lookup(_ context.Context, _ string) (Result, error) {
 	return f.result, f.err
 }
 
+// answering returns a leg with a partial record: enough to be substantive, not
+// enough to satisfy isComplete. Under merge-until-complete this is the
+// interesting case, because it is the one that keeps the cascade walking.
 func answering(name string) *fakeResolver {
 	return &fakeResolver{
 		name:   name,
 		result: Result{Domain: "example.com", Registrar: name, Sources: []string{name}},
+	}
+}
+
+// complete returns a leg whose record satisfies isComplete, so the cascade has
+// no reason to consult anything after it.
+func complete(name string) *fakeResolver {
+	return &fakeResolver{name: name, result: completeResult(name)}
+}
+
+func completeResult(name string) Result {
+	return Result{
+		Domain:      "example.com",
+		Registrar:   name,
+		Expiration:  "2027-08-13T04:00:00Z",
+		NameServers: []string{"ns1." + name + ".test"},
+		Registrant:  Contact{Organization: "Example Corp", Email: "admin@example.com"},
+		Sources:     []string{name},
 	}
 }
 
@@ -46,56 +66,96 @@ func unkeyed(name string) *fakeResolver {
 	return &fakeResolver{name: name, err: ErrNoCredential}
 }
 
-// TestRunFallbacks_StopsAtFirstAnswer: once a provider answers, no later
-// provider is consulted.
+// route builds a commercial-only cascade. The free legs are left nil, which the
+// cascade skips, so these tests exercise the configurable tail in isolation.
+func route(resolvers ...Resolver) *WHOIS {
+	return &WHOIS{Fallbacks: resolvers}
+}
+
+// TestCascade_ContinuesWhileIncomplete is the core of the resolution model: a
+// leg that answers with a partial record does NOT end the cascade. Every later
+// provider is consulted, and their fields are merged in.
 //
-// This bounds how many providers ANSWER, not how many are BILLED. A provider
-// consulted before the winner may already have been charged -- see
-// TestRunFallbacks_EveryConsultedProviderMayBeBilled.
-func TestRunFallbacks_StopsAtFirstAnswer(t *testing.T) {
+// This is the deliberate inversion of the previous stop-at-first-answer
+// behaviour, requested in review on #161. Read
+// TestCascade_EveryConsultedProviderIsBilled for what it costs.
+func TestCascade_ContinuesWhileIncomplete(t *testing.T) {
 	first := answering(ProviderWhoxy)
+	second := &fakeResolver{
+		name: ProviderWhoisFreaks,
+		result: Result{
+			Domain:     "example.com",
+			Expiration: "2027-08-13T04:00:00Z",
+			Sources:    []string{ProviderWhoisFreaks},
+		},
+	}
+	third := &fakeResolver{
+		name: ProviderWhoisXML,
+		result: Result{
+			Domain:      "example.com",
+			Registrant:  Contact{Organization: "Example Corp", Email: "admin@example.com"},
+			NameServers: []string{"ns1.example.com"},
+			Sources:     []string{ProviderWhoisXML},
+		},
+	}
+
+	res, err := route(first, second, third).Lookup(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, first.calls)
+	assert.Equal(t, 1, second.calls, "a partial answer must not end the cascade")
+	assert.Equal(t, 1, third.calls, "a still-incomplete record keeps walking the route")
+
+	// Each leg contributed the field the earlier ones left empty.
+	assert.Equal(t, ProviderWhoxy, res.Registrar)
+	assert.Equal(t, "2027-08-13T04:00:00Z", res.Expiration)
+	assert.Equal(t, "Example Corp", res.Registrant.Organization)
+	assert.Equal(t, []string{ProviderWhoxy, ProviderWhoisFreaks, ProviderWhoisXML}, res.Sources,
+		"provenance accumulates across every leg that contributed")
+}
+
+// TestCascade_StopsWhenComplete is the other half of the contract: completeness
+// is what ends the cascade, so a leg that answers in full spares every provider
+// behind it.
+func TestCascade_StopsWhenComplete(t *testing.T) {
+	first := complete(ProviderWhoxy)
 	second := answering(ProviderWhoisFreaks)
 	third := answering(ProviderWhoisXML)
 
-	res, ok, err := runFallbacks(context.Background(),
-		[]Resolver{first, second, third}, "example.com")
+	res, err := route(first, second, third).Lookup(context.Background(), "example.com")
 
-	require.True(t, ok)
 	require.NoError(t, err)
-	assert.Equal(t, ProviderWhoxy, res.Registrar, "the first provider's record should win")
-
+	assert.Equal(t, ProviderWhoxy, res.Registrar)
 	assert.Equal(t, 1, first.calls)
-	assert.Zero(t, second.calls, "no later provider is consulted once the first answered")
-	assert.Zero(t, third.calls, "no later provider is consulted once the first answered")
+	assert.Zero(t, second.calls, "a complete record leaves nothing to fill")
+	assert.Zero(t, third.calls)
 }
 
-// TestRunFallbacks_OrderIsHonoured proves the route is the operator's, not a
-// hardcoded preference: the same providers in the other order give the other
-// answer.
-func TestRunFallbacks_OrderIsHonoured(t *testing.T) {
+// TestCascade_OrderIsHonoured proves the route is the operator's, not a
+// hardcoded preference. Merge is first-non-empty-wins, so order is also field
+// precedence: the same two providers in the other order give the other answer.
+func TestCascade_OrderIsHonoured(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		order []string
-		want  string
 	}{
-		{"whoxy first", []string{ProviderWhoxy, ProviderWhoisXML}, ProviderWhoxy},
-		{"whoisxml first", []string{ProviderWhoisXML, ProviderWhoxy}, ProviderWhoisXML},
+		{"whoxy first", []string{ProviderWhoxy, ProviderWhoisXML}},
+		{"whoisxml first", []string{ProviderWhoisXML, ProviderWhoxy}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resolvers := []Resolver{answering(tc.order[0]), answering(tc.order[1])}
+			res, err := route(complete(tc.order[0]), complete(tc.order[1])).
+				Lookup(context.Background(), "example.com")
 
-			res, ok, err := runFallbacks(context.Background(), resolvers, "example.com")
-
-			require.True(t, ok)
 			require.NoError(t, err)
-			assert.Equal(t, tc.want, res.Registrar)
+			assert.Equal(t, tc.order[0], res.Registrar,
+				"the leg configured first sets the field")
 		})
 	}
 }
 
-// TestRunFallbacks_PassesThroughToNext covers the reason a route exists: a
-// provider that errors, or that answers with nothing, must not end the chain.
-func TestRunFallbacks_PassesThroughToNext(t *testing.T) {
+// TestCascade_PassesThroughToNext covers the reason a route exists: a provider
+// that errors, or answers with nothing, must not end the cascade.
+func TestCascade_PassesThroughToNext(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		first *fakeResolver
@@ -105,12 +165,11 @@ func TestRunFallbacks_PassesThroughToNext(t *testing.T) {
 		{"first has no credential", unkeyed(ProviderWhoxy)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			second := answering(ProviderWhoisFreaks)
+			second := complete(ProviderWhoisFreaks)
 
-			res, ok, _ := runFallbacks(context.Background(),
-				[]Resolver{tc.first, second}, "example.com")
+			res, err := route(tc.first, second).Lookup(context.Background(), "example.com")
 
-			require.True(t, ok)
+			require.NoError(t, err)
 			assert.Equal(t, ProviderWhoisFreaks, res.Registrar)
 			assert.Equal(t, 1, tc.first.calls)
 			assert.Equal(t, 1, second.calls)
@@ -118,20 +177,18 @@ func TestRunFallbacks_PassesThroughToNext(t *testing.T) {
 	}
 }
 
-// TestRunFallbacks_Exhaustion reports failure without inventing a result, and
-// surfaces every provider's reason so a caller can say why the route came up
+// TestCascade_Exhaustion reports failure without inventing a result, and
+// surfaces every provider's reason so a caller can say why the cascade came up
 // empty.
-func TestRunFallbacks_Exhaustion(t *testing.T) {
+func TestCascade_Exhaustion(t *testing.T) {
 	first := failing(ProviderWhoxy)
 	second := silent(ProviderWhoisFreaks)
 	third := unkeyed(ProviderWhoisXML)
 
-	res, ok, err := runFallbacks(context.Background(),
-		[]Resolver{first, second, third}, "example.com")
+	res, err := route(first, second, third).Lookup(context.Background(), "example.com")
 
-	assert.False(t, ok)
-	assert.Equal(t, Result{}, res)
 	require.Error(t, err)
+	assert.Equal(t, Result{}, res)
 	assert.Contains(t, err.Error(), "whoxy unavailable")
 	assert.ErrorIs(t, err, ErrNoCredential)
 
@@ -140,43 +197,244 @@ func TestRunFallbacks_Exhaustion(t *testing.T) {
 	assert.Equal(t, 1, third.calls, "every provider should be tried before giving up")
 }
 
-// TestRunFallbacks_EmptyRoute is the no-fallback configuration: nothing is
-// consulted and nothing is billed.
-func TestRunFallbacks_EmptyRoute(t *testing.T) {
-	for _, resolvers := range [][]Resolver{nil, {}} {
-		res, ok, err := runFallbacks(context.Background(), resolvers, "example.com")
-		assert.False(t, ok)
-		assert.Equal(t, Result{}, res)
-		assert.NoError(t, err)
+// TestCascade_PartialResultSurvivesAFailedTail is the exhaustion case that
+// matters in production: the free legs supplied something, every paid provider
+// then failed, and the partial record is still returned successfully rather
+// than thrown away as an error.
+func TestCascade_PartialResultSurvivesAFailedTail(t *testing.T) {
+	free := answering(SourceRDAP)
+	w := &WHOIS{
+		RDAPResolver: free,
+		Fallbacks:    []Resolver{failing(ProviderWhoxy), unkeyed(ProviderWhoisXML)},
+	}
+
+	res, err := w.Lookup(context.Background(), "example.com")
+
+	require.NoError(t, err, "a partial record is a result, not a failure")
+	assert.Equal(t, SourceRDAP, res.Registrar)
+	assert.Equal(t, "example.com", res.Domain)
+}
+
+// TestCascade_EmptyRouteResolvesFromFreeLegsAlone is the no-fallback
+// configuration: nothing commercial is consulted and nothing is billed.
+func TestCascade_EmptyRouteResolvesFromFreeLegsAlone(t *testing.T) {
+	for _, fallbacks := range [][]Resolver{nil, {}} {
+		w := &WHOIS{
+			RDAPResolver:  complete(SourceRDAP),
+			TCP43Resolver: answering(SourceTCP43),
+			Fallbacks:     fallbacks,
+		}
+
+		res, err := w.Lookup(context.Background(), "example.com")
+
+		require.NoError(t, err)
+		assert.Equal(t, SourceRDAP, res.Registrar)
 	}
 }
 
-// TestRunFallbacks_UnregisteredIsAnAnswer: a provider reporting the domain does
-// not exist has answered. The route stops; what the caller does with that
-// verdict is its own decision.
-func TestRunFallbacks_UnregisteredIsAnAnswer(t *testing.T) {
+// TestCascade_UnregisteredBelievedWhenNothingResolved: with no competing
+// evidence, a provider's not-registered verdict stands, and it ends the cascade
+// rather than paying the remaining providers to re-confirm it.
+func TestCascade_UnregisteredBelievedWhenNothingResolved(t *testing.T) {
 	first := &fakeResolver{
 		name:   ProviderWhoxy,
 		result: Result{Domain: "gone.com", Unregistered: true},
 	}
-	second := answering(ProviderWhoisFreaks)
+	second := complete(ProviderWhoisFreaks)
 
-	res, ok, _ := runFallbacks(context.Background(), []Resolver{first, second}, "gone.com")
+	res, err := route(first, second).Lookup(context.Background(), "gone.com")
 
-	require.True(t, ok)
+	require.NoError(t, err)
 	assert.True(t, res.Unregistered)
+	assert.Equal(t, "gone.com", res.Domain)
+	assert.Zero(t, second.calls, "a verdict ends the cascade")
+}
+
+// TestCascade_UnregisteredDiscardedAfterARecord: a leg already returned a
+// record, so a later provider claiming the domain does not exist is
+// contradicting better evidence. Believing it would mark a live domain dead —
+// and in Guard that verdict is persisted as a cacheable success, so it sticks.
+func TestCascade_UnregisteredDiscardedAfterARecord(t *testing.T) {
+	resolved := answering(SourceRDAP)
+	denier := &fakeResolver{
+		name:   ProviderWhoisXML,
+		result: Result{Domain: "example.com", Unregistered: true},
+	}
+
+	w := &WHOIS{RDAPResolver: resolved, Fallbacks: []Resolver{denier}}
+	res, err := w.Lookup(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, denier.calls)
+	assert.False(t, res.Unregistered, "a resolved record must not be marked unregistered")
+	assert.Equal(t, SourceRDAP, res.Registrar)
+	assert.Equal(t, []string{SourceRDAP}, res.Sources,
+		"a discarded verdict adds no provenance")
+}
+
+// TestCascade_ScrubsBeforeMerging guards an ordering that is easy to get wrong.
+// A privacy placeholder must not occupy a field and block the real value a
+// later leg carries. Scrubbing the merged record at the end instead would clear
+// the placeholder but lose the real name with it.
+func TestCascade_ScrubsBeforeMerging(t *testing.T) {
+	redacted := &fakeResolver{
+		name: SourceRDAP,
+		result: Result{
+			Domain:     "example.com",
+			Registrar:  "Original Registrar",
+			Registrant: Contact{Organization: "REDACTED FOR PRIVACY"},
+			Sources:    []string{SourceRDAP},
+		},
+	}
+	real := &fakeResolver{
+		name: ProviderWhoisXML,
+		result: Result{
+			Domain:     "example.com",
+			Registrant: Contact{Organization: "Example Corp"},
+			Sources:    []string{ProviderWhoisXML},
+		},
+	}
+
+	w := &WHOIS{RDAPResolver: redacted, Fallbacks: []Resolver{real}}
+	res, err := w.Lookup(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Example Corp", res.Registrant.Organization,
+		"a placeholder must not block a later leg's real value")
+	assert.Equal(t, "Original Registrar", res.Registrar, "real values still take precedence")
+}
+
+// TestCascade_StopsOnCancelledContext: a cancelled context fails every
+// remaining provider identically, so continuing only produces duplicate errors
+// and log noise.
+func TestCascade_StopsOnCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	first := complete(ProviderWhoxy)
+	second := complete(ProviderWhoisFreaks)
+
+	_, err := route(first, second).Lookup(ctx, "example.com")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, first.calls, "no provider should be consulted once the context is done")
 	assert.Zero(t, second.calls)
 }
 
+// TestCascade_EveryConsultedProviderIsBilled states the cost of
+// merge-until-complete plainly, so nobody reads "merges the best fields" as
+// "cheap".
+//
+// Under stop-at-first-answer, reaching the third provider needed the first two
+// to fail. Under merge-until-complete, all three are consulted whenever the
+// record stays incomplete — which is the normal outcome for a GDPR-redacted
+// domain, because registrant identity is stripped at the registry and is
+// therefore absent from every provider. So the common case is one billable
+// request per configured provider, and a short default route is the only thing
+// bounding it.
+func TestCascade_EveryConsultedProviderIsBilled(t *testing.T) {
+	first := answering(ProviderWhoxy)
+	second := answering(ProviderWhoisFreaks)
+	third := answering(ProviderWhoisXML)
+
+	res, err := route(first, second, third).Lookup(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	require.False(t, res.isComplete(), "the record never reached completeness")
+
+	assert.Equal(t, 1, first.calls)
+	assert.Equal(t, 1, second.calls, "billed even though the first already answered")
+	assert.Equal(t, 1, third.calls, "billed even though two providers already answered")
+}
+
+// TestCascade_MissingCredentialCostsNothing is the one failure mode that is
+// free: no key means no request, so it is worth distinguishing from a provider
+// that was consulted and declined.
+func TestCascade_MissingCredentialCostsNothing(t *testing.T) {
+	t.Setenv("WHOISXML_API_KEY", "")
+
+	_, err := NewWhoisXMLResolver(nil, "").Lookup(context.Background(), "example.com")
+
+	assert.ErrorIs(t, err, ErrNoCredential,
+		"an unkeyed resolver declines before building a request")
+}
+
+// TestWHOIS_AcceptsFakeLegs is the testability payoff of putting every leg
+// behind Resolver: a unit test replaces the network entirely by assigning
+// struct fields, with no package-level function patching.
+func TestWHOIS_AcceptsFakeLegs(t *testing.T) {
+	w := &WHOIS{
+		RDAPResolver:  complete(SourceRDAP),
+		TCP43Resolver: failing(SourceTCP43),
+		Fallbacks:     []Resolver{failing(ProviderWhoxy)},
+	}
+
+	res, err := w.Lookup(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, SourceRDAP, res.Registrar)
+}
+
+// TestWHOIS_SkipsNilLegs: the zero value plus a tail is a valid commercial-only
+// cascade, so an absent leg is skipped rather than panicking.
+func TestWHOIS_SkipsNilLegs(t *testing.T) {
+	w := &WHOIS{Fallbacks: []Resolver{complete(ProviderWhoxy)}}
+
+	res, err := w.Lookup(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, ProviderWhoxy, res.Registrar)
+}
+
+func TestNewBuildsTheDefaultCascade(t *testing.T) {
+	w := New()
+
+	require.NotNil(t, w.RDAPResolver)
+	require.NotNil(t, w.TCP43Resolver)
+	assert.Equal(t, SourceRDAP, w.RDAPResolver.Name())
+	assert.Equal(t, SourceTCP43, w.TCP43Resolver.Name())
+
+	require.Len(t, w.Fallbacks, 3)
+	assert.Equal(t, ProviderWhoxy, w.Fallbacks[0].Name(),
+		"the incumbent leads by default so behaviour is preserved")
+	assert.Equal(t, ProviderWhoisFreaks, w.Fallbacks[1].Name())
+	assert.Equal(t, ProviderWhoisXML, w.Fallbacks[2].Name())
+}
+
+// TestResultIsComplete pins the stop condition. It is a cost dial: every field
+// added here bills more providers on every lookup that lacks it.
+func TestResultIsComplete(t *testing.T) {
+	full := completeResult(ProviderWhoxy)
+	require.True(t, full.isComplete())
+
+	for _, tc := range []struct {
+		name  string
+		strip func(*Result)
+	}{
+		{"no registrant identity", func(r *Result) { r.Registrant.Organization = "" }},
+		{"no registrant email", func(r *Result) { r.Registrant.Email = "" }},
+		{"no registrar", func(r *Result) { r.Registrar = "" }},
+		{"no expiration", func(r *Result) { r.Expiration = "" }},
+		{"no nameservers", func(r *Result) { r.NameServers = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := completeResult(ProviderWhoxy)
+			tc.strip(&r)
+			assert.False(t, r.isComplete(), "a missing field must keep the cascade walking")
+		})
+	}
+}
+
 // TestFallbackResultMergesRatherThanReplaces guards the gap-filling contract
-// the route depends on: a later source fills what earlier ones left empty and
+// the cascade depends on: a later source fills what earlier ones left empty and
 // never overwrites what they supplied.
 func TestFallbackResultMergesRatherThanReplaces(t *testing.T) {
 	base := Result{
 		Domain:    "example.com",
 		Registrar: "Original Registrar",
 		Created:   "1995-08-14T04:00:00Z",
-		Sources:   []string{"rdap"},
+		Sources:   []string{SourceRDAP},
 	}
 	fallback := Result{
 		Domain:     "example.com",
@@ -192,7 +450,7 @@ func TestFallbackResultMergesRatherThanReplaces(t *testing.T) {
 	assert.Equal(t, "1995-08-14T04:00:00Z", base.Created)
 	assert.Equal(t, "2027-08-13T04:00:00Z", base.Expiration, "gaps must be filled")
 	assert.Equal(t, "Example Corp", base.Registrant.Organization)
-	assert.Equal(t, []string{"rdap", ProviderWhoisXML}, base.Sources, "provenance accumulates")
+	assert.Equal(t, []string{SourceRDAP, ProviderWhoisXML}, base.Sources, "provenance accumulates")
 }
 
 func TestResolversByName(t *testing.T) {
@@ -265,8 +523,7 @@ func TestConfigResolvers(t *testing.T) {
 		resolvers := cfg.resolvers()
 
 		require.Len(t, resolvers, 3)
-		assert.Equal(t, ProviderWhoxy, resolvers[0].Name(),
-			"the incumbent leads by default so behaviour is preserved")
+		assert.Equal(t, ProviderWhoxy, resolvers[0].Name())
 		assert.Equal(t, ProviderWhoisFreaks, resolvers[1].Name())
 		assert.Equal(t, ProviderWhoisXML, resolvers[2].Name())
 	})
@@ -292,184 +549,4 @@ func TestDefaultFallbackOrder(t *testing.T) {
 	assert.Equal(t,
 		[]string{ProviderWhoxy, ProviderWhoisFreaks, ProviderWhoisXML},
 		DefaultFallbackOrder())
-}
-
-// TestFillGapsFromFallback_SkipsWhenRegistrantPresent is the cost guarantee for
-// the gap-fill path: a result that already identifies its registrant must not
-// consult a paid provider at all.
-func TestFillGapsFromFallback_SkipsWhenRegistrantPresent(t *testing.T) {
-	provider := answering(ProviderWhoxy)
-	result := Result{Domain: "example.com", Registrant: Contact{Organization: "Example Corp"}}
-
-	fillGapsFromFallback(context.Background(), []Resolver{provider}, "example.com", &result)
-
-	assert.Zero(t, provider.calls, "no provider should be billed when nothing is missing")
-	assert.Equal(t, "Example Corp", result.Registrant.Organization)
-}
-
-func TestFillGapsFromFallback_FillsMissingRegistrant(t *testing.T) {
-	provider := &fakeResolver{
-		name: ProviderWhoisXML,
-		result: Result{
-			Domain:     "example.com",
-			Registrant: Contact{Organization: "Found By Fallback"},
-			Expiration: "2027-08-13T04:00:00Z",
-			Sources:    []string{ProviderWhoisXML},
-		},
-	}
-	result := Result{Domain: "example.com", Registrar: "Original", Sources: []string{"rdap"}}
-
-	fillGapsFromFallback(context.Background(), []Resolver{provider}, "example.com", &result)
-
-	assert.Equal(t, 1, provider.calls)
-	assert.Equal(t, "Found By Fallback", result.Registrant.Organization)
-	assert.Equal(t, "2027-08-13T04:00:00Z", result.Expiration)
-	assert.Equal(t, "Original", result.Registrar, "existing fields survive")
-	assert.Equal(t, []string{"rdap", ProviderWhoisXML}, result.Sources)
-}
-
-// TestFallbackUnregisteredNeverOverwritesAResolvedRecord: RDAP or TCP-43 already
-// returned a record, so a fallback provider reporting the domain as unregistered
-// is contradicting better evidence. Believing it would mark a live domain dead —
-// and in Guard that verdict is persisted as a cacheable success, so it sticks.
-func TestFallbackUnregisteredNeverOverwritesAResolvedRecord(t *testing.T) {
-	provider := &fakeResolver{
-		name:   ProviderWhoisXML,
-		result: Result{Domain: "example.com", Unregistered: true},
-	}
-	result := Result{Domain: "example.com", Registrar: "Original", Sources: []string{"rdap"}}
-
-	fillGapsFromFallback(context.Background(), []Resolver{provider}, "example.com", &result)
-
-	assert.Equal(t, 1, provider.calls)
-	assert.False(t, result.Unregistered, "a resolved record must not be marked unregistered")
-	assert.Equal(t, "Original", result.Registrar)
-	assert.Equal(t, []string{"rdap"}, result.Sources, "a discarded verdict adds no provenance")
-}
-
-// TestFillGapsFromFallback_EmptyRouteIsSafe: with no commercial fallback
-// configured, a registrant-less result is returned as-is rather than erroring.
-func TestFillGapsFromFallback_EmptyRouteIsSafe(t *testing.T) {
-	result := Result{Domain: "example.com", Registrar: "Original"}
-
-	fillGapsFromFallback(context.Background(), nil, "example.com", &result)
-
-	assert.Equal(t, "Original", result.Registrar)
-	assert.False(t, result.HasRegistrant())
-}
-
-// TestResolveViaFallbackOnly covers the branch taken when neither RDAP nor
-// TCP-43 produced anything, so the route is the only remaining source.
-func TestResolveViaFallbackOnly(t *testing.T) {
-	t.Run("returns the first answer with contacts scrubbed", func(t *testing.T) {
-		provider := &fakeResolver{
-			name: ProviderWhoisFreaks,
-			result: Result{
-				Domain: "example.com",
-				// A privacy placeholder must not survive into the result.
-				Registrant: Contact{Organization: "REDACTED FOR PRIVACY", Name: "Jane Doe"},
-				Sources:    []string{ProviderWhoisFreaks},
-			},
-		}
-
-		res, ok, err := resolveViaFallbackOnly(context.Background(),
-			[]Resolver{provider}, "example.com")
-
-		require.True(t, ok)
-		require.NoError(t, err)
-		assert.Empty(t, res.Registrant.Organization, "privacy placeholders should be scrubbed")
-		assert.Equal(t, "Jane Doe", res.Registrant.Name, "real values survive scrubbing")
-	})
-
-	t.Run("believes an unregistered verdict when nothing else resolved", func(t *testing.T) {
-		provider := &fakeResolver{
-			name:   ProviderWhoisXML,
-			result: Result{Domain: "gone.example", Unregistered: true},
-		}
-
-		res, ok, err := resolveViaFallbackOnly(context.Background(),
-			[]Resolver{provider}, "gone.example")
-
-		require.True(t, ok)
-		require.NoError(t, err)
-		assert.True(t, res.Unregistered,
-			"with no competing evidence, a provider's verdict stands")
-	})
-
-	t.Run("reports every reason when the route is exhausted", func(t *testing.T) {
-		res, ok, err := resolveViaFallbackOnly(context.Background(),
-			[]Resolver{failing(ProviderWhoxy), unkeyed(ProviderWhoisXML)}, "example.com")
-
-		assert.False(t, ok)
-		assert.Equal(t, Result{}, res)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "whoxy unavailable")
-		assert.ErrorIs(t, err, ErrNoCredential)
-	})
-
-	t.Run("is a no-op with no route configured", func(t *testing.T) {
-		_, ok, err := resolveViaFallbackOnly(context.Background(), nil, "example.com")
-		assert.False(t, ok)
-		assert.NoError(t, err)
-	})
-}
-
-// TestRunFallbacks_StopsOnCancelledContext: a cancelled context fails every
-// remaining provider identically, so continuing only produces duplicate errors
-// and log noise.
-func TestRunFallbacks_StopsOnCancelledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	first := answering(ProviderWhoxy)
-	second := answering(ProviderWhoisFreaks)
-
-	_, ok, err := runFallbacks(ctx, []Resolver{first, second}, "example.com")
-
-	assert.False(t, ok)
-	assert.ErrorIs(t, err, context.Canceled)
-	assert.Zero(t, first.calls, "no provider should be consulted once the context is done")
-	assert.Zero(t, second.calls)
-}
-
-// TestRunFallbacks_EveryConsultedProviderMayBeBilled documents the real cost
-// shape of a fallback route, so nobody reads "stops at the first answer" as
-// "only ever pays one provider".
-//
-// A provider that returns an error, an unparseable body, or an acknowledged-but-
-// empty record has usually already incurred a charge. The route then moves on,
-// so the worst case is one billable request per configured provider. That is
-// inherent to a fallback -- "A has nothing, ask B" is the point -- and it is why
-// a short default route matters.
-func TestRunFallbacks_EveryConsultedProviderMayBeBilled(t *testing.T) {
-	billed := failing(ProviderWhoxy)          // request made, then failed
-	alsoBilled := silent(ProviderWhoisFreaks) // request made, no record
-	answered := answering(ProviderWhoisXML)
-
-	_, ok, _ := runFallbacks(context.Background(),
-		[]Resolver{billed, alsoBilled, answered}, "example.com")
-
-	require.True(t, ok)
-	assert.Equal(t, 1, billed.calls, "a failed request was still sent, and still charged")
-	assert.Equal(t, 1, alsoBilled.calls, "an empty answer was still a billable request")
-	assert.Equal(t, 1, answered.calls)
-}
-
-// TestRunFallbacks_MissingCredentialCostsNothing is the one failure mode that is
-// free: no key means no request, so it is worth distinguishing from a provider
-// that was consulted and declined.
-func TestRunFallbacks_MissingCredentialCostsNothing(t *testing.T) {
-	free := unkeyed(ProviderWhoxy)
-	answered := answering(ProviderWhoisXML)
-
-	_, ok, _ := runFallbacks(context.Background(),
-		[]Resolver{free, answered}, "example.com")
-
-	require.True(t, ok)
-
-	// The fake counts calls, so assert on the contract instead: an unkeyed real
-	// resolver reports ErrNoCredential before building a request.
-	t.Setenv("WHOISXML_API_KEY", "")
-	_, err := NewWhoisXMLResolver(nil, "").Lookup(context.Background(), "example.com")
-	assert.ErrorIs(t, err, ErrNoCredential)
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Resolver is a commercial WHOIS provider consulted as a fallback after the
@@ -33,6 +34,15 @@ const (
 	ProviderWhoxy       = "whoxy"
 	ProviderWhoisFreaks = "whoisfreaks"
 	ProviderWhoisXML    = "whoisxml"
+)
+
+// Source identifiers for the two free legs. These are the values that reach
+// Result.Sources and are serialized into Guard's whois/<domain> record, so they
+// are the existing wire strings and not free to rename: "whois" — not "tcp43" —
+// is what port-43 has always reported.
+const (
+	SourceRDAP  = "rdap"
+	SourceTCP43 = "whois"
 )
 
 // DefaultFallbackOrder is the route used when the caller configures none.
@@ -117,99 +127,51 @@ func defaultResolvers(httpClient *http.Client) []Resolver {
 	return resolvers
 }
 
-// resolveViaFallbackOnly walks the route when neither free protocol produced
-// anything, so the answer has to come from a commercial provider or not at all.
-//
-// Unlike fillGapsFromFallback this does believe an Unregistered verdict: nothing
-// else resolved the domain, so there is no better evidence to contradict.
-func resolveViaFallbackOnly(ctx context.Context, resolvers []Resolver, domain string) (Result, bool, error) {
-	res, ok, err := runFallbacks(ctx, resolvers, domain)
-	if !ok {
-		return Result{}, false, err
-	}
-	res.ScrubContacts()
-	return res, true, nil
-}
+// Lookup outcomes recorded by logLookup. These are the vocabulary the
+// per-provider success rate is computed from, so they are deliberately four
+// values rather than a pass/fail pair: "the provider is broken" and "the
+// registry has nothing to give anyone" are the same event under a binary flag,
+// and telling them apart is the whole point of measuring.
+const (
+	// outcomeFound means the provider returned a definitive answer — either a
+	// record carrying registration data, or a credible "not registered"
+	// verdict. Both ended the question.
+	outcomeFound = "found"
+	// outcomeEmpty means the provider acknowledged the query and held no
+	// record. Common under GDPR redaction, and not a provider defect.
+	outcomeEmpty = "empty"
+	// outcomeError means the request, the response or the parse failed.
+	outcomeError = "error"
+	// outcomeSkipped means no credential was configured, so no request was
+	// sent — the one failure mode that costs nothing.
+	outcomeSkipped = "skipped"
+)
 
-// fillGapsFromFallback consults the route when the free-protocol result lacks
-// registrant identity, merging in the first usable answer.
+// logLookup emits exactly one record per resolver call, at Info so it survives
+// production log levels. CloudWatch aggregates these into per-provider success,
+// breakage and unkeyed rates, which is what tells an operator whether a
+// configured route is earning its cost and in which order the legs belong.
 //
-// An Unregistered verdict is discarded here rather than acted on. RDAP or TCP-43
-// already returned a record for this domain, so a provider claiming it does not
-// exist is contradicting better evidence — and because Merge would not undo a
-// resolved record anyway, acting on it could only mislead. The both-legs-failed
-// path in Lookup does believe that verdict, because there nothing else resolved
-// the domain at all.
-func fillGapsFromFallback(ctx context.Context, resolvers []Resolver, domain string, result *Result) {
-	if result.HasRegistrant() {
-		return
+// Called via defer with named returns, so every exit path is counted — an early
+// ErrNoCredential included. It never inspects the error text, only its kind, so
+// a provider that authenticates with a query parameter cannot leak its key here.
+func logLookup(name, domain string, started time.Time, result *Result, err *error) {
+	outcome := outcomeFound
+	switch {
+	case err != nil && errors.Is(*err, ErrNoCredential):
+		outcome = outcomeSkipped
+	case err != nil && *err != nil:
+		outcome = outcomeError
+	case result.Unregistered:
+		// A definitive not-registered verdict answered the question.
+		outcome = outcomeFound
+	case !result.hasSubstance():
+		outcome = outcomeEmpty
 	}
-	fbResult, ok, _ := runFallbacks(ctx, resolvers, domain)
-	if !ok || fbResult.Unregistered {
-		return
-	}
-	fbResult.ScrubContacts()
-	result.Merge(fbResult)
-}
 
-// runFallbacks tries each resolver in order and returns the first usable
-// record. "Usable" is deliberately a low bar: returned without an error, and
-// naming a domain.
-//
-// There is no completeness test. A provider that answers ends the chain even if
-// its record is partial, enforced by control flow rather than by a predicate
-// that must stay correct as Result grows fields. A completeness test would also
-// be unreachable in practice: GDPR and privacy-proxy redaction strip registrant
-// identity at the registry, so those fields are absent from every provider and
-// the chain would call all of them on every redacted domain, forever.
-//
-// # What this does and does not bound
-//
-// Stopping at the first answer bounds how many providers *answer*, which is one.
-// It does NOT bound how many are *billed*. A provider that is consulted and
-// returns an error, an unparseable body, or an acknowledged-but-empty record has
-// usually already incurred a charge, and the route then moves on to the next
-// paid provider. So the worst case is one billable request per configured
-// provider, per lookup.
-//
-// That is inherent to a fallback route rather than a defect — "provider A has
-// nothing, ask B" is the entire point — but it is the reason a short default
-// route matters, and the reason ErrNoCredential is worth distinguishing: an
-// unkeyed provider is skipped without a request, so it is the one failure mode
-// that costs nothing.
-//
-// Errors are collected rather than returned early so that a caller which
-// exhausts the route can report why every provider declined. They are returned
-// only when no provider answered: a non-nil error alongside a usable result
-// would invite callers to treat a satisfied lookup as a failure.
-func runFallbacks(ctx context.Context, resolvers []Resolver, domain string) (Result, bool, error) {
-	var errs []error
-	for _, r := range resolvers {
-		// A cancelled context will fail every remaining provider for the same
-		// reason, so stop rather than generating one identical error per provider.
-		if err := ctx.Err(); err != nil {
-			errs = append(errs, err)
-			break
-		}
-
-		res, err := r.Lookup(ctx, domain)
-		if err != nil {
-			if errors.Is(err, ErrNoCredential) {
-				slog.Debug("WHOIS fallback skipped: no credential",
-					"provider", r.Name(), "domain", domain)
-			} else {
-				slog.Debug("WHOIS fallback failed",
-					"provider", r.Name(), "domain", domain, "error", err)
-			}
-			errs = append(errs, err)
-			continue
-		}
-		if res.Domain == "" {
-			slog.Debug("WHOIS fallback returned no record",
-				"provider", r.Name(), "domain", domain)
-			continue
-		}
-		return res, true, nil
-	}
-	return Result{}, false, errors.Join(errs...)
+	slog.Info("whois lookup complete",
+		"resolver", name,
+		"domain", domain,
+		"result", outcome,
+		"duration_ms", time.Since(started).Milliseconds())
 }
