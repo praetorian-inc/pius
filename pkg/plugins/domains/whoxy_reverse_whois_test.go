@@ -86,7 +86,7 @@ func TestWhoxyReverseWhois_Run_EmitsFindings(t *testing.T) {
 	for _, f := range findings {
 		assert.Equal(t, plugins.FindingDomain, f.Type)
 		assert.Equal(t, "whoxy-reverse-whois", f.Source)
-		assert.Equal(t, []ReverseWhoisParameter{{Field: "company", Value: "Acme Corp"}},
+		assert.Equal(t, []WhoisParameter{{Field: "company", Value: "Acme Corp"}},
 			findingReverseWhoisParameters(t, f))
 		require.Len(t, f.Confidences, 1)
 		assert.Equal(t, 50, plugins.TotalConfidence(f))
@@ -190,7 +190,7 @@ func TestWhoxyReverseWhois_Run_EmailMode(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{Email: "admin@acme.com"})
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
-	assert.Equal(t, []ReverseWhoisParameter{{Field: "email", Value: "admin@acme.com"}},
+	assert.Equal(t, []WhoisParameter{{Field: "email", Value: "admin@acme.com"}},
 		findingReverseWhoisParameters(t, findings[0]))
 }
 
@@ -218,7 +218,7 @@ func TestWhoxyReverseWhois_Run_PreservesParametersPerDomain(t *testing.T) {
 	require.Len(t, findings, 4)
 	assert.Equal(t, []string{"company.example", "shared.example", "name.example", "email.example"},
 		[]string{findings[0].Value, findings[1].Value, findings[2].Value, findings[3].Value})
-	assert.Equal(t, []ReverseWhoisParameter{
+	assert.Equal(t, []WhoisParameter{
 		{Field: "company", Value: "Acme Corp"},
 		{Field: "name", Value: "Alice Smith"},
 	}, findingReverseWhoisParameters(t, findings[1]))

@@ -81,11 +81,11 @@ func TestViewDNSReverseWhois_Run_OrgMode(t *testing.T) {
 
 	assert.Equal(t, plugins.FindingDomain, findings[0].Type)
 	assert.Equal(t, "acme.com", findings[0].Value)
-	assert.Equal(t, []ReverseWhoisParameter{{Field: "company", Value: "Acme Corp"}},
+	assert.Equal(t, []WhoisParameter{{Field: "company", Value: "Acme Corp"}},
 		findingReverseWhoisParameters(t, findings[0]))
 
 	assert.Equal(t, "acme.net", findings[1].Value)
-	assert.Equal(t, []ReverseWhoisParameter{{Field: "company", Value: "Acme Corp"}},
+	assert.Equal(t, []WhoisParameter{{Field: "company", Value: "Acme Corp"}},
 		findingReverseWhoisParameters(t, findings[1]))
 	for _, finding := range findings {
 		require.Len(t, finding.Confidences, 1)
@@ -126,7 +126,7 @@ func TestViewDNSReverseWhois_Run_EmailMode(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
 	assert.Equal(t, "acme.com", findings[0].Value)
-	assert.Equal(t, []ReverseWhoisParameter{{Field: "email", Value: "admin@acme.com"}},
+	assert.Equal(t, []WhoisParameter{{Field: "email", Value: "admin@acme.com"}},
 		findingReverseWhoisParameters(t, findings[0]))
 }
 
@@ -139,11 +139,35 @@ func TestViewDNSReverseWhois_Run_NameMode(t *testing.T) {
 	defer srv.Close()
 
 	p := &ViewDNSReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
-	findings, err := p.Run(context.Background(), plugins.Input{PersonName: "Alice Smith", Email: "alice@example.com"})
+	findings, err := p.Run(context.Background(), plugins.Input{PersonName: "Alice Smith"})
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
-	assert.Equal(t, []ReverseWhoisParameter{{Field: "name", Value: "Alice Smith"}},
+	assert.Equal(t, []WhoisParameter{{Field: "name", Value: "Alice Smith"}},
 		findingReverseWhoisParameters(t, findings[0]))
+}
+
+func TestViewDNSReverseWhois_Run_QueriesEveryParameter(t *testing.T) {
+	t.Setenv("VIEWDNS_API_KEY", "test-key")
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query().Get("q"))
+		_, _ = w.Write([]byte(`{"response":{"matches":[{"domain":"shared.example"}]}}`))
+	}))
+	defer srv.Close()
+
+	p := &ViewDNSReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	findings, err := p.Run(context.Background(), plugins.Input{
+		OrgName: "Acme Corp",
+		Email:   "admin@acme.com",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Acme Corp", "admin@acme.com"}, queries)
+	require.Len(t, findings, 1)
+	assert.Equal(t, []WhoisParameter{
+		{Field: "company", Value: "Acme Corp"},
+		{Field: "email", Value: "admin@acme.com"},
+	}, findingReverseWhoisParameters(t, findings[0]))
+	require.Len(t, findings[0].Confidences, 1)
 }
 
 func TestViewDNSReverseWhois_Run_SkipsInvalidHigherPriorityParameter(t *testing.T) {
@@ -161,7 +185,7 @@ func TestViewDNSReverseWhois_Run_SkipsInvalidHigherPriorityParameter(t *testing.
 	})
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
-	assert.Equal(t, []ReverseWhoisParameter{{Field: "email", Value: "admin@acme.com"}},
+	assert.Equal(t, []WhoisParameter{{Field: "email", Value: "admin@acme.com"}},
 		findingReverseWhoisParameters(t, findings[0]))
 }
 

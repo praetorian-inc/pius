@@ -8,95 +8,76 @@ import (
 	"github.com/praetorian-inc/pius/pkg/whois"
 )
 
-const reverseWhoisParametersKey = "reverse_whois_parameters"
+const WhoisParametersKey = "whois_parameters"
 const reverseWhoisBaselineConfidence = 50
 
-// ReverseWhoisParameter records the typed pivot that produced a reverse-WHOIS result.
-type ReverseWhoisParameter struct {
+// WhoisParameter records the typed pivot that produced a reverse-WHOIS result.
+type WhoisParameter struct {
 	Field string `json:"field"`
 	Value string `json:"value"`
 }
 
-type reverseWhoisDomain struct {
+type WhoisDomain struct {
 	value      string
-	parameters []ReverseWhoisParameter
+	parameters []WhoisParameter
 }
 
-// domainFindings normalizes, filters, and deduplicates reverse-WHOIS results.
+// reverseWhoisFindings normalizes, filters, and deduplicates reverse-WHOIS results.
 // A domain returned by multiple pivots is emitted once with their union.
-func domainFindings(source string, rawDomains []reverseWhoisDomain) []plugins.Finding {
-	var findings []plugins.Finding
-	findingByDomain := make(map[string]int, len(rawDomains))
-
+func reverseWhoisFindings(source string, rawDomains []WhoisDomain) []plugins.Finding {
+	parametersByDomain := map[string][]WhoisParameter{}
+	var domains []string
 	for _, rawDomain := range rawDomains {
-		domain := normalizeReverseWhoisDomain(rawDomain.value)
+		domain := normalizeWhoisDomain(rawDomain.value)
 		if domain == "" || !whois.IsPlausibleDomain(domain) {
 			continue
 		}
-
-		parameters := validReverseWhoisParameters(rawDomain.parameters)
-		if index, exists := findingByDomain[domain]; exists {
-			findings[index].Data[reverseWhoisParametersKey] = mergeReverseWhoisParameters(
-				findings[index].Data[reverseWhoisParametersKey].([]ReverseWhoisParameter),
-				parameters,
-			)
-			continue
+		if _, exists := parametersByDomain[domain]; !exists {
+			domains = append(domains, domain)
 		}
+		parametersByDomain[domain] = uniqueWhoisParameters(
+			parametersByDomain[domain],
+			rawDomain.parameters,
+		)
+	}
 
+	findings := []plugins.Finding{}
+	for _, domain := range domains {
 		finding := plugins.Finding{
 			Type:   plugins.FindingDomain,
 			Value:  domain,
 			Source: source,
 			Data: map[string]any{
-				reverseWhoisParametersKey: parameters,
+				WhoisParametersKey: parametersByDomain[domain],
 			},
 		}
 		plugins.AddConfidence(&finding, reverseWhoisBaselineConfidence,
 			fmt.Sprintf("%s reverse-WHOIS API returned domain %q", source, domain))
-
-		findingByDomain[domain] = len(findings)
 		findings = append(findings, finding)
 	}
 
 	return findings
 }
 
-func normalizeReverseWhoisDomain(domain string) string {
+func normalizeWhoisDomain(domain string) string {
 	return strings.TrimSuffix(strings.TrimSpace(strings.ToLower(domain)), ".")
 }
 
-func reverseWhoisParameters(input plugins.Input) []ReverseWhoisParameter {
-	return validReverseWhoisParameters([]ReverseWhoisParameter{
+func whoisParameters(input plugins.Input) []WhoisParameter {
+	return []WhoisParameter{
 		{Field: "company", Value: input.OrgName},
 		{Field: "name", Value: input.PersonName},
 		{Field: "email", Value: input.Email},
-	})
+	}
 }
 
-func validReverseWhoisParameters(parameters []ReverseWhoisParameter) []ReverseWhoisParameter {
-	valid := make([]ReverseWhoisParameter, 0, len(parameters))
-	for _, parameter := range parameters {
-		parameter.Field = strings.ToLower(strings.TrimSpace(parameter.Field))
-		parameter.Value = strings.TrimSpace(parameter.Value)
-		if !isReverseWhoisField(parameter.Field) || parameter.Value == "" || whois.IsPrivacy(parameter.Value) {
+func uniqueWhoisParameters(existing, incoming []WhoisParameter) []WhoisParameter {
+	for _, candidate := range incoming {
+		candidate.Field = strings.ToLower(strings.TrimSpace(candidate.Field))
+		candidate.Value = strings.TrimSpace(candidate.Value)
+		if candidate.Field == "" || candidate.Value == "" || whois.IsPrivacy(candidate.Value) {
 			continue
 		}
-		valid = mergeReverseWhoisParameters(valid, []ReverseWhoisParameter{parameter})
-	}
-	return valid
-}
-
-func isReverseWhoisField(field string) bool {
-	switch field {
-	case "company", "name", "email":
-		return true
-	default:
-		return false
-	}
-}
-
-func mergeReverseWhoisParameters(existing, incoming []ReverseWhoisParameter) []ReverseWhoisParameter {
-	for _, candidate := range incoming {
 		duplicate := false
 		for _, parameter := range existing {
 			if parameter.Field == candidate.Field && strings.EqualFold(parameter.Value, candidate.Value) {

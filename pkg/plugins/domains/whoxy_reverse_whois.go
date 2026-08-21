@@ -44,7 +44,8 @@ func (p *WhoxyReverseWhoisPlugin) Phase() int       { return 0 }
 func (p *WhoxyReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *WhoxyReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return p.resolveAPIKey() != "" && len(buildWhoxyQueries(input)) > 0
+	return p.resolveAPIKey() != "" &&
+		(input.OrgName != "" || input.PersonName != "" || input.Email != "")
 }
 
 func (p *WhoxyReverseWhoisPlugin) resolveAPIKey() string {
@@ -84,7 +85,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		return nil, nil
 	}
 
-	var rawDomains []reverseWhoisDomain
+	var rawDomains []WhoisDomain
 	for _, q := range queries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -95,9 +96,9 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 			continue
 		}
 		for _, domain := range domains {
-			rawDomains = append(rawDomains, reverseWhoisDomain{
+			rawDomains = append(rawDomains, WhoisDomain{
 				value: domain,
-				parameters: []ReverseWhoisParameter{{
+				parameters: []WhoisParameter{{
 					Field: q.param,
 					Value: q.value,
 				}},
@@ -105,12 +106,12 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		}
 	}
 
-	return domainFindings(p.Name(), rawDomains), nil
+	return reverseWhoisFindings(p.Name(), rawDomains), nil
 }
 
 // buildWhoxyQueries maps Input fields to the correct Whoxy API parameters.
 func buildWhoxyQueries(input plugins.Input) []whoxyQuery {
-	parameters := reverseWhoisParameters(input)
+	parameters := whoisParameters(input)
 	queries := make([]whoxyQuery, 0, len(parameters))
 	for _, parameter := range parameters {
 		queries = append(queries, whoxyQuery{param: parameter.Field, value: parameter.Value})
