@@ -26,15 +26,12 @@ type WhoisDomain struct {
 // A domain returned by multiple pivots is emitted once with their union.
 func reverseWhoisFindings(source string, rawDomains []WhoisDomain) []plugins.Finding {
 	parametersByDomain := map[string][]WhoisParameter{}
-	var domains []string
 	for _, rawDomain := range rawDomains {
 		domain := normalizeWhoisDomain(rawDomain.value)
 		if domain == "" || !whois.IsPlausibleDomain(domain) {
 			continue
 		}
-		if _, exists := parametersByDomain[domain]; !exists {
-			domains = append(domains, domain)
-		}
+
 		parametersByDomain[domain] = uniqueWhoisParameters(
 			parametersByDomain[domain],
 			rawDomain.parameters,
@@ -42,8 +39,11 @@ func reverseWhoisFindings(source string, rawDomains []WhoisDomain) []plugins.Fin
 	}
 
 	findings := []plugins.Finding{}
-	for _, domain := range domains {
-		params := parametersByDomain[domain]
+	for domain, params := range parametersByDomain {
+		if len(params) == 0 { // skip findings with no legit params
+			continue
+		}
+
 		finding := plugins.Finding{
 			Type:   plugins.FindingDomain,
 			Value:  domain,
