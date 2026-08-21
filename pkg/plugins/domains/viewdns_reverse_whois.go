@@ -57,7 +57,7 @@ type viewDNSResponse struct {
 
 func (p *ViewDNSReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("VIEWDNS_API_KEY")
-	parameters := whoisParameters(input)
+	parameters := whoisParametersFromInput(input)
 	if len(parameters) == 0 {
 		return nil, nil
 	}

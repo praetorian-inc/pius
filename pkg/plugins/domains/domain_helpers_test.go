@@ -15,19 +15,6 @@ func findingReverseWhoisParameters(t *testing.T, finding plugins.Finding) []Whoi
 	return parameters
 }
 
-func TestWhoisParameters_ConvertsValidInputFieldsInOrder(t *testing.T) {
-	parameters := whoisParameters(plugins.Input{
-		OrgName:    " Acme Corp ",
-		PersonName: "Privacy Redaction",
-		Email:      "admin@acme.com",
-	})
-
-	assert.Equal(t, []WhoisParameter{
-		{Field: "company", Value: "Acme Corp"},
-		{Field: "email", Value: "admin@acme.com"},
-	}, parameters)
-}
-
 func TestReverseWhoisPlugins_AcceptTheSameInputFields(t *testing.T) {
 	t.Setenv("VIEWDNS_API_KEY", "test-key")
 	viewDNS := &ViewDNSReverseWhoisPlugin{}

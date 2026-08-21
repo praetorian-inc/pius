@@ -73,12 +73,23 @@ func normalizeWhoisDomain(domain string) string {
 	return strings.TrimSuffix(strings.TrimSpace(strings.ToLower(domain)), ".")
 }
 
-func whoisParameters(input plugins.Input) []WhoisParameter {
-	return []WhoisParameter{
+func whoisParametersFromInput(input plugins.Input) []WhoisParameter {
+	raw := []WhoisParameter{
 		{Field: "company", Value: input.OrgName},
 		{Field: "name", Value: input.PersonName},
 		{Field: "email", Value: input.Email},
 	}
+
+	filtered := []WhoisParameter{}
+	for _, param := range raw {
+		if param.Value == "" || whois.IsPrivacy(param.Value) {
+			continue
+		}
+
+		filtered = append(filtered, param)
+	}
+
+	return filtered
 }
 
 func uniqueWhoisParameters(existing, incoming []WhoisParameter) []WhoisParameter {
