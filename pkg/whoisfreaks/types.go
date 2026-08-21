@@ -108,10 +108,13 @@ type SSLResult struct {
 	RawPEM         string        // populated only when Raw=true; carried verbatim
 	CreditsCharged int           // credits the meter recorded for THIS call (AC#3)
 	// ChainValid is self-consistency of the provider's chain bytes; NOT
-	// trust-store path validation. A true value means the provider's chain is
-	// well-linked and terminates in a self-signed cert it claims is the root; it
-	// says nothing about real-world trust, expiry, revocation, or hostname.
-	// Never gate a security/authorization decision on this field (security T9).
+	// trust-store path validation. A true value means the provider's chain bytes
+	// are well-linked and internally self-consistent, AND — only if the chain
+	// terminates in a cert claiming to be the root (ChainOrder == "root") — that
+	// terminal cert is self-signed; a chain ending in a leaf or intermediate is
+	// held to no self-signed-root clause. It says nothing about real-world trust,
+	// expiry, revocation, or hostname. Never gate a security/authorization
+	// decision on this field (security T9).
 	ChainValid     bool
 	ChainAnomalies []string // e.g. "link break [2]→[3]: issuer≠subject", "non-hex serial [3]", "root not self-signed"
 }

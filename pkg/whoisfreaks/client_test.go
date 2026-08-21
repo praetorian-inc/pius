@@ -283,3 +283,76 @@ func TestUsage_MalformedBodyKeyFreeNeverPanics(t *testing.T) {
 		})
 	}
 }
+
+// roundTripFunc adapts a function to http.RoundTripper so a test can inject a
+// deterministic transport outcome — a specific error or response — without any
+// real network dial. It is the offline injection point for do()'s transport
+// branch when the failure must be shaped precisely (here: a caller cancellation
+// mid-request), which an httptest.Server cannot express as directly.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// TestDo_CallerCancellationDuringRequest_SurfacesContextError pins do()'s
+// obligation to preserve the CAUSE of a cancelled request. When the caller's
+// context is cancelled while http.Client.Do is in flight, Do returns a
+// *url.Error wrapping context.Canceled — and do() must surface the bare,
+// key-free ctx.Err() so the caller can distinguish a cancellation/deadline from
+// a generic failure (errors.Is(err, context.Canceled)). Flattening every
+// transport error to the static errRequestFailed erases that signal.
+//
+// The two invariants are asserted together because they trade off: the naive
+// "return the transport error" fix would surface context.Canceled BUT also leak
+// the keyed *url.Error, so the test proves the cause is preserved AND the key
+// never rides along.
+func TestDo_CallerCancellationDuringRequest_SurfacesContextError(t *testing.T) {
+	t.Parallel()
+
+	const sentinel = "WF_CANCEL_SENTINEL"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// The transport stands in for a request the caller cancels mid-flight: it
+	// cancels ctx, then returns the *url.Error http.Client surfaces for a
+	// cancelled GET. The URL is the REAL, live keyed request URL
+	// (req.URL.String(), i.e. ...?apiKey=WF_CANCEL_SENTINEL) so a regression that
+	// folds this error into the returned one would leak the key — giving the
+	// leak assertions below teeth.
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		cancel()
+		return nil, &url.Error{
+			Op:  "Get",
+			URL: req.URL.String(),
+			Err: context.Canceled,
+		}
+	})
+
+	c, err := New(WithAPIKey(sentinel), WithHTTPClient(&http.Client{Transport: rt}))
+	require.NoError(t, err)
+
+	// Teeth check: the keyed URL this request carries genuinely leaks both the
+	// sentinel value and the apiKey= fragment, so the key-free assertions below
+	// can actually fail on a regression that surfaces the raw *url.Error.
+	leaked := (&url.Error{Op: "Get", URL: c.usageURL(), Err: context.Canceled}).Error()
+	require.Contains(t, leaked, sentinel,
+		"sanity: the keyed request URL leaks the apiKey value — so the checks below have teeth")
+	require.Contains(t, leaked, "apiKey=",
+		"sanity: the keyed request URL leaks the apiKey query parameter")
+
+	_, err = c.Usage(ctx)
+
+	require.Error(t, err, "a cancelled request must surface an error")
+	// LOAD-BEARING: the caller cancellation must be observable as
+	// context.Canceled, not flattened to the generic sentinel. do() currently
+	// returns errRequestFailed on every transport error, dropping the cause.
+	assert.ErrorIs(t, err, context.Canceled,
+		"a caller cancellation must surface as context.Canceled, not a flattened sentinel")
+
+	// Security spine (T1/T3): whatever error do() returns, it must stay key-free.
+	// The bare ctx error carries no URL; the dropped *url.Error must never
+	// resurface with the keyed URL in tow.
+	assertKeyFree(t, err, sentinel)
+	assert.NotContains(t, err.Error(), "api.whoisfreaks.com",
+		"the surfaced error must not carry the request host")
+}

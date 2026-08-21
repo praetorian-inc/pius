@@ -157,6 +157,15 @@ func (c *Client) do(ctx context.Context, cat Category, reqURL string) ([]byte, e
 
 	resp, err := c.http.Do(req)
 	if err != nil {
+		// F6: surface the caller's context error (context.Canceled /
+		// context.DeadlineExceeded) BEFORE the *url.Error is dropped. ctxErr
+		// returns the bare, package-level ctx.Err() sentinel — no URL, no key —
+		// so T1/T3 are preserved. A genuine transport timeout (the internal 30s
+		// http.Client timeout) leaves ctx.Err() nil and correctly falls through
+		// to the key-free errRequestFailed below.
+		if ctxErr := ctxErr(ctx); ctxErr != nil {
+			return nil, ctxErr
+		}
 		// T1 (LOAD-BEARING): an *http.Client.Do failure is returned as a
 		// *url.Error whose Error() string embeds the full request URL — which
 		// carries the apiKey query parameter. It MUST NEVER be %w-wrapped or

@@ -152,6 +152,45 @@ func TestValidateChain_RootNotSelfSigned(t *testing.T) {
 	require.Len(t, out, 2, "a non-self-signed root is dropped from out")
 }
 
+// TestValidateChain_SingleNonSelfSignedRoot_RetainsIndex0 pins the documented
+// invariant that out ALWAYS retains index 0 (the leaf), even when the terminal
+// root is dropped. A one-cert chain whose sole cert claims to be a root but is
+// NOT self-signed is the degenerate case where last==0: dropping the "root"
+// (out = out[:last]) collapses to out[:0] and erases the leaf, so a caller
+// reading out[0] on a false result gets an empty slice instead of the classified
+// leaf. The (valid, anomalies) classification is correct and asserted here; the
+// load-bearing assertion is that the returned slice still carries the single
+// input cert at index 0 rather than being emptied.
+func TestValidateChain_SingleNonSelfSignedRoot_RetainsIndex0(t *testing.T) {
+	t.Parallel()
+
+	// A single cert that claims root order but is not self-signed
+	// (Subject != Issuer). The serial is valid hex so Rule 3 stays silent and
+	// "root not self-signed" is the only anomaly.
+	cert := mkCert("Fake Root CA", "Different Issuer CA", "1a2b", "root")
+	certs := []Certificate{cert}
+
+	valid, anomalies, out := validateChain(certs)
+
+	// Classification: a non-self-signed root is an anomaly, so the chain is
+	// inconsistent and the sole anomaly is the root-sanity defect.
+	assert.False(t, valid, "a non-self-signed root makes the chain inconsistent")
+	assertValidInvariant(t, valid, anomalies)
+	assert.Equal(t, []string{"root not self-signed"}, anomalies,
+		"the only defect is the root failing the self-signed check")
+
+	// Load-bearing invariant: out retains index 0 (the leaf) in every case. With
+	// last==0, dropping the fabricated root must not empty the slice.
+	require.Len(t, out, 1,
+		"out must retain the single input cert at index 0; dropping the root must not empty the slice")
+	assert.Equal(t, cert, out[0],
+		"the retained index-0 cert must be the input cert (hex serial preserved, unmutated)")
+
+	// The caller's input is never mutated.
+	require.Len(t, certs, 1, "input length must be unchanged")
+	assert.Equal(t, cert, certs[0], "input cert must not be mutated")
+}
+
 // TestValidateChain_RootBothDefects: a terminal root that is neither
 // self-signed nor linked to the prior issuer raises BOTH root anomalies, in
 // order, and is dropped exactly once.

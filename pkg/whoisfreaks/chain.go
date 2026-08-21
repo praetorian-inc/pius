@@ -96,7 +96,7 @@ func validateChain(certs []Certificate) (valid bool, anomalies []string, out []C
 			anomalies = append(anomalies, "root subject≠prior issuer")
 			bad = true
 		}
-		if bad {
+		if bad && last >= 1 {
 			out = out[:last] // drop the fabricated root; never a trust anchor
 		}
 	}
