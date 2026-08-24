@@ -51,9 +51,9 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	return findings, nil
 }
 
-// whoisFindingData wraps a whois.Result with corroboration metadata for the
+// WhoisFindingData wraps a whois.Result with corroboration metadata for the
 // Finding payload.
-type whoisFindingData struct {
+type WhoisFindingData struct {
 	whois.Result
 	Corroboration string `json:"corroboration,omitempty"`
 }
@@ -85,7 +85,7 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 		r.Registrant.Email = whois.PrivacyRedaction
 	}
 
-	fd := whoisFindingData{Result: r}
+	fd := WhoisFindingData{Result: r}
 	if pivotOrg != "" {
 		fd.Corroboration = whois.Corroborate(pivotOrg, org)
 	}
