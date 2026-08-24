@@ -3,10 +3,8 @@ package whois
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -29,7 +27,7 @@ type Resolver interface {
 // and moves on.
 var ErrNoCredential = errors.New("whois: provider credential not configured")
 
-// Provider identifiers accepted by ResolversByName.
+// The commercial providers' config identifiers, as reported by Resolver.Name().
 const (
 	ProviderWhoxy       = "whoxy"
 	ProviderWhoisFreaks = "whoisfreaks"
@@ -45,7 +43,8 @@ const (
 	SourceTCP43 = "whois"
 )
 
-// DefaultFallbackOrder is the route used when the caller configures none.
+// defaultFallbacks is the commercial tail used when the operator configures
+// none.
 //
 // Whoxy leads deliberately. It is the incumbent, it is already paid for, and it
 // mirrors the cascade Guard runs in production today, so the default preserves
@@ -55,76 +54,12 @@ const (
 // answer.
 //
 // Reordering this is a cost decision, not a tuning tweak.
-func DefaultFallbackOrder() []string {
-	return []string{ProviderWhoxy, ProviderWhoisFreaks, ProviderWhoisXML}
-}
-
-// credentialed is implemented by resolvers that authenticate with an API key,
-// so the route builder can report a configured-but-unusable provider.
-type credentialed interface{ hasCredential() bool }
-
-// ResolversByName builds a fallback route from an ordered list of provider
-// names. Use it to turn operator configuration into resolvers once, at startup.
-//
-// Order is significant twice over: it is the order providers are tried, and —
-// because Result.Merge keeps the first non-empty value for each field — it is
-// also field precedence. Reordering the route silently changes which source
-// wins per field.
-//
-// A nil or empty list is valid and means "no commercial fallback".
-//
-// A named provider with no credential is reported here, at build time, rather
-// than doing nothing on every lookup for the rest of the process's life.
-func ResolversByName(httpClient *http.Client, names ...string) ([]Resolver, error) {
-	resolvers := make([]Resolver, 0, len(names))
-	for _, raw := range names {
-		name := strings.ToLower(strings.TrimSpace(raw))
-		if name == "" {
-			continue
-		}
-		r, err := newResolver(httpClient, name)
-		if err != nil {
-			return nil, err
-		}
-		if c, ok := r.(credentialed); ok && !c.hasCredential() {
-			slog.Warn("WHOIS fallback provider is configured but has no API key; it will be skipped on every lookup",
-				"provider", name)
-		}
-		resolvers = append(resolvers, r)
+func defaultFallbacks(httpClient *http.Client) []Resolver {
+	return []Resolver{
+		NewWhoxyResolver(httpClient, ""),
+		NewWhoisFreaksResolver(httpClient, ""),
+		NewWhoisXMLResolver(httpClient, ""),
 	}
-	return resolvers, nil
-}
-
-// newResolver constructs a single provider by name without reporting a missing
-// credential. The default route uses it because those providers are merely
-// available-if-keyed, not operator assertions that they should be in use.
-func newResolver(httpClient *http.Client, name string) (Resolver, error) {
-	switch name {
-	case ProviderWhoxy:
-		return NewWhoxyResolver(httpClient, ""), nil
-	case ProviderWhoisFreaks:
-		return NewWhoisFreaksResolver(httpClient, ""), nil
-	case ProviderWhoisXML:
-		return NewWhoisXMLResolver(httpClient, ""), nil
-	default:
-		return nil, fmt.Errorf("whois: unknown fallback provider %q (want %s, %s or %s)",
-			name, ProviderWhoxy, ProviderWhoisFreaks, ProviderWhoisXML)
-	}
-}
-
-// defaultResolvers builds DefaultFallbackOrder. The names are compile-time
-// constants, so construction cannot fail.
-func defaultResolvers(httpClient *http.Client) []Resolver {
-	names := DefaultFallbackOrder()
-	resolvers := make([]Resolver, 0, len(names))
-	for _, name := range names {
-		r, err := newResolver(httpClient, name)
-		if err != nil {
-			continue
-		}
-		resolvers = append(resolvers, r)
-	}
-	return resolvers
 }
 
 // Lookup outcomes recorded by logLookup. These are the vocabulary the

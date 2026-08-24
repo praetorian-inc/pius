@@ -129,8 +129,7 @@ func TestResolvers_EmitOneRecordEachThroughLookup(t *testing.T) {
 	unkeyedXML := NewWhoisXMLResolver(nil, "")
 
 	records := captureLogs(t, slog.LevelInfo, func() {
-		w := &WHOIS{Fallbacks: []Resolver{whoxy, freaks, unkeyedXML}}
-		_, err := w.Lookup(context.Background(), "example.com")
+		_, err := Lookup(context.Background(), "example.com", route(whoxy, freaks, unkeyedXML)...)
 		require.Error(t, err, "no leg had a record")
 	})
 
