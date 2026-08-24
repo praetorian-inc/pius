@@ -30,6 +30,10 @@ const (
 
 	// FindingIPWhoisResult carries structured WHOIS/RDAP allocation data for an IP or CIDR.
 	FindingIPWhoisResult FindingType = "ip-whois-result"
+
+	// FindingRIRResult carries the registry record that produced a CIDR handle.
+	// Value is the handle; Data contains normalized fields and the native record.
+	FindingRIRResult FindingType = "rir-result"
 )
 
 // Mode constants for plugin classification.
