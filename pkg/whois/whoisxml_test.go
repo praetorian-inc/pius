@@ -41,13 +41,13 @@ func newWhoisXMLTestResolver(t *testing.T, handler http.HandlerFunc) *WhoisXMLRe
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	r := NewWhoisXMLResolver(srv.Client(), "test-key")
+	r := NewWhoisXMLClient(srv.Client(), "test-key")
 	r.baseURL = srv.URL
 	return r
 }
 
 func TestWhoisXMLResolver_Name(t *testing.T) {
-	assert.Equal(t, ProviderWhoisXML, NewWhoisXMLResolver(nil, "k").Name())
+	assert.Equal(t, ProviderWhoisXML, NewWhoisXMLClient(nil, "k").Name())
 }
 
 func TestWhoisXMLResolver_Success(t *testing.T) {
@@ -279,7 +279,7 @@ func TestWhoisXMLResolver_FillsFromRegistryData(t *testing.T) {
 func TestWhoisXMLResolver_NoCredential(t *testing.T) {
 	t.Setenv("WHOISXML_API_KEY", "")
 
-	_, err := NewWhoisXMLResolver(nil, "").Lookup(context.Background(), "example.com")
+	_, err := NewWhoisXMLClient(nil, "").Lookup(context.Background(), "example.com")
 
 	assert.ErrorIs(t, err, ErrNoCredential)
 }
@@ -287,9 +287,9 @@ func TestWhoisXMLResolver_NoCredential(t *testing.T) {
 func TestWhoisXMLResolver_EnvFallback(t *testing.T) {
 	t.Setenv("WHOISXML_API_KEY", "from-env")
 
-	assert.True(t, NewWhoisXMLResolver(nil, "").hasCredential())
-	assert.Equal(t, "from-env", NewWhoisXMLResolver(nil, "").resolveAPIKey())
-	assert.Equal(t, "explicit", NewWhoisXMLResolver(nil, "explicit").resolveAPIKey())
+	assert.True(t, NewWhoisXMLClient(nil, "").hasCredential())
+	assert.Equal(t, "from-env", NewWhoisXMLClient(nil, "").resolveAPIKey())
+	assert.Equal(t, "explicit", NewWhoisXMLClient(nil, "explicit").resolveAPIKey())
 }
 
 func TestWhoisXMLResolver_ErrorsDoNotLeakAPIKey(t *testing.T) {
@@ -297,7 +297,7 @@ func TestWhoisXMLResolver_ErrorsDoNotLeakAPIKey(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 
-	r := NewWhoisXMLResolver(nil, "super-secret-key")
+	r := NewWhoisXMLClient(nil, "super-secret-key")
 	r.baseURL = url
 
 	_, err := r.Lookup(context.Background(), "example.com")

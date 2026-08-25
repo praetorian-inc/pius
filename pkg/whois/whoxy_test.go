@@ -40,13 +40,13 @@ func newWhoxyTestResolver(t *testing.T, handler http.HandlerFunc) *WhoxyResolver
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	r := NewWhoxyResolver(srv.Client(), "test-key")
+	r := NewWhoxyClient(srv.Client(), "test-key")
 	r.baseURL = srv.URL
 	return r
 }
 
 func TestWhoxyResolver_Name(t *testing.T) {
-	assert.Equal(t, ProviderWhoxy, NewWhoxyResolver(nil, "k").Name())
+	assert.Equal(t, ProviderWhoxy, NewWhoxyClient(nil, "k").Name())
 }
 
 func TestWhoxyResolver_Success(t *testing.T) {
@@ -89,7 +89,7 @@ func TestWhoxyResolver_ZeroBalanceIsAFailure(t *testing.T) {
 func TestWhoxyResolver_NoCredential(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
 
-	_, err := NewWhoxyResolver(nil, "").Lookup(context.Background(), "example.com")
+	_, err := NewWhoxyClient(nil, "").Lookup(context.Background(), "example.com")
 
 	assert.ErrorIs(t, err, ErrNoCredential)
 }
@@ -97,11 +97,11 @@ func TestWhoxyResolver_NoCredential(t *testing.T) {
 func TestWhoxyResolver_EnvFallback(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "from-env")
 
-	r := NewWhoxyResolver(nil, "")
+	r := NewWhoxyClient(nil, "")
 	assert.True(t, r.hasCredential())
 	assert.Equal(t, "from-env", r.resolveAPIKey())
 
-	assert.Equal(t, "explicit", NewWhoxyResolver(nil, "explicit").resolveAPIKey(),
+	assert.Equal(t, "explicit", NewWhoxyClient(nil, "explicit").resolveAPIKey(),
 		"an explicit key should win over the environment")
 }
 
@@ -135,7 +135,7 @@ func TestWhoxyResolver_ErrorsDoNotLeakAPIKey(t *testing.T) {
 	url := srv.URL
 	srv.Close() // force a connection failure
 
-	r := NewWhoxyResolver(nil, "super-secret-key")
+	r := NewWhoxyClient(nil, "super-secret-key")
 	r.baseURL = url
 
 	_, err := r.Lookup(context.Background(), "example.com")

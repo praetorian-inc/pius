@@ -21,8 +21,8 @@ var whoisXMLBaseURL = "https://www.whoisxmlapi.com/whoisserver/WhoisService"
 // WhoisXMLResolver looks up live WHOIS through the WhoisXML API.
 //
 // Of the three providers this is the most expensive per query and by far the
-// highest throughput, so it earns its place at the end of the default route:
-// reached only when the cheaper providers had no answer.
+// highest throughput, so it runs last and is reached only when the cheaper
+// providers did not complete the record.
 type WhoisXMLResolver struct {
 	httpClient *http.Client
 	apiKey     string
@@ -34,9 +34,9 @@ type WhoisXMLResolver struct {
 	hardRefresh bool
 }
 
-// NewWhoisXMLResolver returns a WhoisXML resolver with hard refresh disabled.
+// NewWhoisXMLClient returns a WhoisXML resolver with hard refresh disabled.
 // An empty apiKey falls back to WHOISXML_API_KEY.
-func NewWhoisXMLResolver(httpClient *http.Client, apiKey string) *WhoisXMLResolver {
+func NewWhoisXMLClient(httpClient *http.Client, apiKey string) *WhoisXMLResolver {
 	return &WhoisXMLResolver{httpClient: httpClient, apiKey: apiKey}
 }
 
@@ -183,9 +183,9 @@ func (r *WhoisXMLResolver) Lookup(ctx context.Context, domain string) (result Re
 	// structures", and recommends looking "under both WhoisRecord and
 	// registryData when searching for a piece of information (e.g. registrant,
 	// createdDate)". Most ccTLDs populate only registryData — and ccTLDs are the
-	// bulk of the coverage gap this fallback exists to close — so both are mapped
+	// bulk of the coverage gap this lookup exists to close — so both are mapped
 	// and merged. Merging whole Results rather than copying selected fields also
-	// means contacts are carried across, which is the reason the fallback was
+	// means contacts are carried across, which is the reason this lookup was
 	// consulted in the first place.
 	result = mapWhoisXMLToResult(domain, rec)
 	if registry != nil {
@@ -206,14 +206,14 @@ func (r *WhoisXMLResolver) Lookup(ctx context.Context, domain string) (result Re
 		// Documented as "domain is not registered; no need to retry fetching the
 		// data", so with no substance anywhere this is a verdict, not a gap.
 		//
-		// Safe to report despite coming from a fallback: Lookup discards an
-		// Unregistered result from the route whenever RDAP or TCP-43 already
+		// Safe to report here: Lookup discards an Unregistered result whenever
+		// an earlier lookup already
 		// returned a record, so it is only believed when nothing else resolved
 		// the domain at all.
 		return Result{Domain: domain, Unregistered: true}, nil
 	}
 
-	// Answered, but holds nothing usable — the route should continue.
+	// Answered, but holds nothing usable — Lookup should continue.
 	return Result{}, nil
 }
 

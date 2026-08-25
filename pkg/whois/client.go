@@ -4,17 +4,15 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"time"
 )
 
-// Resolver is a commercial WHOIS provider consulted as a fallback after the
-// free RDAP and TCP-43 legs.
+// Client is one source of domain registration data.
 //
-// Implementations report a missing API key as ErrNoCredential rather than as a
-// silent empty result: an operator who configured a provider needs to find out
-// that it is not actually serving traffic.
-type Resolver interface {
+// Commercial implementations report a missing API key as ErrNoCredential
+// rather than as a silent empty result: an operator who configured a provider
+// needs to know that it is not actually serving traffic.
+type Client interface {
 	// Name is the provider's config identifier, e.g. "whoxy".
 	Name() string
 	// Lookup returns registration data for domain. A provider that answered but
@@ -27,7 +25,7 @@ type Resolver interface {
 // and moves on.
 var ErrNoCredential = errors.New("whois: provider credential not configured")
 
-// The commercial providers' config identifiers, as reported by Resolver.Name().
+// The commercial providers' config identifiers, as reported by WHOISLookup.Name().
 const (
 	ProviderWhoxy       = "whoxy"
 	ProviderWhoisFreaks = "whoisfreaks"
@@ -42,25 +40,6 @@ const (
 	SourceRDAP  = "rdap"
 	SourceTCP43 = "whois"
 )
-
-// defaultFallbacks is the commercial tail used when the operator configures
-// none.
-//
-// Whoxy leads deliberately. It is the incumbent, it is already paid for, and it
-// mirrors the cascade Guard runs in production today, so the default preserves
-// current behaviour instead of silently re-routing spend to another vendor.
-// WhoisFreaks is second on marginal price. WhoisXML is last: it is the most
-// expensive per query and is reached only when the cheaper providers had no
-// answer.
-//
-// Reordering this is a cost decision, not a tuning tweak.
-func defaultFallbacks(httpClient *http.Client) []Resolver {
-	return []Resolver{
-		NewWhoxyResolver(httpClient, ""),
-		NewWhoisFreaksResolver(httpClient, ""),
-		NewWhoisXMLResolver(httpClient, ""),
-	}
-}
 
 // Lookup outcomes recorded by logLookup. These are the vocabulary the
 // per-provider success rate is computed from, so they are deliberately four
@@ -82,10 +61,10 @@ const (
 	outcomeSkipped = "skipped"
 )
 
-// logLookup emits exactly one record per resolver call, at Info so it survives
+// logLookup emits exactly one record per lookup call, at Info so it survives
 // production log levels. CloudWatch aggregates these into per-provider success,
 // breakage and unkeyed rates, which is what tells an operator whether a
-// configured route is earning its cost and in which order the legs belong.
+// configured providers are earning their cost.
 //
 // Called via defer with named returns, so every exit path is counted — an early
 // ErrNoCredential included. It never inspects the error text, only its kind, so

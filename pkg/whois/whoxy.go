@@ -31,10 +31,10 @@ type WhoxyResolver struct {
 	baseURL    string
 }
 
-// NewWhoxyResolver returns a Whoxy resolver. An empty apiKey falls back to
+// NewWhoxyClient returns a Whoxy resolver. An empty apiKey falls back to
 // WHOXY_API_KEY, matching the convention of the existing Whoxy reverse-WHOIS
 // plugin.
-func NewWhoxyResolver(httpClient *http.Client, apiKey string) *WhoxyResolver {
+func NewWhoxyClient(httpClient *http.Client, apiKey string) *WhoxyResolver {
 	return &WhoxyResolver{httpClient: httpClient, apiKey: apiKey}
 }
 

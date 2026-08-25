@@ -63,7 +63,7 @@ func (r Result) HasRegistrant() bool {
 // The field set is named explicitly rather than derived from "every field on
 // Result", because "every field" is unsatisfiable: DNSSEC, Province and Street
 // are absent from most registries, so requiring them would guarantee every
-// lookup walks the entire route and bills every paid provider, every time.
+// lookup reaches every paid provider and bills each one, every time.
 // These five are the fields Guard actually consumes — registrant identity and a
 // contact address to reach it at, plus the registrar, expiry and nameservers
 // that make the record actionable.
@@ -82,7 +82,7 @@ func (r Result) isComplete() bool {
 // hasSubstance reports whether the record carries actual registration data
 // rather than just a domain name echoed back by the provider. It is what
 // distinguishes "this source has an answer" from "this source acknowledged the
-// query and had nothing", which decides whether a fallback route continues.
+// query and had nothing", which decides whether Lookup continues.
 func (r Result) hasSubstance() bool {
 	return r.Registrar != "" ||
 		r.Created != "" || r.Updated != "" || r.Expiration != "" ||

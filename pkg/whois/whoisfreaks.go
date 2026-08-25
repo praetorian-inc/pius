@@ -29,13 +29,13 @@ type WhoisFreaksResolver struct {
 	baseURL    string
 }
 
-// NewWhoisFreaksResolver returns a WhoisFreaks resolver. An empty apiKey falls
+// NewWhoisFreaksClient returns a WhoisFreaks resolver. An empty apiKey falls
 // back to WHOISFREAKS_API_KEY.
 //
 // The key is a constructor parameter rather than an environment read at call
 // time because Guard injects credentials rather than exporting them, matching
 // the fix made on main to WhoxyReverseWHOIS.
-func NewWhoisFreaksResolver(httpClient *http.Client, apiKey string) *WhoisFreaksResolver {
+func NewWhoisFreaksClient(httpClient *http.Client, apiKey string) *WhoisFreaksResolver {
 	return &WhoisFreaksResolver{httpClient: httpClient, apiKey: apiKey}
 }
 

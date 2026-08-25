@@ -62,11 +62,11 @@ func lookupRecords(records []map[string]any) []map[string]any {
 func TestLogLookup_ClassifiesEveryOutcome(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		resolver *fakeResolver
+		resolver *fakeWHOISClient
 		want     string
 	}{
 		{"a record is found", complete(ProviderWhoxy), outcomeFound},
-		{"an unregistered verdict is an answer", &fakeResolver{
+		{"an unregistered verdict is an answer", &fakeWHOISClient{
 			name:   ProviderWhoxy,
 			result: Result{Domain: "gone.example", Unregistered: true},
 		}, outcomeFound},
@@ -120,16 +120,16 @@ func TestResolvers_EmitOneRecordEachThroughLookup(t *testing.T) {
 	}))
 	defer freaksSrv.Close()
 
-	whoxy := NewWhoxyResolver(whoxySrv.Client(), "key")
+	whoxy := NewWhoxyClient(whoxySrv.Client(), "key")
 	whoxy.baseURL = whoxySrv.URL
-	freaks := NewWhoisFreaksResolver(freaksSrv.Client(), "key")
+	freaks := NewWhoisFreaksClient(freaksSrv.Client(), "key")
 	freaks.baseURL = freaksSrv.URL
 
 	t.Setenv("WHOISXML_API_KEY", "")
-	unkeyedXML := NewWhoisXMLResolver(nil, "")
+	unkeyedXML := NewWhoisXMLClient(nil, "")
 
 	records := captureLogs(t, slog.LevelInfo, func() {
-		_, err := Lookup(context.Background(), "example.com", route(whoxy, freaks, unkeyedXML)...)
+		_, err := withCommercialLookups(whoxy, freaks, unkeyedXML).Lookup(context.Background(), "example.com")
 		require.Error(t, err, "no leg had a record")
 	})
 

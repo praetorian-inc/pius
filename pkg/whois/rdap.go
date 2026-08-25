@@ -11,9 +11,8 @@ import (
 	"github.com/openrdap/rdap"
 )
 
-// RDAPResolver is the RDAP leg of the cascade, expressed as a Resolver so the
-// whole chain — free protocols included — is one uniform list that a test can
-// substitute a fake into.
+// RDAPResolver implements the RDAP registration lookup. It satisfies
+// WHOISLookup so tests can substitute a fake without touching the network.
 //
 // RDAP leads the cascade because it returns structured fields and standardized
 // dates. It rarely carries registrant email, which is what the later legs are
@@ -22,9 +21,9 @@ type RDAPResolver struct {
 	httpClient *http.Client
 }
 
-// NewRDAPResolver returns an RDAP resolver. A nil httpClient uses the rdap
+// NewRDAPClient returns an RDAP resolver. A nil httpClient uses the rdap
 // package's default.
-func NewRDAPResolver(httpClient *http.Client) *RDAPResolver {
+func NewRDAPClient(httpClient *http.Client) *RDAPResolver {
 	return &RDAPResolver{httpClient: httpClient}
 }
 
