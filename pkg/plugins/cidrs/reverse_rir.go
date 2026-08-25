@@ -1,6 +1,7 @@
 package cidrs
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -191,15 +192,15 @@ type rpslAttributes struct {
 func (attributes *rpslAttributes) add(name string, values ...string) {
 	switch name {
 	case "org-name":
-		attributes.Name = firstNonempty(attributes.Name, first(values))
+		attributes.Name = cmp.Or(attributes.Name, first(values))
 	case "address":
 		attributes.Street = append(attributes.Street, values...)
 	case "country":
-		attributes.Country = firstNonempty(attributes.Country, first(values))
+		attributes.Country = cmp.Or(attributes.Country, first(values))
 	case "created":
-		attributes.RegistrationDate = firstNonempty(attributes.RegistrationDate, first(values))
+		attributes.RegistrationDate = cmp.Or(attributes.RegistrationDate, first(values))
 	case "last-modified":
-		attributes.LastUpdated = firstNonempty(attributes.LastUpdated, first(values))
+		attributes.LastUpdated = cmp.Or(attributes.LastUpdated, first(values))
 	case "remarks":
 		attributes.Comments = append(attributes.Comments, values...)
 	}
@@ -211,10 +212,10 @@ func applyRDAPResultData(
 	record json.RawMessage,
 ) {
 	data.Record = record
-	data.SourceURL = firstNonempty(entity.selfLink(), data.SourceURL)
-	data.RegistrationDate = firstNonempty(
+	data.SourceURL = cmp.Or(entity.selfLink(), data.SourceURL)
+	data.RegistrationDate = cmp.Or(
 		entity.eventDate("registration"), data.RegistrationDate)
-	data.LastUpdated = firstNonempty(
+	data.LastUpdated = cmp.Or(
 		entity.eventDate("last changed"), data.LastUpdated)
 	for _, remark := range entity.Remarks {
 		data.Comments = append(data.Comments, remark.Description...)
@@ -223,7 +224,7 @@ func applyRDAPResultData(
 	for _, property := range entity.VCard.Properties {
 		switch property.Name {
 		case "fn":
-			data.Name = firstNonempty(property.stringValue(), data.Name)
+			data.Name = cmp.Or(property.stringValue(), data.Name)
 		case "adr":
 			applyRDAPAddress(data, property)
 		case "note":
@@ -238,10 +239,10 @@ func applyRDAPAddress(data *ReverseRIRFindingData, property rdapVCardProperty) {
 	values := property.stringValues()
 	if len(values) >= 7 {
 		data.Street = appendNonempty(data.Street, values[2])
-		data.City = firstNonempty(values[3], data.City)
-		data.StateProvince = firstNonempty(values[4], data.StateProvince)
-		data.PostalCode = firstNonempty(values[5], data.PostalCode)
-		data.Country = firstNonempty(values[6], data.Country)
+		data.City = cmp.Or(values[3], data.City)
+		data.StateProvince = cmp.Or(values[4], data.StateProvince)
+		data.PostalCode = cmp.Or(values[5], data.PostalCode)
+		data.Country = cmp.Or(values[6], data.Country)
 	}
 	if len(data.Street) > 0 {
 		return
@@ -399,15 +400,6 @@ func first(values []string) string {
 		return ""
 	}
 	return values[0]
-}
-
-func firstNonempty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func appendNonempty(values []string, value string) []string {

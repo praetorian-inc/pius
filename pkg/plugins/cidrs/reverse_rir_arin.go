@@ -1,6 +1,7 @@
 package cidrs
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -138,14 +139,14 @@ func (p *ReverseRIRPlugin) queryARINDetail(
 	if entity == nil {
 		return data
 	}
-	data.Name = firstNonempty(string(entity.Name), data.Name)
+	data.Name = cmp.Or(string(entity.Name), data.Name)
 	data.City = string(entity.City)
 	data.StateProvince = string(entity.StateProvince)
 	data.PostalCode = string(entity.PostalCode)
 	data.Country = string(entity.Country.Code2)
 	data.RegistrationDate = string(entity.RegistrationDate)
 	data.LastUpdated = string(entity.UpdateDate)
-	data.SourceURL = firstNonempty(
+	data.SourceURL = cmp.Or(
 		data.SourceURL, string(entity.Ref), string(entity.RDAPRef))
 	data.Street = entity.StreetAddress.strings()
 	data.Comments = entity.Comment.strings()
