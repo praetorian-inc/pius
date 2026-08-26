@@ -11,25 +11,25 @@ import (
 	"github.com/openrdap/rdap"
 )
 
-// RDAPResolver implements the RDAP registration lookup. It satisfies
+// RDAPClient implements the RDAP registration lookup. It satisfies
 // WHOISLookup so tests can substitute a fake without touching the network.
 //
 // RDAP leads the cascade because it returns structured fields and standardized
 // dates. It rarely carries registrant email, which is what the later legs are
 // for.
-type RDAPResolver struct {
+type RDAPClient struct {
 	httpClient *http.Client
 }
 
 // NewRDAPClient returns an RDAP resolver. A nil httpClient uses the rdap
 // package's default.
-func NewRDAPClient(httpClient *http.Client) *RDAPResolver {
-	return &RDAPResolver{httpClient: httpClient}
+func NewRDAPClient(httpClient *http.Client) *RDAPClient {
+	return &RDAPClient{httpClient: httpClient}
 }
 
-func (r *RDAPResolver) Name() string { return SourceRDAP }
+func (r *RDAPClient) Name() string { return SourceRDAP }
 
-func (r *RDAPResolver) Lookup(ctx context.Context, domain string) (result Result, err error) {
+func (r *RDAPClient) Lookup(ctx context.Context, domain string) (result Result, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
 	result, err = rdapLookup(ctx, r.httpClient, domain)

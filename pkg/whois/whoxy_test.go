@@ -35,7 +35,7 @@ DNSSEC: unsigned
 
 // newWhoxyTestResolver points a resolver at a stub server so no real request is
 // ever made.
-func newWhoxyTestResolver(t *testing.T, handler http.HandlerFunc) *WhoxyResolver {
+func newWhoxyTestResolver(t *testing.T, handler http.HandlerFunc) *WhoxyClient {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -47,6 +47,49 @@ func newWhoxyTestResolver(t *testing.T, handler http.HandlerFunc) *WhoxyResolver
 
 func TestWhoxyResolver_Name(t *testing.T) {
 	assert.Equal(t, ProviderWhoxy, NewWhoxyClient(nil, "k").Name())
+}
+
+func TestWhoxyClient_ReverseLookup(t *testing.T) {
+	client := newWhoxyTestResolver(t, func(w http.ResponseWriter, req *http.Request) {
+		query := req.URL.Query()
+		assert.Equal(t, "test-key", query.Get("key"))
+		assert.Equal(t, "whois", query.Get("reverse"))
+		assert.Equal(t, "Acme Corp", query.Get("company"))
+		assert.Equal(t, "micro", query.Get("mode"))
+		assert.Equal(t, "2", query.Get("page"))
+
+		_ = json.NewEncoder(w).Encode(WhoxyReverseResponse{
+			TotalPages: 3,
+			SearchResult: []WhoxyReverseResult{
+				{DomainName: "example.com", QueryTime: "2025-01-01 00:00:00"},
+			},
+		})
+	})
+
+	response, err := client.ReverseLookup(context.Background(), "company", "Acme Corp", 2)
+
+	require.NoError(t, err)
+	assert.Equal(t, 3, response.TotalPages)
+	require.Len(t, response.SearchResult, 1)
+	assert.Equal(t, "example.com", response.SearchResult[0].DomainName)
+}
+
+func TestWhoxyClient_ReverseLookupValidatesInput(t *testing.T) {
+	client := NewWhoxyClient(nil, "test-key")
+
+	_, err := client.ReverseLookup(context.Background(), "domain", "example.com", 1)
+	assert.ErrorContains(t, err, "unsupported reverse-WHOIS field")
+
+	_, err = client.ReverseLookup(context.Background(), "company", "Acme", 0)
+	assert.ErrorContains(t, err, "page must be positive")
+}
+
+func TestWhoxyClient_ReverseLookupRequiresCredential(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "")
+
+	_, err := NewWhoxyClient(nil, "").ReverseLookup(context.Background(), "company", "Acme", 1)
+
+	assert.ErrorIs(t, err, ErrNoCredential)
 }
 
 func TestWhoxyResolver_Success(t *testing.T) {
@@ -99,9 +142,9 @@ func TestWhoxyResolver_EnvFallback(t *testing.T) {
 
 	r := NewWhoxyClient(nil, "")
 	assert.True(t, r.hasCredential())
-	assert.Equal(t, "from-env", r.resolveAPIKey())
+	assert.Equal(t, "from-env", r.getAPIKey())
 
-	assert.Equal(t, "explicit", NewWhoxyClient(nil, "explicit").resolveAPIKey(),
+	assert.Equal(t, "explicit", NewWhoxyClient(nil, "explicit").getAPIKey(),
 		"an explicit key should win over the environment")
 }
 

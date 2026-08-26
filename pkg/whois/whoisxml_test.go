@@ -36,7 +36,7 @@ const whoisXMLRecordJSON = `{
   }
 }`
 
-func newWhoisXMLTestResolver(t *testing.T, handler http.HandlerFunc) *WhoisXMLResolver {
+func newWhoisXMLTestResolver(t *testing.T, handler http.HandlerFunc) *WhoisXMLClient {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)

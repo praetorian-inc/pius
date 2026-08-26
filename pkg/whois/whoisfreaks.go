@@ -17,13 +17,13 @@ import (
 // It is a var so tests can point it at httptest.Server.
 var whoisFreaksBaseURL = "https://api.whoisfreaks.com/v2.0/whois/live"
 
-// WhoisFreaksResolver looks up live WHOIS through the WhoisFreaks v2.0 API.
+// WhoisFreaksClient looks up live WHOIS through the WhoisFreaks v2.0 API.
 //
 // WhoisFreaks has the cheapest marginal live rate of the three commercial legs,
 // but GATE 1 measured its free tier throttling at concurrency 1 on a per-minute
 // limit shared across its products, so it sits behind the incumbent rather than
 // ahead of it.
-type WhoisFreaksResolver struct {
+type WhoisFreaksClient struct {
 	httpClient *http.Client
 	apiKey     string
 	baseURL    string
@@ -35,19 +35,19 @@ type WhoisFreaksResolver struct {
 // The key is a constructor parameter rather than an environment read at call
 // time because Guard injects credentials rather than exporting them, matching
 // the fix made on main to WhoxyReverseWHOIS.
-func NewWhoisFreaksClient(httpClient *http.Client, apiKey string) *WhoisFreaksResolver {
-	return &WhoisFreaksResolver{httpClient: httpClient, apiKey: apiKey}
+func NewWhoisFreaksClient(httpClient *http.Client, apiKey string) *WhoisFreaksClient {
+	return &WhoisFreaksClient{httpClient: httpClient, apiKey: apiKey}
 }
 
-func (r *WhoisFreaksResolver) Name() string { return ProviderWhoisFreaks }
+func (r *WhoisFreaksClient) Name() string { return ProviderWhoisFreaks }
 
-func (r *WhoisFreaksResolver) resolveAPIKey() string {
+func (r *WhoisFreaksClient) resolveAPIKey() string {
 	return cmp.Or(r.apiKey, os.Getenv("WHOISFREAKS_API_KEY"))
 }
 
-func (r *WhoisFreaksResolver) hasCredential() bool { return r.resolveAPIKey() != "" }
+func (r *WhoisFreaksClient) hasCredential() bool { return r.resolveAPIKey() != "" }
 
-func (r *WhoisFreaksResolver) apiBase() string { return cmp.Or(r.baseURL, whoisFreaksBaseURL) }
+func (r *WhoisFreaksClient) apiBase() string { return cmp.Or(r.baseURL, whoisFreaksBaseURL) }
 
 // whoisFreaksResponse mirrors the WhoisFreaks v2.0 Live WHOIS JSON response.
 //
@@ -94,7 +94,7 @@ type whoisFreaksContact struct {
 // A missing key is ErrNoCredential, not a silent empty result: the two are
 // indistinguishable to a caller, and an operator who configured this provider
 // needs to find out it is not actually serving traffic.
-func (r *WhoisFreaksResolver) Lookup(ctx context.Context, domain string) (result Result, err error) {
+func (r *WhoisFreaksClient) Lookup(ctx context.Context, domain string) (result Result, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
 	apiKey := r.resolveAPIKey()

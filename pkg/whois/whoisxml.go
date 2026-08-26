@@ -18,12 +18,12 @@ import (
 // tests can point it at an httptest.Server.
 var whoisXMLBaseURL = "https://www.whoisxmlapi.com/whoisserver/WhoisService"
 
-// WhoisXMLResolver looks up live WHOIS through the WhoisXML API.
+// WhoisXMLClient looks up live WHOIS through the WhoisXML API.
 //
 // Of the three providers this is the most expensive per query and by far the
 // highest throughput, so it runs last and is reached only when the cheaper
 // providers did not complete the record.
-type WhoisXMLResolver struct {
+type WhoisXMLClient struct {
 	httpClient *http.Client
 	apiKey     string
 	baseURL    string
@@ -36,26 +36,26 @@ type WhoisXMLResolver struct {
 
 // NewWhoisXMLClient returns a WhoisXML resolver with hard refresh disabled.
 // An empty apiKey falls back to WHOISXML_API_KEY.
-func NewWhoisXMLClient(httpClient *http.Client, apiKey string) *WhoisXMLResolver {
-	return &WhoisXMLResolver{httpClient: httpClient, apiKey: apiKey}
+func NewWhoisXMLClient(httpClient *http.Client, apiKey string) *WhoisXMLClient {
+	return &WhoisXMLClient{httpClient: httpClient, apiKey: apiKey}
 }
 
 // WithHardRefresh enables WhoisXML's hard refresh. It is a 5x cost multiplier
 // (5 credits per query against 1), so callers must opt in deliberately.
-func (r *WhoisXMLResolver) WithHardRefresh(enabled bool) *WhoisXMLResolver {
+func (r *WhoisXMLClient) WithHardRefresh(enabled bool) *WhoisXMLClient {
 	r.hardRefresh = enabled
 	return r
 }
 
-func (r *WhoisXMLResolver) Name() string { return ProviderWhoisXML }
+func (r *WhoisXMLClient) Name() string { return ProviderWhoisXML }
 
-func (r *WhoisXMLResolver) resolveAPIKey() string {
+func (r *WhoisXMLClient) resolveAPIKey() string {
 	return cmp.Or(r.apiKey, os.Getenv("WHOISXML_API_KEY"))
 }
 
-func (r *WhoisXMLResolver) hasCredential() bool { return r.resolveAPIKey() != "" }
+func (r *WhoisXMLClient) hasCredential() bool { return r.resolveAPIKey() != "" }
 
-func (r *WhoisXMLResolver) apiBase() string { return cmp.Or(r.baseURL, whoisXMLBaseURL) }
+func (r *WhoisXMLClient) apiBase() string { return cmp.Or(r.baseURL, whoisXMLBaseURL) }
 
 type whoisXMLResponse struct {
 	WhoisRecord  whoisXMLRecord `json:"WhoisRecord"`
@@ -111,7 +111,7 @@ type whoisXMLContact struct {
 // dataErrorMissingWhois is WhoisXML's marker for "no WHOIS data available".
 const dataErrorMissingWhois = "MISSING_WHOIS_DATA"
 
-func (r *WhoisXMLResolver) Lookup(ctx context.Context, domain string) (result Result, err error) {
+func (r *WhoisXMLClient) Lookup(ctx context.Context, domain string) (result Result, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
 	apiKey := r.resolveAPIKey()

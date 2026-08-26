@@ -10,43 +10,63 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	whoisparser "github.com/likexian/whois-parser"
+
+	httpclient "github.com/praetorian-inc/pius/pkg/client"
 )
 
 // whoxyBaseURL is the Whoxy API endpoint. It is a var so tests can point it at
 // an httptest.Server.
 var whoxyBaseURL = "https://api.whoxy.com/"
 
-// WhoxyResolver looks up live WHOIS through the Whoxy API.
+// WhoxyClient looks up live WHOIS through the Whoxy API.
 //
 // Whoxy returns the registry's raw WHOIS text rather than parsed fields, so the
 // response is run through the same whoisparser mapping the TCP-43 leg uses.
 // The request shape matches the code running in Guard production today
 // (guard-core .../capabilities/whois/whois.go).
-type WhoxyResolver struct {
-	httpClient *http.Client
-	apiKey     string
-	baseURL    string
+type WhoxyClient struct {
+	httpClient        *http.Client
+	reverseHTTPClient *httpclient.Client
+	apiKey            string
+	baseURL           string
 }
 
 // NewWhoxyClient returns a Whoxy resolver. An empty apiKey falls back to
 // WHOXY_API_KEY, matching the convention of the existing Whoxy reverse-WHOIS
 // plugin.
-func NewWhoxyClient(httpClient *http.Client, apiKey string) *WhoxyResolver {
-	return &WhoxyResolver{httpClient: httpClient, apiKey: apiKey}
+func NewWhoxyClient(httpClient *http.Client, apiKey string) *WhoxyClient {
+	reverseHTTPClient := httpclient.New()
+	if httpClient != nil {
+		reverseHTTPClient = httpclient.NewWithHTTPClient(httpClient)
+	}
+	return &WhoxyClient{
+		httpClient:        httpClient,
+		reverseHTTPClient: reverseHTTPClient,
+		apiKey:            apiKey,
+	}
 }
 
-func (r *WhoxyResolver) Name() string { return ProviderWhoxy }
+// WithBaseURL overrides the Whoxy API endpoint. It is primarily useful for
+// tests and applies to both live and reverse WHOIS requests.
+func (r *WhoxyClient) WithBaseURL(baseURL string) *WhoxyClient {
+	r.baseURL = baseURL
+	return r
+}
 
-func (r *WhoxyResolver) resolveAPIKey() string {
+func (r *WhoxyClient) Name() string { return ProviderWhoxy }
+
+func (r *WhoxyClient) getAPIKey() string {
 	return cmp.Or(r.apiKey, os.Getenv("WHOXY_API_KEY"))
 }
 
-func (r *WhoxyResolver) hasCredential() bool { return r.resolveAPIKey() != "" }
+func (r *WhoxyClient) hasCredential() bool { return r.getAPIKey() != "" }
 
-func (r *WhoxyResolver) apiBase() string { return cmp.Or(r.baseURL, whoxyBaseURL) }
+func (r *WhoxyClient) apiBase() string { return cmp.Or(r.baseURL, whoxyBaseURL) }
 
 // whoxyLiveResponse is Whoxy's live-WHOIS envelope. status == 1 means success;
 // anything else carries the reason in status_reason, including "Zero Account
@@ -58,10 +78,57 @@ type whoxyLiveResponse struct {
 	StatusReason string `json:"status_reason"`
 }
 
-func (r *WhoxyResolver) Lookup(ctx context.Context, domain string) (result Result, err error) {
+// WhoxyReverseResponse is one page returned by Whoxy's reverse-WHOIS API.
+type WhoxyReverseResponse struct {
+	TotalPages   int                  `json:"total_pages"`
+	SearchResult []WhoxyReverseResult `json:"search_result"`
+}
+
+// WhoxyReverseResult is one domain in a reverse-WHOIS response.
+type WhoxyReverseResult struct {
+	DomainName string `json:"domain_name"`
+	QueryTime  string `json:"query_time"`
+}
+
+// ReverseLookup retrieves one page of domains associated with value. Field
+// must be "company", "name", or "email".
+func (r *WhoxyClient) ReverseLookup(ctx context.Context, field, value string, page int) (WhoxyReverseResponse, error) {
+	if !slices.Contains([]string{"company", "name", "email"}, field) {
+		return WhoxyReverseResponse{}, fmt.Errorf("whoxy: unsupported reverse-WHOIS field %q", field)
+	}
+	if page < 1 {
+		return WhoxyReverseResponse{}, fmt.Errorf("whoxy: reverse-WHOIS page must be positive")
+	}
+
+	apiKey := r.getAPIKey()
+	if apiKey == "" {
+		return WhoxyReverseResponse{}, ErrNoCredential
+	}
+
+	params := url.Values{}
+	params.Set("key", apiKey)
+	params.Set("reverse", "whois")
+	params.Set(field, value)
+	params.Set("mode", "micro")
+	params.Set("page", fmt.Sprint(page))
+	reqURL := strings.TrimRight(r.apiBase(), "/") + "/?" + params.Encode()
+
+	body, err := r.reverseHTTPClient.Get(ctx, reqURL)
+	if err != nil {
+		return WhoxyReverseResponse{}, fmt.Errorf("whoxy: reverse-WHOIS request failed")
+	}
+
+	var response WhoxyReverseResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return WhoxyReverseResponse{}, fmt.Errorf("whoxy: decoding reverse-WHOIS response: %w", err)
+	}
+	return response, nil
+}
+
+func (r *WhoxyClient) Lookup(ctx context.Context, domain string) (result Result, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
-	apiKey := r.resolveAPIKey()
+	apiKey := r.getAPIKey()
 	if apiKey == "" {
 		return Result{}, ErrNoCredential
 	}
