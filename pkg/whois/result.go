@@ -43,9 +43,8 @@ type DomainContact struct {
 
 // Reports whether the merged record has enough information to stop the cascade.
 func (r *DomainResult) isComplete() bool {
-	return isNotEmptyOrPrivate(r.RegistrantIdentity) &&
-		isNotEmptyOrPrivate(r.ContactEmail) &&
-		isNotEmptyOrPrivate(r.Registrar)
+	return isNotEmptyOrPrivate(r.RegistrantIdentity) || (isNotEmptyOrPrivate(r.ContactEmail) &&
+		isNotEmptyOrPrivate(r.Registrar))
 }
 
 // hasRegistrationData distinguishes a partial registration record from an empty response.
