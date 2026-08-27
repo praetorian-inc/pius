@@ -3,36 +3,39 @@ package domains
 import (
 	"cmp"
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"time"
 
-	"github.com/praetorian-inc/pius/pkg/client"
+	httpclient "github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
+	"github.com/praetorian-inc/pius/pkg/whois"
 )
 
 const maxWhoxyPages = 100
 
 func init() {
-	plugins.Register("whoxy-reverse-whois", func() plugins.Plugin { return &WhoxyReverseWhoisPlugin{client: client.New()} })
+	plugins.Register("whoxy-reverse-whois", func() plugins.Plugin {
+		return NewWhoxyReverseWhoisPlugin(nil, "")
+	})
 }
 
 // WhoxyReverseWhoisPlugin discovers related domains via Whoxy reverse WHOIS.
 // Findings retain every typed pivot that returned the domain for deferred
 // WHOIS corroboration in Guard.
 type WhoxyReverseWhoisPlugin struct {
-	client  *client.Client
-	apiKey  string
-	baseURL string // overridable for tests
+	client *whois.WhoxyClient
+	apiKey string
 }
 
-// NewWhoxyReverseWhoisPlugin creates a plugin with an injectable HTTP client and API key.
-func NewWhoxyReverseWhoisPlugin(httpClient *client.Client, apiKey string) *WhoxyReverseWhoisPlugin {
-	return &WhoxyReverseWhoisPlugin{client: httpClient, apiKey: apiKey}
+// NewWhoxyReverseWhoisPlugin creates a plugin with an injectable shared HTTP
+// client. apiKey takes precedence over WHOXY_API_KEY.
+func NewWhoxyReverseWhoisPlugin(client *httpclient.Client, apiKey string) *WhoxyReverseWhoisPlugin {
+	return &WhoxyReverseWhoisPlugin{
+		client: whois.NewWhoxyClient(nil, apiKey).WithReverseHTTPClient(client),
+		apiKey: apiKey,
+	}
 }
 
 func (p *WhoxyReverseWhoisPlugin) Name() string { return "whoxy-reverse-whois" }
@@ -52,23 +55,6 @@ func (p *WhoxyReverseWhoisPlugin) resolveAPIKey() string {
 	return cmp.Or(p.apiKey, os.Getenv("WHOXY_API_KEY"))
 }
 
-func (p *WhoxyReverseWhoisPlugin) apiBase() string {
-	if p.baseURL != "" {
-		return p.baseURL
-	}
-	return "https://api.whoxy.com"
-}
-
-type whoxyResponse struct {
-	TotalPages   int                 `json:"total_pages"`
-	SearchResult []whoxySearchResult `json:"search_result"`
-}
-
-type whoxySearchResult struct {
-	DomainName string `json:"domain_name"`
-	QueryTime  string `json:"query_time"`
-}
-
 // whoxyQuery pairs a Whoxy API parameter name with the search value.
 type whoxyQuery struct {
 	param string // "company", "name", or "email"
@@ -76,8 +62,6 @@ type whoxyQuery struct {
 }
 
 func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	apiKey := p.resolveAPIKey()
-
 	// Build the set of queries from the input. Whoxy distinguishes company
 	// names (&company=) from person names (&name=) from email (&email=).
 	queries := buildWhoxyQueries(input)
@@ -90,7 +74,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		domains, err := p.paginateQuery(ctx, apiKey, q)
+		domains, err := p.paginateQuery(ctx, q)
 		if err != nil {
 			slog.Warn("whoxy-reverse-whois: query failed", "param", q.param, "value", q.value, "error", err)
 			continue
@@ -119,13 +103,13 @@ func buildWhoxyQueries(input plugins.Input) []whoxyQuery {
 	return queries
 }
 
-func (p *WhoxyReverseWhoisPlugin) paginateQuery(ctx context.Context, apiKey string, q whoxyQuery) ([]string, error) {
+func (p *WhoxyReverseWhoisPlugin) paginateQuery(ctx context.Context, q whoxyQuery) ([]string, error) {
 	var domains []string
 	page := 1
 	totalPages := 1
 
 	for {
-		resp, err := p.fetchPage(ctx, apiKey, q.param, q.value, page)
+		resp, err := p.client.ReverseLookup(ctx, q.param, q.value, page)
 		if err != nil {
 			if page == 1 {
 				return nil, err
@@ -148,24 +132,6 @@ func (p *WhoxyReverseWhoisPlugin) paginateQuery(ctx context.Context, apiKey stri
 	}
 
 	return strutil.Unique(domains), nil
-}
-
-func (p *WhoxyReverseWhoisPlugin) fetchPage(ctx context.Context, apiKey, param, value string, page int) (whoxyResponse, error) {
-	reqURL := fmt.Sprintf(
-		"%s/?key=%s&reverse=whois&%s=%s&mode=micro&page=%d",
-		p.apiBase(), url.QueryEscape(apiKey), param, url.QueryEscape(value), page,
-	)
-
-	body, err := p.client.Get(ctx, reqURL)
-	if err != nil {
-		return whoxyResponse{}, fmt.Errorf("request failed")
-	}
-
-	var resp whoxyResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return whoxyResponse{}, fmt.Errorf("parse response: %w", err)
-	}
-	return resp, nil
 }
 
 func whoxyRecordStale(queryTime string) bool {
