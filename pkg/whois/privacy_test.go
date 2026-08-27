@@ -40,6 +40,12 @@ func TestIsPrivacy(t *testing.T) {
 		{"redacted text", "DATA REDACTED", true},
 		{"not disclosed", "Not Disclosed", true},
 
+		// Contact-form placeholders.
+		{"request email form", "Select Request Email Form at example.com", true},
+		{"contact domain holder", "Select Contact Domain Holder link at example.com", true},
+		{"query RDDS", "Please query the RDDS service of the registrar of record", true},
+		{"query WHOIS", "Please query the WHOIS service of the registrar of record", true},
+
 		// Edge: "privacy" alone is NOT a marker (legitimate orgs use it).
 		{"privacy in name", "Privacy International", false},
 
@@ -55,10 +61,4 @@ func TestIsPrivacy(t *testing.T) {
 			assert.Equal(t, tt.want, IsPrivacy(tt.value), "IsPrivacy(%q)", tt.value)
 		})
 	}
-}
-
-func TestNormalizePrivacy(t *testing.T) {
-	assert.Equal(t, "", NormalizePrivacy(""))
-	assert.Equal(t, PrivacyRedaction, NormalizePrivacy("REDACTED FOR PRIVACY"))
-	assert.Equal(t, "Acme Corporation", NormalizePrivacy("Acme Corporation"))
 }

@@ -102,8 +102,8 @@ func networkContactFromEntity(entity *rdap.Entity, direct bool) NetworkContact {
 	contact.Kind = firstVCardValue(entity.VCard, "kind")
 	contact.Organization = base.Organization
 	contact.Name = base.Name
-	contact.Email = clearIfPrivacy(entity.VCard.Email())
-	contact.Phone = clearIfPrivacy(strings.TrimPrefix(entity.VCard.Tel(), "tel:"))
+	contact.Email = entity.VCard.Email()
+	contact.Phone = strings.TrimPrefix(entity.VCard.Tel(), "tel:")
 	contact.Country = base.Country
 	contact.Province = base.Province
 	contact.City = base.City

@@ -68,12 +68,8 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 		}
 	}
 
-	// Normalize privacy on the registrant fields before emitting.
 	org := whois.RegistrantOrg(r.Registrant, r.Domain)
-	r.Registrant.Organization = whois.NormalizePrivacy(org)
-	r.Registrant.Country = whois.NormalizePrivacy(r.Registrant.Country)
-	r.Registrant.Province = whois.NormalizePrivacy(r.Registrant.Province)
-	r.Registrant.City = whois.NormalizePrivacy(r.Registrant.City)
+	r.Registrant.Organization = org
 	r.Registrar = whois.NormalizeRegistrar(r.Registrar)
 
 	// Find the best non-privacy email across all contacts.

@@ -79,15 +79,15 @@ func (c NetworkContact) Clean() NetworkContact {
 	c.Roles = trimStrings(c.Roles)
 	c.Status = trimStrings(c.Status)
 	c.Kind = strings.TrimSpace(c.Kind)
-	c.Organization = clearIfPrivacy(c.Organization)
-	c.Name = clearIfPrivacy(c.Name)
-	c.Email = clearIfPrivacy(c.Email)
-	c.Phone = clearIfPrivacy(c.Phone)
-	c.Country = clearIfPrivacy(c.Country)
-	c.Province = clearIfPrivacy(c.Province)
-	c.City = clearIfPrivacy(c.City)
-	c.Street = clearIfPrivacy(c.Street)
-	c.PostalCode = clearIfPrivacy(c.PostalCode)
+	c.Organization = normalizePrivacy(c.Organization)
+	c.Name = normalizePrivacy(c.Name)
+	c.Email = normalizePrivacy(c.Email)
+	c.Phone = normalizePrivacy(c.Phone)
+	c.Country = normalizePrivacy(c.Country)
+	c.Province = normalizePrivacy(c.Province)
+	c.City = normalizePrivacy(c.City)
+	c.Street = normalizePrivacy(c.Street)
+	c.PostalCode = normalizePrivacy(c.PostalCode)
 	return c
 }
 
@@ -118,7 +118,7 @@ func (c NetworkContact) IsPrivacyProtected() bool {
 
 func PreferredNetworkRole(contacts []NetworkContact) string {
 	for _, contact := range contacts {
-		if contact.Direct && !contact.IsPrivacyProtected() && contact.HasRole("customer") {
+		if contact.Direct && contact.HasRole("customer") && contact.hasUsefulIdentity() {
 			return "customer"
 		}
 	}
@@ -215,29 +215,35 @@ func requireContainingAllocation(result NetworkResult, target networkTarget) err
 func hasUsefulNetworkIdentity(contacts []NetworkContact) bool {
 	preferredRole := PreferredNetworkRole(contacts)
 	for _, contact := range contacts {
-		if !contact.Direct || contact.IsPrivacyProtected() {
+		if !contact.Direct || !contact.HasRole(preferredRole) || contact.IsMaintainer() {
 			continue
 		}
-		if !contact.HasRole(preferredRole) || contact.IsMaintainer() {
-			continue
-		}
-
-		identity := contact.Organization
-		switch contact.Kind {
-		case "org":
-			if identity == "" {
-				identity = contact.Name
-			}
-		case "individual":
-			identity = contact.Name
-		default:
-			identity = ""
-		}
-		if identity != "" || IsEmail(contact.Email) {
+		if contact.hasUsefulIdentity() {
 			return true
 		}
 	}
 	return false
+}
+
+func (c NetworkContact) hasUsefulIdentity() bool {
+	if c.IsPrivacyProtected() {
+		return false
+	}
+
+	identity := c.Organization
+	switch c.Kind {
+	case "org":
+		if identity == "" {
+			identity = c.Name
+		}
+	case "individual":
+		identity = c.Name
+	default:
+		identity = ""
+	}
+	hasIdentity := identity != "" && !IsPrivacy(identity)
+	hasEmail := IsEmail(c.Email) && !IsPrivacy(c.Email)
+	return hasIdentity || hasEmail
 }
 
 func mergeTCP43NetworkResult(rdapResult *NetworkResult, tcpResult NetworkResult) {

@@ -43,6 +43,7 @@ func TestResult_Clean(t *testing.T) {
 			Organization: "Example Inc.",
 			Email:        "admin@example.com",
 		},
+		Admin: Contact{Name: PrivacyRedaction},
 	}, result)
 }
 
@@ -68,4 +69,30 @@ func TestResult_CleanAllowsProviderFallback(t *testing.T) {
 	assert.Equal(t, []string{"ns1.example.com"}, primary.NameServers)
 	assert.Equal(t, []string{"active"}, primary.Status)
 	assert.Equal(t, "Jane Doe", primary.Registrant.Name)
+}
+
+func TestResult_MergeContactPrefersRealValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		base  string
+		other string
+		want  string
+	}{
+		{name: "fills empty base", other: "Fallback Inc.", want: "Fallback Inc."},
+		{name: "replaces privacy with real value", base: PrivacyRedaction, other: "Fallback Inc.", want: "Fallback Inc."},
+		{name: "preserves privacy without fallback", base: PrivacyRedaction, want: PrivacyRedaction},
+		{name: "preserves primary real value", base: "Primary Inc.", other: "Fallback Inc.", want: "Primary Inc."},
+		{name: "ignores fallback privacy", base: "Primary Inc.", other: PrivacyRedaction, want: "Primary Inc."},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := Result{Registrant: Contact{Organization: test.base}}
+			other := Result{Registrant: Contact{Organization: test.other}}
+
+			base.Merge(other)
+
+			assert.Equal(t, test.want, base.Registrant.Organization)
+		})
+	}
 }

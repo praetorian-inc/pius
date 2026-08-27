@@ -81,28 +81,18 @@ func (r *Result) Merge(other Result) {
 	r.Sources = append(r.Sources, other.Sources...)
 }
 
-// clearIfPrivacy returns "" if the value is a known WHOIS privacy placeholder.
-func clearIfPrivacy(v string) string {
-	v = strings.TrimSpace(v)
-	if IsPrivacy(v) {
-		return ""
-	}
-	return v
-}
-
-// Clean clears privacy/redaction placeholder values from all fields,
-// leaving only real data. Returns the scrubbed contact.
+// Clean trims fields and normalizes privacy placeholders.
 func (c Contact) Clean() Contact {
 	return Contact{
-		Organization: clearIfPrivacy(c.Organization),
-		Name:         clearIfPrivacy(c.Name),
-		Email:        clearIfPrivacy(c.Email),
-		Country:      clearIfPrivacy(c.Country),
-		Province:     clearIfPrivacy(c.Province),
-		City:         clearIfPrivacy(c.City),
-		Street:       clearIfPrivacy(c.Street),
-		PostalCode:   clearIfPrivacy(c.PostalCode),
-		Phone:        clearIfPrivacy(c.Phone),
+		Organization: normalizePrivacy(c.Organization),
+		Name:         normalizePrivacy(c.Name),
+		Email:        normalizePrivacy(c.Email),
+		Country:      normalizePrivacy(c.Country),
+		Province:     normalizePrivacy(c.Province),
+		City:         normalizePrivacy(c.City),
+		Street:       normalizePrivacy(c.Street),
+		PostalCode:   normalizePrivacy(c.PostalCode),
+		Phone:        normalizePrivacy(c.Phone),
 	}
 }
 
@@ -128,27 +118,16 @@ func (r *Result) Clean() {
 	r.ScrubContacts()
 }
 
-func trimStrings(arr []string) []string {
-	res := make([]string, 0, len(arr))
-	for i := range arr {
-		v := strings.TrimSpace(arr[i])
-		if v != "" {
-			res = append(res, v)
-		}
-	}
-	return res
-}
-
 func mergeContact(base, other Contact) Contact {
 	return Contact{
-		Organization: cmp.Or(base.Organization, other.Organization),
-		Name:         cmp.Or(base.Name, other.Name),
-		Email:        cmp.Or(base.Email, other.Email),
-		Country:      cmp.Or(base.Country, other.Country),
-		Province:     cmp.Or(base.Province, other.Province),
-		City:         cmp.Or(base.City, other.City),
-		Street:       cmp.Or(base.Street, other.Street),
-		PostalCode:   cmp.Or(base.PostalCode, other.PostalCode),
-		Phone:        cmp.Or(base.Phone, other.Phone),
+		Organization: preferNonPrivacy(base.Organization, other.Organization),
+		Name:         preferNonPrivacy(base.Name, other.Name),
+		Email:        preferNonPrivacy(base.Email, other.Email),
+		Country:      preferNonPrivacy(base.Country, other.Country),
+		Province:     preferNonPrivacy(base.Province, other.Province),
+		City:         preferNonPrivacy(base.City, other.City),
+		Street:       preferNonPrivacy(base.Street, other.Street),
+		PostalCode:   preferNonPrivacy(base.PostalCode, other.PostalCode),
+		Phone:        preferNonPrivacy(base.Phone, other.Phone),
 	}
 }

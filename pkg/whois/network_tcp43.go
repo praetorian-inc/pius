@@ -159,7 +159,7 @@ func organizationContacts(fields map[string][]string) []NetworkContact {
 			Roles:        []string{organization.role},
 			Kind:         "org",
 			Direct:       true,
-			Organization: clearIfPrivacy(organization.value),
+			Organization: organization.value,
 		})
 	}
 	return contacts
@@ -182,7 +182,7 @@ func individualContacts(fields map[string][]string) []NetworkContact {
 				Roles:  []string{field.role},
 				Kind:   "individual",
 				Direct: true,
-				Name:   clearIfPrivacy(value),
+				Name:   value,
 			})
 		}
 	}
@@ -206,7 +206,7 @@ func emailContacts(fields map[string][]string) []NetworkContact {
 	for _, field := range emailFields {
 		for _, value := range fields[field.key] {
 			email := firstEmail(value)
-			if email == "" || IsPrivacy(email) {
+			if email == "" {
 				continue
 			}
 			contacts = append(contacts, NetworkContact{

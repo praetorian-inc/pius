@@ -42,6 +42,13 @@ func TestNetworkResult_Clean(t *testing.T) {
 				Email:        " admin@example.com ",
 				Country:      " US ",
 			},
+			{
+				Roles:        []string{" customer "},
+				Kind:         " org ",
+				Direct:       true,
+				Organization: " REDACTED FOR PRIVACY ",
+				Email:        " domains@markmonitor.com ",
+			},
 			{Name: " "},
 		},
 		Sources: []string{" rdap ", " ", " whois "},
@@ -64,16 +71,26 @@ func TestNetworkResult_Clean(t *testing.T) {
 		Server:       "rdap.example.com",
 		RDAPServer:   "rdap.example.com",
 		WhoisServer:  "whois.example.com",
-		Contacts: []NetworkContact{{
-			Handle:       "CONTACT-1",
-			Roles:        []string{"registrant"},
-			Status:       []string{"validated"},
-			Kind:         "org",
-			Direct:       true,
-			Organization: "Example Networks",
-			Email:        "admin@example.com",
-			Country:      "US",
-		}},
+		Contacts: []NetworkContact{
+			{
+				Handle:       "CONTACT-1",
+				Roles:        []string{"registrant"},
+				Status:       []string{"validated"},
+				Kind:         "org",
+				Direct:       true,
+				Organization: "Example Networks",
+				Email:        "admin@example.com",
+				Country:      "US",
+			},
+			{
+				Roles:        []string{"customer"},
+				Status:       []string{},
+				Kind:         "org",
+				Direct:       true,
+				Organization: PrivacyRedaction,
+				Email:        PrivacyRedaction,
+			},
+		},
 		Sources: []string{"rdap", "whois"},
 		Raw:     " raw response \n",
 	}, result)
@@ -162,9 +179,27 @@ func TestPreferredNetworkRole_IgnoresPrivacyProtectedCustomer(t *testing.T) {
 	assert.Equal(t, "registrant", PreferredNetworkRole(contacts))
 }
 
+func TestPreferredNetworkRole_IgnoresRedactedCustomer(t *testing.T) {
+	contacts := []NetworkContact{
+		{Roles: []string{"customer"}, Kind: "org", Direct: true, Organization: PrivacyRedaction},
+		{Roles: []string{"registrant"}, Kind: "org", Direct: true, Organization: "Public Registrant"},
+	}
+
+	assert.Equal(t, "registrant", PreferredNetworkRole(contacts))
+}
+
 func TestHasUsefulNetworkIdentity_IgnoresPrivacyProtectedContact(t *testing.T) {
 	contacts := []NetworkContact{{
 		Roles: []string{"registrant"}, Status: []string{"private"}, Kind: "org", Direct: true, Name: "Private Customer",
+	}}
+
+	assert.False(t, hasUsefulNetworkIdentity(contacts))
+}
+
+func TestHasUsefulNetworkIdentity_IgnoresRedactedContact(t *testing.T) {
+	contacts := []NetworkContact{{
+		Roles: []string{"registrant"}, Kind: "org", Direct: true,
+		Organization: PrivacyRedaction, Email: PrivacyRedaction,
 	}}
 
 	assert.False(t, hasUsefulNetworkIdentity(contacts))
@@ -223,14 +258,16 @@ func TestLookupNetwork_SuccessfulRDAPWithoutUsefulIdentityFallsBackToTCP43(t *te
 	assert.Equal(t, "whois.example.test", result.WhoisServer)
 	assert.Equal(t, "NET-8-8-8-0-1", result.Handle)
 	assert.Equal(t, []string{"active"}, result.Status)
-	require.Len(t, result.Contacts, 2)
+	require.Len(t, result.Contacts, 3)
 	assert.Equal(t, "ABUSE-1", result.Contacts[0].Handle)
 	assert.Equal(t, []string{"abuse"}, result.Contacts[0].Roles)
 	assert.Equal(t, []string{"validated"}, result.Contacts[0].Status)
 	assert.Equal(t, "group", result.Contacts[0].Kind)
 	assert.Equal(t, "Abuse Desk", result.Contacts[0].Name)
 	assert.Equal(t, "abuse@example.com", result.Contacts[0].Email)
-	assert.Equal(t, "Example Networks", result.Contacts[1].Organization)
+	assert.Equal(t, PrivacyRedaction, result.Contacts[1].Organization)
+	assert.Equal(t, PrivacyRedaction, result.Contacts[1].Email)
+	assert.Equal(t, "Example Networks", result.Contacts[2].Organization)
 }
 
 type rdapResponseRoundTripper struct{}
@@ -256,6 +293,17 @@ func (rdapResponseRoundTripper) RoundTrip(request *http.Request) (*http.Response
 				["fn",{},"text"," Abuse Desk "],
 				["email",{},"text"," abuse@example.com "]
 			]]
+		},{
+			"objectClassName":"entity",
+			"handle":" CUSTOMER-1 ",
+			"roles":[" customer "],
+			"vcardArray":["vcard",[
+				["version",{},"text","4.0"],
+				["kind",{},"text"," org "],
+				["fn",{},"text"," REDACTED FOR PRIVACY "],
+				["org",{},"text"," REDACTED FOR PRIVACY "],
+				["email",{},"text"," domains@markmonitor.com "]
+			]]
 		}]
 	}`
 	return &http.Response{
@@ -278,12 +326,15 @@ func TestParseTCP43NetworkResult_AcceptsCIDRFormInetnum(t *testing.T) {
 	assert.Equal(t, "whois.lacnic.net", result.WhoisServer)
 }
 
-func TestTCP43NetworkContacts_OmitsPrivacyEmail(t *testing.T) {
-	contacts := tcp43NetworkContacts(map[string][]string{
+func TestTCP43NetworkContacts_NormalizesPrivacyEmail(t *testing.T) {
+	result := NetworkResult{Contacts: tcp43NetworkContacts(map[string][]string{
 		"email": {"zzzz03.com@shieldwhois.com"},
-	})
+	})}
 
-	assert.Empty(t, contacts)
+	result.Clean()
+
+	require.Len(t, result.Contacts, 1)
+	assert.Equal(t, PrivacyRedaction, result.Contacts[0].Email)
 }
 
 func TestLookupNetwork_FallsBackToTCP43(t *testing.T) {
