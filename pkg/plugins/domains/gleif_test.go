@@ -88,6 +88,7 @@ func makeLEI(id, name, jurisdiction string, hasParentLink bool) leiRecord {
 		Attributes: leiAttributes{
 			Entity: leiEntity{
 				LegalName:    leiLegalName{Name: name},
+				LegalAddress: leiAddress{Country: jurisdiction},
 				Jurisdiction: jurisdiction,
 				Status:       "ACTIVE",
 			},
@@ -169,6 +170,7 @@ func TestGLEIFPlugin_Run_TopLevelWithSubsidiaries(t *testing.T) {
 	for _, f := range findings {
 		assert.Equal(t, plugins.FindingPreseed, f.Type)
 		assert.Equal(t, "gleif", f.Source)
+		assert.Equal(t, "organization", f.Data["preseed_type"])
 		assert.Equal(t, "subsidiary", f.Data["corporate_relationship"])
 		assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(f))
 		require.Len(t, f.Confidences, 2, "resolution and registered relationship are the independent signals")
@@ -365,7 +367,7 @@ func TestGLEIFPlugin_Run_ContextCanceled(t *testing.T) {
 	}
 }
 
-func TestGLEIFPlugin_Run_PreseedData_ContainsJurisdiction(t *testing.T) {
+func TestGLEIFPlugin_Run_PreseedData_ContainsCountry(t *testing.T) {
 	primary := makeLEI("LEI001", "Acme Corp", "US", false)
 	child := makeLEI("LEI010", "Acme UK", "GB", false)
 
@@ -396,8 +398,62 @@ func TestGLEIFPlugin_Run_PreseedData_ContainsJurisdiction(t *testing.T) {
 		}
 	}
 	require.NotNil(t, preseed, "expected preseed finding for subsidiary")
-	assert.Equal(t, "GB", preseed.Data["jurisdiction"])
+	assert.Equal(t, "GB", preseed.Data["country"])
 	assert.Equal(t, "LEI010", preseed.Data["lei"])
+}
+
+func TestGLEIFPlugin_RecordToPreseed_EnrichesOrganization(t *testing.T) {
+	p := newGLEIFPlugin("")
+	p.primaryName = "Acme Holdings"
+	record := makeLEI("LEI010", "Acme GmbH", "DE", false)
+	record.Attributes.Entity.OtherNames = []leiLegalName{{Name: "Acme Germany"}}
+	record.Attributes.Entity.TransliteratedOtherNames = []leiLegalName{{Name: "ACME GMBH"}}
+	record.Attributes.Entity.Industry = "Manufacturing"
+	record.Attributes.Entity.KnownWebsites = []string{"https://acme.example"}
+	record.Attributes.Entity.HeadquartersAddress = leiAddress{
+		AddressLines: []string{"Main Street 1", "Building A"},
+		City:         "Frankfurt",
+		Region:       "HE",
+		Country:      "DE",
+		PostalCode:   "60311",
+	}
+
+	finding := p.recordToPreseed(record, "subsidiary")
+
+	assert.Equal(t, []string{"Acme Germany", "ACME GMBH"}, finding.Data["alternate_names"])
+	assert.Equal(t, "Manufacturing", finding.Data["industry"])
+	assert.Equal(t, []string{"https://acme.example"}, finding.Data["known_websites"])
+	assert.Equal(t, "Main Street 1, Building A", finding.Data["street_address"])
+	assert.Equal(t, "Frankfurt", finding.Data["city"])
+	assert.Equal(t, "HE", finding.Data["province"])
+	assert.Equal(t, "DE", finding.Data["country"])
+	assert.Equal(t, "60311", finding.Data["postal_code"])
+	assert.Equal(t, "https://search.gleif.org/#/record/LEI010", finding.Data["external_reference"])
+}
+
+func TestGLEIFPlugin_RecordToPreseed_FallsBackToLegalAddress(t *testing.T) {
+	p := newGLEIFPlugin("")
+	record := makeLEI("LEI010", "Acme GmbH", "DE", false)
+	record.Attributes.Entity.LegalAddress = leiAddress{
+		AddressLines: []string{"Legal Street 2"},
+		City:         "Berlin",
+		Country:      "DE",
+	}
+
+	finding := p.recordToPreseed(record, "subsidiary")
+
+	assert.Equal(t, "Legal Street 2", finding.Data["street_address"])
+	assert.Equal(t, "Berlin", finding.Data["city"])
+}
+
+func TestGLEIFPlugin_RecordToPreseed_OmitsUnavailableOptionalData(t *testing.T) {
+	p := newGLEIFPlugin("")
+	finding := p.recordToPreseed(makeLEI("LEI010", "Acme GmbH", "", false), "subsidiary")
+
+	assert.NotContains(t, finding.Data, "alternate_names")
+	assert.NotContains(t, finding.Data, "industry")
+	assert.NotContains(t, finding.Data, "known_websites")
+	assert.NotContains(t, finding.Data, "street_address")
 }
 
 // ── Confidence decomposition tests ──────────────────────────────────────────

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/lib/strutil"
@@ -310,20 +311,23 @@ func hasParent(record *leiRecord) bool {
 // recordToPreseed converts a GLEIF LEI record to a FindingPreseed with
 // decomposed confidence signals. Reads enrichment state from p.
 func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins.Finding {
-	name := record.Attributes.Entity.LegalName.Name
+	entity := record.Attributes.Entity
+	name := entity.LegalName.Name
 	f := plugins.Finding{
 		Type:   plugins.FindingPreseed,
 		Value:  name,
 		Source: "gleif",
 		Data: map[string]any{
-			"preseed_type":           "whois+company",
+			"preseed_type":           "organization",
 			"preseed_title":          name,
 			"lei":                    record.ID,
-			"jurisdiction":           record.Attributes.Entity.Jurisdiction,
+			"external_source":        "gleif",
+			"external_reference":     fmt.Sprintf("https://search.gleif.org/#/record/%s", url.PathEscape(record.ID)),
 			"corporate_relationship": relation,
 			"corporate_parent":       p.primaryName,
 		},
 	}
+	addEntityData(f.Data, entity)
 
 	// Signal 1: Name resolution quality — how well fuzzycompletions matched.
 	if p.candidateRank == 0 {
@@ -356,6 +360,52 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins
 	return f
 }
 
+func addEntityData(data map[string]any, entity leiEntity) {
+	if alternateNames := collectAlternateNames(entity); len(alternateNames) > 0 {
+		data["alternate_names"] = alternateNames
+	}
+	if entity.Industry != "" {
+		data["industry"] = entity.Industry
+	}
+	if len(entity.KnownWebsites) > 0 {
+		data["known_websites"] = entity.KnownWebsites
+	}
+
+	address := preferredAddress(entity)
+	addIfPresent(data, "country", address.Country)
+	addIfPresent(data, "province", address.Region)
+	addIfPresent(data, "city", address.City)
+	addIfPresent(data, "street_address", strings.Join(address.AddressLines, ", "))
+	addIfPresent(data, "postal_code", address.PostalCode)
+}
+
+func collectAlternateNames(entity leiEntity) []string {
+	names := make([]string, 0, len(entity.OtherNames)+len(entity.TransliteratedOtherNames))
+	for _, alternateName := range append(entity.OtherNames, entity.TransliteratedOtherNames...) {
+		if alternateName.Name != "" {
+			names = append(names, alternateName.Name)
+		}
+	}
+	return strutil.Unique(names)
+}
+
+func preferredAddress(entity leiEntity) leiAddress {
+	if entity.HeadquartersAddress.hasData() {
+		return entity.HeadquartersAddress
+	}
+	return entity.LegalAddress
+}
+
+func (a leiAddress) hasData() bool {
+	return len(a.AddressLines) > 0 || a.City != "" || a.Region != "" || a.Country != "" || a.PostalCode != ""
+}
+
+func addIfPresent(data map[string]any, key, value string) {
+	if value != "" {
+		data[key] = value
+	}
+}
+
 // ── API response types ─────────────────────────────────────────────────────────
 
 type leiRecord struct {
@@ -369,13 +419,27 @@ type leiAttributes struct {
 }
 
 type leiEntity struct {
-	LegalName    leiLegalName `json:"legalName"`
-	Jurisdiction string       `json:"jurisdiction"`
-	Status       string       `json:"status"`
+	LegalName                leiLegalName   `json:"legalName"`
+	OtherNames               []leiLegalName `json:"otherNames"`
+	TransliteratedOtherNames []leiLegalName `json:"transliteratedOtherNames"`
+	LegalAddress             leiAddress     `json:"legalAddress"`
+	HeadquartersAddress      leiAddress     `json:"headquartersAddress"`
+	Jurisdiction             string         `json:"jurisdiction"`
+	Industry                 string         `json:"industry"`
+	KnownWebsites            []string       `json:"knownWebsites"`
+	Status                   string         `json:"status"`
 }
 
 type leiLegalName struct {
 	Name string `json:"name"`
+}
+
+type leiAddress struct {
+	AddressLines []string `json:"addressLines"`
+	City         string   `json:"city"`
+	Region       string   `json:"region"`
+	Country      string   `json:"country"`
+	PostalCode   string   `json:"postalCode"`
 }
 
 type leiRelationships struct {
