@@ -123,12 +123,12 @@ func TestOrgSimilarity(t *testing.T) {
 	assert.InDelta(t, 0.0, OrgSimilarity("Co., Ltd.", "Acme Corp"), 0.01)
 }
 
-func TestRegistrantOrganization(t *testing.T) {
-	assert.Equal(t, "Acme Corp", registrantOrganization(
+func TestCleanRegistryArtifact(t *testing.T) {
+	assert.Equal(t, "Acme Corp", cleanRegistryArtifact(
 		Contact{Organization: "Acme Corp", Name: "Domain Admin"},
 		"example.com",
 	))
-	assert.Empty(t, registrantOrganization(Contact{Organization: "DIDEP2435-002435"}, "example.se"))
+	assert.Empty(t, cleanRegistryArtifact(Contact{Organization: "DIDEP2435-002435"}, "example.se"))
 }
 
 func TestRegistrantIdentity(t *testing.T) {

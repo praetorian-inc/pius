@@ -78,19 +78,14 @@ func (r *DomainResult) Normalize() {
 	r.Admin = r.Admin.normalize()
 	r.Tech = r.Tech.normalize()
 	r.Billing = r.Billing.normalize()
+	r.Registrant.Organization = cleanRegistryArtifact(r.Registrant, r.Domain)
 	r.populateDerivedFields()
 }
 
 func (r *DomainResult) populateDerivedFields() {
-	r.Registrant.Organization = registrantOrganization(r.Registrant, r.Domain)
 	r.RegistrantIdentity = registrantIdentity(r.Registrant)
 
-	email, role, sawPrivacy := preferredContactEmail(*r)
-	if email == "" && sawPrivacy {
-		email = PrivacyRedaction
-	}
-	r.ContactEmail = email
-	r.ContactEmailRole = role
+	r.ContactEmail, r.ContactEmailRole = preferredContactEmail(*r)
 }
 
 // Contact holds registration contact information.

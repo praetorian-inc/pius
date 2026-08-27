@@ -13,8 +13,8 @@ import (
 	"github.com/praetorian-inc/pius/pkg/whois/data"
 )
 
-// registrantOrganization removes registry artifacts from an observed registrant organization.
-func registrantOrganization(c Contact, domain string) string {
+// cleanRegistryArtifact removes registry artifacts from an observed registrant organization.
+func cleanRegistryArtifact(c Contact, domain string) string {
 	if isRegistryArtifact(c.Organization, domain) {
 		return ""
 	}
@@ -27,22 +27,24 @@ func registrantIdentity(c Contact) string {
 	return preferNonPrivacy(c.Organization, c.Name)
 }
 
-func preferredContactEmail(r DomainResult) (email, role string, sawPrivacy bool) {
+func preferredContactEmail(r DomainResult) (email, role string) {
 	roles := [...]string{"registrant", "administrative", "technical", "billing"}
 	privacyRole := ""
 	for i, contact := range r.AllContacts() {
 		classified := classifyEmail(contact.Email)
 		switch {
-		case classified == PrivacyRedaction:
-			sawPrivacy = true
-			if privacyRole == "" {
-				privacyRole = roles[i]
-			}
-		case classified != "":
-			return classified, roles[i], sawPrivacy
+		case classified == "":
+			continue
+		case classified != PrivacyRedaction:
+			return classified, roles[i]
+		case privacyRole == "":
+			privacyRole = roles[i]
 		}
 	}
-	return "", privacyRole, sawPrivacy
+	if privacyRole != "" {
+		return PrivacyRedaction, privacyRole
+	}
+	return "", ""
 }
 
 func classifyEmail(raw string) string {
