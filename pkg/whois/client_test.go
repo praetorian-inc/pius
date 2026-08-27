@@ -51,7 +51,7 @@ func complete(name string) *fakeWHOISClient {
 }
 
 func completeResult(name string) DomainResult {
-	return DomainResult{
+	result := DomainResult{
 		Domain:      "example.com",
 		Registrar:   name,
 		Expiration:  "2027-08-13T04:00:00Z",
@@ -59,6 +59,8 @@ func completeResult(name string) DomainResult {
 		Registrant:  Contact{Organization: "Example Corp", Email: "admin@example.com"},
 		Sources:     []string{name},
 	}
+	result.Normalize()
+	return result
 }
 
 func failing(name string) *fakeWHOISClient {
@@ -150,6 +152,21 @@ func TestCascade_StopsWhenComplete(t *testing.T) {
 	assert.Equal(t, 1, first.calls)
 	assert.Zero(t, second.calls, "a complete record leaves nothing to fill")
 	assert.Zero(t, third.calls)
+}
+
+func TestCascade_StopsWhenRegistrantDataIsPrivate(t *testing.T) {
+	result := completeResult(ProviderWhoxy)
+	result.Registrant = Contact{}
+	first := &fakeWHOISClient{name: ProviderWhoxy, result: result}
+	second := answering(ProviderWhoisFreaks)
+
+	res, err := withCommercialLookups(first, second).LookupDomain(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, PrivacyRedaction, res.RegistrantIdentity)
+	assert.Equal(t, PrivacyRedaction, res.ContactEmail)
+	assert.Equal(t, 1, first.calls)
+	assert.Zero(t, second.calls, "privacy is a complete registrant outcome")
 }
 
 // TestCascade_PassesThroughToNext verifies that a provider
@@ -432,8 +449,8 @@ func TestResultIsComplete(t *testing.T) {
 		name  string
 		strip func(*DomainResult)
 	}{
-		{"no registrant identity", func(r *DomainResult) { r.Registrant.Organization = "" }},
-		{"no registrant email", func(r *DomainResult) { r.Registrant.Email = "" }},
+		{"no registrant identity", func(r *DomainResult) { r.RegistrantIdentity = "" }},
+		{"no contact email outcome", func(r *DomainResult) { r.ContactEmail = "" }},
 		{"no registrar", func(r *DomainResult) { r.Registrar = "" }},
 		{"no expiration", func(r *DomainResult) { r.Expiration = "" }},
 		{"no nameservers", func(r *DomainResult) { r.NameServers = nil }},

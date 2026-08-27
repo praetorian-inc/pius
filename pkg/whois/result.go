@@ -41,26 +41,31 @@ type DomainContact struct {
 	Contact
 }
 
-// Reports whether the record has enough information to be considered complete.
+// Reports whether the merged record has enough information to stop the cascade.
 func (r *DomainResult) isComplete() bool {
-	return (r.Registrant.Organization != "" || r.Registrant.Name != "") &&
-		r.Registrant.Email != "" &&
-		r.Registrar != "" &&
-		r.Expiration != "" &&
-		len(r.NameServers) > 0
+	return isNotEmptyOrPrivate(r.RegistrantIdentity) &&
+		isNotEmptyOrPrivate(r.ContactEmail) &&
+		isNotEmptyOrPrivate(r.Registrar)
 }
 
-// hasSubstance reports whether the record carries actual registration data
-// rather than just a domain name echoed back by the provider. It is what
-// distinguishes "this source has an answer" from "this source acknowledged the
-// query and had nothing", which decides whether Lookup continues.
+// hasSubstance distinguishes a partial registration record from an empty response.
 func (r *DomainResult) hasSubstance() bool {
-	return r.Registrar != "" ||
+	if r.Registrar != "" ||
 		r.Created != "" || r.Updated != "" || r.Expiration != "" ||
 		r.WhoisServer != "" || r.DNSSEC != "" ||
-		len(r.NameServers) > 0 || len(r.Status) > 0 ||
-		!r.Registrant.IsEmpty() || !r.Admin.IsEmpty() ||
-		!r.Tech.IsEmpty() || !r.Billing.IsEmpty()
+		len(r.NameServers) > 0 || len(r.Status) > 0 {
+		return true
+	}
+	for _, contact := range r.AllContacts() {
+		if !contact.IsEmpty() {
+			return true
+		}
+	}
+	return false
+}
+
+func isNotEmptyOrPrivate(s string) bool {
+	return s != "" && s != PrivacyRedaction
 }
 
 // Merge fills empty fields on r from other, used to chain providers.
@@ -115,6 +120,9 @@ func (r *DomainResult) Normalize() {
 
 func (r *DomainResult) populateDerivedFields() {
 	r.RegistrantIdentity = preferNonPrivacy(r.Registrant.Organization, r.Registrant.Name)
+	if r.RegistrantIdentity == "" {
+		r.RegistrantIdentity = PrivacyRedaction
+	}
 	r.ContactEmail, r.ContactEmailRole = preferredContactEmail(*r)
 }
 

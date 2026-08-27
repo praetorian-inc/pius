@@ -17,8 +17,7 @@ import (
 // WHOISClient so tests can substitute a fake without touching the network.
 //
 // RDAP leads the cascade because it returns structured fields and standardized
-// dates. It rarely carries registrant email, which is what the later legs are
-// for.
+// dates. Later legs fill missing registration fields when its record is incomplete.
 type RDAPClient struct {
 	httpClient *http.Client
 }

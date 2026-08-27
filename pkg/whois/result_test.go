@@ -125,6 +125,18 @@ func TestDomainResult_NormalizeCleansRegistrantAndRegistrarArtifacts(t *testing.
 	assert.Equal(t, "EXAMPLE", result.Registrar)
 }
 
+func TestDomainResult_NormalizeDefaultsUnavailableRegistrantIdentityToPrivacy(t *testing.T) {
+	result := DomainResult{
+		Registrar:   "Example Registrar",
+		Expiration:  "2027-08-13T04:00:00Z",
+		NameServers: []string{"ns1.example.com"},
+	}
+
+	result.Normalize()
+
+	assert.Equal(t, PrivacyRedaction, result.RegistrantIdentity)
+}
+
 func TestDomainResult_NormalizeDefaultsUnavailableContactEmailToRegistrantPrivacy(t *testing.T) {
 	tests := []struct {
 		name   string

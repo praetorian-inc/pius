@@ -112,6 +112,9 @@ const (
 // ErrNoCredential included. It never inspects the error text, only its kind, so
 // a provider that authenticates with a query parameter cannot leak its key here.
 func logLookup(name, domain string, started time.Time, result *DomainResult, err *error) {
+	normalized := *result
+	normalized.Normalize()
+
 	outcome := outcomeFound
 	switch {
 	case err != nil && errors.Is(*err, ErrNoCredential):
@@ -121,7 +124,7 @@ func logLookup(name, domain string, started time.Time, result *DomainResult, err
 	case result.Unregistered:
 		// A definitive not-registered verdict answered the question.
 		outcome = outcomeFound
-	case !result.hasSubstance():
+	case !normalized.hasSubstance():
 		outcome = outcomeEmpty
 	}
 

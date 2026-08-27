@@ -51,7 +51,7 @@ func (w *WHOIS) LookupDomain(ctx context.Context, domain string) (DomainResult, 
 }
 
 // doDomainLookup runs one leg and folds its answer into state, reporting whether the
-// cascade should stop. Scrub-then-merge-then-check is order-sensitive, so the
+// cascade should stop. Normalize-then-check-then-merge is order-sensitive, so the
 // operation is kept in one method rather than repeated for each kind of leg.
 func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomainOnlyClient, state *lookupState) (stop bool) {
 	if err := ctx.Err(); err != nil {
@@ -86,6 +86,7 @@ func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomain
 		return false
 	}
 
+	res.Normalize()
 	if !res.hasSubstance() {
 		return false
 	}

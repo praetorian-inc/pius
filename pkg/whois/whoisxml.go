@@ -198,6 +198,7 @@ func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (resul
 	// thin registry sets dataError at the registrar level while registryData
 	// carries the actual record, so testing dataError first would throw away a
 	// usable answer — and worse, report a live domain as unregistered.
+	result.Normalize()
 	if result.hasSubstance() {
 		return result, nil
 	}
