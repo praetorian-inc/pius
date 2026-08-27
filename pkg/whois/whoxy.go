@@ -58,6 +58,16 @@ func (r *WhoxyClient) WithBaseURL(baseURL string) *WhoxyClient {
 	return r
 }
 
+// WithReverseHTTPClient sets the shared Pius client used for reverse WHOIS.
+// Live WHOIS continues to use the regular HTTP client supplied to the
+// constructor.
+func (r *WhoxyClient) WithReverseHTTPClient(client *httpclient.Client) *WhoxyClient {
+	if client != nil {
+		r.reverseHTTPClient = client
+	}
+	return r
+}
+
 func (r *WhoxyClient) Name() string { return ProviderWhoxy }
 
 func (r *WhoxyClient) getAPIKey() string {
@@ -115,6 +125,8 @@ func (r *WhoxyClient) ReverseLookup(ctx context.Context, field, value string, pa
 
 	body, err := r.reverseHTTPClient.Get(ctx, reqURL)
 	if err != nil {
+		// Do not wrap client errors because transport failures may contain the
+		// query URL and its API key.
 		return WhoxyReverseResponse{}, fmt.Errorf("whoxy: reverse-WHOIS request failed")
 	}
 

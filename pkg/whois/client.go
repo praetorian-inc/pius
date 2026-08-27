@@ -7,25 +7,28 @@ import (
 	"time"
 )
 
-// Client is one source of domain registration data.
-//
-// Commercial implementations report a missing API key as ErrNoCredential
-// rather than as a silent empty result: an operator who configured a provider
-// needs to know that it is not actually serving traffic.
-type Client interface {
-	// Name is the provider's config identifier, e.g. "whoxy".
+// WHOISDomainOnlyClient is one source of domain registration data.
+type WHOISDomainOnlyClient interface {
 	Name() string
-	// Lookup returns registration data for domain. A provider that answered but
-	// holds no record returns a zero Result and a nil error.
 	Lookup(ctx context.Context, domain string) (Result, error)
 }
+
+// WHOISClient supports both domain and network registration lookups.
+type WHOISClient interface {
+	WHOISDomainOnlyClient
+	LookupNetwork(ctx context.Context, query string) (NetworkResult, error)
+}
+
+// Client is retained as a compatibility alias for the original domain client
+// interface.
+type Client = WHOISDomainOnlyClient
 
 // ErrNoCredential reports that a provider has no API key configured, so it
 // cannot be consulted. It is not a lookup failure: the chain skips the provider
 // and moves on.
 var ErrNoCredential = errors.New("whois: provider credential not configured")
 
-// The commercial providers' config identifiers, as reported by WHOISLookup.Name().
+// The commercial providers' config identifiers, as reported by WHOISDomainClient.Name().
 const (
 	ProviderWhoxy       = "whoxy"
 	ProviderWhoisFreaks = "whoisfreaks"

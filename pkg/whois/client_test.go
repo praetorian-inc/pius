@@ -13,10 +13,13 @@ import (
 // counts how many times it was consulted. The count is what proves the cascade
 // stopped, or continued, where it was supposed to.
 type fakeWHOISClient struct {
-	name   string
-	result Result
-	err    error
-	calls  int
+	name          string
+	result        Result
+	err           error
+	calls         int
+	networkResult NetworkResult
+	networkErr    error
+	networkCalls  int
 }
 
 func (f *fakeWHOISClient) Name() string { return f.name }
@@ -24,6 +27,11 @@ func (f *fakeWHOISClient) Name() string { return f.name }
 func (f *fakeWHOISClient) Lookup(_ context.Context, _ string) (Result, error) {
 	f.calls++
 	return f.result, f.err
+}
+
+func (f *fakeWHOISClient) LookupNetwork(_ context.Context, _ string) (NetworkResult, error) {
+	f.networkCalls++
+	return f.networkResult, f.networkErr
 }
 
 // answering returns a leg with a partial record: enough to be substantive, not

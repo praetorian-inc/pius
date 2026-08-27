@@ -17,20 +17,23 @@ import (
 // Naming every source makes both the order and the cost of an incomplete lookup
 // explicit.
 type WHOIS struct {
-	RDAPClient        Client
-	TCP43Client       Client
-	WhoxyClient       Client
-	WhoisFreaksClient Client
-	WhoisXMLClient    Client
+	RDAPClient        WHOISClient
+	TCP43Client       WHOISClient
+	WhoxyClient       WHOISDomainOnlyClient
+	WhoisFreaksClient WHOISDomainOnlyClient
+	WhoisXMLClient    WHOISDomainOnlyClient
 
 	// httpClient builds whichever default lookups the caller did not supply.
 	httpClient *http.Client
 }
 
+// Option configures WHOIS lookups.
+type Option = func(*WHOIS)
+
 // New builds the WHOIS sequence, filling each lookup the caller left unset
 // with its default implementation. Callers may pass ad hoc configuration
 // functions when direct field assignment is not convenient.
-func New(opts ...func(*WHOIS)) *WHOIS {
+func New(opts ...Option) *WHOIS {
 	w := &WHOIS{}
 	for _, o := range opts {
 		o(w)
@@ -55,7 +58,7 @@ func New(opts ...func(*WHOIS)) *WHOIS {
 }
 
 // WithHTTPClient sets the HTTP client used by the HTTP-based lookups.
-func WithHTTPClient(c *http.Client) func(*WHOIS) {
+func WithHTTPClient(c *http.Client) Option {
 	return func(w *WHOIS) { w.httpClient = c }
 }
 
@@ -101,7 +104,7 @@ func (w *WHOIS) Lookup(ctx context.Context, domain string) (Result, error) {
 // doLookup runs one leg and folds its answer into state, reporting whether the
 // cascade should stop. Scrub-then-merge-then-check is order-sensitive, so the
 // operation is kept in one method rather than repeated for each kind of leg.
-func (w *WHOIS) doLookup(ctx context.Context, domain string, r Client, state *lookupState) (stop bool) {
+func (w *WHOIS) doLookup(ctx context.Context, domain string, r WHOISDomainOnlyClient, state *lookupState) (stop bool) {
 	if err := ctx.Err(); err != nil {
 		state.errs = append(state.errs, err)
 		return true

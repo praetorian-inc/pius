@@ -131,35 +131,74 @@ func ValidateNetworkTarget(query string) error {
 	return err
 }
 
-// LookupNetwork resolves an IP or CIDR through RDAP with TCP-43 fallback.
+// LookupNetwork resolves an IP or CIDR using the default WHOIS cascade.
+// It is retained as a compatibility wrapper around WHOIS.LookupNetwork.
 func LookupNetwork(ctx context.Context, query string, opts ...Option) (NetworkResult, error) {
+	return New(opts...).LookupNetwork(ctx, query)
+}
+
+// networkLookupState holds the mutable state for one network cascade walk.
+type networkLookupState struct {
+	target   networkTarget
+	result   NetworkResult
+	errs     []error
+	resolved bool
+}
+
+// LookupNetwork resolves an IP or CIDR through the configured RDAP and TCP-43
+// network clients.
+func (w *WHOIS) LookupNetwork(ctx context.Context, query string) (NetworkResult, error) {
 	target, err := parseNetworkTarget(query)
 	if err != nil {
 		return NetworkResult{}, err
 	}
 
-	cfg := config{}
-	for _, option := range opts {
-		option(&cfg)
+	state := networkLookupState{target: target}
+	if w.doNetworkLookup(ctx, w.RDAPClient, &state) {
+		return state.finish()
+	}
+	if w.doNetworkLookup(ctx, w.TCP43Client, &state) {
+		return state.finish()
+	}
+	return state.finish()
+}
+
+// doNetworkLookup runs one network leg, validates its allocation and merges it
+// into state. A useful RDAP identity ends the cascade before TCP-43 is needed.
+func (w *WHOIS) doNetworkLookup(ctx context.Context, client WHOISClient, state *networkLookupState) (stop bool) {
+	if err := ctx.Err(); err != nil {
+		state.errs = append(state.errs, err)
+		return true
 	}
 
-	rdapResult, rdapErr := rdapNetworkLookup(ctx, cfg.httpClient, target)
-	if rdapErr == nil && hasUsefulNetworkIdentity(rdapResult.Contacts) {
-		return rdapResult, nil
+	result, err := client.LookupNetwork(ctx, state.target.query)
+	if err != nil {
+		state.errs = append(state.errs, err)
+		return ctx.Err() != nil
 	}
 
-	tcpResult, tcpErr := tcp43NetworkLookup(ctx, target)
-	if rdapErr == nil {
-		if tcpErr == nil {
-			mergeTCP43NetworkResult(&rdapResult, tcpResult)
-		}
-		return rdapResult, nil
-	}
-	if tcpErr == nil {
-		return tcpResult, nil
+	result.Query = state.target.query
+	result.Clean()
+	if err := requireContainingAllocation(result, state.target); err != nil {
+		state.errs = append(state.errs, fmt.Errorf("%s network lookup: %w", client.Name(), err))
+		return false
 	}
 
-	return NetworkResult{}, fmt.Errorf("whois: all methods failed for %s: %w", target.query, errors.Join(rdapErr, tcpErr))
+	state.result.Merge(result)
+	state.resolved = true
+	return client.Name() == SourceRDAP && hasUsefulNetworkIdentity(result.Contacts)
+}
+
+func (state *networkLookupState) finish() (NetworkResult, error) {
+	if state.resolved {
+		state.result.Query = state.target.query
+		state.result.Clean()
+		return state.result, nil
+	}
+	if joined := errors.Join(state.errs...); joined != nil {
+		return NetworkResult{}, fmt.Errorf("whois: all methods failed for %s: %w", state.target.query, joined)
+	}
+	return NetworkResult{}, fmt.Errorf("whois: no source had a record for %s", state.target.query)
 }
 
 type networkTarget struct {
@@ -240,14 +279,48 @@ func hasUsefulNetworkIdentity(contacts []NetworkContact) bool {
 	return false
 }
 
-func mergeTCP43NetworkResult(rdapResult *NetworkResult, tcpResult NetworkResult) {
-	rdapResult.Contacts = mergeNetworkContacts(rdapResult.Contacts, tcpResult.Contacts)
-	rdapResult.Sources = append(rdapResult.Sources, "whois")
-	rdapResult.WhoisServer = tcpResult.WhoisServer
-	rdapResult.Raw = tcpResult.Raw
-	if rdapResult.Registry == "" {
-		rdapResult.Registry = tcpResult.Registry
+// Merge fills gaps from other while preserving the receiver as the base
+// allocation. This keeps RDAP authoritative when it ran first while retaining
+// TCP-43 contacts, provenance, server attribution, and raw evidence.
+func (r *NetworkResult) Merge(other NetworkResult) {
+	fill := func(base *string, value string) {
+		if *base == "" {
+			*base = value
+		}
 	}
+
+	fill(&r.Query, other.Query)
+	fill(&r.StartAddress, other.StartAddress)
+	fill(&r.EndAddress, other.EndAddress)
+	fill(&r.Handle, other.Handle)
+	fill(&r.Name, other.Name)
+	fill(&r.Type, other.Type)
+	if len(r.Status) == 0 {
+		r.Status = slices.Clone(other.Status)
+	}
+	fill(&r.Country, other.Country)
+	fill(&r.ParentHandle, other.ParentHandle)
+	fill(&r.Registry, other.Registry)
+	fill(&r.Server, other.Server)
+	fill(&r.RDAPServer, other.RDAPServer)
+	fill(&r.WhoisServer, other.WhoisServer)
+	fill(&r.Raw, other.Raw)
+	r.Contacts = mergeNetworkContacts(r.Contacts, other.Contacts)
+	r.Sources = mergeNetworkSources(r.Sources, other.Sources)
+}
+
+func mergeNetworkSources(base, other []string) []string {
+	seen := make(map[string]bool, len(base)+len(other))
+	out := make([]string, 0, len(base)+len(other))
+	for _, source := range append(append([]string(nil), base...), other...) {
+		source = strings.TrimSpace(source)
+		if source == "" || seen[source] {
+			continue
+		}
+		seen[source] = true
+		out = append(out, source)
+	}
+	return out
 }
 
 func mergeNetworkContacts(base, other []NetworkContact) []NetworkContact {

@@ -7,39 +7,44 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	httpclient "github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
-	"github.com/praetorian-inc/pius/pkg/whois"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func newWhoxyReverseWhoisTestPlugin(httpClient *http.Client, baseURL string) *WhoxyReverseWhoisPlugin {
-	client := whois.NewWhoxyClient(httpClient, "").WithBaseURL(baseURL)
-	return &WhoxyReverseWhoisPlugin{client: client}
+func newWhoxyReverseWhoisTestPlugin(rawClient *http.Client, baseURL string, apiKeys ...string) *WhoxyReverseWhoisPlugin {
+	apiKey := ""
+	if len(apiKeys) > 0 {
+		apiKey = apiKeys[0]
+	}
+	plugin := NewWhoxyReverseWhoisPlugin(httpclient.NewWithHTTPClient(rawClient), apiKey)
+	plugin.client.WithBaseURL(baseURL)
+	return plugin
 }
 
 func TestWhoxyReverseWhois_Accepts_WithKeyAndOrg(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "test-key")
-	p := NewWhoxyReverseWhoisPlugin(nil)
+	p := NewWhoxyReverseWhoisPlugin(nil, "")
 	assert.True(t, p.Accepts(plugins.Input{OrgName: "Acme Corp"}))
 }
 
 func TestWhoxyReverseWhois_Accepts_RejectsWithoutKey(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
-	p := NewWhoxyReverseWhoisPlugin(nil)
+	p := NewWhoxyReverseWhoisPlugin(nil, "")
 	assert.False(t, p.Accepts(plugins.Input{OrgName: "Acme Corp"}))
 }
 
 func TestWhoxyReverseWhois_Accepts_RejectsWithoutOrgName(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "test-key")
-	p := NewWhoxyReverseWhoisPlugin(nil)
+	p := NewWhoxyReverseWhoisPlugin(nil, "")
 	assert.False(t, p.Accepts(plugins.Input{}))
 	assert.False(t, p.Accepts(plugins.Input{Domain: "acme.com"}))
 }
 
 func TestWhoxyReverseWhois_Accepts_WithKeyAndEmail(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "test-key")
-	p := NewWhoxyReverseWhoisPlugin(nil)
+	p := NewWhoxyReverseWhoisPlugin(nil, "")
 	assert.True(t, p.Accepts(plugins.Input{Email: "admin@acme.com"}))
 }
 
@@ -81,7 +86,7 @@ func TestWhoxyReverseWhois_Run_EmitsFindings(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newWhoxyReverseWhoisTestPlugin(srv.Client(), srv.URL)
+	p := newWhoxyReverseWhoisTestPlugin(srv.Client(), srv.URL, "constructor-key")
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 	require.Len(t, findings, 2)
@@ -214,7 +219,7 @@ func TestWhoxyReverseWhois_Run_PreservesParametersPerDomain(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := &WhoxyReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	p := newWhoxyReverseWhoisTestPlugin(srv.Client(), srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{
 		OrgName: "Acme Corp", PersonName: "Alice Smith", Email: "alice@acme.com",
 	})

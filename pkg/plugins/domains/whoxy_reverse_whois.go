@@ -4,10 +4,10 @@ import (
 	"cmp"
 	"context"
 	"log/slog"
-	"net/http"
 	"os"
 	"time"
 
+	httpclient "github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/praetorian-inc/pius/pkg/whois"
@@ -17,7 +17,7 @@ const maxWhoxyPages = 100
 
 func init() {
 	plugins.Register("whoxy-reverse-whois", func() plugins.Plugin {
-		return NewWhoxyReverseWhoisPlugin(nil)
+		return NewWhoxyReverseWhoisPlugin(nil, "")
 	})
 }
 
@@ -26,13 +26,16 @@ func init() {
 // WHOIS corroboration in Guard.
 type WhoxyReverseWhoisPlugin struct {
 	client *whois.WhoxyClient
-	apiKey  string
-	baseURL string // overridable for tests
+	apiKey string
 }
 
-// NewWhoxyReverseWhoisPlugin creates a plugin with an injectable HTTP client.
-func NewWhoxyReverseWhoisPlugin(httpClient *client.Client, apiKey string) *WhoxyReverseWhoisPlugin {
-	return &WhoxyReverseWhoisPlugin{client: whois.NewWhoxyClient(httpClient, apiKey)}
+// NewWhoxyReverseWhoisPlugin creates a plugin with an injectable shared HTTP
+// client. apiKey takes precedence over WHOXY_API_KEY.
+func NewWhoxyReverseWhoisPlugin(client *httpclient.Client, apiKey string) *WhoxyReverseWhoisPlugin {
+	return &WhoxyReverseWhoisPlugin{
+		client: whois.NewWhoxyClient(nil, apiKey).WithReverseHTTPClient(client),
+		apiKey: apiKey,
+	}
 }
 
 func (p *WhoxyReverseWhoisPlugin) Name() string { return "whoxy-reverse-whois" }
@@ -59,11 +62,6 @@ type whoxyQuery struct {
 }
 
 func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-<<<<<<< HEAD
-=======
-	apiKey := p.resolveAPIKey()
-
->>>>>>> origin/main
 	// Build the set of queries from the input. Whoxy distinguishes company
 	// names (&company=) from person names (&name=) from email (&email=).
 	queries := buildWhoxyQueries(input)
