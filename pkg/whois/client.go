@@ -11,7 +11,7 @@ import (
 // WHOISDomainOnlyClient is one source of domain registration data.
 type WHOISDomainOnlyClient interface {
 	Name() string
-	LookupDomain(ctx context.Context, domain string) (Result, error)
+	LookupDomain(ctx context.Context, domain string) (DomainResult, error)
 }
 
 // WHOISClient supports both domain and network registration lookups.
@@ -97,9 +97,9 @@ const (
 // registry has nothing to give anyone" are the same event under a binary flag,
 // and telling them apart is the whole point of measuring.
 const (
-	outcomeFound = "found"
-	outcomeEmpty = "empty"
-	outcomeError = "error"
+	outcomeFound   = "found"
+	outcomeEmpty   = "empty"
+	outcomeError   = "error"
 	outcomeSkipped = "skipped"
 )
 
@@ -111,7 +111,7 @@ const (
 // Called via defer with named returns, so every exit path is counted — an early
 // ErrNoCredential included. It never inspects the error text, only its kind, so
 // a provider that authenticates with a query parameter cannot leak its key here.
-func logLookup(name, domain string, started time.Time, result *Result, err *error) {
+func logLookup(name, domain string, started time.Time, result *DomainResult, err *error) {
 	outcome := outcomeFound
 	switch {
 	case err != nil && errors.Is(*err, ErrNoCredential):

@@ -1,6 +1,7 @@
 package whois
 
 import (
+	"cmp"
 	"net"
 	"net/mail"
 	"regexp"
@@ -28,7 +29,7 @@ func RegistrantOrg(c Contact, domain string) string {
 
 // ContactEmail finds the best non-privacy email across a result's contacts.
 // Prefers registrant, then admin, tech, billing.
-func ContactEmail(r Result) (email string, sawProxy bool) {
+func ContactEmail(r DomainResult) (email string, sawProxy bool) {
 	for _, c := range r.AllContacts() {
 		classified := classifyEmail(c.Email)
 		switch {
@@ -52,6 +53,32 @@ func classifyEmail(raw string) string {
 		return raw
 	}
 	return ""
+}
+
+func normalizePrivacy(v string) string {
+	v = strings.TrimSpace(v)
+	if IsPrivacy(v) {
+		return PrivacyRedaction
+	}
+	return v
+}
+
+func preferNonPrivacy(base, other string) string {
+	if IsPrivacy(other) {
+		return cmp.Or(base, other)
+	}
+	return cmp.Or(other, base)
+}
+
+func trimStrings(arr []string) []string {
+	res := make([]string, 0, len(arr))
+	for i := range arr {
+		v := strings.TrimSpace(arr[i])
+		if v != "" {
+			res = append(res, v)
+		}
+	}
+	return res
 }
 
 // IsEmail reports whether s is a syntactically valid email address.
@@ -207,7 +234,7 @@ func ContainsRedactionMarker(raw string) bool {
 // applyISOCILFallback fills empty Registrant org/email for .il domains from
 // the raw RPSL descr/e-mail block, which likexian/whois-parser does not map
 // onto Registrant.
-func applyISOCILFallback(r *Result, rawText string) {
+func applyISOCILFallback(r *DomainResult, rawText string) {
 	dns := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(r.Domain), "."))
 	if !strings.HasSuffix(dns, ".il") {
 		return

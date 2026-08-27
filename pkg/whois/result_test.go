@@ -7,7 +7,7 @@ import (
 )
 
 func TestResult_Clean(t *testing.T) {
-	result := Result{
+	result := DomainResult{
 		Domain:      " example.com ",
 		Registrar:   " Example Registrar ",
 		Created:     " 2020-01-01 ",
@@ -26,9 +26,9 @@ func TestResult_Clean(t *testing.T) {
 		Admin: Contact{Name: "REDACTED FOR PRIVACY"},
 	}
 
-	result.Clean()
+	result.Normalize()
 
-	assert.Equal(t, Result{
+	assert.Equal(t, DomainResult{
 		Domain:      "example.com",
 		Registrar:   "Example Registrar",
 		Created:     "2020-01-01",
@@ -47,21 +47,21 @@ func TestResult_Clean(t *testing.T) {
 }
 
 func TestResult_CleanAllowsProviderFallback(t *testing.T) {
-	primary := Result{
+	primary := DomainResult{
 		Registrar:   " ",
 		NameServers: []string{" "},
 		Status:      []string{"\t"},
 		Registrant:  Contact{Name: " "},
 	}
-	fallback := Result{
+	fallback := DomainResult{
 		Registrar:   "Fallback Registrar",
 		NameServers: []string{"ns1.example.com"},
 		Status:      []string{"active"},
 		Registrant:  Contact{Name: "Jane Doe"},
 	}
 
-	primary.Clean()
-	fallback.Clean()
+	primary.Normalize()
+	fallback.Normalize()
 	primary.Merge(fallback)
 
 	assert.Equal(t, "Fallback Registrar", primary.Registrar)

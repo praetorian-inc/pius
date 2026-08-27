@@ -54,17 +54,17 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 // WhoisFindingData wraps a whois.Result with corroboration metadata for the
 // Finding payload.
 type WhoisFindingData struct {
-	whois.Result
+	whois.DomainResult
 	Corroboration string `json:"corroboration,omitempty"`
 }
 
-func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
+func buildWhoisResultFinding(r whois.DomainResult, pivotOrg string) plugins.Finding {
 	if r.Unregistered {
 		return plugins.Finding{
 			Type:   plugins.FindingWhoisResult,
 			Value:  r.Domain,
 			Source: "whois",
-			Data:   plugins.FindingData(whois.Result{Domain: r.Domain, Unregistered: true}),
+			Data:   plugins.FindingData(whois.DomainResult{Domain: r.Domain, Unregistered: true}),
 		}
 	}
 
@@ -85,7 +85,7 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 		r.Registrant.Email = whois.PrivacyRedaction
 	}
 
-	fd := WhoisFindingData{Result: r}
+	fd := WhoisFindingData{DomainResult: r}
 	if pivotOrg != "" {
 		fd.Corroboration = whois.Corroborate(pivotOrg, org)
 	}
@@ -100,7 +100,7 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 
 const confWhoisServerRecord = 85
 
-func extractPreseeds(r whois.Result) []plugins.Finding {
+func extractPreseeds(r whois.DomainResult) []plugins.Finding {
 	type candidate struct {
 		field, role, value string
 	}

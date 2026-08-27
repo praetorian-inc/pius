@@ -31,12 +31,12 @@ func NewRDAPClient(httpClient *http.Client) *RDAPClient {
 
 func (r *RDAPClient) Name() string { return SourceRDAP }
 
-func (r *RDAPClient) LookupDomain(ctx context.Context, domain string) (result Result, err error) {
+func (r *RDAPClient) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
 	result, err = rdapLookup(ctx, r.httpClient, domain)
 	if err != nil {
-		return Result{}, err
+		return DomainResult{}, err
 	}
 	result.Sources = []string{SourceRDAP}
 	return result, nil
@@ -44,7 +44,7 @@ func (r *RDAPClient) LookupDomain(ctx context.Context, domain string) (result Re
 
 // rdapLookup performs an RDAP domain lookup, following registrar "related"
 // links when the registry response lacks registrant data (common under GDPR).
-func rdapLookup(ctx context.Context, httpClient *http.Client, domain string) (Result, error) {
+func rdapLookup(ctx context.Context, httpClient *http.Client, domain string) (DomainResult, error) {
 	client := &rdap.Client{}
 	if httpClient != nil {
 		client.HTTP = httpClient
@@ -59,11 +59,11 @@ func rdapLookup(ctx context.Context, httpClient *http.Client, domain string) (Re
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return Result{}, fmt.Errorf("RDAP lookup failed for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("RDAP lookup failed for %s: %w", domain, err)
 	}
 	domainResp, ok := resp.Object.(*rdap.Domain)
 	if !ok {
-		return Result{}, fmt.Errorf("unexpected RDAP response type for %s", domain)
+		return DomainResult{}, fmt.Errorf("unexpected RDAP response type for %s", domain)
 	}
 
 	result := mapRDAPToResult(domain, domainResp)
@@ -72,13 +72,13 @@ func rdapLookup(ctx context.Context, httpClient *http.Client, domain string) (Re
 	if result.Registrant.IsEmpty() {
 		enrichFromRegistrar(ctx, client, &result, domainResp)
 	}
-	result.Clean()
+	result.Normalize()
 
 	return result, nil
 }
 
-func mapRDAPToResult(domain string, resp *rdap.Domain) Result {
-	r := Result{Domain: domain}
+func mapRDAPToResult(domain string, resp *rdap.Domain) DomainResult {
+	r := DomainResult{Domain: domain}
 
 	for _, event := range resp.Events {
 		switch event.Action {
@@ -113,7 +113,7 @@ func mapRDAPToResult(domain string, resp *rdap.Domain) Result {
 	return r
 }
 
-func enrichFromRegistrar(ctx context.Context, client *rdap.Client, result *Result, domainResp *rdap.Domain) {
+func enrichFromRegistrar(ctx context.Context, client *rdap.Client, result *DomainResult, domainResp *rdap.Domain) {
 	var registrarURL string
 	for _, link := range domainResp.Links {
 		if link.Rel == "related" && link.Type == "application/rdap+json" {
@@ -262,8 +262,8 @@ func networkContactFromEntity(entity *rdap.Entity, direct bool) NetworkContact {
 	contact.Kind = firstVCardValue(entity.VCard, "kind")
 	contact.Organization = base.Organization
 	contact.Name = base.Name
-	contact.Email = clearIfPrivacy(entity.VCard.Email())
-	contact.Phone = clearIfPrivacy(strings.TrimPrefix(entity.VCard.Tel(), "tel:"))
+	contact.Email = normalizePrivacy(entity.VCard.Email())
+	contact.Phone = normalizePrivacy(strings.TrimPrefix(entity.VCard.Tel(), "tel:"))
 	contact.Country = base.Country
 	contact.Province = base.Province
 	contact.City = base.City
@@ -295,7 +295,7 @@ func contactFromVCard(vcard *rdap.VCard) Contact {
 	if contact.Street == "" && contact.City == "" && contact.Province == "" && contact.PostalCode == "" {
 		contact.Street = addressLabelFromVCard(vcard)
 	}
-	return contact.Clean()
+	return contact.Normalize()
 }
 
 func addressLabelFromVCard(vcard *rdap.VCard) string {

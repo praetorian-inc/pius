@@ -14,7 +14,7 @@ func TestExtractPreseeds_DropsMonikerPrivacyServices(t *testing.T) {
 		Organization: "Moniker Privacy Services",
 		Email:        "676db20f21af0a0a9ccb7d19f72c34238d63e06ceb66bf94ec7f7ce203093358@randommedia.com.whoisproxy.org",
 	}
-	r := whois.Result{
+	r := whois.DomainResult{
 		Domain:     "randommedia.com",
 		Registrant: contact,
 		Admin:      contact,
@@ -28,7 +28,7 @@ func TestExtractPreseeds_DropsMonikerPrivacyServices(t *testing.T) {
 // A preseed justification names the server that answered the WHOIS query, so a
 // reviewer can retrace the claim to the record it came from.
 func TestExtractPreseeds_JustificationNamesWhoisServer(t *testing.T) {
-	r := whois.Result{
+	r := whois.DomainResult{
 		Domain:      "example.com",
 		WhoisServer: "whois.registrar.example",
 		Registrant:  whois.Contact{Organization: "ACME-CORP"},
@@ -46,7 +46,7 @@ func TestExtractPreseeds_JustificationNamesWhoisServer(t *testing.T) {
 // An RDAP-only lookup has no WHOIS server to cite, so the justification falls
 // back to the unattributed wording rather than naming an empty server.
 func TestExtractPreseeds_JustificationOmitsUnknownWhoisServer(t *testing.T) {
-	r := whois.Result{
+	r := whois.DomainResult{
 		Domain:     "example.com",
 		Registrant: whois.Contact{Organization: "ACME-CORP"},
 	}

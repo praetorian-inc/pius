@@ -68,7 +68,7 @@ func TestLogLookup_ClassifiesEveryOutcome(t *testing.T) {
 		{"a record is found", complete(ProviderWhoxy), outcomeFound},
 		{"an unregistered verdict is an answer", &fakeWHOISClient{
 			name:   ProviderWhoxy,
-			result: Result{Domain: "gone.example", Unregistered: true},
+			result: DomainResult{Domain: "gone.example", Unregistered: true},
 		}, outcomeFound},
 		{"acknowledged with no record", silent(ProviderWhoxy), outcomeEmpty},
 		{"a failed request", failing(ProviderWhoxy), outcomeError},
@@ -154,7 +154,7 @@ func TestLogLookup_NeverLogsTheAPIKey(t *testing.T) {
 	const key = "super-secret-key"
 
 	records := captureLogs(t, slog.LevelDebug, func() {
-		var result Result
+		var result DomainResult
 		err := errors.New(`Get "https://api.whoxy.com/?key=` + key + `&whois=example.com": dial error`)
 		logLookup(ProviderWhoxy, "example.com", time.Now(), &result, &err)
 	})

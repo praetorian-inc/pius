@@ -137,12 +137,12 @@ func (r *WhoxyClient) ReverseLookup(ctx context.Context, field, value string, pa
 	return response, nil
 }
 
-func (r *WhoxyClient) LookupDomain(ctx context.Context, domain string) (result Result, err error) {
+func (r *WhoxyClient) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
 	apiKey := r.getAPIKey()
 	if apiKey == "" {
-		return Result{}, ErrNoCredential
+		return DomainResult{}, ErrNoCredential
 	}
 
 	params := url.Values{}
@@ -152,7 +152,7 @@ func (r *WhoxyClient) LookupDomain(ctx context.Context, domain string) (result R
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return Result{}, fmt.Errorf("whoxy: building request for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("whoxy: building request for %s: %w", domain, err)
 	}
 
 	httpClient := cmp.Or(r.httpClient, http.DefaultClient)
@@ -163,41 +163,41 @@ func (r *WhoxyClient) LookupDomain(ctx context.Context, domain string) (result R
 		// `Get "<full url>": <cause>` — with the API key embedded in it.
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
-			return Result{}, fmt.Errorf("whoxy: request failed for %s: %w", domain, urlErr.Err)
+			return DomainResult{}, fmt.Errorf("whoxy: request failed for %s: %w", domain, urlErr.Err)
 		}
-		return Result{}, fmt.Errorf("whoxy: request failed for %s", domain)
+		return DomainResult{}, fmt.Errorf("whoxy: request failed for %s", domain)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return Result{}, fmt.Errorf("whoxy: API returned HTTP %d for %s", resp.StatusCode, domain)
+		return DomainResult{}, fmt.Errorf("whoxy: API returned HTTP %d for %s", resp.StatusCode, domain)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return Result{}, fmt.Errorf("whoxy: reading response for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("whoxy: reading response for %s: %w", domain, err)
 	}
 
 	var wr whoxyLiveResponse
 	if err := json.Unmarshal(body, &wr); err != nil {
-		return Result{}, fmt.Errorf("whoxy: decoding response for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("whoxy: decoding response for %s: %w", domain, err)
 	}
 
 	if wr.Status != 1 {
-		return Result{}, fmt.Errorf("whoxy: lookup failed for %s: %s", domain, wr.StatusReason)
+		return DomainResult{}, fmt.Errorf("whoxy: lookup failed for %s: %s", domain, wr.StatusReason)
 	}
 
 	if wr.Raw == "" {
 		// Answered successfully, but holds nothing for this domain.
-		return Result{}, nil
+		return DomainResult{}, nil
 	}
 
 	parsed, err := whoisparser.Parse(wr.Raw)
 	if err != nil {
 		if errors.Is(err, whoisparser.ErrNotFoundDomain) {
-			return Result{Domain: domain, Unregistered: true}, nil
+			return DomainResult{Domain: domain, Unregistered: true}, nil
 		}
-		return Result{}, fmt.Errorf("whoxy: parsing record for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("whoxy: parsing record for %s: %w", domain, err)
 	}
 
 	result = mapParsedToResult(domain, parsed)

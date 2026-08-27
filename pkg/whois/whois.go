@@ -11,11 +11,10 @@ import (
 	"github.com/openrdap/rdap"
 )
 
-
 // lookupState holds the mutable state for one cascade walk. Keeping it local to
 // Lookup allows a configured WHOIS to be reused safely by concurrent callers.
 type lookupState struct {
-	result       Result
+	result       DomainResult
 	errs         []error
 	resolved     bool
 	unregistered bool
@@ -24,10 +23,10 @@ type lookupState struct {
 // LookupDomain resolves domain registration data by walking w's configured cascade
 // and merging each leg's answer into a single record, stopping as soon as the
 // record is complete.
-func (w *WHOIS) LookupDomain(ctx context.Context, domain string) (Result, error) {
+func (w *WHOIS) LookupDomain(ctx context.Context, domain string) (DomainResult, error) {
 	domain = RootDomain(domain)
 	if domain == "" {
-		return Result{}, fmt.Errorf("whois: no registrable domain")
+		return DomainResult{}, fmt.Errorf("whois: no registrable domain")
 	}
 
 	state := lookupState{}
@@ -91,8 +90,6 @@ func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomain
 		return false
 	}
 
-	res.ScrubContacts()
-
 	state.result.Merge(res)
 	state.result.Domain = domain
 	state.resolved = true
@@ -116,9 +113,9 @@ func isDomainNotFound(err error) bool {
 	return false
 }
 
-func (state *lookupState) finish(domain string) (Result, error) {
+func (state *lookupState) finish(domain string) (DomainResult, error) {
 	if state.unregistered {
-		return Result{Domain: domain, Unregistered: true}, nil
+		return DomainResult{Domain: domain, Unregistered: true}, nil
 	}
 
 	// Success requires that some lookup actually contributed data. A sequence
@@ -126,9 +123,9 @@ func (state *lookupState) finish(domain string) (Result, error) {
 	// record that happens to be empty.
 	if !state.resolved {
 		if joined := errors.Join(state.errs...); joined != nil {
-			return Result{}, fmt.Errorf("whois: all methods failed for %s: %w", domain, joined)
+			return DomainResult{}, fmt.Errorf("whois: all methods failed for %s: %w", domain, joined)
 		}
-		return Result{}, fmt.Errorf("whois: no source had a record for %s", domain)
+		return DomainResult{}, fmt.Errorf("whois: no source had a record for %s", domain)
 	}
 
 	state.result.Domain = domain

@@ -41,12 +41,12 @@ func (r *TCP43Client) Name() string { return SourceTCP43 }
 // and no longer in the orchestrator. Keeping it in the leg that produced the
 // text is why WHOISClient can return just (Result, error) without plumbing raw
 // string through the whole cascade.
-func (r *TCP43Client) LookupDomain(ctx context.Context, domain string) (result Result, err error) {
+func (r *TCP43Client) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
 	result, raw, err := tcp43Lookup(ctx, domain)
 	if err != nil {
-		return Result{}, err
+		return DomainResult{}, err
 	}
 	applyISOCILFallback(&result, raw)
 	result.Sources = []string{SourceTCP43}
@@ -57,27 +57,27 @@ func (r *TCP43Client) LookupDomain(ctx context.Context, domain string) (result R
 // then parses the result into a Result.
 // tcp43Lookup returns both the parsed Result and the raw WHOIS text. The raw
 // text is needed for ISOC-IL fallback parsing but is not persisted on Result.
-func tcp43Lookup(ctx context.Context, domain string) (Result, string, error) {
+func tcp43Lookup(ctx context.Context, domain string) (DomainResult, string, error) {
 	raw, server, err := tcp43Raw(ctx, domain)
 	if err != nil {
-		return Result{}, "", err
+		return DomainResult{}, "", err
 	}
 	if err := ctx.Err(); err != nil {
-		return Result{}, "", err
+		return DomainResult{}, "", err
 	}
 
 	parsed, err := whoisparser.Parse(raw)
 	if err != nil {
-		return Result{}, "", fmt.Errorf("whois parse failed for %s: %w", domain, err)
+		return DomainResult{}, "", fmt.Errorf("whois parse failed for %s: %w", domain, err)
 	}
 	result := mapParsedToResult(domain, parsed)
 	result.WhoisServer = server
-	result.Clean()
+	result.Normalize()
 	return result, raw, nil
 }
 
-func mapParsedToResult(domain string, info whoisparser.WhoisInfo) Result {
-	r := Result{Domain: domain}
+func mapParsedToResult(domain string, info whoisparser.WhoisInfo) DomainResult {
+	r := DomainResult{Domain: domain}
 
 	if info.Domain != nil {
 		r.Created = info.Domain.CreatedDate
@@ -270,7 +270,7 @@ func organizationContacts(fields map[string][]string) []NetworkContact {
 			Roles:        []string{organization.role},
 			Kind:         "org",
 			Direct:       true,
-			Organization: clearIfPrivacy(organization.value),
+			Organization: normalizePrivacy(organization.value),
 		})
 	}
 	return contacts
@@ -293,7 +293,7 @@ func individualContacts(fields map[string][]string) []NetworkContact {
 				Roles:  []string{field.role},
 				Kind:   "individual",
 				Direct: true,
-				Name:   clearIfPrivacy(value),
+				Name:   normalizePrivacy(value),
 			})
 		}
 	}

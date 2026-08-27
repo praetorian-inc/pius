@@ -138,7 +138,7 @@ func TestRegistrantOrg(t *testing.T) {
 }
 
 func TestContactEmail(t *testing.T) {
-	r := Result{
+	r := DomainResult{
 		Registrant: Contact{Email: "admin@example.com"},
 		Admin:      Contact{Email: "tech@example.com"},
 	}
@@ -147,7 +147,7 @@ func TestContactEmail(t *testing.T) {
 	assert.False(t, proxy)
 
 	// Privacy email in registrant, real in admin.
-	r2 := Result{
+	r2 := DomainResult{
 		Registrant: Contact{Email: "proxy@withheldforprivacy.com"},
 		Admin:      Contact{Email: "real@example.com"},
 	}
@@ -156,7 +156,7 @@ func TestContactEmail(t *testing.T) {
 	assert.True(t, proxy2)
 
 	// All privacy.
-	r3 := Result{
+	r3 := DomainResult{
 		Registrant: Contact{Email: "proxy@withheldforprivacy.com"},
 	}
 	email3, proxy3 := ContactEmail(r3)

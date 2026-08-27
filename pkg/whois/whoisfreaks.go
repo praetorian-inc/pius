@@ -94,12 +94,12 @@ type whoisFreaksContact struct {
 // A missing key is ErrNoCredential, not a silent empty result: the two are
 // indistinguishable to a caller, and an operator who configured this provider
 // needs to find out it is not actually serving traffic.
-func (r *WhoisFreaksClient) LookupDomain(ctx context.Context, domain string) (result Result, err error) {
+func (r *WhoisFreaksClient) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
 	apiKey := r.resolveAPIKey()
 	if apiKey == "" {
-		return Result{}, ErrNoCredential
+		return DomainResult{}, ErrNoCredential
 	}
 
 	params := url.Values{}
@@ -109,7 +109,7 @@ func (r *WhoisFreaksClient) LookupDomain(ctx context.Context, domain string) (re
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return Result{}, fmt.Errorf("whoisfreaks: building request for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("whoisfreaks: building request for %s: %w", domain, err)
 	}
 
 	httpClient := cmp.Or(r.httpClient, http.DefaultClient)
@@ -120,41 +120,41 @@ func (r *WhoisFreaksClient) LookupDomain(ctx context.Context, domain string) (re
 		// `Get "<full url>": <cause>` — with the API key embedded in it.
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
-			return Result{}, fmt.Errorf("whoisfreaks: request failed for %s: %w", domain, urlErr.Err)
+			return DomainResult{}, fmt.Errorf("whoisfreaks: request failed for %s: %w", domain, urlErr.Err)
 		}
-		return Result{}, fmt.Errorf("whoisfreaks: request failed for %s", domain)
+		return DomainResult{}, fmt.Errorf("whoisfreaks: request failed for %s", domain)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return Result{}, fmt.Errorf("whoisfreaks: API returned HTTP %d for %s", resp.StatusCode, domain)
+		return DomainResult{}, fmt.Errorf("whoisfreaks: API returned HTTP %d for %s", resp.StatusCode, domain)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return Result{}, fmt.Errorf("whoisfreaks: reading response for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("whoisfreaks: reading response for %s: %w", domain, err)
 	}
 
 	var wfResp whoisFreaksResponse
 	if err := json.Unmarshal(body, &wfResp); err != nil {
-		return Result{}, fmt.Errorf("whoisfreaks: decoding response for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("whoisfreaks: decoding response for %s: %w", domain, err)
 	}
 
 	// Reported inside an HTTP 200. Trusting the status code here would record a
 	// provider-side failure as "this domain has no data".
 	if !wfResp.Status {
-		return Result{}, fmt.Errorf("whoisfreaks: API returned unsuccessful status for %s", domain)
+		return DomainResult{}, fmt.Errorf("whoisfreaks: API returned unsuccessful status for %s", domain)
 	}
 
 	if wfResp.DomainRegistered == "no" {
-		return Result{Domain: domain, Unregistered: true}, nil
+		return DomainResult{Domain: domain, Unregistered: true}, nil
 	}
 
 	return mapWhoisFreaksToResult(domain, wfResp), nil
 }
 
-func mapWhoisFreaksToResult(domain string, wf whoisFreaksResponse) Result {
-	return Result{
+func mapWhoisFreaksToResult(domain string, wf whoisFreaksResponse) DomainResult {
+	return DomainResult{
 		Domain:      domain,
 		Registrar:   wf.DomainRegistrar.RegistrarName,
 		Created:     wf.CreateDate,

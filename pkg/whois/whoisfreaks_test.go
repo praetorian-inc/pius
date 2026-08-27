@@ -269,7 +269,7 @@ func TestWhoisFreaksLookup_PrivacyRedacted(t *testing.T) {
 	assert.Equal(t, "REDACTED FOR PRIVACY", result.Registrant.Name)
 
 	// Scrub the contacts.
-	result.ScrubContacts()
+	result.Normalize()
 
 	// After scrub: all contact fields should be cleared.
 	for _, c := range result.AllContacts() {
@@ -309,7 +309,7 @@ func TestWhoisFreaksLookup_APIError401(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "401")
-	assert.Equal(t, Result{}, result)
+	assert.Equal(t, DomainResult{}, result)
 }
 
 // TestWhoisFreaksLookup_RateLimit429 verifies that an HTTP 429 response
@@ -327,7 +327,7 @@ func TestWhoisFreaksLookup_RateLimit429(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "429")
-	assert.Equal(t, Result{}, result)
+	assert.Equal(t, DomainResult{}, result)
 }
 
 // TestWhoisFreaksLookup_StatusFalse verifies that an HTTP 200 response with
@@ -350,7 +350,7 @@ func TestWhoisFreaksLookup_StatusFalse(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsuccessful status")
-	assert.Equal(t, Result{}, result)
+	assert.Equal(t, DomainResult{}, result)
 }
 
 // TestWhoisFreaksLookup_NoAPIKey verifies that an unkeyed resolver declines
@@ -367,7 +367,7 @@ func TestWhoisFreaksLookup_NoAPIKey(t *testing.T) {
 	result, err := NewWhoisFreaksClient(http.DefaultClient, "").LookupDomain(context.Background(), "example.com")
 
 	assert.ErrorIs(t, err, ErrNoCredential)
-	assert.Equal(t, Result{}, result)
+	assert.Equal(t, DomainResult{}, result)
 }
 
 // TestWhoisFreaksLookup_ExplicitKeyBeatsEnv covers the Guard requirement: the

@@ -14,7 +14,7 @@ import (
 // stopped, or continued, where it was supposed to.
 type fakeWHOISClient struct {
 	name          string
-	result        Result
+	result        DomainResult
 	err           error
 	calls         int
 	networkResult NetworkResult
@@ -24,7 +24,7 @@ type fakeWHOISClient struct {
 
 func (f *fakeWHOISClient) Name() string { return f.name }
 
-func (f *fakeWHOISClient) LookupDomain(_ context.Context, _ string) (Result, error) {
+func (f *fakeWHOISClient) LookupDomain(_ context.Context, _ string) (DomainResult, error) {
 	f.calls++
 	return f.result, f.err
 }
@@ -40,7 +40,7 @@ func (f *fakeWHOISClient) LookupNetwork(_ context.Context, _ string) (NetworkRes
 func answering(name string) *fakeWHOISClient {
 	return &fakeWHOISClient{
 		name:   name,
-		result: Result{Domain: "example.com", Registrar: name, Sources: []string{name}},
+		result: DomainResult{Domain: "example.com", Registrar: name, Sources: []string{name}},
 	}
 }
 
@@ -50,8 +50,8 @@ func complete(name string) *fakeWHOISClient {
 	return &fakeWHOISClient{name: name, result: completeResult(name)}
 }
 
-func completeResult(name string) Result {
-	return Result{
+func completeResult(name string) DomainResult {
+	return DomainResult{
 		Domain:      "example.com",
 		Registrar:   name,
 		Expiration:  "2027-08-13T04:00:00Z",
@@ -104,7 +104,7 @@ func TestCascade_ContinuesWhileIncomplete(t *testing.T) {
 	first := answering(ProviderWhoxy)
 	second := &fakeWHOISClient{
 		name: ProviderWhoisFreaks,
-		result: Result{
+		result: DomainResult{
 			Domain:     "example.com",
 			Expiration: "2027-08-13T04:00:00Z",
 			Sources:    []string{ProviderWhoisFreaks},
@@ -112,7 +112,7 @@ func TestCascade_ContinuesWhileIncomplete(t *testing.T) {
 	}
 	third := &fakeWHOISClient{
 		name: ProviderWhoisXML,
-		result: Result{
+		result: DomainResult{
 			Domain:      "example.com",
 			Registrant:  Contact{Organization: "Example Corp", Email: "admin@example.com"},
 			NameServers: []string{"ns1.example.com"},
@@ -187,7 +187,7 @@ func TestCascade_Exhaustion(t *testing.T) {
 	res, err := withCommercialLookups(first, second, third).LookupDomain(context.Background(), "example.com")
 
 	require.Error(t, err)
-	assert.Equal(t, Result{}, res)
+	assert.Equal(t, DomainResult{}, res)
 	assert.Contains(t, err.Error(), "whoxy unavailable")
 	assert.ErrorIs(t, err, ErrNoCredential)
 
@@ -223,7 +223,7 @@ func TestCascade_PartialResultSurvivesAFailedTail(t *testing.T) {
 func TestCascade_UnregisteredBelievedWhenNothingResolved(t *testing.T) {
 	first := &fakeWHOISClient{
 		name:   ProviderWhoxy,
-		result: Result{Domain: "gone.com", Unregistered: true},
+		result: DomainResult{Domain: "gone.com", Unregistered: true},
 	}
 	second := complete(ProviderWhoisFreaks)
 
@@ -243,7 +243,7 @@ func TestCascade_UnregisteredDiscardedAfterARecord(t *testing.T) {
 	resolved := answering(SourceRDAP)
 	denier := &fakeWHOISClient{
 		name:   ProviderWhoisXML,
-		result: Result{Domain: "example.com", Unregistered: true},
+		result: DomainResult{Domain: "example.com", Unregistered: true},
 	}
 
 	w := New()
@@ -270,7 +270,7 @@ func TestCascade_UnregisteredDiscardedAfterARecord(t *testing.T) {
 func TestCascade_ScrubsBeforeMerging(t *testing.T) {
 	redacted := &fakeWHOISClient{
 		name: SourceRDAP,
-		result: Result{
+		result: DomainResult{
 			Domain:     "example.com",
 			Registrar:  "Original Registrar",
 			Registrant: Contact{Organization: "REDACTED FOR PRIVACY"},
@@ -279,7 +279,7 @@ func TestCascade_ScrubsBeforeMerging(t *testing.T) {
 	}
 	real := &fakeWHOISClient{
 		name: ProviderWhoisXML,
-		result: Result{
+		result: DomainResult{
 			Domain:     "example.com",
 			Registrant: Contact{Organization: "Example Corp"},
 			Sources:    []string{ProviderWhoisXML},
@@ -430,13 +430,13 @@ func TestResultIsComplete(t *testing.T) {
 
 	for _, tc := range []struct {
 		name  string
-		strip func(*Result)
+		strip func(*DomainResult)
 	}{
-		{"no registrant identity", func(r *Result) { r.Registrant.Organization = "" }},
-		{"no registrant email", func(r *Result) { r.Registrant.Email = "" }},
-		{"no registrar", func(r *Result) { r.Registrar = "" }},
-		{"no expiration", func(r *Result) { r.Expiration = "" }},
-		{"no nameservers", func(r *Result) { r.NameServers = nil }},
+		{"no registrant identity", func(r *DomainResult) { r.Registrant.Organization = "" }},
+		{"no registrant email", func(r *DomainResult) { r.Registrant.Email = "" }},
+		{"no registrar", func(r *DomainResult) { r.Registrar = "" }},
+		{"no expiration", func(r *DomainResult) { r.Expiration = "" }},
+		{"no nameservers", func(r *DomainResult) { r.NameServers = nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := completeResult(ProviderWhoxy)
@@ -450,13 +450,13 @@ func TestResultIsComplete(t *testing.T) {
 // later source fills what earlier ones left empty and never overwrites what
 // they supplied.
 func TestLaterResultMergesRatherThanReplaces(t *testing.T) {
-	base := Result{
+	base := DomainResult{
 		Domain:    "example.com",
 		Registrar: "Original Registrar",
 		Created:   "1995-08-14T04:00:00Z",
 		Sources:   []string{SourceRDAP},
 	}
-	later := Result{
+	later := DomainResult{
 		Domain:     "example.com",
 		Registrar:  "Different Registrar",
 		Expiration: "2027-08-13T04:00:00Z",

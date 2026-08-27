@@ -215,7 +215,7 @@ func TestWhoisXMLResolver_TakesContactsFromRegistryData(t *testing.T) {
 	assert.Equal(t, "reg@example.co.kr", result.Registrant.Email)
 	assert.Equal(t, "KR", result.Registrant.Country)
 	assert.Equal(t, "Registry Admin Org", result.Admin.Organization)
-	assert.True(t, result.HasRegistrant(),
+	assert.True(t, result.isComplete(),
 		"a record satisfying the trigger condition is the point of the fallback")
 
 	assert.Equal(t, "Registry Registrar", result.Registrar)
