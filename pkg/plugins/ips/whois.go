@@ -128,20 +128,12 @@ func validNetworkPreseedCandidate(candidate networkPreseedCandidate) bool {
 }
 
 func contactIdentityCandidate(contact whois.NetworkContact, role string) networkPreseedCandidate {
-	identity := contact.Identity()
-	field := ""
-	switch contact.Kind {
-	case "org":
-		field = "company"
-	case "individual":
+	field := "company"
+	if contact.Kind == "individual" {
 		field = "name"
-	default:
-		if identity != "" {
-			field = "company"
-		}
 	}
 	return networkPreseedCandidate{
-		field: field, role: role, value: identity, status: contact.Status,
+		field: field, role: role, value: contact.Identity(), status: contact.Status,
 	}
 }
 

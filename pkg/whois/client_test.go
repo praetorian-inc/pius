@@ -154,7 +154,7 @@ func TestCascade_StopsWhenComplete(t *testing.T) {
 	assert.Zero(t, third.calls)
 }
 
-func TestCascade_StopsWhenRegistrantDataIsPrivate(t *testing.T) {
+func TestCascade_ContinuesWhenRegistrantDataIsPrivate(t *testing.T) {
 	result := completeResult(ProviderWhoxy)
 	result.Registrant = Contact{}
 	first := &fakeWHOISClient{name: ProviderWhoxy, result: result}
@@ -166,7 +166,7 @@ func TestCascade_StopsWhenRegistrantDataIsPrivate(t *testing.T) {
 	assert.Equal(t, PrivacyRedaction, res.RegistrantIdentity)
 	assert.Equal(t, PrivacyRedaction, res.ContactEmail)
 	assert.Equal(t, 1, first.calls)
-	assert.Zero(t, second.calls, "privacy is a complete registrant outcome")
+	assert.Equal(t, 1, second.calls, "privacy keeps the cascade searching for public registrant data")
 }
 
 // TestCascade_PassesThroughToNext verifies that a provider
@@ -450,10 +450,11 @@ func TestResultIsComplete(t *testing.T) {
 		strip func(*DomainResult)
 	}{
 		{"no registrant identity", func(r *DomainResult) { r.RegistrantIdentity = "" }},
-		{"no contact email outcome", func(r *DomainResult) { r.ContactEmail = "" }},
+		{"private registrant identity", func(r *DomainResult) { r.RegistrantIdentity = PrivacyRedaction }},
+		{"no contact email", func(r *DomainResult) { r.ContactEmail = "" }},
+		{"private contact email", func(r *DomainResult) { r.ContactEmail = PrivacyRedaction }},
 		{"no registrar", func(r *DomainResult) { r.Registrar = "" }},
-		{"no expiration", func(r *DomainResult) { r.Expiration = "" }},
-		{"no nameservers", func(r *DomainResult) { r.NameServers = nil }},
+		{"private registrar", func(r *DomainResult) { r.Registrar = PrivacyRedaction }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := completeResult(ProviderWhoxy)
