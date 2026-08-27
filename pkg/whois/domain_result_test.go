@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestResult_Normalize(t *testing.T) {
-	result := Result{
+func TestDomainResult_Normalize(t *testing.T) {
+	result := DomainResult{
 		Domain:      " example.com ",
 		Registrar:   " Example Registrar ",
 		Created:     " 2020-01-01 ",
@@ -28,7 +28,7 @@ func TestResult_Normalize(t *testing.T) {
 
 	result.Normalize()
 
-	assert.Equal(t, Result{
+	assert.Equal(t, DomainResult{
 		Domain:      "example.com",
 		Registrar:   "Example Registrar",
 		Created:     "2020-01-01",
@@ -48,24 +48,26 @@ func TestResult_Normalize(t *testing.T) {
 		ContactEmail:       "admin@example.com",
 		ContactEmailRole:   "registrant",
 	}, result)
+
+	normalized := result
+	result.Normalize()
+	assert.Equal(t, normalized, result)
 }
 
-func TestResult_NormalizeAllowsProviderFallback(t *testing.T) {
-	primary := Result{
+func TestDomainResult_MergeNormalizesProviderData(t *testing.T) {
+	primary := DomainResult{
 		Registrar:   " ",
 		NameServers: []string{" "},
 		Status:      []string{"\t"},
 		Registrant:  Contact{Name: " "},
 	}
-	fallback := Result{
+	fallback := DomainResult{
 		Registrar:   "Fallback Registrar",
 		NameServers: []string{"ns1.example.com"},
 		Status:      []string{"active"},
 		Registrant:  Contact{Name: "Jane Doe"},
 	}
 
-	primary.Normalize()
-	fallback.Normalize()
 	primary.Merge(fallback)
 
 	assert.Equal(t, "Fallback Registrar", primary.Registrar)
@@ -75,8 +77,8 @@ func TestResult_NormalizeAllowsProviderFallback(t *testing.T) {
 	assert.Equal(t, "Jane Doe", primary.RegistrantIdentity)
 }
 
-func TestResult_NormalizePopulatesDerivedFields(t *testing.T) {
-	result := Result{
+func TestDomainResult_NormalizePopulatesDerivedFields(t *testing.T) {
+	result := DomainResult{
 		Domain:    "acme.cn",
 		Registrar: "Example Registrar [Tag = EXAMPLE]",
 		Registrant: Contact{
@@ -97,8 +99,8 @@ func TestResult_NormalizePopulatesDerivedFields(t *testing.T) {
 	assert.Equal(t, "administrative", result.ContactEmailRole)
 }
 
-func TestResult_NormalizePreservesPrivateContactEmail(t *testing.T) {
-	result := Result{Tech: Contact{Email: "domains@markmonitor.com"}}
+func TestDomainResult_NormalizePreservesPrivateContactEmail(t *testing.T) {
+	result := DomainResult{Tech: Contact{Email: "domains@markmonitor.com"}}
 
 	result.Normalize()
 
@@ -106,19 +108,16 @@ func TestResult_NormalizePreservesPrivateContactEmail(t *testing.T) {
 	assert.Equal(t, "technical", result.ContactEmailRole)
 }
 
-func TestResult_MergeRecomputesDerivedFields(t *testing.T) {
-	primary := Result{Registrant: Contact{Email: "proxy@withheldforprivacy.com"}}
-	fallback := Result{Admin: Contact{Email: "admin@example.com"}}
-	primary.Normalize()
-	fallback.Normalize()
-
+func TestDomainResult_MergeRecomputesDerivedFields(t *testing.T) {
+	primary := DomainResult{Registrant: Contact{Email: "proxy@withheldforprivacy.com"}}
+	fallback := DomainResult{Admin: Contact{Email: "admin@example.com"}}
 	primary.Merge(fallback)
 
 	assert.Equal(t, "admin@example.com", primary.ContactEmail)
 	assert.Equal(t, "administrative", primary.ContactEmailRole)
 }
 
-func TestResult_MergeContactPrefersRealValues(t *testing.T) {
+func TestDomainResult_MergeContactPrefersRealValues(t *testing.T) {
 	tests := []struct {
 		name  string
 		base  string
@@ -126,7 +125,10 @@ func TestResult_MergeContactPrefersRealValues(t *testing.T) {
 		want  string
 	}{
 		{name: "fills empty base", other: "Fallback Inc.", want: "Fallback Inc."},
-		{name: "replaces privacy with real value", base: PrivacyRedaction, other: "Fallback Inc.", want: "Fallback Inc."},
+		{
+			name: "replaces raw privacy with real value", base: "REDACTED FOR PRIVACY",
+			other: "Fallback Inc.", want: "Fallback Inc.",
+		},
 		{name: "preserves privacy without fallback", base: PrivacyRedaction, want: PrivacyRedaction},
 		{name: "preserves primary real value", base: "Primary Inc.", other: "Fallback Inc.", want: "Primary Inc."},
 		{name: "ignores fallback privacy", base: "Primary Inc.", other: PrivacyRedaction, want: "Primary Inc."},
@@ -134,8 +136,8 @@ func TestResult_MergeContactPrefersRealValues(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			base := Result{Registrant: Contact{Organization: test.base}}
-			other := Result{Registrant: Contact{Organization: test.other}}
+			base := DomainResult{Registrant: Contact{Organization: test.base}}
+			other := DomainResult{Registrant: Contact{Organization: test.other}}
 
 			base.Merge(other)
 

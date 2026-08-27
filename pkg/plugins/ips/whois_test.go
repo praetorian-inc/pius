@@ -41,10 +41,19 @@ func TestNetworkFindings_EmitResultAndPreseeds(t *testing.T) {
 		Status:       []string{"active"},
 		Sources:      []string{"whois"},
 		Contacts: []whois.NetworkContact{
-			{Roles: []string{"registrant"}, Status: []string{"validated"}, Kind: "org", Direct: true, Name: "Example Networks", Email: "jane@example.com"},
-			{Handle: "EXAMPLE-MNT", Roles: []string{"registrant"}, Kind: "individual", Direct: true, Name: "EXAMPLE-MNT"},
-			{Roles: []string{"registrant"}, Kind: "org", Name: "Upstream ISP"},
-			{Roles: []string{"technical"}, Kind: "group", Direct: true, Organization: "Carrier NOC", Email: "noc@carrier.example"},
+			{
+				Roles: []string{"registrant"}, Status: []string{"validated"}, Kind: "org", Direct: true,
+				Contact: whois.Contact{Name: "Example Networks", Email: "jane@example.com"},
+			},
+			{
+				Handle: "EXAMPLE-MNT", Roles: []string{"registrant"}, Kind: "individual", Direct: true,
+				Contact: whois.Contact{Name: "EXAMPLE-MNT"},
+			},
+			{Roles: []string{"registrant"}, Kind: "org", Contact: whois.Contact{Name: "Upstream ISP"}},
+			{
+				Roles: []string{"technical"}, Kind: "group", Direct: true,
+				Contact: whois.Contact{Organization: "Carrier NOC", Email: "noc@carrier.example"},
+			},
 		},
 	}
 
@@ -91,8 +100,8 @@ func TestNetworkPreseedJustification_AttributesMergedSources(t *testing.T) {
 
 func TestNetworkPreseeds_PrefersCustomerOverRegistrant(t *testing.T) {
 	findings := networkPreseeds(whois.NetworkResult{Contacts: []whois.NetworkContact{
-		{Roles: []string{"registrant"}, Kind: "org", Direct: true, Name: "Upstream ISP"},
-		{Roles: []string{"customer"}, Kind: "org", Direct: true, Name: "Example Customer"},
+		{Roles: []string{"registrant"}, Kind: "org", Direct: true, Contact: whois.Contact{Name: "Upstream ISP"}},
+		{Roles: []string{"customer"}, Kind: "org", Direct: true, Contact: whois.Contact{Name: "Example Customer"}},
 	}})
 
 	require.Len(t, findings, 1)
@@ -103,7 +112,8 @@ func TestNetworkPreseeds_OmitsPrivacyProtectedContacts(t *testing.T) {
 	for _, status := range []string{"private", "removed", "obscured"} {
 		t.Run(status, func(t *testing.T) {
 			findings := networkPreseeds(whois.NetworkResult{Contacts: []whois.NetworkContact{{
-				Roles: []string{"registrant"}, Status: []string{status}, Kind: "org", Direct: true, Name: "Private Customer",
+				Roles: []string{"registrant"}, Status: []string{status}, Kind: "org", Direct: true,
+				Contact: whois.Contact{Name: "Private Customer"},
 			}}})
 
 			assert.Empty(t, findings)

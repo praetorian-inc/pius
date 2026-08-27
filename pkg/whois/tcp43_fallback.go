@@ -2,14 +2,14 @@ package whois
 
 import "strings"
 
-type tcp43Fallback func(*Result, string)
+type tcp43Fallback func(*DomainResult, string)
 
 var tcp43Fallbacks = map[string]tcp43Fallback{
 	".il": applyISOCILFallback,
 	".pt": applyDNSPTFallback,
 }
 
-func applyTCP43RegistryFallback(result *Result, raw string) {
+func applyTCP43RegistryFallback(result *DomainResult, raw string) {
 	fallback, ok := tcp43Fallbacks[domainTLD(result.Domain)]
 	if !ok {
 		return
@@ -27,7 +27,7 @@ func domainTLD(domain string) string {
 
 // applyISOCILFallback parses the RPSL descr/e-mail holder block that
 // likexian/whois-parser does not map onto Registrant.
-func applyISOCILFallback(result *Result, raw string) {
+func applyISOCILFallback(result *DomainResult, raw string) {
 	if result.Registrant.Organization != "" && result.Registrant.Email != "" {
 		return
 	}
@@ -61,7 +61,7 @@ func applyISOCILFallback(result *Result, raw string) {
 
 // applyDNSPTFallback parses the Owner Name field that likexian/whois-parser
 // does not map onto Registrant.
-func applyDNSPTFallback(result *Result, raw string) {
+func applyDNSPTFallback(result *DomainResult, raw string) {
 	if result.Registrant.Name != "" {
 		return
 	}

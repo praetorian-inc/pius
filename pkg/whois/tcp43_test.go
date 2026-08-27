@@ -126,7 +126,7 @@ Name Server: alan.ns.cloudflare.com
 `,
 	})
 
-	result, err := tcp43Lookup(context.Background(), "sketchers.pt")
+	result, err := tcp43DomainLookup(context.Background(), "sketchers.pt")
 
 	require.NoError(t, err)
 	assert.Equal(t, "Skechers USA", result.Registrant.Name)
@@ -136,7 +136,7 @@ Name Server: alan.ns.cloudflare.com
 }
 
 func TestApplyTCP43RegistryFallback_ISOCIL(t *testing.T) {
-	result := Result{Domain: "example.co.il"}
+	result := DomainResult{Domain: "example.co.il"}
 	raw := `domain: example.co.il
 descr: Example Company Ltd
 e-mail: admin AT example.co.il

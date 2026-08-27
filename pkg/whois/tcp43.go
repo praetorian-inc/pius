@@ -22,30 +22,30 @@ const (
 	maxResponseBytes = 1 << 20 // 1 MiB
 )
 
-// tcp43Lookup performs a raw TCP port-43 WHOIS lookup with referral following,
-// then parses the result into a Result.
-func tcp43Lookup(ctx context.Context, domain string) (Result, error) {
+// tcp43DomainLookup performs a raw TCP port-43 WHOIS lookup with referral following,
+// then parses the result into a DomainResult.
+func tcp43DomainLookup(ctx context.Context, domain string) (DomainResult, error) {
 	raw, server, err := tcp43Raw(ctx, domain)
 	if err != nil {
-		return Result{}, err
+		return DomainResult{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return Result{}, err
+		return DomainResult{}, err
 	}
 
 	parsed, err := whoisparser.Parse(raw)
 	if err != nil {
-		return Result{}, fmt.Errorf("whois parse failed for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("whois parse failed for %s: %w", domain, err)
 	}
-	result := mapParsedToResult(domain, parsed)
+	result := mapParsedToDomainResult(domain, parsed)
 	result.WhoisServer = server
 	applyTCP43RegistryFallback(&result, raw)
 	result.Normalize()
 	return result, nil
 }
 
-func mapParsedToResult(domain string, info whoisparser.WhoisInfo) Result {
-	r := Result{Domain: domain}
+func mapParsedToDomainResult(domain string, info whoisparser.WhoisInfo) DomainResult {
+	r := DomainResult{Domain: domain}
 
 	if info.Domain != nil {
 		r.Created = info.Domain.CreatedDate

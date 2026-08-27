@@ -42,7 +42,7 @@ func parseTCP43NetworkResult(target networkTarget, raw, server string) (NetworkR
 		Sources:      []string{"whois"},
 		Raw:          raw,
 	}
-	result.Clean()
+	result.Normalize()
 	if err := requireContainingAllocation(result, target); err != nil {
 		return NetworkResult{}, err
 	}
@@ -139,10 +139,12 @@ func organizationContacts(fields map[string][]string) []NetworkContact {
 			continue
 		}
 		contacts = append(contacts, NetworkContact{
-			Roles:        []string{organization.role},
-			Kind:         "org",
-			Direct:       true,
-			Organization: organization.value,
+			Roles:  []string{organization.role},
+			Kind:   "org",
+			Direct: true,
+			Contact: Contact{
+				Organization: organization.value,
+			},
 		})
 	}
 	return contacts
@@ -165,7 +167,9 @@ func individualContacts(fields map[string][]string) []NetworkContact {
 				Roles:  []string{field.role},
 				Kind:   "individual",
 				Direct: true,
-				Name:   value,
+				Contact: Contact{
+					Name: value,
+				},
 			})
 		}
 	}
@@ -193,7 +197,9 @@ func emailContacts(fields map[string][]string) []NetworkContact {
 				continue
 			}
 			contacts = append(contacts, NetworkContact{
-				Roles: []string{field.role}, Direct: true, Email: email,
+				Roles:   []string{field.role},
+				Direct:  true,
+				Contact: Contact{Email: email},
 			})
 		}
 	}

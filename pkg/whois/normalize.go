@@ -13,28 +13,21 @@ import (
 	"github.com/praetorian-inc/pius/pkg/whois/data"
 )
 
-// RegistrantOrg removes registry artifacts from an observed registrant organization.
-func RegistrantOrg(c Contact, domain string) string {
+// registrantOrganization removes registry artifacts from an observed registrant organization.
+func registrantOrganization(c Contact, domain string) string {
 	if isRegistryArtifact(c.Organization, domain) {
 		return ""
 	}
 	return c.Organization
 }
 
-// RegistrantIdentity returns the best display identity without changing the
+// registrantIdentity returns the best display identity without changing the
 // observed registrant name or organization fields.
-func RegistrantIdentity(c Contact) string {
+func registrantIdentity(c Contact) string {
 	return preferNonPrivacy(c.Organization, c.Name)
 }
 
-// ContactEmail finds the best non-privacy email across a result's contacts.
-// Prefers registrant, then administrative, technical, and billing contacts.
-func ContactEmail(r Result) (email string, sawPrivacy bool) {
-	email, _, sawPrivacy = preferredContactEmail(r)
-	return email, sawPrivacy
-}
-
-func preferredContactEmail(r Result) (email, role string, sawPrivacy bool) {
+func preferredContactEmail(r DomainResult) (email, role string, sawPrivacy bool) {
 	roles := [...]string{"registrant", "administrative", "technical", "billing"}
 	privacyRole := ""
 	for i, contact := range r.AllContacts() {
@@ -71,9 +64,9 @@ func IsEmail(s string) bool {
 	return err == nil
 }
 
-// NormalizeRegistrar cleans up registrar names. Strips Nominet-style
+// normalizeRegistrar cleans up registrar names. Strips Nominet-style
 // "[Tag = X]" suffixes, keeping only the IPS tag when present.
-func NormalizeRegistrar(name string) string {
+func normalizeRegistrar(name string) string {
 	name = strings.TrimSpace(name)
 	match := nominetTagPattern.FindStringSubmatch(name)
 	if match == nil {

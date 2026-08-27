@@ -6,10 +6,8 @@ import (
 	"strings"
 )
 
-// Result is the structured WHOIS record for a domain. It is serialized as JSON
-// to the whois/<domain> file in Guard and is designed to be incrementally
-// filled by multiple providers (RDAP, TCP-43, Whoxy, WhoisFreaks, etc.).
-type Result struct {
+// DomainResult is the structured registration record for a domain.
+type DomainResult struct {
 	Domain             string   `json:"domain"`
 	Registrar          string   `json:"registrar,omitempty"`
 	Registrant         Contact  `json:"registrant"`
@@ -31,19 +29,16 @@ type Result struct {
 }
 
 // AllContacts returns the four contact roles in order: registrant, admin, tech, billing.
-func (r Result) AllContacts() [4]Contact {
+func (r DomainResult) AllContacts() [4]Contact {
 	return [4]Contact{r.Registrant, r.Admin, r.Tech, r.Billing}
 }
 
-// HasRegistrant reports whether the result has a non-empty registrant identity
-// (org or name). Email alone doesn't count — it identifies a mailbox, not an entity.
-func (r Result) HasRegistrant() bool {
-	return r.Registrant.Organization != "" || r.Registrant.Name != ""
-}
+// Merge combines provider results, replacing privacy placeholders with real
+// fallback data when available.
+func (r *DomainResult) Merge(other DomainResult) {
+	r.Normalize()
+	other.Normalize()
 
-// Merge combines normalized provider results, replacing privacy placeholders
-// with real fallback data when available. Sources are accumulated.
-func (r *Result) Merge(other Result) {
 	r.Registrar = cmp.Or(r.Registrar, other.Registrar)
 	r.Created = cmp.Or(r.Created, other.Created)
 	r.Updated = cmp.Or(r.Updated, other.Updated)
@@ -67,9 +62,10 @@ func (r *Result) Merge(other Result) {
 	r.populateDerivedFields()
 }
 
-func (r *Result) Normalize() {
+// Normalize trims provider data, preserves privacy markers, and refreshes derived fields.
+func (r *DomainResult) Normalize() {
 	r.Domain = strings.TrimSpace(r.Domain)
-	r.Registrar = NormalizeRegistrar(r.Registrar)
+	r.Registrar = normalizeRegistrar(r.Registrar)
 	r.Created = strings.TrimSpace(r.Created)
 	r.Updated = strings.TrimSpace(r.Updated)
 	r.Expiration = strings.TrimSpace(r.Expiration)
@@ -78,16 +74,16 @@ func (r *Result) Normalize() {
 	r.Status = trimStrings(r.Status)
 	r.NameServers = trimStrings(r.NameServers)
 	r.Sources = trimStrings(r.Sources)
-	r.Registrant = r.Registrant.Normalize()
-	r.Admin = r.Admin.Normalize()
-	r.Tech = r.Tech.Normalize()
-	r.Billing = r.Billing.Normalize()
+	r.Registrant = r.Registrant.normalize()
+	r.Admin = r.Admin.normalize()
+	r.Tech = r.Tech.normalize()
+	r.Billing = r.Billing.normalize()
 	r.populateDerivedFields()
 }
 
-func (r *Result) populateDerivedFields() {
-	r.Registrant.Organization = RegistrantOrg(r.Registrant, r.Domain)
-	r.RegistrantIdentity = RegistrantIdentity(r.Registrant)
+func (r *DomainResult) populateDerivedFields() {
+	r.Registrant.Organization = registrantOrganization(r.Registrant, r.Domain)
+	r.RegistrantIdentity = registrantIdentity(r.Registrant)
 
 	email, role, sawPrivacy := preferredContactEmail(*r)
 	if email == "" && sawPrivacy {
@@ -97,7 +93,7 @@ func (r *Result) populateDerivedFields() {
 	r.ContactEmailRole = role
 }
 
-// Contact holds registration contact information for a single role.
+// Contact holds registration contact information.
 type Contact struct {
 	Organization string `json:"organization,omitempty"`
 	Name         string `json:"name,omitempty"`
@@ -110,13 +106,12 @@ type Contact struct {
 	Phone        string `json:"phone,omitempty"`
 }
 
-// IsEmpty reports whether the contact has no usable identity.
+// IsEmpty reports whether the contact has no organization, name, or email.
 func (c Contact) IsEmpty() bool {
 	return c.Organization == "" && c.Name == "" && c.Email == ""
 }
 
-// Normalize trims fields and normalizes privacy placeholders.
-func (c Contact) Normalize() Contact {
+func (c Contact) normalize() Contact {
 	return Contact{
 		Organization: normalizePrivacy(c.Organization),
 		Name:         normalizePrivacy(c.Name),
