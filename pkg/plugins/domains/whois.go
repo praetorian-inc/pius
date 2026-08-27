@@ -34,8 +34,11 @@ func (p *WhoisPlugin) Mode() string                     { return plugins.ModePas
 func (p *WhoisPlugin) Accepts(input plugins.Input) bool { return input.Domain != "" }
 
 func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	opts := append([]whois.Option{whois.WithHTTPClient(p.HTTPClient)}, p.options...)
-	result, err := whois.New(opts...).LookupDomain(ctx, input.Domain)
+	opts := []whois.Option{whois.WithHTTPClient(p.HTTPClient)}
+	opts = append(opts, p.options...)
+
+	client := whois.New(opts...)
+	result, err := client.LookupDomain(ctx, input.Domain)
 	if err != nil {
 		return nil, err
 	}
