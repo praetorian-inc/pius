@@ -11,7 +11,6 @@ import (
 	"github.com/openrdap/rdap"
 )
 
-
 // lookupState holds the mutable state for one cascade walk. Keeping it local to
 // Lookup allows a configured WHOIS to be reused safely by concurrent callers.
 type lookupState struct {
@@ -68,10 +67,10 @@ func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomain
 		}
 
 		if errors.Is(err, ErrNoCredential) {
-			slog.Debug("WHOIS leg skipped: no credential",
+			slog.Info("WHOIS leg skipped: no credential",
 				"resolver", r.Name(), "domain", domain)
 		} else {
-			slog.Debug("WHOIS leg failed",
+			slog.Info("WHOIS leg failed",
 				"resolver", r.Name(), "domain", domain, "error", err)
 		}
 
