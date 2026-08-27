@@ -429,6 +429,7 @@ func TestGLEIFPlugin_RecordToPreseed_EnrichesOrganization(t *testing.T) {
 	assert.Equal(t, "DE", finding.Data["country"])
 	assert.Equal(t, "60311", finding.Data["postal_code"])
 	assert.Equal(t, "https://search.gleif.org/#/record/LEI010", finding.Data["external_reference"])
+	assert.Equal(t, "gleif", finding.Data["source"])
 }
 
 func TestGLEIFPlugin_RecordToPreseed_FallsBackToLegalAddress(t *testing.T) {

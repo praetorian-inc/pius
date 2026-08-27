@@ -321,7 +321,7 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins
 			"preseed_type":           "organization",
 			"preseed_title":          name,
 			"lei":                    record.ID,
-			"external_source":        "gleif",
+			"source":                 "gleif",
 			"external_reference":     fmt.Sprintf("https://search.gleif.org/#/record/%s", url.PathEscape(record.ID)),
 			"corporate_relationship": relation,
 			"corporate_parent":       p.primaryName,
