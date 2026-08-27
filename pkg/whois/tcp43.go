@@ -91,6 +91,9 @@ func tcp43Raw(ctx context.Context, domain string) (string, string, error) {
 	server := defaultServer
 	var lastRaw, lastServer string
 
+	visited := make(map[string]struct{}, maxReferrals)
+	visited[normalizeServer(defaultServer)] = struct{}{}
+
 	for range maxReferrals {
 		if err := ctx.Err(); err != nil {
 			if lastRaw != "" {
@@ -125,6 +128,18 @@ func tcp43Raw(ctx context.Context, domain string) (string, string, error) {
 		if refer == "" || sameServer(refer, server) {
 			break
 		}
+
+		// Cycle detection: if the referral target has already been visited,
+		// the chain is looping. Salvage what we have rather than burning
+		// hops on a cycle.
+		normRefer := normalizeServer(refer)
+		if _, seen := visited[normRefer]; seen {
+			slog.Debug("whois referral cycle detected, returning last record",
+				"domain", domain, "server", server, "refer", refer)
+			break
+		}
+		visited[normRefer] = struct{}{}
+
 		server = refer
 	}
 
@@ -186,14 +201,24 @@ func dialAddr(server string) string {
 	return net.JoinHostPort(server, whoisPort)
 }
 
+// normalizeServer canonicalizes a WHOIS server name for visited-set
+// membership: strip scheme, port, trailing dot, and fold case.
+func normalizeServer(s string) string {
+	s = strings.ToLower(s)
+	s = strings.TrimPrefix(s, "http://")
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimSuffix(s, "/")
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		s = host
+	}
+	return strings.TrimRight(strings.TrimSpace(s), ".")
+}
+
 // sameServer reports whether two WHOIS server names denote the same host.
 // DNS names are equal under a trailing root dot and are case-insensitive,
 // neither of which strings.EqualFold alone accounts for.
 func sameServer(a, b string) bool {
-	return strings.EqualFold(
-		strings.TrimRight(strings.TrimSpace(a), "."),
-		strings.TrimRight(strings.TrimSpace(b), "."),
-	)
+	return normalizeServer(a) == normalizeServer(b)
 }
 
 func extractReferral(raw string) string {
