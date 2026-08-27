@@ -1,7 +1,6 @@
 package domains
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,8 +16,7 @@ func init() {
 }
 
 // ViewDNSReverseWhoisPlugin discovers related domains via ViewDNS reverse WHOIS.
-// Emits FindingDomain with Data["pivot_org"]. Verification happens when Guard
-// runs the whois capability on each discovered domain.
+// Findings retain the typed pivot for deferred WHOIS corroboration in Guard.
 type ViewDNSReverseWhoisPlugin struct {
 	client  *client.Client
 	baseURL string // overridable for tests
@@ -45,7 +43,8 @@ func (p *ViewDNSReverseWhoisPlugin) Phase() int       { return 0 }
 func (p *ViewDNSReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *ViewDNSReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("VIEWDNS_API_KEY") != "" && (input.OrgName != "" || input.PersonName != "" || input.Email != "")
+	return os.Getenv("VIEWDNS_API_KEY") != "" &&
+		(input.OrgName != "" || input.PersonName != "" || input.Email != "")
 }
 
 type viewDNSResponse struct {
@@ -58,14 +57,33 @@ type viewDNSResponse struct {
 
 func (p *ViewDNSReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	apiKey := os.Getenv("VIEWDNS_API_KEY")
+	parameters := whoisParametersFromInput(input)
+	if len(parameters) == 0 {
+		return nil, nil
+	}
 
-	query := cmp.Or(input.OrgName, input.PersonName, input.Email)
+	var rawDomains []WhoisDomain
+	for _, parameter := range parameters {
+		domains, err := p.query(ctx, apiKey, parameter.Value)
+		if err != nil {
+			return nil, err
+		}
+		for _, domain := range domains {
+			rawDomains = append(rawDomains, WhoisDomain{
+				value:      domain,
+				parameters: []WhoisParameter{parameter},
+			})
+		}
+	}
 
+	return reverseWhoisFindings("https://viewdns.info/", rawDomains), nil
+}
+
+func (p *ViewDNSReverseWhoisPlugin) query(ctx context.Context, apiKey, value string) ([]string, error) {
 	reqURL := fmt.Sprintf(
 		"%s/reversewhois/?q=%s&apikey=%s&output=json",
-		p.apiBase(), url.QueryEscape(query), apiKey,
+		p.apiBase(), url.QueryEscape(value), apiKey,
 	)
-
 	body, err := p.client.Get(ctx, reqURL)
 	if err != nil {
 		return nil, fmt.Errorf("viewdns-reverse-whois: request failed")
@@ -76,10 +94,9 @@ func (p *ViewDNSReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input
 		return nil, fmt.Errorf("viewdns-reverse-whois: parse response: %w", err)
 	}
 
-	var rawDomains []string
-	for _, d := range response.Response.Matches {
-		rawDomains = append(rawDomains, d.Domain)
+	domains := make([]string, 0, len(response.Response.Matches))
+	for _, match := range response.Response.Matches {
+		domains = append(domains, match.Domain)
 	}
-
-	return domainFindings(p.Name(), query, rawDomains), nil
+	return domains, nil
 }

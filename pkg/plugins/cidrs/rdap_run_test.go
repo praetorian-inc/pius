@@ -7,47 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// mockHTTPDoer implements httpDoer using an httptest.Server.
-type mockHTTPDoer struct {
-	server *httptest.Server
-}
-
-func (m *mockHTTPDoer) Get(ctx context.Context, url string) ([]byte, error) {
-	return m.GetWithHeaders(ctx, url, nil)
-}
-
-func (m *mockHTTPDoer) GetWithHeaders(ctx context.Context, url string, headers map[string]string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := m.server.Client().Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
-	}
-	buf := make([]byte, 0, 4096)
-	tmp := make([]byte, 512)
-	for {
-		n, err := resp.Body.Read(tmp)
-		buf = append(buf, tmp[:n]...)
-		if err != nil {
-			break
-		}
-	}
-	return buf, nil
-}
 
 func TestRDAPPlugin_FetchCIDRs_IPv4(t *testing.T) {
 	rdapJSON := `{
@@ -66,8 +30,8 @@ func TestRDAPPlugin_FetchCIDRs_IPv4(t *testing.T) {
 	defer srv.Close()
 
 	p := &rdapPlugin{
-		cfg:  rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
-		doer: &mockHTTPDoer{server: srv},
+		cfg: rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
+		c:   client.NewWithHTTPClient(srv.Client()),
 	}
 
 	cidrs, err := p.fetchCIDRs(context.Background(), "ACME-1")
@@ -100,8 +64,8 @@ func TestRDAPPlugin_FetchCIDRs_IPv6(t *testing.T) {
 	defer srv.Close()
 
 	p := &rdapPlugin{
-		cfg:  rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
-		doer: &mockHTTPDoer{server: srv},
+		cfg: rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
+		c:   client.NewWithHTTPClient(srv.Client()),
 	}
 
 	cidrs, err := p.fetchCIDRs(context.Background(), "ACME-1")
@@ -117,8 +81,8 @@ func TestRDAPPlugin_Run_EmitsFindingCIDR(t *testing.T) {
 	defer srv.Close()
 
 	p := &rdapPlugin{
-		cfg:  rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
-		doer: &mockHTTPDoer{server: srv},
+		cfg: rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
+		c:   client.NewWithHTTPClient(srv.Client()),
 	}
 	input := plugins.Input{
 		OrgName: "Acme Corp",
@@ -148,8 +112,8 @@ func TestRDAPPlugin_Run_MultipleHandles(t *testing.T) {
 	defer srv.Close()
 
 	p := &rdapPlugin{
-		cfg:  rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
-		doer: &mockHTTPDoer{server: srv},
+		cfg: rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
+		c:   client.NewWithHTTPClient(srv.Client()),
 	}
 	input := plugins.Input{
 		Meta: map[string]string{"arin_handles": "H1,H2,H3"},
@@ -174,8 +138,8 @@ func TestRDAPPlugin_Run_ContinuesOnFailedHandle(t *testing.T) {
 	defer srv.Close()
 
 	p := &rdapPlugin{
-		cfg:  rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
-		doer: &mockHTTPDoer{server: srv},
+		cfg: rdapConfig{name: "arin", baseURL: srv.URL, metaKey: "arin_handles", registry: "arin"},
+		c:   client.NewWithHTTPClient(srv.Client()),
 	}
 	input := plugins.Input{Meta: map[string]string{"arin_handles": "FAIL-1,OK-2"}}
 

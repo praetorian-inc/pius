@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"maps"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -20,6 +21,12 @@ type Config struct {
 
 	// ASN is an optional known ASN hint (e.g., "AS12345").
 	ASN string
+
+	// IP is an optional known IP address.
+	IP string
+
+	// CIDR is an optional known IP range.
+	CIDR string
 
 	// Plugins is a whitelist of plugin names. Empty means all.
 	Plugins []string
@@ -47,13 +54,13 @@ func Run(ctx context.Context, cfg Config) ([]plugins.Finding, error) {
 		Email:   cfg.Email,
 		Domain:  cfg.Domain,
 		ASN:     cfg.ASN,
+		IP:      cfg.IP,
+		CIDR:    cfg.CIDR,
 		Meta:    make(map[string]string),
 	}
 
 	// Copy caller-provided meta into input for plugin consumption.
-	for k, v := range cfg.Meta {
-		input.Meta[k] = v
-	}
+	maps.Copy(input.Meta, cfg.Meta)
 
 	mode := cfg.Mode
 	if mode == "" {

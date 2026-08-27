@@ -22,15 +22,17 @@ func init() {
 }
 
 // WhoxyReverseWhoisPlugin discovers related domains via Whoxy reverse WHOIS.
-// Emits FindingDomain with Data["pivot_org"]. Verification happens when Guard
-// runs the whois capability on each discovered domain.
+// Findings retain every typed pivot that returned the domain for deferred
+// WHOIS corroboration in Guard.
 type WhoxyReverseWhoisPlugin struct {
 	client *whois.WhoxyClient
+	apiKey  string
+	baseURL string // overridable for tests
 }
 
 // NewWhoxyReverseWhoisPlugin creates a plugin with an injectable HTTP client.
-func NewWhoxyReverseWhoisPlugin(httpClient *http.Client) *WhoxyReverseWhoisPlugin {
-	return &WhoxyReverseWhoisPlugin{client: whois.NewWhoxyClient(httpClient, "")}
+func NewWhoxyReverseWhoisPlugin(httpClient *client.Client, apiKey string) *WhoxyReverseWhoisPlugin {
+	return &WhoxyReverseWhoisPlugin{client: whois.NewWhoxyClient(httpClient, apiKey)}
 }
 
 func (p *WhoxyReverseWhoisPlugin) Name() string { return "whoxy-reverse-whois" }
@@ -42,7 +44,12 @@ func (p *WhoxyReverseWhoisPlugin) Phase() int       { return 0 }
 func (p *WhoxyReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *WhoxyReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("WHOXY_API_KEY") != "" && (input.OrgName != "" || input.PersonName != "" || input.Email != "")
+	return p.resolveAPIKey() != "" &&
+		(input.OrgName != "" || input.PersonName != "" || input.Email != "")
+}
+
+func (p *WhoxyReverseWhoisPlugin) resolveAPIKey() string {
+	return cmp.Or(p.apiKey, os.Getenv("WHOXY_API_KEY"))
 }
 
 // whoxyQuery pairs a Whoxy API parameter name with the search value.
@@ -52,6 +59,11 @@ type whoxyQuery struct {
 }
 
 func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
+<<<<<<< HEAD
+=======
+	apiKey := p.resolveAPIKey()
+
+>>>>>>> origin/main
 	// Build the set of queries from the input. Whoxy distinguishes company
 	// names (&company=) from person names (&name=) from email (&email=).
 	queries := buildWhoxyQueries(input)
@@ -59,9 +71,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 		return nil, nil
 	}
 
-	pivotOrg := cmp.Or(input.OrgName, input.PersonName, input.Email)
-
-	var allDomains []string
+	var rawDomains []WhoisDomain
 	for _, q := range queries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -71,23 +81,26 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 			slog.Warn("whoxy-reverse-whois: query failed", "param", q.param, "value", q.value, "error", err)
 			continue
 		}
-		allDomains = append(allDomains, domains...)
+		for _, domain := range domains {
+			rawDomains = append(rawDomains, WhoisDomain{
+				value: domain,
+				parameters: []WhoisParameter{{
+					Field: q.param,
+					Value: q.value,
+				}},
+			})
+		}
 	}
 
-	return domainFindings(p.Name(), pivotOrg, allDomains), nil
+	return reverseWhoisFindings("https://www.whoxy.com/", rawDomains), nil
 }
 
 // buildWhoxyQueries maps Input fields to the correct Whoxy API parameters.
 func buildWhoxyQueries(input plugins.Input) []whoxyQuery {
-	var queries []whoxyQuery
-	if input.OrgName != "" {
-		queries = append(queries, whoxyQuery{param: "company", value: input.OrgName})
-	}
-	if input.PersonName != "" {
-		queries = append(queries, whoxyQuery{param: "name", value: input.PersonName})
-	}
-	if input.Email != "" {
-		queries = append(queries, whoxyQuery{param: "email", value: input.Email})
+	parameters := whoisParametersFromInput(input)
+	queries := make([]whoxyQuery, 0, len(parameters))
+	for _, parameter := range parameters {
+		queries = append(queries, whoxyQuery{param: parameter.Field, value: parameter.Value})
 	}
 	return queries
 }

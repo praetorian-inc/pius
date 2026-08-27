@@ -1,11 +1,10 @@
-// Package whois provides domain registration lookups via RDAP and TCP port-43.
-//
-// Lookup is the primary entry point: it cascades through RDAP (structured data,
-// standardized dates) then TCP-43 (broader email coverage, raw text) and merges
-// the best fields from each source into a single Result.
+// Package whois provides domain and IP registration lookups via RDAP and TCP port 43.
 package whois
 
-import "cmp"
+import (
+	"cmp"
+	"strings"
+)
 
 // Result is the structured WHOIS record for a domain. It is serialized as JSON
 // to the whois/<domain> file in Guard and is designed to be incrementally
@@ -13,10 +12,10 @@ import "cmp"
 type Result struct {
 	Domain       string   `json:"domain"`
 	Registrar    string   `json:"registrar,omitempty"`
-	Registrant   Contact  `json:"registrant,omitempty"`
-	Admin        Contact  `json:"admin,omitempty"`
-	Tech         Contact  `json:"tech,omitempty"`
-	Billing      Contact  `json:"billing,omitempty"`
+	Registrant   Contact  `json:"registrant"`
+	Admin        Contact  `json:"admin"`
+	Tech         Contact  `json:"tech"`
+	Billing      Contact  `json:"billing"`
 	Created      string   `json:"created,omitempty"`
 	Updated      string   `json:"updated,omitempty"`
 	Expiration   string   `json:"expiration,omitempty"`
@@ -119,15 +118,16 @@ func (r *Result) Merge(other Result) {
 
 // clearIfPrivacy returns "" if the value is a known WHOIS privacy placeholder.
 func clearIfPrivacy(v string) string {
+	v = strings.TrimSpace(v)
 	if IsPrivacy(v) {
 		return ""
 	}
 	return v
 }
 
-// Scrub clears privacy/redaction placeholder values from all fields,
+// Clean clears privacy/redaction placeholder values from all fields,
 // leaving only real data. Returns the scrubbed contact.
-func (c Contact) Scrub() Contact {
+func (c Contact) Clean() Contact {
 	return Contact{
 		Organization: clearIfPrivacy(c.Organization),
 		Name:         clearIfPrivacy(c.Name),
@@ -143,10 +143,35 @@ func (c Contact) Scrub() Contact {
 
 // ScrubContacts scrubs all four contact roles on a Result.
 func (r *Result) ScrubContacts() {
-	r.Registrant = r.Registrant.Scrub()
-	r.Admin = r.Admin.Scrub()
-	r.Tech = r.Tech.Scrub()
-	r.Billing = r.Billing.Scrub()
+	r.Registrant = r.Registrant.Clean()
+	r.Admin = r.Admin.Clean()
+	r.Tech = r.Tech.Clean()
+	r.Billing = r.Billing.Clean()
+}
+
+func (r *Result) Clean() {
+	r.Domain = strings.TrimSpace(r.Domain)
+	r.Registrar = strings.TrimSpace(r.Registrar)
+	r.Created = strings.TrimSpace(r.Created)
+	r.Updated = strings.TrimSpace(r.Updated)
+	r.Expiration = strings.TrimSpace(r.Expiration)
+	r.DNSSEC = strings.TrimSpace(r.DNSSEC)
+	r.WhoisServer = strings.TrimSpace(r.WhoisServer)
+	r.Status = trimStrings(r.Status)
+	r.NameServers = trimStrings(r.NameServers)
+	r.Sources = trimStrings(r.Sources)
+	r.ScrubContacts()
+}
+
+func trimStrings(arr []string) []string {
+	res := make([]string, 0, len(arr))
+	for i := range arr {
+		v := strings.TrimSpace(arr[i])
+		if v != "" {
+			res = append(res, v)
+		}
+	}
+	return res
 }
 
 func mergeContact(base, other Contact) Contact {

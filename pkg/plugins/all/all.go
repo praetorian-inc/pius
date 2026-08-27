@@ -7,4 +7,6 @@ import (
 	_ "github.com/praetorian-inc/pius/pkg/plugins/cidrs"
 	// Domain plugins
 	_ "github.com/praetorian-inc/pius/pkg/plugins/domains"
+	// IP plugins
+	_ "github.com/praetorian-inc/pius/pkg/plugins/ips"
 )

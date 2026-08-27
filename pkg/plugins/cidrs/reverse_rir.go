@@ -1,30 +1,48 @@
 package cidrs
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 )
 
-const confReverseRIRHandle = 60
+const (
+	confReverseRIRHandle        = 60
+	confReverseRIROrgSimilarity = 25
+	minReverseRIROrgSimilarity  = 0.5
+)
 
 func init() {
 	plugins.Register("reverse-rir", func() plugins.Plugin {
-		return &ReverseRIRPlugin{client: client.New()}
+		return NewReverseRIRPlugin(client.New())
 	})
+}
+
+// NewReverseRIRPlugin builds the plugin around a caller-supplied client, for
+// embedders that must route pius egress through their own transport rather than
+// the package default. A nil client takes the default, which is what the
+// self-registering plugin uses.
+func NewReverseRIRPlugin(c *client.Client) *ReverseRIRPlugin {
+	if c == nil {
+		c = client.New()
+	}
+	return &ReverseRIRPlugin{client: c}
 }
 
 // ReverseRIRPlugin discovers RIR org handles from company names.
 // Queries ARIN, RIPE, APNIC, AFRINIC, and LACNIC WHOIS/RDAP APIs.
-// Phase 1 plugin: emits FindingCIDRHandle findings consumed by Phase 2.
+// Phase 1 plugin: emits FindingCIDRHandle findings consumed by Phase 2 and
+// FindingRIRResult findings carrying the registry records behind those handles.
 type ReverseRIRPlugin struct {
-	client httpDoer
+	client *client.Client
 }
 
 func (p *ReverseRIRPlugin) Name() string { return "reverse-rir" }
@@ -36,41 +54,36 @@ func (p *ReverseRIRPlugin) Phase() int       { return 1 }
 func (p *ReverseRIRPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *ReverseRIRPlugin) Accepts(input plugins.Input) bool {
-	return input.OrgName != ""
+	return strings.TrimSpace(input.OrgName) != ""
 }
 
 func (p *ReverseRIRPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	var findings []plugins.Finding
 
-	// Query ARIN WHOIS for all entity types
 	arinFindings, err := p.queryARIN(ctx, input.OrgName)
 	if err != nil {
 		slog.Warn("ARIN query failed", "plugin", "reverse-rir", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, arinFindings...)
 
-	// Query RIPE search
 	ripeFindings, err := p.queryRIPE(ctx, input.OrgName)
 	if err != nil {
 		slog.Warn("RIPE query failed", "plugin", "reverse-rir", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, ripeFindings...)
 
-	// Query APNIC REST WHOIS (Asia-Pacific)
 	apnicFindings, err := p.queryAPNIC(ctx, input.OrgName)
 	if err != nil {
 		slog.Warn("APNIC query failed", "plugin", "reverse-rir", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, apnicFindings...)
 
-	// Query AFRINIC RDAP entity search (Africa)
 	afrinicFindings, err := p.queryAFRINIC(ctx, input.OrgName)
 	if err != nil {
 		slog.Warn("AFRINIC query failed", "plugin", "reverse-rir", "org", input.OrgName, "error", err)
 	}
 	findings = append(findings, afrinicFindings...)
 
-	// Query LACNIC RDAP entity search (Latin America & Caribbean)
 	lacnicFindings, err := p.queryLACNIC(ctx, input.OrgName)
 	if err != nil {
 		slog.Warn("LACNIC query failed", "plugin", "reverse-rir", "org", input.OrgName, "error", err)
@@ -80,320 +93,338 @@ func (p *ReverseRIRPlugin) Run(ctx context.Context, input plugins.Input) ([]plug
 	return findings, nil
 }
 
-// queryARIN queries multiple ARIN entity types with handle deduplication
-func (p *ReverseRIRPlugin) queryARIN(ctx context.Context, org string) ([]plugins.Finding, error) {
-	seen := make(map[string]bool)
-	var findings []plugins.Finding
+// newReverseRIRFinding builds the handle and registry-result findings from a
+// fully assembled registry record. Unusable records produce no findings.
+func newReverseRIRFinding(database string, data ReverseRIRFindingData) []plugins.Finding {
+	data.Handle = strings.TrimSpace(data.Handle)
+	data.Name = strings.TrimSpace(data.Name)
+	data.QueriedOrganization = strings.TrimSpace(data.QueriedOrganization)
 
-	// Query all entity types, deduplicating by handle value
-	for _, entity := range []string{"orgs", "customers", "nets", "asns"} {
-		for _, f := range p.queryArinEntity(ctx, entity, org) {
-			if !seen[f.Value] {
-				seen[f.Value] = true
-				findings = append(findings, f)
-			}
-		}
-	}
-
-	return findings, nil
-}
-
-// queryArinEntity queries a specific ARIN entity type
-func (p *ReverseRIRPlugin) queryArinEntity(ctx context.Context, entity, org string) []plugins.Finding {
-	apiURL := fmt.Sprintf("https://whois.arin.net/rest/%s;name=*%s*", entity, url.PathEscape(org))
-
-	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
-		"Accept": "application/json",
-	})
-	if err != nil {
+	if data.Handle == "" || data.QueriedOrganization == "" || !resolvableRegistry(data.Registry) {
+		slog.Debug("reverse-rir: dropping unusable handle",
+			"handle", data.Handle,
+			"org", data.QueriedOrganization,
+			"registry", data.Registry,
+			"database", database,
+		)
 		return nil
 	}
 
-	// Parse response based on entity type
-	var handles []string
-	switch entity {
-	case "orgs":
-		var resp ArinOrgsResponse
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil
-		}
-		for _, ref := range resp.Orgs.OrgRef {
-			if ref.Handle != "" {
-				handles = append(handles, ref.Handle)
-			}
-		}
-	case "customers":
-		var resp ArinCustomersResponse
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil
-		}
-		for _, ref := range resp.Customers.CustomerRef {
-			if ref.Handle != "" {
-				handles = append(handles, ref.Handle)
-			}
-		}
-	case "nets":
-		var resp ArinNetsResponse
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil
-		}
-		for _, ref := range resp.Nets.NetRef {
-			if ref.Handle != "" {
-				handles = append(handles, ref.Handle)
-			}
-		}
-	case "asns":
-		var resp ArinAsnsResponse
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil
-		}
-		for _, ref := range resp.Asns.AsnRef {
-			if ref.Handle != "" {
-				handles = append(handles, ref.Handle)
-			}
-		}
-	}
-
-	var findings []plugins.Finding
-	for _, handle := range handles {
-		findings = append(findings, newReverseRIRFinding(handle, "arin", "ARIN "+entity+" database", org))
-	}
-
-	return findings
-}
-
-// queryRIPE queries RIPE search API
-func (p *ReverseRIRPlugin) queryRIPE(ctx context.Context, org string) ([]plugins.Finding, error) {
-	apiURL := fmt.Sprintf("https://rest.db.ripe.net/search?query-string=%s", url.QueryEscape(org))
-
-	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
-		"Accept": "application/json",
-	})
-	if err != nil {
-		return nil, nil // Graceful degradation
-	}
-
-	var resp RipeWhoisResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, nil
-	}
-
-	var findings []plugins.Finding
-	for _, obj := range resp.Objects.Object {
-		if len(obj.PrimaryKey.Attribute) == 0 {
-			continue
-		}
-
-		name := obj.PrimaryKey.Attribute[0].Name
-		value := obj.PrimaryKey.Attribute[0].Value
-
-		if name == "organisation" {
-			findings = append(findings, newReverseRIRFinding(value, "ripe", "RIPE database", org))
-		}
-	}
-
-	return findings, nil
-}
-
-// queryAPNIC queries APNIC REST WHOIS for organisation handles.
-// URL: https://wq.apnic.net/query?searchtext={org}&type=organisation
-// Response: JSON array where each item has objectType and primaryKey.
-// Handle format: "ORG-STCS1-AP", "ORG-GA71-AP" (Asia-Pacific suffix)
-func (p *ReverseRIRPlugin) queryAPNIC(ctx context.Context, org string) ([]plugins.Finding, error) {
-	apiURL := fmt.Sprintf("https://wq.apnic.net/query?searchtext=%s&type=organisation", url.QueryEscape(org))
-
-	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
-		"Accept": "application/json",
-	})
-	if err != nil {
-		return nil, nil
-	}
-
-	var items []ApnicQueryItem
-	if err := json.Unmarshal(body, &items); err != nil {
-		return nil, nil
-	}
-
-	var findings []plugins.Finding
-	for _, item := range items {
-		if item.ObjectType != "organisation" || item.PrimaryKey == "" {
-			continue
-		}
-		findings = append(findings, newReverseRIRFinding(item.PrimaryKey, "apnic", "APNIC WHOIS database", org))
-	}
-
-	return findings, nil
-}
-
-// queryAFRINIC queries AFRINIC RDAP entity search for organisation handles.
-// URL: https://rdap.afrinic.net/rdap/entities?fn={org}
-// Response: standard RDAP entitySearchResults[].handle
-// Handle format: "ORG-AS2-AFRINIC", "ORG-MC12-AFRINIC" (Africa suffix)
-// Only ORG- prefixed handles are emitted; individual contacts (e.g. "ATD1-AFRINIC") are skipped.
-func (p *ReverseRIRPlugin) queryAFRINIC(ctx context.Context, org string) ([]plugins.Finding, error) {
-	apiURL := fmt.Sprintf("https://rdap.afrinic.net/rdap/entities?fn=%s", url.QueryEscape(org))
-
-	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
-		"Accept": "application/rdap+json",
-	})
-	if err != nil {
-		return nil, nil
-	}
-
-	var resp RdapEntitySearchResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, nil
-	}
-
-	var findings []plugins.Finding
-	for _, entity := range resp.EntitySearchResults {
-		handle := entity.Handle
-		// Only emit organisation handles (ORG- prefix); skip individual contacts
-		if handle == "" || !strings.HasPrefix(strings.ToUpper(handle), "ORG-") {
-			continue
-		}
-		findings = append(findings, newReverseRIRFinding(handle, "afrinic", "AFRINIC RDAP database", org))
-	}
-
-	return findings, nil
-}
-
-// queryLACNIC queries LACNIC RDAP entity search API.
-// LACNIC covers Latin America and the Caribbean.
-// URL: https://rdap.lacnic.net/rdap/entities?fn={org}
-// Response key: "entities" (LACNIC non-standard; RDAP spec uses "entitySearchResults")
-// Handle format: "BR-MERC-LACNIC", "MX-USCV4-LACNIC" (country-code prefix)
-func (p *ReverseRIRPlugin) queryLACNIC(ctx context.Context, org string) ([]plugins.Finding, error) {
-	apiURL := fmt.Sprintf("https://rdap.lacnic.net/rdap/entities?fn=%s", url.QueryEscape(org))
-
-	body, err := p.client.GetWithHeaders(ctx, apiURL, map[string]string{
-		"Accept": "application/rdap+json",
-	})
-	if err != nil {
-		return nil, nil // Graceful degradation
-	}
-
-	var resp LacnicSearchResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, nil
-	}
-
-	var findings []plugins.Finding
-	for _, entity := range resp.Entities {
-		if entity.Handle == "" {
-			continue
-		}
-		findings = append(findings, newReverseRIRFinding(entity.Handle, "lacnic", "LACNIC RDAP database", org))
-	}
-
-	return findings, nil
-}
-
-func newReverseRIRFinding(handle, registry, database, org string) plugins.Finding {
-	finding := plugins.Finding{
+	handleFinding := plugins.Finding{
 		Type:   plugins.FindingCIDRHandle,
-		Value:  handle,
+		Value:  data.Handle,
 		Source: "reverse-rir",
 		Data: map[string]any{
-			"registry": registry,
-			"org":      org,
+			"registry": data.Registry,
+			"org":      data.Name,
 		},
 	}
-	plugins.AddConfidence(&finding, confReverseRIRHandle, fmt.Sprintf(
-		"%s returned organization handle %q for organization search %q", database, handle, org))
-	return finding
-}
+	plugins.AddConfidence(&handleFinding, confReverseRIRHandle, fmt.Sprintf(
+		"%s returned organization handle %q for organization search %q",
+		database, data.Handle, data.QueriedOrganization,
+	))
 
-// ── ARIN response types ───────────────────────────────────────────────────────
-
-type ArinRef struct {
-	Handle string `json:"@handle"`
-	Name   string `json:"@name"`
-}
-
-// ArinRefs handles ARIN's JSON quirk: single results are returned as a bare
-// object, not a single-element array. Standard json.Unmarshal fails silently
-// when unmarshaling an object into []T.
-type ArinRefs []ArinRef
-
-func (r *ArinRefs) UnmarshalJSON(data []byte) error {
-	// Try array first (common case with multiple results).
-	var arr []ArinRef
-	if err := json.Unmarshal(data, &arr); err == nil {
-		*r = arr
-		return nil
+	if similarity := strutil.TokenSimilarity(data.QueriedOrganization, data.Name); similarity >= minReverseRIROrgSimilarity {
+		plugins.AddConfidence(&handleFinding, confReverseRIROrgSimilarity, fmt.Sprintf(
+			"RIR organization name %q matches the queried organization %q",
+			data.Name, data.QueriedOrganization,
+		))
 	}
-	// Fall back to single object (ARIN returns this for exactly one result).
-	var single ArinRef
-	if err := json.Unmarshal(data, &single); err != nil {
+
+	resultFinding := plugins.Finding{
+		Type:        plugins.FindingRIRResult,
+		Value:       data.Handle,
+		Source:      handleFinding.Source,
+		Confidences: slices.Clone(handleFinding.Confidences),
+		Data:        plugins.FindingData(data),
+	}
+	return []plugins.Finding{handleFinding, resultFinding}
+}
+
+// ReverseRIRFindingData is the common envelope emitted for every registry
+// record that produced a CIDR handle. Record preserves the registry-native JSON.
+type ReverseRIRFindingData struct {
+	Registry            string          `json:"registry"`
+	Handle              string          `json:"handle"`
+	Name                string          `json:"name,omitempty"`
+	QueriedOrganization string          `json:"queriedOrganization,omitempty"`
+	Street              []string        `json:"street,omitempty"`
+	City                string          `json:"city,omitempty"`
+	StateProvince       string          `json:"stateProvince,omitempty"`
+	PostalCode          string          `json:"postalCode,omitempty"`
+	Country             string          `json:"country,omitempty"`
+	RegistrationDate    string          `json:"registrationDate,omitempty"`
+	LastUpdated         string          `json:"lastUpdated,omitempty"`
+	Comments            []string        `json:"comments,omitempty"`
+	SourceURL           string          `json:"sourceUrl,omitempty"`
+	Record              json.RawMessage `json:"record"`
+}
+
+func newRPSLResultData(
+	registry, handle, queriedOrganization, sourceURL string,
+	attributes rpslAttributes,
+	record json.RawMessage,
+) ReverseRIRFindingData {
+	return ReverseRIRFindingData{
+		Registry:            registry,
+		Handle:              handle,
+		Name:                attributes.Name,
+		QueriedOrganization: queriedOrganization,
+		Street:              attributes.Street,
+		Country:             attributes.Country,
+		RegistrationDate:    attributes.RegistrationDate,
+		LastUpdated:         attributes.LastUpdated,
+		Comments:            attributes.Comments,
+		SourceURL:           sourceURL,
+		Record:              record,
+	}
+}
+
+type rpslAttributes struct {
+	Name             string
+	Street           []string
+	Country          string
+	RegistrationDate string
+	LastUpdated      string
+	Comments         []string
+}
+
+func (attributes *rpslAttributes) add(name string, values ...string) {
+	switch name {
+	case "org-name":
+		attributes.Name = cmp.Or(attributes.Name, first(values))
+	case "address":
+		attributes.Street = append(attributes.Street, values...)
+	case "country":
+		attributes.Country = cmp.Or(attributes.Country, first(values))
+	case "created":
+		attributes.RegistrationDate = cmp.Or(attributes.RegistrationDate, first(values))
+	case "last-modified":
+		attributes.LastUpdated = cmp.Or(attributes.LastUpdated, first(values))
+	case "remarks":
+		attributes.Comments = append(attributes.Comments, values...)
+	}
+}
+
+func applyRDAPResultData(
+	data *ReverseRIRFindingData,
+	entity RdapEntity,
+	record json.RawMessage,
+) {
+	data.Record = record
+	data.SourceURL = cmp.Or(entity.selfLink(), data.SourceURL)
+	data.RegistrationDate = cmp.Or(
+		entity.eventDate("registration"), data.RegistrationDate)
+	data.LastUpdated = cmp.Or(
+		entity.eventDate("last changed"), data.LastUpdated)
+	for _, remark := range entity.Remarks {
+		data.Comments = append(data.Comments, remark.Description...)
+	}
+
+	for _, property := range entity.VCard.Properties {
+		switch property.Name {
+		case "fn":
+			data.Name = cmp.Or(property.stringValue(), data.Name)
+		case "adr":
+			applyRDAPAddress(data, property)
+		case "note":
+			if comment := property.stringValue(); comment != "" {
+				data.Comments = append(data.Comments, comment)
+			}
+		}
+	}
+}
+
+func applyRDAPAddress(data *ReverseRIRFindingData, property rdapVCardProperty) {
+	values := property.stringValues()
+	if len(values) >= 7 {
+		data.Street = appendNonempty(data.Street, values[2])
+		data.City = cmp.Or(values[3], data.City)
+		data.StateProvince = cmp.Or(values[4], data.StateProvince)
+		data.PostalCode = cmp.Or(values[5], data.PostalCode)
+		data.Country = cmp.Or(values[6], data.Country)
+	}
+	if len(data.Street) > 0 {
+		return
+	}
+
+	lines := nonemptyLines(property.Parameters.Label)
+	if len(lines) == 0 {
+		return
+	}
+	data.Street = append(data.Street, lines[0])
+	if len(lines) > 1 && data.City == "" {
+		data.City = lines[1]
+	}
+}
+
+type RdapEntity struct {
+	Handle  string       `json:"handle"`
+	VCard   rdapVCard    `json:"vcardArray"`
+	Events  []rdapEvent  `json:"events"`
+	Remarks []rdapRemark `json:"remarks"`
+	Links   []rdapLink   `json:"links"`
+}
+
+func (entity RdapEntity) eventDate(action string) string {
+	for _, event := range entity.Events {
+		if event.Action == action {
+			return event.Date
+		}
+	}
+	return ""
+}
+
+func (entity RdapEntity) selfLink() string {
+	for _, link := range entity.Links {
+		if link.Relation == "self" {
+			return link.Href
+		}
+	}
+	return ""
+}
+
+type rdapEvent struct {
+	Action string `json:"eventAction"`
+	Date   string `json:"eventDate"`
+}
+
+type rdapRemark struct {
+	Description []string `json:"description"`
+}
+
+type rdapLink struct {
+	Relation string `json:"rel"`
+	Href     string `json:"href"`
+}
+
+type rdapVCard struct {
+	Properties []rdapVCardProperty
+}
+
+func (vcard *rdapVCard) UnmarshalJSON(data []byte) error {
+	var tuple []json.RawMessage
+	if err := json.Unmarshal(data, &tuple); err != nil {
 		return err
 	}
-	*r = ArinRefs{single}
+	if len(tuple) < 2 {
+		return nil
+	}
+
+	var rawProperties []json.RawMessage
+	if err := json.Unmarshal(tuple[1], &rawProperties); err != nil {
+		return err
+	}
+	for _, rawProperty := range rawProperties {
+		var property rdapVCardProperty
+		if property.unmarshalJSON(rawProperty) == nil {
+			vcard.Properties = append(vcard.Properties, property)
+		}
+	}
 	return nil
 }
 
-type ArinOrgsResponse struct {
-	Orgs struct {
-		OrgRef ArinRefs `json:"orgRef"`
-	} `json:"orgs"`
+type rdapVCardProperty struct {
+	Name       string
+	Parameters rdapVCardParameters
+	Text       string
+	Address    []string
 }
 
-type ArinCustomersResponse struct {
-	Customers struct {
-		CustomerRef ArinRefs `json:"customerRef"`
-	} `json:"customers"`
+func (property *rdapVCardProperty) unmarshalJSON(data []byte) error {
+	var tuple []json.RawMessage
+	if err := json.Unmarshal(data, &tuple); err != nil {
+		return err
+	}
+	if len(tuple) < 4 {
+		return fmt.Errorf("RDAP vCard property has %d fields", len(tuple))
+	}
+	if err := json.Unmarshal(tuple[0], &property.Name); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(tuple[1], &property.Parameters); err != nil {
+		return err
+	}
+	if property.Name == "adr" {
+		property.Address = rdapStrings(tuple[3])
+		return nil
+	}
+	_ = json.Unmarshal(tuple[3], &property.Text)
+	return nil
 }
 
-type ArinNetsResponse struct {
-	Nets struct {
-		NetRef ArinRefs `json:"netRef"`
-	} `json:"nets"`
+func (property rdapVCardProperty) stringValue() string {
+	return property.Text
 }
 
-type ArinAsnsResponse struct {
-	Asns struct {
-		AsnRef ArinRefs `json:"asnRef"`
-	} `json:"asns"`
+func (property rdapVCardProperty) stringValues() []string {
+	return property.Address
 }
 
-// ── RIPE response types ───────────────────────────────────────────────────────
-
-type RipeWhoisResponse struct {
-	Objects struct {
-		Object []struct {
-			Type       string `json:"type,omitempty"`
-			PrimaryKey struct {
-				Attribute []struct {
-					Name  string `json:"name,omitempty"`
-					Value string `json:"value,omitempty"`
-				} `json:"attribute,omitempty"`
-			} `json:"primary-key,omitempty"`
-		} `json:"object,omitempty"`
-	} `json:"objects,omitempty"`
+func rdapStrings(data json.RawMessage) []string {
+	var rawValues []json.RawMessage
+	if json.Unmarshal(data, &rawValues) != nil {
+		return nil
+	}
+	values := make([]string, len(rawValues))
+	for i, rawValue := range rawValues {
+		_ = json.Unmarshal(rawValue, &values[i])
+	}
+	return values
 }
 
-// ── APNIC response types ──────────────────────────────────────────────────────
-// wq.apnic.net returns a top-level JSON array of mixed object types.
-
-type ApnicQueryItem struct {
-	ObjectType string `json:"objectType"`
-	PrimaryKey string `json:"primaryKey"`
+type rdapVCardParameters struct {
+	Label string `json:"label"`
 }
 
-// ── AFRINIC response types ────────────────────────────────────────────────────
-// Standard RDAP entitySearchResults (used by AFRINIC and APNIC RDAP).
-
-type RdapEntitySearchResponse struct {
-	EntitySearchResults []struct {
-		Handle string `json:"handle"`
-	} `json:"entitySearchResults"`
+type nativeRecord[T any] struct {
+	Value T
+	Raw   json.RawMessage
 }
 
-// ── LACNIC response types ─────────────────────────────────────────────────────
-// LACNIC uses non-standard "entities" key (not "entitySearchResults").
+func (record *nativeRecord[T]) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &record.Value); err != nil {
+		return err
+	}
+	record.Raw = slices.Clone(data)
+	return nil
+}
 
-type LacnicSearchResponse struct {
-	Entities []struct {
-		Handle string `json:"handle"`
-	} `json:"entities"`
+func jsonRecord[T any](value T) json.RawMessage {
+	record, _ := json.Marshal(value)
+	return record
+}
+
+func first(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func appendNonempty(values []string, value string) []string {
+	if value == "" || slices.Contains(values, value) {
+		return values
+	}
+	return append(values, value)
+}
+
+func nonemptyLines(value string) []string {
+	var lines []string
+	for _, line := range strings.Split(value, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+var knownRIRs = []string{
+	"arin", "lacnic", "apnic", "afrinic", "ripe",
+}
+
+// resolvableRegistry reports whether a phase-two plugin in this package can
+// resolve a handle at one of the five regional internet registries.
+func resolvableRegistry(registry string) bool {
+	return slices.Contains(knownRIRs, strings.ToLower(registry))
 }

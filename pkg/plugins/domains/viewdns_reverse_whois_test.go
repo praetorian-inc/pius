@@ -79,12 +79,17 @@ func TestViewDNSReverseWhois_Run_OrgMode(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, findings, 2)
 
-	assert.Equal(t, plugins.FindingDomain, findings[0].Type)
-	assert.Equal(t, "acme.com", findings[0].Value)
-	assert.Equal(t, "Acme Corp", findings[0].Data["pivot_org"])
-
-	assert.Equal(t, "acme.net", findings[1].Value)
-	assert.Equal(t, "Acme Corp", findings[1].Data["pivot_org"])
+	assert.ElementsMatch(t, []string{"acme.com", "acme.net"}, []string{
+		findings[0].Value,
+		findings[1].Value,
+	})
+	for _, finding := range findings {
+		assert.Equal(t, plugins.FindingDomain, finding.Type)
+		assert.Equal(t, []WhoisParameter{{Field: "company", Value: "Acme Corp"}},
+			findingReverseWhoisParameters(t, finding))
+		require.Len(t, finding.Confidences, 1)
+		assert.Equal(t, 50, plugins.TotalConfidence(finding))
+	}
 }
 
 func TestViewDNSReverseWhois_Run_Dedup(t *testing.T) {
@@ -120,7 +125,48 @@ func TestViewDNSReverseWhois_Run_EmailMode(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
 	assert.Equal(t, "acme.com", findings[0].Value)
-	assert.Equal(t, "admin@acme.com", findings[0].Data["pivot_org"])
+	assert.Equal(t, []WhoisParameter{{Field: "email", Value: "admin@acme.com"}},
+		findingReverseWhoisParameters(t, findings[0]))
+}
+
+func TestViewDNSReverseWhois_Run_NameMode(t *testing.T) {
+	t.Setenv("VIEWDNS_API_KEY", "test-key")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Alice Smith", r.URL.Query().Get("q"))
+		_, _ = w.Write([]byte(`{"response":{"matches":[{"domain":"example.com"}]}}`))
+	}))
+	defer srv.Close()
+
+	p := &ViewDNSReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	findings, err := p.Run(context.Background(), plugins.Input{PersonName: "Alice Smith"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, []WhoisParameter{{Field: "name", Value: "Alice Smith"}},
+		findingReverseWhoisParameters(t, findings[0]))
+}
+
+func TestViewDNSReverseWhois_Run_QueriesEveryParameter(t *testing.T) {
+	t.Setenv("VIEWDNS_API_KEY", "test-key")
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query().Get("q"))
+		_, _ = w.Write([]byte(`{"response":{"matches":[{"domain":"shared.example"}]}}`))
+	}))
+	defer srv.Close()
+
+	p := &ViewDNSReverseWhoisPlugin{client: client.New(), baseURL: srv.URL}
+	findings, err := p.Run(context.Background(), plugins.Input{
+		OrgName: "Acme Corp",
+		Email:   "admin@acme.com",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Acme Corp", "admin@acme.com"}, queries)
+	require.Len(t, findings, 1)
+	assert.Equal(t, []WhoisParameter{
+		{Field: "company", Value: "Acme Corp"},
+		{Field: "email", Value: "admin@acme.com"},
+	}, findingReverseWhoisParameters(t, findings[0]))
+	require.Len(t, findings[0].Confidences, 1)
 }
 
 func TestViewDNSReverseWhois_Run_ErrorOmitsURL(t *testing.T) {

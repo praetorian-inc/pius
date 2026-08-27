@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 	"time"
+	"strings"
 
 	"github.com/openrdap/rdap"
 )
@@ -70,6 +71,7 @@ func rdapLookup(ctx context.Context, httpClient *http.Client, domain string) (Re
 	if result.Registrant.IsEmpty() {
 		enrichFromRegistrar(ctx, client, &result, domainResp)
 	}
+	result.Clean()
 
 	return result, nil
 }
@@ -107,7 +109,6 @@ func mapRDAPToResult(domain string, resp *rdap.Domain) Result {
 	r.Admin = extractContact(resp.Entities, "administrative")
 	r.Tech = extractContact(resp.Entities, "technical")
 	r.Billing = extractContact(resp.Entities, "billing")
-
 	return r
 }
 
@@ -159,12 +160,38 @@ func extractContact(entities []rdap.Entity, role string) Contact {
 	if e == nil || e.VCard == nil {
 		return Contact{}
 	}
-	c := Contact{
-		Name:         e.VCard.Name(),
-		Organization: extractOrgFromVCard(e.VCard),
+	return contactFromVCard(e.VCard)
+}
+
+func contactFromVCard(vcard *rdap.VCard) Contact {
+	contact := Contact{
+		Name:         vcard.Name(),
+		Organization: extractOrgFromVCard(vcard),
+		Street:       vcard.StreetAddress(),
+		PostalCode:   vcard.PostalCode(),
 	}
-	c.Country, c.Province, c.City = extractAddressFromVCard(e.VCard)
-	return c
+	contact.Country, contact.Province, contact.City = extractAddressFromVCard(vcard)
+	if contact.Street == "" && contact.City == "" && contact.Province == "" && contact.PostalCode == "" {
+		contact.Street = addressLabelFromVCard(vcard)
+	}
+	return contact.Clean()
+}
+
+func addressLabelFromVCard(vcard *rdap.VCard) string {
+	for _, property := range vcard.Get("adr") {
+		for _, label := range property.Parameters["label"] {
+			lines := make([]string, 0, strings.Count(label, "\n")+1)
+			for line := range strings.Lines(label) {
+				if line = strings.TrimSpace(line); line != "" {
+					lines = append(lines, line)
+				}
+			}
+			if len(lines) > 0 {
+				return strings.Join(lines, ", ")
+			}
+		}
+	}
+	return ""
 }
 
 func extractOrgFromVCard(vcard *rdap.VCard) string {

@@ -69,9 +69,9 @@ func tcp43Lookup(ctx context.Context, domain string) (Result, string, error) {
 	if err != nil {
 		return Result{}, "", fmt.Errorf("whois parse failed for %s: %w", domain, err)
 	}
-
 	result := mapParsedToResult(domain, parsed)
 	result.WhoisServer = server
+	result.Clean()
 	return result, raw, nil
 }
 
