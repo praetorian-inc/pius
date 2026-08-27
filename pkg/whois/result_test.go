@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestResult_Clean(t *testing.T) {
+func TestResult_Normalize(t *testing.T) {
 	result := Result{
 		Domain:      " example.com ",
 		Registrar:   " Example Registrar ",
@@ -26,7 +26,7 @@ func TestResult_Clean(t *testing.T) {
 		Admin: Contact{Name: "REDACTED FOR PRIVACY"},
 	}
 
-	result.Clean()
+	result.Normalize()
 
 	assert.Equal(t, Result{
 		Domain:      "example.com",
@@ -43,11 +43,13 @@ func TestResult_Clean(t *testing.T) {
 			Organization: "Example Inc.",
 			Email:        "admin@example.com",
 		},
-		Admin: Contact{Name: PrivacyRedaction},
+		Admin:            Contact{Name: PrivacyRedaction},
+		ContactEmail:     "admin@example.com",
+		ContactEmailRole: "registrant",
 	}, result)
 }
 
-func TestResult_CleanAllowsProviderFallback(t *testing.T) {
+func TestResult_NormalizeAllowsProviderFallback(t *testing.T) {
 	primary := Result{
 		Registrar:   " ",
 		NameServers: []string{" "},
@@ -61,14 +63,55 @@ func TestResult_CleanAllowsProviderFallback(t *testing.T) {
 		Registrant:  Contact{Name: "Jane Doe"},
 	}
 
-	primary.Clean()
-	fallback.Clean()
+	primary.Normalize()
+	fallback.Normalize()
 	primary.Merge(fallback)
 
 	assert.Equal(t, "Fallback Registrar", primary.Registrar)
 	assert.Equal(t, []string{"ns1.example.com"}, primary.NameServers)
 	assert.Equal(t, []string{"active"}, primary.Status)
 	assert.Equal(t, "Jane Doe", primary.Registrant.Name)
+}
+
+func TestResult_NormalizePopulatesDerivedFields(t *testing.T) {
+	result := Result{
+		Domain:    "acme.cn",
+		Registrar: "Example Registrar [Tag = EXAMPLE]",
+		Registrant: Contact{
+			Name:  "Acme Holdings Ltd.",
+			Email: "proxy@withheldforprivacy.com",
+		},
+		Admin: Contact{Email: "admin@example.com"},
+	}
+
+	result.Normalize()
+
+	assert.Equal(t, "Acme Holdings Ltd.", result.Registrant.Organization)
+	assert.Equal(t, "EXAMPLE", result.Registrar)
+	assert.Equal(t, PrivacyRedaction, result.Registrant.Email)
+	assert.Equal(t, "admin@example.com", result.ContactEmail)
+	assert.Equal(t, "administrative", result.ContactEmailRole)
+}
+
+func TestResult_NormalizePreservesPrivateContactEmail(t *testing.T) {
+	result := Result{Tech: Contact{Email: "domains@markmonitor.com"}}
+
+	result.Normalize()
+
+	assert.Equal(t, PrivacyRedaction, result.ContactEmail)
+	assert.Equal(t, "technical", result.ContactEmailRole)
+}
+
+func TestResult_MergeRecomputesDerivedFields(t *testing.T) {
+	primary := Result{Registrant: Contact{Email: "proxy@withheldforprivacy.com"}}
+	fallback := Result{Admin: Contact{Email: "admin@example.com"}}
+	primary.Normalize()
+	fallback.Normalize()
+
+	primary.Merge(fallback)
+
+	assert.Equal(t, "admin@example.com", primary.ContactEmail)
+	assert.Equal(t, "administrative", primary.ContactEmailRole)
 }
 
 func TestResult_MergeContactPrefersRealValues(t *testing.T) {

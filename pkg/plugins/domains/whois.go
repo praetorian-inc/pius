@@ -68,22 +68,9 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 		}
 	}
 
-	org := whois.RegistrantOrg(r.Registrant, r.Domain)
-	r.Registrant.Organization = org
-	r.Registrar = whois.NormalizeRegistrar(r.Registrar)
-
-	// Find the best non-privacy email across all contacts.
-	email, sawProxy := whois.ContactEmail(r)
-	switch {
-	case email != "":
-		r.Registrant.Email = email
-	case sawProxy || r.Registrant.Organization == whois.PrivacyRedaction:
-		r.Registrant.Email = whois.PrivacyRedaction
-	}
-
 	fd := WhoisFindingData{Result: r}
 	if pivotOrg != "" {
-		fd.Corroboration = whois.Corroborate(pivotOrg, org)
+		fd.Corroboration = whois.Corroborate(pivotOrg, r.Registrant.Organization)
 	}
 
 	return plugins.Finding{
@@ -107,12 +94,8 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 	// Collect all valid candidates, then dedupe by {field, value}.
 	var all []candidate
 	for i, c := range contacts {
-		org := c.Organization
-		if i == 0 {
-			org = whois.RegistrantOrg(c, r.Domain)
-		}
 		for _, cd := range []candidate{
-			{"company", roles[i], org},
+			{"company", roles[i], c.Organization},
 			{"name", roles[i], c.Name},
 			{"email", roles[i], c.Email},
 		} {

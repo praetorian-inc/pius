@@ -10,39 +10,23 @@ import (
 // to the whois/<domain> file in Guard and is designed to be incrementally
 // filled by multiple providers (RDAP, TCP-43, Whoxy, WhoisFreaks, etc.).
 type Result struct {
-	Domain       string   `json:"domain"`
-	Registrar    string   `json:"registrar,omitempty"`
-	Registrant   Contact  `json:"registrant"`
-	Admin        Contact  `json:"admin"`
-	Tech         Contact  `json:"tech"`
-	Billing      Contact  `json:"billing"`
-	Created      string   `json:"created,omitempty"`
-	Updated      string   `json:"updated,omitempty"`
-	Expiration   string   `json:"expiration,omitempty"`
-	NameServers  []string `json:"nameservers,omitempty"`
-	Status       []string `json:"status,omitempty"`
-	DNSSEC       string   `json:"dnssec,omitempty"`
-	WhoisServer  string   `json:"whois_server,omitempty"`
-	Sources      []string `json:"sources,omitempty"`
-	Unregistered bool     `json:"unregistered,omitempty"`
-}
-
-// Contact holds registration contact information for a single role.
-type Contact struct {
-	Organization string `json:"organization,omitempty"`
-	Name         string `json:"name,omitempty"`
-	Email        string `json:"email,omitempty"`
-	Country      string `json:"country,omitempty"`
-	Province     string `json:"province,omitempty"`
-	City         string `json:"city,omitempty"`
-	Street       string `json:"street,omitempty"`
-	PostalCode   string `json:"postal_code,omitempty"`
-	Phone        string `json:"phone,omitempty"`
-}
-
-// IsEmpty reports whether the contact has no usable identity.
-func (c Contact) IsEmpty() bool {
-	return c.Organization == "" && c.Name == "" && c.Email == ""
+	Domain           string   `json:"domain"`
+	Registrar        string   `json:"registrar,omitempty"`
+	Registrant       Contact  `json:"registrant"`
+	Admin            Contact  `json:"admin"`
+	Tech             Contact  `json:"tech"`
+	Billing          Contact  `json:"billing"`
+	Created          string   `json:"created,omitempty"`
+	Updated          string   `json:"updated,omitempty"`
+	Expiration       string   `json:"expiration,omitempty"`
+	NameServers      []string `json:"nameservers,omitempty"`
+	Status           []string `json:"status,omitempty"`
+	DNSSEC           string   `json:"dnssec,omitempty"`
+	WhoisServer      string   `json:"whois_server,omitempty"`
+	Sources          []string `json:"sources,omitempty"`
+	Unregistered     bool     `json:"unregistered,omitempty"`
+	ContactEmail     string   `json:"contact_email,omitempty"`
+	ContactEmailRole string   `json:"contact_email_role,omitempty"`
 }
 
 // AllContacts returns the four contact roles in order: registrant, admin, tech, billing.
@@ -56,8 +40,8 @@ func (r Result) HasRegistrant() bool {
 	return r.Registrant.Organization != "" || r.Registrant.Name != ""
 }
 
-// Merge fills empty fields on r from other, used to chain providers.
-// Non-empty fields on r are never overwritten. Sources are accumulated.
+// Merge combines normalized provider results, replacing privacy placeholders
+// with real fallback data when available. Sources are accumulated.
 func (r *Result) Merge(other Result) {
 	r.Registrar = cmp.Or(r.Registrar, other.Registrar)
 	r.Created = cmp.Or(r.Created, other.Created)
@@ -79,10 +63,58 @@ func (r *Result) Merge(other Result) {
 	r.Billing = mergeContact(r.Billing, other.Billing)
 
 	r.Sources = append(r.Sources, other.Sources...)
+	r.populateDerivedFields()
 }
 
-// Clean trims fields and normalizes privacy placeholders.
-func (c Contact) Clean() Contact {
+func (r *Result) Normalize() {
+	r.Domain = strings.TrimSpace(r.Domain)
+	r.Registrar = NormalizeRegistrar(r.Registrar)
+	r.Created = strings.TrimSpace(r.Created)
+	r.Updated = strings.TrimSpace(r.Updated)
+	r.Expiration = strings.TrimSpace(r.Expiration)
+	r.DNSSEC = strings.TrimSpace(r.DNSSEC)
+	r.WhoisServer = strings.TrimSpace(r.WhoisServer)
+	r.Status = trimStrings(r.Status)
+	r.NameServers = trimStrings(r.NameServers)
+	r.Sources = trimStrings(r.Sources)
+	r.Registrant = r.Registrant.Normalize()
+	r.Admin = r.Admin.Normalize()
+	r.Tech = r.Tech.Normalize()
+	r.Billing = r.Billing.Normalize()
+	r.populateDerivedFields()
+}
+
+func (r *Result) populateDerivedFields() {
+	r.Registrant.Organization = RegistrantOrg(r.Registrant, r.Domain)
+
+	email, role, sawPrivacy := preferredContactEmail(*r)
+	if email == "" && sawPrivacy {
+		email = PrivacyRedaction
+	}
+	r.ContactEmail = email
+	r.ContactEmailRole = role
+}
+
+// Contact holds registration contact information for a single role.
+type Contact struct {
+	Organization string `json:"organization,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Email        string `json:"email,omitempty"`
+	Country      string `json:"country,omitempty"`
+	Province     string `json:"province,omitempty"`
+	City         string `json:"city,omitempty"`
+	Street       string `json:"street,omitempty"`
+	PostalCode   string `json:"postal_code,omitempty"`
+	Phone        string `json:"phone,omitempty"`
+}
+
+// IsEmpty reports whether the contact has no usable identity.
+func (c Contact) IsEmpty() bool {
+	return c.Organization == "" && c.Name == "" && c.Email == ""
+}
+
+// Normalize trims fields and normalizes privacy placeholders.
+func (c Contact) Normalize() Contact {
 	return Contact{
 		Organization: normalizePrivacy(c.Organization),
 		Name:         normalizePrivacy(c.Name),
@@ -94,28 +126,6 @@ func (c Contact) Clean() Contact {
 		PostalCode:   normalizePrivacy(c.PostalCode),
 		Phone:        normalizePrivacy(c.Phone),
 	}
-}
-
-// ScrubContacts scrubs all four contact roles on a Result.
-func (r *Result) ScrubContacts() {
-	r.Registrant = r.Registrant.Clean()
-	r.Admin = r.Admin.Clean()
-	r.Tech = r.Tech.Clean()
-	r.Billing = r.Billing.Clean()
-}
-
-func (r *Result) Clean() {
-	r.Domain = strings.TrimSpace(r.Domain)
-	r.Registrar = strings.TrimSpace(r.Registrar)
-	r.Created = strings.TrimSpace(r.Created)
-	r.Updated = strings.TrimSpace(r.Updated)
-	r.Expiration = strings.TrimSpace(r.Expiration)
-	r.DNSSEC = strings.TrimSpace(r.DNSSEC)
-	r.WhoisServer = strings.TrimSpace(r.WhoisServer)
-	r.Status = trimStrings(r.Status)
-	r.NameServers = trimStrings(r.NameServers)
-	r.Sources = trimStrings(r.Sources)
-	r.ScrubContacts()
 }
 
 func mergeContact(base, other Contact) Contact {

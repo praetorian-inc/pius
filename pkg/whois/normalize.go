@@ -27,18 +27,28 @@ func RegistrantOrg(c Contact, domain string) string {
 }
 
 // ContactEmail finds the best non-privacy email across a result's contacts.
-// Prefers registrant, then admin, tech, billing.
-func ContactEmail(r Result) (email string, sawProxy bool) {
-	for _, c := range r.AllContacts() {
-		classified := classifyEmail(c.Email)
+// Prefers registrant, then administrative, technical, and billing contacts.
+func ContactEmail(r Result) (email string, sawPrivacy bool) {
+	email, _, sawPrivacy = preferredContactEmail(r)
+	return email, sawPrivacy
+}
+
+func preferredContactEmail(r Result) (email, role string, sawPrivacy bool) {
+	roles := [...]string{"registrant", "administrative", "technical", "billing"}
+	privacyRole := ""
+	for i, contact := range r.AllContacts() {
+		classified := classifyEmail(contact.Email)
 		switch {
 		case classified == PrivacyRedaction:
-			sawProxy = true
+			sawPrivacy = true
+			if privacyRole == "" {
+				privacyRole = roles[i]
+			}
 		case classified != "":
-			return classified, sawProxy
+			return classified, roles[i], sawPrivacy
 		}
 	}
-	return "", sawProxy
+	return "", privacyRole, sawPrivacy
 }
 
 func classifyEmail(raw string) string {
