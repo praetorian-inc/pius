@@ -36,9 +36,11 @@ type GLEIFPlugin struct {
 	baseURL string // override for testing; default "https://api.gleif.org/api/v1"
 
 	// Per-run enrichment state, set in Run().
-	orgName       string
-	primaryName   string
-	candidateRank int
+	orgName                    string
+	primaryName                string
+	primaryLEI                 string
+	candidateRank              int
+	registrationAuthorityCache map[string]map[string]any
 }
 
 var gleifHeaders = map[string]string{
@@ -82,7 +84,9 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 
 	p.orgName = input.OrgName
 	p.primaryName = primary.Attributes.Entity.LegalName.Name
+	p.primaryLEI = primary.ID
 	p.candidateRank = candidateRank
+	p.registrationAuthorityCache = make(map[string]map[string]any)
 
 	var findings []plugins.Finding
 
@@ -133,12 +137,12 @@ func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, fin
 
 // emitRelated fetches a single LEI record and emits a preseed finding.
 func (p *GLEIFPlugin) emitRelated(ctx context.Context, lei, relation string, findings *[]plugins.Finding) {
-	record, err := p.getRecord(ctx, lei)
+	record, rawRecord, err := p.getRecord(ctx, lei)
 	if err != nil {
 		log.Printf("[gleif] %s record failed for %s: %v", relation, lei, err)
 		return
 	}
-	finding := p.recordToPreseed(*record, relation)
+	finding := p.recordToPreseed(ctx, *record, rawRecord, relation)
 	if finding.Value != "" {
 		*findings = append(*findings, finding)
 	}
@@ -155,7 +159,13 @@ func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relat
 		if child.ID == excludeLEI || child.Attributes.Entity.LegalName.Name == "" {
 			continue
 		}
-		*findings = append(*findings, p.recordToPreseed(child, relation))
+		record, rawRecord, recordErr := p.getRecord(ctx, child.ID)
+		if recordErr != nil {
+			log.Printf("[gleif] %s full record failed for %s: %v", relation, child.ID, recordErr)
+			record = &child
+			rawRecord = map[string]any{"data": child}
+		}
+		*findings = append(*findings, p.recordToPreseed(ctx, *record, rawRecord, relation))
 	}
 	return nil
 }
@@ -178,7 +188,7 @@ func (p *GLEIFPlugin) resolveEntity(ctx context.Context, name string) (*leiRecor
 	}
 
 	for i, lei := range leis {
-		record, err := p.getRecord(ctx, lei)
+		record, _, err := p.getRecord(ctx, lei)
 		if err != nil {
 			log.Printf("[gleif] candidate %s failed: %v", lei, err)
 			continue
@@ -232,19 +242,23 @@ func (p *GLEIFPlugin) fuzzyResolve(ctx context.Context, name string) ([]string, 
 	return strutil.Unique(leis), nil
 }
 
-func (p *GLEIFPlugin) getRecord(ctx context.Context, lei string) (*leiRecord, error) {
+func (p *GLEIFPlugin) getRecord(ctx context.Context, lei string) (*leiRecord, map[string]any, error) {
 	u := fmt.Sprintf("%s/lei-records/%s", p.gleifBase(), url.PathEscape(lei))
 	body, err := p.client.GetWithHeaders(ctx, u, gleifHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("gleif: get record %s: %w", lei, err)
+		return nil, nil, fmt.Errorf("gleif: get record %s: %w", lei, err)
 	}
 	var resp struct {
 		Data leiRecord `json:"data"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("gleif: get record parse: %w", err)
+		return nil, nil, fmt.Errorf("gleif: get record parse: %w", err)
 	}
-	return &resp.Data, nil
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, nil, fmt.Errorf("gleif: preserve record response: %w", err)
+	}
+	return &resp.Data, raw, nil
 }
 
 func (p *GLEIFPlugin) getDirectParent(ctx context.Context, lei string) (string, error) {
@@ -299,6 +313,48 @@ func (p *GLEIFPlugin) getChildren(ctx context.Context, lei string) ([]leiRecord,
 	return all, nil
 }
 
+func (p *GLEIFPlugin) getRegistrationAuthority(ctx context.Context, authorityID string) map[string]any {
+	if authorityID == "" {
+		return nil
+	}
+
+	if cached, ok := p.registrationAuthorityCache[authorityID]; ok {
+		return cached
+	}
+
+	u := fmt.Sprintf("%s/registration-authorities/%s", p.gleifBase(), url.PathEscape(authorityID))
+	response, err := p.getJSONResponse(ctx, u)
+	if err != nil {
+		log.Printf("[gleif] registration authority failed for %s: %v", authorityID, err)
+		return nil
+	}
+
+	p.registrationAuthorityCache[authorityID] = response
+	return response
+}
+
+func (p *GLEIFPlugin) getISINs(ctx context.Context, lei string) map[string]any {
+	u := fmt.Sprintf("%s/lei-records/%s/isins", p.gleifBase(), url.PathEscape(lei))
+	response, err := p.getJSONResponse(ctx, u)
+	if err != nil {
+		log.Printf("[gleif] ISIN lookup failed for %s: %v", lei, err)
+		return nil
+	}
+	return response
+}
+
+func (p *GLEIFPlugin) getJSONResponse(ctx context.Context, endpoint string) (map[string]any, error) {
+	body, err := p.client.GetWithHeaders(ctx, endpoint, gleifHeaders)
+	if err != nil {
+		return nil, err
+	}
+	var response map[string]any
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // hasParent reports whether the record has a registered direct parent LEI.
@@ -309,19 +365,32 @@ func hasParent(record *leiRecord) bool {
 
 // recordToPreseed converts a GLEIF LEI record to a FindingPreseed with
 // decomposed confidence signals. Reads enrichment state from p.
-func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins.Finding {
+func (p *GLEIFPlugin) recordToPreseed(ctx context.Context, record leiRecord, rawRecord map[string]any, relation string) plugins.Finding {
 	name := record.Attributes.Entity.LegalName.Name
+	authority := p.getRegistrationAuthority(ctx, record.Attributes.Registration.RegisteredAt.ID)
+	isins := p.getISINs(ctx, record.ID)
 	f := plugins.Finding{
 		Type:   plugins.FindingPreseed,
 		Value:  name,
 		Source: "gleif",
 		Data: map[string]any{
-			"preseed_type":           "whois+company",
+			"preseed_type":           "legal-entity",
 			"preseed_title":          name,
 			"lei":                    record.ID,
 			"jurisdiction":           record.Attributes.Entity.Jurisdiction,
 			"corporate_relationship": relation,
 			"corporate_parent":       p.primaryName,
+			"gleif": map[string]any{
+				"recordUrl":    fmt.Sprintf("https://search.gleif.org/#/record/%s", record.ID),
+				"relationship": relation,
+				"sourceEntity": map[string]string{
+					"lei":       p.primaryLEI,
+					"legalName": p.primaryName,
+				},
+				"record":                rawRecord,
+				"registrationAuthority": authority,
+				"isins":                 isins,
+			},
 		},
 	}
 
@@ -365,7 +434,16 @@ type leiRecord struct {
 }
 
 type leiAttributes struct {
-	Entity leiEntity `json:"entity"`
+	Entity       leiEntity       `json:"entity"`
+	Registration leiRegistration `json:"registration"`
+}
+
+type leiRegistration struct {
+	RegisteredAt leiRegisteredAt `json:"registeredAt"`
+}
+
+type leiRegisteredAt struct {
+	ID string `json:"id"`
 }
 
 type leiEntity struct {
