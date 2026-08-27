@@ -117,7 +117,12 @@ func OrgSimilarity(a, b string) float64 {
 // share the "inc" token and inflate the score on a legally meaningless match.
 // It returns the kept tokens directly so callers can feed them to
 // JaccardTokenSets and TokenSetContained without re-tokenizing.
+// Dotted acronym runs are collapsed before tokenizing so that punctuated legal
+// suffixes ("L.L.C.", "S.A") reach the suffix lookup as one token (ENG-5393).
 func normalizeOrgTokens(s string) []string {
+	s = dottedAcronymPattern.ReplaceAllStringFunc(s, func(run string) string {
+		return strings.ReplaceAll(run, ".", "")
+	})
 	tokens := strutil.Tokenize(s)
 	kept := make([]string, 0, len(tokens))
 	for _, t := range tokens {
@@ -127,6 +132,41 @@ func normalizeOrgTokens(s string) []string {
 	}
 	return kept
 }
+
+// dottedAcronymPattern matches a dotted acronym run — one or more
+// single-letter-plus-period pairs closed by a further letter (L.L.C, U.S, S.A)
+// — which normalizeOrgTokens collapses to the bare letters before tokenizing.
+//
+// The collapse must happen before tokenization because strutil.Tokenize splits
+// on every non-alphanumeric character: "L.L.C." reaches the legal-suffix lookup
+// as ["l","l","c"], never matching the "llc" entry. The suffix is therefore
+// never stripped, and the three retained single-letter tokens are left behind as
+// private tokens on one side only — which both depresses the Jaccard score and
+// defeats the TokenSetContained guard, so a merely less-specific pivot reads as
+// an affirmative "mismatch". Collapsing first lets "llc"/"sa" reach the lookup
+// as one token.
+//
+// The rule is deliberately restricted to dotted acronym runs rather than
+// stripping every period. A blanket strip merges tokens across a period that was
+// acting as a separator: "Acme.Corp" would normalize to "acmecorp" and "acme.com"
+// to "acmecom", so "corp" would never reach the suffix list at all.
+//
+// The trailing "[a-z]\b" is what bounds the run at its right edge, and it earns
+// its place three times over. It forces the match to END on a letter that ends a
+// word, so "U.S.Army" collapses only the "U.S" and leaves ".Army" for Tokenize
+// to split into a second token rather than merging into "usarmy". It leaves a
+// letter glued to a following word alone, so "J.Crew" keeps two tokens: "C" is
+// followed by more letters, so there is no word boundary to close on and no
+// second letter-period pair to consume. It likewise leaves a lone initial alone,
+// so "John Q. Public" keeps its "q" token. And because the closing letter needs
+// no period of its own, a two-letter suffix written without a trailing dot
+// ("Globex S.A") still collapses — that spelling carries only ONE period, so a
+// "{2,}" letter-period quantifier would skip it and leave the suffix unstripped.
+//
+// "U.S." → "us" is an intended and beneficial side-effect: "us" is not in
+// legal_suffixes.txt, so it survives as a content token rather than being
+// stripped, which is precisely what lets "U.S. Steel Corp." match "US Steel".
+var dottedAcronymPattern = regexp.MustCompile(`(?i)\b(?:[a-z]\.)+[a-z]\b`)
 
 func RootDomain(hostname string) string {
 	hostname = strings.TrimSpace(hostname)
