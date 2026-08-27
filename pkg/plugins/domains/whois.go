@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -82,35 +83,20 @@ func buildWhoisResultFinding(r whois.DomainResult, pivotOrg string) plugins.Find
 
 const confWhoisServerRecord = 85
 
+type preseedCandidate struct {
+	field string
+	role  string
+	value string
+}
+
 func extractPreseeds(r whois.DomainResult) []plugins.Finding {
-	type candidate struct {
-		field, role, value string
+	var candidates []preseedCandidate
+	for _, contact := range r.AllContacts() {
+		candidates = append(candidates, contactPreseedCandidates(contact)...)
 	}
 
-	roles := [4]string{"registrant", "administrative", "technical", "billing"}
-	contacts := r.AllContacts()
-
-	// Collect all valid candidates, then dedupe by {field, value}.
-	var all []candidate
-	for i, c := range contacts {
-		for _, cd := range []candidate{
-			{"company", roles[i], c.Organization},
-			{"name", roles[i], c.Name},
-			{"email", roles[i], c.Email},
-		} {
-			if cd.value == "" || whois.IsPrivacy(cd.value) {
-				continue
-			}
-			if cd.field == "email" && !whois.IsEmail(cd.value) {
-				continue
-			}
-			all = append(all, cd)
-		}
-	}
-
-	// Dedupe: keep first occurrence per {field, value} (preserves the
-	// highest-priority role since contacts are ordered registrant-first).
-	unique := strutil.UniqueFunc(all, func(c candidate) [2]string {
+	// Keep the highest-priority role for each field and value.
+	unique := strutil.UniqueFunc(candidates, func(c preseedCandidate) [2]string {
 		return [2]string{c.field, c.value}
 	})
 
@@ -139,4 +125,16 @@ func extractPreseeds(r whois.DomainResult) []plugins.Finding {
 		findings = append(findings, f)
 	}
 	return findings
+}
+
+func contactPreseedCandidates(contact whois.DomainContact) []preseedCandidate {
+	candidates := []preseedCandidate{
+		{field: "company", role: contact.Role, value: contact.Organization},
+		{field: "name", role: contact.Role, value: contact.Name},
+		{field: "email", role: contact.Role, value: contact.Email},
+	}
+	return slices.DeleteFunc(candidates, func(candidate preseedCandidate) bool {
+		return candidate.value == "" || candidate.value == whois.PrivacyRedaction ||
+			(candidate.field == "email" && !whois.IsEmail(candidate.value))
+	})
 }

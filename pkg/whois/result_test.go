@@ -50,6 +50,22 @@ func TestResult_Clean(t *testing.T) {
 	}, result)
 }
 
+func TestDomainResult_AllContactsIncludesRoles(t *testing.T) {
+	result := DomainResult{
+		Registrant: Contact{Name: "Registrant"},
+		Admin:      Contact{Name: "Administrator"},
+		Tech:       Contact{Name: "Technical"},
+		Billing:    Contact{Name: "Billing"},
+	}
+
+	assert.Equal(t, [4]DomainContact{
+		{Role: "registrant", Contact: result.Registrant},
+		{Role: "administrative", Contact: result.Admin},
+		{Role: "technical", Contact: result.Tech},
+		{Role: "billing", Contact: result.Billing},
+	}, result.AllContacts())
+}
+
 func TestResult_CleanAllowsProviderFallback(t *testing.T) {
 	primary := DomainResult{
 		Registrar:   " ",

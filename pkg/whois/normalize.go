@@ -28,10 +28,9 @@ func RegistrantOrg(c Contact, domain string) string {
 }
 
 func preferredContactEmail(r DomainResult) (email, role string) {
-	roles := [...]string{"registrant", "administrative", "technical", "billing"}
-	for i, contact := range r.AllContacts() {
+	for _, contact := range r.AllContacts() {
 		if IsEmail(contact.Email) && contact.Email != PrivacyRedaction {
-			return contact.Email, roles[i]
+			return contact.Email, contact.Role
 		}
 	}
 	return PrivacyRedaction, "registrant"

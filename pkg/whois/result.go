@@ -26,8 +26,19 @@ type DomainResult struct {
 	ContactEmailRole   string   `json:"contact_email_role,omitempty"`
 }
 
-func (r *DomainResult) AllContacts() [4]Contact {
-	return [4]Contact{r.Registrant, r.Admin, r.Tech, r.Billing}
+func (r *DomainResult) AllContacts() [4]DomainContact {
+	return [4]DomainContact{
+		{Role: "registrant", Contact: r.Registrant},
+		{Role: "administrative", Contact: r.Admin},
+		{Role: "technical", Contact: r.Tech},
+		{Role: "billing", Contact: r.Billing},
+	}
+}
+
+// DomainContact identifies a domain registration contact's role.
+type DomainContact struct {
+	Role string
+	Contact
 }
 
 // Reports whether the record has enough information to be considered complete.

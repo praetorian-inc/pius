@@ -21,6 +21,7 @@ func TestExtractPreseeds_DropsMonikerPrivacyServices(t *testing.T) {
 		Tech:       contact,
 		Billing:    contact,
 	}
+	r.Normalize()
 
 	assert.Empty(t, extractPreseeds(r))
 }
