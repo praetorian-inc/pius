@@ -86,8 +86,20 @@ func TestSanitizeURL_EdgeCases(t *testing.T) {
 		{
 			name:     "case sensitivity - KEY vs key",
 			input:    "https://api.example.com/search?KEY=UPPERCASE_SECRET&query=test",
-			// KEY (uppercase) is NOT in our list, so should be preserved
-			contains: []string{"KEY=UPPERCASE_SECRET", "query=test"},
+			contains: []string{"REDACTED", "query=test"},
+			excludes: []string{"UPPERCASE_SECRET"},
+		},
+		{
+			name:     "case sensitivity - camelCase apiKey",
+			input:    "https://api.whoisfreaks.com/v1.0/whois?apiKey=CAMEL_SECRET&domainName=example.com",
+			contains: []string{"REDACTED", "domainName=example.com"},
+			excludes: []string{"CAMEL_SECRET"},
+		},
+		{
+			name:     "case sensitivity - mixed case Access_Token",
+			input:    "https://api.example.com/data?Access_Token=MIXED_SECRET&format=json",
+			contains: []string{"REDACTED", "format=json"},
+			excludes: []string{"MIXED_SECRET"},
 		},
 		{
 			name:     "invalid URL returns marker",
