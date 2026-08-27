@@ -76,7 +76,7 @@ func unkeyed(name string) *fakeWHOISClient {
 
 // withCommercialLookups makes the free lookups silent and assigns the supplied
 // lookups to Whoxy, WhoisFreaks, and WhoisXML, in that fixed order.
-func withCommercialLookups(lookups ...WHOISDomainOnlyClient) *Domain {
+func withCommercialLookups(lookups ...WHOISDomainOnlyClient) *WHOIS {
 	commercial := []WHOISDomainOnlyClient{
 		silent(ProviderWhoxy),
 		silent(ProviderWhoisFreaks),
@@ -399,7 +399,7 @@ func TestLookupUsesFixedOrder(t *testing.T) {
 
 func TestNewAcceptsInformalOptions(t *testing.T) {
 	rdap := silent(SourceRDAP)
-	w := New(func(w *Domain) {
+	w := New(func(w *WHOIS) {
 		w.RDAPClient = rdap
 	})
 

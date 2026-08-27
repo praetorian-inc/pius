@@ -20,11 +20,11 @@ type WHOISClient interface {
 	LookupNetwork(ctx context.Context, query string) (NetworkResult, error)
 }
 
-// Domain is a configured sequence of Domain lookups. Lookup consults each named
+// WHOIS is a configured sequence of WHOIS lookups. Lookup consults each named
 // source in this fixed order: RDAP, TCP-43, Whoxy, WhoisFreaks, then WhoisXML.
 // Naming every source makes both the order and the cost of an incomplete lookup
 // explicit.
-type Domain struct {
+type WHOIS struct {
 	RDAPClient        WHOISClient
 	TCP43Client       WHOISClient
 	WhoxyClient       WHOISDomainOnlyClient
@@ -36,13 +36,13 @@ type Domain struct {
 }
 
 // Option configures WHOIS lookups.
-type Option = func(*Domain)
+type Option = func(*WHOIS)
 
 // New builds the WHOIS sequence, filling each lookup the caller left unset
 // with its default implementation. Callers may pass ad hoc configuration
 // functions when direct field assignment is not convenient.
-func New(opts ...Option) *Domain {
-	w := &Domain{}
+func New(opts ...Option) *WHOIS {
+	w := &WHOIS{}
 	for _, o := range opts {
 		o(w)
 	}
@@ -67,7 +67,7 @@ func New(opts ...Option) *Domain {
 
 // WithHTTPClient sets the HTTP client used by the HTTP-based lookups.
 func WithHTTPClient(c *http.Client) Option {
-	return func(w *Domain) { w.httpClient = c }
+	return func(w *WHOIS) { w.httpClient = c }
 }
 
 // ErrNoCredential reports that a provider has no API key configured, so it
@@ -97,17 +97,9 @@ const (
 // registry has nothing to give anyone" are the same event under a binary flag,
 // and telling them apart is the whole point of measuring.
 const (
-	// outcomeFound means the provider returned a definitive answer — either a
-	// record carrying registration data, or a credible "not registered"
-	// verdict. Both ended the question.
 	outcomeFound = "found"
-	// outcomeEmpty means the provider acknowledged the query and held no
-	// record. Common under GDPR redaction, and not a provider defect.
 	outcomeEmpty = "empty"
-	// outcomeError means the request, the response or the parse failed.
 	outcomeError = "error"
-	// outcomeSkipped means no credential was configured, so no request was
-	// sent — the one failure mode that costs nothing.
 	outcomeSkipped = "skipped"
 )
 

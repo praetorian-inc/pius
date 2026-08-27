@@ -147,7 +147,7 @@ type networkLookupState struct {
 
 // LookupNetwork resolves an IP or CIDR through the configured RDAP and TCP-43
 // network clients.
-func (w *Domain) LookupNetwork(ctx context.Context, query string) (NetworkResult, error) {
+func (w *WHOIS) LookupNetwork(ctx context.Context, query string) (NetworkResult, error) {
 	target, err := parseNetworkTarget(query)
 	if err != nil {
 		return NetworkResult{}, err
@@ -165,7 +165,7 @@ func (w *Domain) LookupNetwork(ctx context.Context, query string) (NetworkResult
 
 // doNetworkLookup runs one network leg, validates its allocation and merges it
 // into state. A useful RDAP identity ends the cascade before TCP-43 is needed.
-func (w *Domain) doNetworkLookup(ctx context.Context, client WHOISClient, state *networkLookupState) (stop bool) {
+func (w *WHOIS) doNetworkLookup(ctx context.Context, client WHOISClient, state *networkLookupState) (stop bool) {
 	if err := ctx.Err(); err != nil {
 		state.errs = append(state.errs, err)
 		return true

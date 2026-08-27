@@ -210,7 +210,7 @@ func validNetworkResult(source string, contacts ...NetworkContact) NetworkResult
 	}
 }
 
-func networkWHOIS(rdapClient, tcp43Client WHOISClient) *Domain {
+func networkWHOIS(rdapClient, tcp43Client WHOISClient) *WHOIS {
 	w := New()
 	w.RDAPClient = rdapClient
 	w.TCP43Client = tcp43Client

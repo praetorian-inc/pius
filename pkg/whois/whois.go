@@ -24,7 +24,7 @@ type lookupState struct {
 // LookupDomain resolves domain registration data by walking w's configured cascade
 // and merging each leg's answer into a single record, stopping as soon as the
 // record is complete.
-func (w *Domain) LookupDomain(ctx context.Context, domain string) (Result, error) {
+func (w *WHOIS) LookupDomain(ctx context.Context, domain string) (Result, error) {
 	domain = RootDomain(domain)
 	if domain == "" {
 		return Result{}, fmt.Errorf("whois: no registrable domain")
@@ -32,29 +32,29 @@ func (w *Domain) LookupDomain(ctx context.Context, domain string) (Result, error
 
 	state := lookupState{}
 
-	if w.doLookup(ctx, domain, w.RDAPClient, &state) {
+	if w.doDomainLookup(ctx, domain, w.RDAPClient, &state) {
 		return state.finish(domain)
 	}
-	if w.doLookup(ctx, domain, w.TCP43Client, &state) {
+	if w.doDomainLookup(ctx, domain, w.TCP43Client, &state) {
 		return state.finish(domain)
 	}
-	if w.doLookup(ctx, domain, w.WhoxyClient, &state) {
+	if w.doDomainLookup(ctx, domain, w.WhoxyClient, &state) {
 		return state.finish(domain)
 	}
-	if w.doLookup(ctx, domain, w.WhoisFreaksClient, &state) {
+	if w.doDomainLookup(ctx, domain, w.WhoisFreaksClient, &state) {
 		return state.finish(domain)
 	}
-	if w.doLookup(ctx, domain, w.WhoisXMLClient, &state) {
+	if w.doDomainLookup(ctx, domain, w.WhoisXMLClient, &state) {
 		return state.finish(domain)
 	}
 
 	return state.finish(domain)
 }
 
-// doLookup runs one leg and folds its answer into state, reporting whether the
+// doDomainLookup runs one leg and folds its answer into state, reporting whether the
 // cascade should stop. Scrub-then-merge-then-check is order-sensitive, so the
 // operation is kept in one method rather than repeated for each kind of leg.
-func (w *Domain) doLookup(ctx context.Context, domain string, r WHOISDomainOnlyClient, state *lookupState) (stop bool) {
+func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomainOnlyClient, state *lookupState) (stop bool) {
 	if err := ctx.Err(); err != nil {
 		state.errs = append(state.errs, err)
 		return true
