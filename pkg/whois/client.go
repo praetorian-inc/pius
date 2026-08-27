@@ -31,7 +31,6 @@ type WHOIS struct {
 	WhoisFreaksClient WHOISDomainOnlyClient
 	WhoisXMLClient    WHOISDomainOnlyClient
 
-	// These fields build whichever default lookups the caller did not supply.
 	httpClient        *http.Client
 	whoxyAPIKey       string
 	whoisXMLAPIKey    string
