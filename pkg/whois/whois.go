@@ -16,7 +16,6 @@ import (
 type lookupState struct {
 	result       DomainResult
 	errs         []error
-	resolved     bool
 	unregistered bool
 }
 
@@ -51,8 +50,8 @@ func (w *WHOIS) LookupDomain(ctx context.Context, domain string) (DomainResult, 
 }
 
 // doDomainLookup runs one leg and folds its answer into state, reporting whether the
-// cascade should stop. Normalize-then-check-then-merge is order-sensitive, so the
-// operation is kept in one method rather than repeated for each kind of leg.
+// cascade should stop. Normalization, logging, merging, and completion remain ordered
+// here rather than repeated for each provider.
 func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomainOnlyClient, state *lookupState) (stop bool) {
 	if err := ctx.Err(); err != nil {
 		state.errs = append(state.errs, err)
@@ -83,21 +82,15 @@ func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomain
 	}
 
 	if res.Unregistered {
-		if !state.resolved {
+		if !state.result.hasRegistrationData() {
 			state.unregistered = true
 			return true
 		}
 		return false
 	}
 
-	if !res.hasSubstance() {
-		return false
-	}
-
 	state.result.Merge(res)
 	state.result.Domain = domain
-	state.resolved = true
-
 	return state.result.isComplete()
 }
 
@@ -125,7 +118,7 @@ func (state *lookupState) finish(domain string) (DomainResult, error) {
 	// Success requires that some lookup actually contributed data. A sequence
 	// where every lookup either failed or held nothing is a failed lookup, not a
 	// record that happens to be empty.
-	if !state.resolved {
+	if !state.result.hasRegistrationData() {
 		if joined := errors.Join(state.errs...); joined != nil {
 			return DomainResult{}, fmt.Errorf("whois: all methods failed for %s: %w", domain, joined)
 		}

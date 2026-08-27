@@ -154,7 +154,7 @@ func TestCascade_StopsWhenComplete(t *testing.T) {
 	assert.Zero(t, third.calls)
 }
 
-func TestCascade_ContinuesWhenRegistrantDataIsPrivate(t *testing.T) {
+func TestCascade_LeavesUnavailableRegistrantDataEmpty(t *testing.T) {
 	result := completeResult(ProviderWhoxy)
 	result.Registrant = Contact{}
 	first := &fakeWHOISClient{name: ProviderWhoxy, result: result}
@@ -163,8 +163,8 @@ func TestCascade_ContinuesWhenRegistrantDataIsPrivate(t *testing.T) {
 	res, err := withCommercialLookups(first, second).LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
-	assert.Equal(t, PrivacyRedaction, res.RegistrantIdentity)
-	assert.Equal(t, PrivacyRedaction, res.ContactEmail)
+	assert.Empty(t, res.RegistrantIdentity)
+	assert.Empty(t, res.ContactEmail)
 	assert.Equal(t, 1, first.calls)
 	assert.Equal(t, 1, second.calls, "privacy keeps the cascade searching for public registrant data")
 }

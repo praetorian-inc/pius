@@ -48,8 +48,8 @@ func (r *DomainResult) isComplete() bool {
 		isNotEmptyOrPrivate(r.Registrar)
 }
 
-// hasSubstance distinguishes a partial registration record from an empty response.
-func (r *DomainResult) hasSubstance() bool {
+// hasRegistrationData distinguishes a partial registration record from an empty response.
+func (r *DomainResult) hasRegistrationData() bool {
 	if r.Registrar != "" ||
 		r.Created != "" || r.Updated != "" || r.Expiration != "" ||
 		r.WhoisServer != "" || r.DNSSEC != "" ||

@@ -115,7 +115,7 @@ func logLookup(name, domain string, started time.Time, result DomainResult, err 
 	case result.Unregistered:
 		// A definitive not-registered verdict answered the question.
 		outcome = outcomeFound
-	case !result.hasSubstance():
+	case !result.hasRegistrationData():
 		outcome = outcomeEmpty
 	}
 

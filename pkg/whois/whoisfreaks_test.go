@@ -263,6 +263,7 @@ func TestWhoisFreaksLookup_PrivacyRedacted(t *testing.T) {
 	result, err := NewWhoisFreaksClient(srv.Client(), "").LookupDomain(context.Background(), "private-domain.com")
 
 	require.NoError(t, err)
+	result.Normalize()
 
 	for _, contact := range result.AllContacts() {
 		assert.Equal(t, PrivacyRedaction, contact.Organization)
@@ -276,8 +277,8 @@ func TestWhoisFreaksLookup_PrivacyRedacted(t *testing.T) {
 		assert.Equal(t, PrivacyRedaction, contact.Phone)
 	}
 	assert.Equal(t, PrivacyRedaction, result.RegistrantIdentity)
-	assert.Equal(t, PrivacyRedaction, result.ContactEmail)
-	assert.Equal(t, "registrant", result.ContactEmailRole)
+	assert.Empty(t, result.ContactEmail)
+	assert.Empty(t, result.ContactEmailRole)
 
 	// Non-contact fields remain populated.
 	assert.Equal(t, "Privacy Registrar LLC", result.Registrar)

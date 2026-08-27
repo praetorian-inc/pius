@@ -83,7 +83,6 @@ func TestNetworkResult_Normalize(t *testing.T) {
 			},
 			{
 				Roles:  []string{"customer"},
-				Status: []string{},
 				Kind:   "org",
 				Direct: true,
 				Contact: Contact{

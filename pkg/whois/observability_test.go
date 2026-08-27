@@ -140,6 +140,8 @@ func TestResolvers_EmitOneRecordEachThroughLookup(t *testing.T) {
 	}
 
 	assert.Equal(t, map[string]string{
+		SourceRDAP:          outcomeEmpty,
+		SourceTCP43:         outcomeEmpty,
 		ProviderWhoxy:       outcomeEmpty,
 		ProviderWhoisFreaks: outcomeError,
 		ProviderWhoisXML:    outcomeSkipped,

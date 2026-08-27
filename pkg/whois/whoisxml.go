@@ -196,7 +196,7 @@ func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (resul
 	// carries the actual record, so testing dataError first would throw away a
 	// usable answer — and worse, report a live domain as unregistered.
 	result.Normalize()
-	if result.hasSubstance() {
+	if result.hasRegistrationData() {
 		return result, nil
 	}
 
