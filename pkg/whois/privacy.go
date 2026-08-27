@@ -1,6 +1,8 @@
 package whois
 
 import (
+	"cmp"
+	"slices"
 	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/lib/strutil"
@@ -60,34 +62,31 @@ func IsPrivacy(value string) bool {
 	return hasMarkerToken(lower)
 }
 
-// NormalizePrivacy maps a raw WHOIS field value: empty stays empty, privacy
-// values collapse to PrivacyRedaction, real values pass through unchanged.
-func NormalizePrivacy(value string) string {
-	if value == "" {
-		return ""
-	}
-	if IsPrivacy(value) {
+func normalizePrivacy(v string) string {
+	v = strings.TrimSpace(v)
+	if IsPrivacy(v) {
 		return PrivacyRedaction
 	}
-	return value
+	return v
+}
+
+func preferNonPrivacy(base, other string) string {
+	if base == PrivacyRedaction {
+		return cmp.Or(other, base)
+	}
+	return cmp.Or(base, other)
 }
 
 func matchesPrefix(lower string) bool {
-	for _, prefix := range data.NoisyPrefixes {
-		if strings.HasPrefix(lower, prefix) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(data.NoisyPrefixes, func(prefix string) bool {
+		return strings.HasPrefix(lower, prefix)
+	})
 }
 
 func matchesSuffix(lower string) bool {
-	for _, suffix := range data.NoisySuffixes {
-		if strings.HasSuffix(lower, suffix) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(data.NoisySuffixes, func(suffix string) bool {
+		return strings.HasSuffix(lower, suffix)
+	})
 }
 
 func hasMarkerToken(lower string) bool {
@@ -104,4 +103,14 @@ func hasMarkerToken(lower string) bool {
 		}
 	}
 	return false
+}
+
+func trimStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
 }

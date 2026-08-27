@@ -56,9 +56,3 @@ func TestIsPrivacy(t *testing.T) {
 		})
 	}
 }
-
-func TestNormalizePrivacy(t *testing.T) {
-	assert.Equal(t, "", NormalizePrivacy(""))
-	assert.Equal(t, PrivacyRedaction, NormalizePrivacy("REDACTED FOR PRIVACY"))
-	assert.Equal(t, "Acme Corporation", NormalizePrivacy("Acme Corporation"))
-}

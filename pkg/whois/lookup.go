@@ -12,7 +12,7 @@ import (
 	"github.com/openrdap/rdap"
 )
 
-// Option configures a Lookup call.
+// Option configures a registration lookup.
 type Option func(*config)
 
 type config struct {
@@ -24,7 +24,7 @@ func WithHTTPClient(c *http.Client) Option {
 	return func(cfg *config) { cfg.httpClient = c }
 }
 
-// Lookup resolves domain registration data by trying RDAP first (structured,
+// LookupDomain resolves domain registration data by trying RDAP first (structured,
 // standardized dates) then TCP-43 (better email coverage, raw text), and
 // merging the best fields from each source.
 //
@@ -32,7 +32,7 @@ func WithHTTPClient(c *http.Client) Option {
 // unregistered. RDAP provides clean metadata but rarely has email (GDPR),
 // while TCP-43 has email but fragile referral chains. The merge gives callers
 // the best of both.
-func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) {
+func LookupDomain(ctx context.Context, domain string, opts ...Option) (DomainResult, error) {
 	cfg := config{}
 	for _, o := range opts {
 		o(&cfg)
@@ -40,20 +40,20 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 
 	domain = RootDomain(domain)
 	if domain == "" {
-		return Result{}, fmt.Errorf("whois: no registrable domain")
+		return DomainResult{}, fmt.Errorf("whois: no registrable domain")
 	}
 
-	rdapResult, rdapErr := rdapLookup(ctx, cfg.httpClient, domain)
+	rdapResult, rdapErr := rdapDomainLookup(ctx, cfg.httpClient, domain)
 	if rdapErr != nil && isDomainNotFound(rdapErr) {
-		return Result{Domain: domain, Unregistered: true}, nil
+		return DomainResult{Domain: domain, Unregistered: true}, nil
 	}
 	if rdapErr != nil {
 		slog.Debug("RDAP lookup failed, will rely on TCP-43", "domain", domain, "error", rdapErr)
 	}
 
-	tcp43Result, tcp43Raw, tcp43Err := tcp43Lookup(ctx, domain)
+	tcp43Result, tcp43Err := tcp43DomainLookup(ctx, domain)
 	if tcp43Err != nil && isDomainNotFound(tcp43Err) {
-		return Result{Domain: domain, Unregistered: true}, nil
+		return DomainResult{Domain: domain, Unregistered: true}, nil
 	}
 	if tcp43Err != nil {
 		slog.Debug("TCP-43 lookup failed", "domain", domain, "error", tcp43Err)
@@ -62,18 +62,20 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 	if rdapErr != nil && tcp43Err != nil {
 		slog.Error("RDAP error", "err", rdapErr)
 		slog.Error("TCP43 error", "err", tcp43Err)
-		return Result{}, fmt.Errorf("whois: all methods failed for %s", domain)
+		return DomainResult{}, fmt.Errorf("whois: all methods failed for %s", domain)
 	}
 
-	result := mergeResults(domain, rdapResult, rdapErr, tcp43Result, tcp43Err)
-	applyISOCILFallback(&result, tcp43Raw)
-	result.ScrubContacts()
-	return result, nil
+	return mergeDomainResults(rdapResult, rdapErr, tcp43Result, tcp43Err), nil
 }
 
-// mergeResults combines the best fields from RDAP and TCP-43 results.
+// mergeDomainResults combines the best fields from RDAP and TCP-43 results.
 // RDAP wins for structured metadata; TCP-43 fills gaps (email, raw text).
-func mergeResults(domain string, rdapR Result, rdapErr error, tcp43R Result, tcp43Err error) Result {
+func mergeDomainResults(
+	rdapR DomainResult,
+	rdapErr error,
+	tcp43R DomainResult,
+	tcp43Err error,
+) DomainResult {
 	if rdapErr != nil {
 		tcp43R.Sources = []string{"whois"}
 		return tcp43R
@@ -87,7 +89,6 @@ func mergeResults(domain string, rdapR Result, rdapErr error, tcp43R Result, tcp
 	rdapR.Sources = []string{"rdap"}
 	tcp43R.Sources = []string{"whois"}
 	rdapR.Merge(tcp43R)
-	rdapR.Domain = domain
 	return rdapR
 }
 

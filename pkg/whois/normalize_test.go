@@ -123,45 +123,50 @@ func TestOrgSimilarity(t *testing.T) {
 	assert.InDelta(t, 0.0, OrgSimilarity("Co., Ltd.", "Acme Corp"), 0.01)
 }
 
-func TestRegistrantOrg(t *testing.T) {
-	// Normal: org field present.
-	c := Contact{Organization: "Acme Corp", Name: "Domain Admin"}
-	assert.Equal(t, "Acme Corp", RegistrantOrg(c, "example.com"))
-
-	// ccTLD name promotion: .cn puts holder in the Name field.
-	c2 := Contact{Name: "Acme Holdings Ltd."}
-	assert.Equal(t, "Acme Holdings Ltd.", RegistrantOrg(c2, "acme.cn"))
-
-	// No org, no name promotion for .com.
-	c3 := Contact{Name: "John Smith"}
-	assert.Equal(t, "", RegistrantOrg(c3, "example.com"))
+func TestCleanRegistryArtifact(t *testing.T) {
+	assert.Equal(t, "Acme Corp", cleanRegistryArtifact(
+		Contact{Organization: "Acme Corp", Name: "Domain Admin"},
+		"example.com",
+	))
+	assert.Empty(t, cleanRegistryArtifact(Contact{Organization: "DIDEP2435-002435"}, "example.se"))
 }
 
-func TestContactEmail(t *testing.T) {
-	r := Result{
-		Registrant: Contact{Email: "admin@example.com"},
-		Admin:      Contact{Email: "tech@example.com"},
+func TestRegistrantIdentity(t *testing.T) {
+	tests := []struct {
+		name    string
+		contact Contact
+		want    string
+	}{
+		{
+			name:    "prefers organization",
+			contact: Contact{Organization: "Acme Corp", Name: "Domain Admin"},
+			want:    "Acme Corp",
+		},
+		{
+			name:    "falls back to name",
+			contact: Contact{Name: "John Smith"},
+			want:    "John Smith",
+		},
+		{
+			name: "prefers real name over private organization",
+			contact: Contact{
+				Organization: PrivacyRedaction,
+				Name:         "John Smith",
+			},
+			want: "John Smith",
+		},
+		{
+			name:    "preserves privacy",
+			contact: Contact{Organization: PrivacyRedaction},
+			want:    PrivacyRedaction,
+		},
 	}
-	email, proxy := ContactEmail(r)
-	assert.Equal(t, "admin@example.com", email)
-	assert.False(t, proxy)
 
-	// Privacy email in registrant, real in admin.
-	r2 := Result{
-		Registrant: Contact{Email: "proxy@withheldforprivacy.com"},
-		Admin:      Contact{Email: "real@example.com"},
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.want, registrantIdentity(test.contact))
+		})
 	}
-	email2, proxy2 := ContactEmail(r2)
-	assert.Equal(t, "real@example.com", email2)
-	assert.True(t, proxy2)
-
-	// All privacy.
-	r3 := Result{
-		Registrant: Contact{Email: "proxy@withheldforprivacy.com"},
-	}
-	email3, proxy3 := ContactEmail(r3)
-	assert.Equal(t, "", email3)
-	assert.True(t, proxy3)
 }
 
 func TestIsPlausibleDomain(t *testing.T) {
@@ -175,7 +180,7 @@ func TestIsPlausibleDomain(t *testing.T) {
 }
 
 func TestNormalizeRegistrar(t *testing.T) {
-	assert.Equal(t, "Example Registrar Ltd.", NormalizeRegistrar("Example Registrar Ltd."))
-	assert.Equal(t, "NOMINET", NormalizeRegistrar("Some Registrar [Tag = NOMINET]"))
-	assert.Equal(t, "Bare", NormalizeRegistrar("Bare [Tag = ]"))
+	assert.Equal(t, "Example Registrar Ltd.", normalizeRegistrar("Example Registrar Ltd."))
+	assert.Equal(t, "NOMINET", normalizeRegistrar("Some Registrar [Tag = NOMINET]"))
+	assert.Equal(t, "Bare", normalizeRegistrar("Bare [Tag = ]"))
 }

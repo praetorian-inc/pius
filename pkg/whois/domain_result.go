@@ -1,0 +1,135 @@
+// Package whois provides domain and IP registration lookups via RDAP and TCP port 43.
+package whois
+
+import (
+	"cmp"
+	"strings"
+)
+
+// DomainResult is the structured registration record for a domain.
+type DomainResult struct {
+	Domain             string   `json:"domain"`
+	Registrar          string   `json:"registrar,omitempty"`
+	Registrant         Contact  `json:"registrant"`
+	Admin              Contact  `json:"admin"`
+	Tech               Contact  `json:"tech"`
+	Billing            Contact  `json:"billing"`
+	Created            string   `json:"created,omitempty"`
+	Updated            string   `json:"updated,omitempty"`
+	Expiration         string   `json:"expiration,omitempty"`
+	NameServers        []string `json:"nameservers,omitempty"`
+	Status             []string `json:"status,omitempty"`
+	DNSSEC             string   `json:"dnssec,omitempty"`
+	WhoisServer        string   `json:"whois_server,omitempty"`
+	Sources            []string `json:"sources,omitempty"`
+	Unregistered       bool     `json:"unregistered,omitempty"`
+	RegistrantIdentity string   `json:"registrant_identity,omitempty"`
+	ContactEmail       string   `json:"contact_email,omitempty"`
+	ContactEmailRole   string   `json:"contact_email_role,omitempty"`
+}
+
+// AllContacts returns the four contact roles in order: registrant, admin, tech, billing.
+func (r DomainResult) AllContacts() [4]Contact {
+	return [4]Contact{r.Registrant, r.Admin, r.Tech, r.Billing}
+}
+
+// Merge combines provider results, replacing privacy placeholders with real
+// fallback data when available.
+func (r *DomainResult) Merge(other DomainResult) {
+	r.Normalize()
+	other.Normalize()
+
+	r.Registrar = cmp.Or(r.Registrar, other.Registrar)
+	r.Created = cmp.Or(r.Created, other.Created)
+	r.Updated = cmp.Or(r.Updated, other.Updated)
+	r.Expiration = cmp.Or(r.Expiration, other.Expiration)
+	r.DNSSEC = cmp.Or(r.DNSSEC, other.DNSSEC)
+	r.WhoisServer = cmp.Or(r.WhoisServer, other.WhoisServer)
+
+	if len(r.NameServers) == 0 {
+		r.NameServers = other.NameServers
+	}
+	if len(r.Status) == 0 {
+		r.Status = other.Status
+	}
+
+	r.Registrant = mergeContact(r.Registrant, other.Registrant)
+	r.Admin = mergeContact(r.Admin, other.Admin)
+	r.Tech = mergeContact(r.Tech, other.Tech)
+	r.Billing = mergeContact(r.Billing, other.Billing)
+
+	r.Sources = append(r.Sources, other.Sources...)
+	r.populateDerivedFields()
+}
+
+// Normalize trims provider data, preserves privacy markers, and refreshes derived fields.
+func (r *DomainResult) Normalize() {
+	r.Domain = strings.TrimSpace(r.Domain)
+	r.Registrar = normalizeRegistrar(r.Registrar)
+	r.Created = strings.TrimSpace(r.Created)
+	r.Updated = strings.TrimSpace(r.Updated)
+	r.Expiration = strings.TrimSpace(r.Expiration)
+	r.DNSSEC = strings.TrimSpace(r.DNSSEC)
+	r.WhoisServer = strings.TrimSpace(r.WhoisServer)
+	r.Status = trimStrings(r.Status)
+	r.NameServers = trimStrings(r.NameServers)
+	r.Sources = trimStrings(r.Sources)
+	r.Registrant = r.Registrant.normalize()
+	r.Admin = r.Admin.normalize()
+	r.Tech = r.Tech.normalize()
+	r.Billing = r.Billing.normalize()
+	r.Registrant.Organization = cleanRegistryArtifact(r.Registrant, r.Domain)
+	r.populateDerivedFields()
+}
+
+func (r *DomainResult) populateDerivedFields() {
+	r.RegistrantIdentity = registrantIdentity(r.Registrant)
+
+	r.ContactEmail, r.ContactEmailRole = preferredContactEmail(*r)
+}
+
+// Contact holds registration contact information.
+type Contact struct {
+	Organization string `json:"organization,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Email        string `json:"email,omitempty"`
+	Country      string `json:"country,omitempty"`
+	Province     string `json:"province,omitempty"`
+	City         string `json:"city,omitempty"`
+	Street       string `json:"street,omitempty"`
+	PostalCode   string `json:"postal_code,omitempty"`
+	Phone        string `json:"phone,omitempty"`
+}
+
+// IsEmpty reports whether the contact has no organization, name, or email.
+func (c Contact) IsEmpty() bool {
+	return c.Organization == "" && c.Name == "" && c.Email == ""
+}
+
+func (c Contact) normalize() Contact {
+	return Contact{
+		Organization: normalizePrivacy(c.Organization),
+		Name:         normalizePrivacy(c.Name),
+		Email:        normalizePrivacy(c.Email),
+		Country:      normalizePrivacy(c.Country),
+		Province:     normalizePrivacy(c.Province),
+		City:         normalizePrivacy(c.City),
+		Street:       normalizePrivacy(c.Street),
+		PostalCode:   normalizePrivacy(c.PostalCode),
+		Phone:        normalizePrivacy(c.Phone),
+	}
+}
+
+func mergeContact(base, other Contact) Contact {
+	return Contact{
+		Organization: preferNonPrivacy(base.Organization, other.Organization),
+		Name:         preferNonPrivacy(base.Name, other.Name),
+		Email:        preferNonPrivacy(base.Email, other.Email),
+		Country:      preferNonPrivacy(base.Country, other.Country),
+		Province:     preferNonPrivacy(base.Province, other.Province),
+		City:         preferNonPrivacy(base.City, other.City),
+		Street:       preferNonPrivacy(base.Street, other.Street),
+		PostalCode:   preferNonPrivacy(base.PostalCode, other.PostalCode),
+		Phone:        preferNonPrivacy(base.Phone, other.Phone),
+	}
+}

@@ -82,7 +82,7 @@ func networkResultFinding(result whois.NetworkResult) plugins.Finding {
 }
 
 func networkPreseeds(result whois.NetworkResult) []plugins.Finding {
-	candidates := networkPreseedCandidates(result.Contacts, preferredNetworkRole(result.Contacts))
+	candidates := networkPreseedCandidates(result.Contacts, whois.PreferredNetworkRole(result.Contacts))
 	candidates = strutil.UniqueFunc(candidates, func(candidate networkPreseedCandidate) [2]string {
 		return [2]string{candidate.field, strings.ToLower(candidate.value)}
 	})
@@ -92,10 +92,6 @@ func networkPreseeds(result whois.NetworkResult) []plugins.Finding {
 		findings = append(findings, networkPreseedFinding(result, candidate))
 	}
 	return findings
-}
-
-func preferredNetworkRole(contacts []whois.NetworkContact) string {
-	return whois.PreferredNetworkRole(contacts)
 }
 
 func networkPreseedCandidates(contacts []whois.NetworkContact, preferredRole string) []networkPreseedCandidate {

@@ -5,131 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"slices"
-	"strings"
 )
 
 // ErrAllocationDoesNotContainTarget means applying the returned registration
 // to the complete input range would make an unsafe ownership claim.
 var ErrAllocationDoesNotContainTarget = errors.New("allocation does not contain target")
-
-// NetworkResult is the structured registration record for an IP allocation.
-type NetworkResult struct {
-	Query        string           `json:"query"`
-	StartAddress string           `json:"start_address,omitempty"`
-	EndAddress   string           `json:"end_address,omitempty"`
-	Handle       string           `json:"handle,omitempty"`
-	Name         string           `json:"name,omitempty"`
-	Type         string           `json:"type,omitempty"`
-	Status       []string         `json:"status,omitempty"`
-	Country      string           `json:"country,omitempty"`
-	ParentHandle string           `json:"parent_handle,omitempty"`
-	Registry     string           `json:"registry,omitempty"`
-	Server       string           `json:"server,omitempty"`
-	RDAPServer   string           `json:"rdap_server,omitempty"`
-	WhoisServer  string           `json:"whois_server,omitempty"`
-	Contacts     []NetworkContact `json:"contacts,omitempty"`
-	Sources      []string         `json:"sources,omitempty"`
-	Raw          string           `json:"raw,omitempty"`
-}
-
-// NetworkContact is an organization or person named by a network registration.
-type NetworkContact struct {
-	Handle       string   `json:"handle,omitempty"`
-	Roles        []string `json:"roles,omitempty"`
-	Status       []string `json:"status,omitempty"`
-	Kind         string   `json:"kind,omitempty"`
-	Direct       bool     `json:"direct,omitempty"`
-	Organization string   `json:"organization,omitempty"`
-	Name         string   `json:"name,omitempty"`
-	Email        string   `json:"email,omitempty"`
-	Phone        string   `json:"phone,omitempty"`
-	Country      string   `json:"country,omitempty"`
-	Province     string   `json:"province,omitempty"`
-	City         string   `json:"city,omitempty"`
-	Street       string   `json:"street,omitempty"`
-	PostalCode   string   `json:"postal_code,omitempty"`
-}
-
-func (r *NetworkResult) Clean() {
-	r.Query = strings.TrimSpace(r.Query)
-	r.StartAddress = strings.TrimSpace(r.StartAddress)
-	r.EndAddress = strings.TrimSpace(r.EndAddress)
-	r.Handle = strings.TrimSpace(r.Handle)
-	r.Name = strings.TrimSpace(r.Name)
-	r.Type = strings.TrimSpace(r.Type)
-	r.Status = trimStrings(r.Status)
-	r.Country = strings.TrimSpace(r.Country)
-	r.ParentHandle = strings.TrimSpace(r.ParentHandle)
-	r.Registry = strings.TrimSpace(r.Registry)
-	r.Server = strings.TrimSpace(r.Server)
-	r.RDAPServer = strings.TrimSpace(r.RDAPServer)
-	r.WhoisServer = strings.TrimSpace(r.WhoisServer)
-	r.Sources = trimStrings(r.Sources)
-
-	contacts := make([]NetworkContact, 0, len(r.Contacts))
-	for _, contact := range r.Contacts {
-		contacts = append(contacts, contact.Clean())
-	}
-	r.Contacts = mergeNetworkContacts(nil, contacts)
-}
-
-func (c NetworkContact) Clean() NetworkContact {
-	c.Handle = strings.TrimSpace(c.Handle)
-	c.Roles = trimStrings(c.Roles)
-	c.Status = trimStrings(c.Status)
-	c.Kind = strings.TrimSpace(c.Kind)
-	c.Organization = clearIfPrivacy(c.Organization)
-	c.Name = clearIfPrivacy(c.Name)
-	c.Email = clearIfPrivacy(c.Email)
-	c.Phone = clearIfPrivacy(c.Phone)
-	c.Country = clearIfPrivacy(c.Country)
-	c.Province = clearIfPrivacy(c.Province)
-	c.City = clearIfPrivacy(c.City)
-	c.Street = clearIfPrivacy(c.Street)
-	c.PostalCode = clearIfPrivacy(c.PostalCode)
-	return c
-}
-
-func (c NetworkContact) IsEmpty() bool {
-	return c.Organization == "" && c.Name == "" && c.Email == "" && len(c.Status) == 0
-}
-
-func (c NetworkContact) HasRole(role string) bool {
-	return slices.Contains(c.Roles, role)
-}
-
-func (c NetworkContact) IsMaintainer() bool {
-	return strings.HasSuffix(strings.ToUpper(c.Handle), "-MNT")
-}
-
-// IsPrivacyProtected recognizes the entity statuses RFC 9083 defines for
-// withheld or altered contact data.
-// https://www.rfc-editor.org/rfc/rfc9083.html#section-13
-func (c NetworkContact) IsPrivacyProtected() bool {
-	for _, status := range c.Status {
-		switch strings.ToLower(status) {
-		case "private", "removed", "obscured":
-			return true
-		}
-	}
-	return false
-}
-
-func PreferredNetworkRole(contacts []NetworkContact) string {
-	for _, contact := range contacts {
-		if contact.Direct && !contact.IsPrivacyProtected() && contact.HasRole("customer") {
-			return "customer"
-		}
-	}
-	return "registrant"
-}
-
-// ValidateNetworkTarget checks that query is an IP address or CIDR.
-func ValidateNetworkTarget(query string) error {
-	_, err := parseNetworkTarget(query)
-	return err
-}
 
 // LookupNetwork resolves an IP or CIDR through RDAP with TCP-43 fallback.
 func LookupNetwork(ctx context.Context, query string, opts ...Option) (NetworkResult, error) {
@@ -160,6 +40,22 @@ func LookupNetwork(ctx context.Context, query string, opts ...Option) (NetworkRe
 	}
 
 	return NetworkResult{}, fmt.Errorf("whois: all methods failed for %s: %w", target.query, errors.Join(rdapErr, tcpErr))
+}
+
+// ValidateNetworkTarget checks that query is an IP address or CIDR.
+func ValidateNetworkTarget(query string) error {
+	_, err := parseNetworkTarget(query)
+	return err
+}
+
+// PreferredNetworkRole returns customer when a direct customer contact has a usable identity.
+func PreferredNetworkRole(contacts []NetworkContact) string {
+	for _, contact := range contacts {
+		if contact.Direct && contact.HasRole("customer") && contact.hasUsefulIdentity() {
+			return "customer"
+		}
+	}
+	return "registrant"
 }
 
 type networkTarget struct {
@@ -215,25 +111,10 @@ func requireContainingAllocation(result NetworkResult, target networkTarget) err
 func hasUsefulNetworkIdentity(contacts []NetworkContact) bool {
 	preferredRole := PreferredNetworkRole(contacts)
 	for _, contact := range contacts {
-		if !contact.Direct || contact.IsPrivacyProtected() {
+		if !contact.Direct || !contact.HasRole(preferredRole) || contact.IsMaintainer() {
 			continue
 		}
-		if !contact.HasRole(preferredRole) || contact.IsMaintainer() {
-			continue
-		}
-
-		identity := contact.Organization
-		switch contact.Kind {
-		case "org":
-			if identity == "" {
-				identity = contact.Name
-			}
-		case "individual":
-			identity = contact.Name
-		default:
-			identity = ""
-		}
-		if identity != "" || IsEmail(contact.Email) {
+		if contact.hasUsefulIdentity() {
 			return true
 		}
 	}

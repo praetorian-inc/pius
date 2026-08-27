@@ -13,32 +13,38 @@ import (
 	"github.com/praetorian-inc/pius/pkg/whois/data"
 )
 
-// RegistrantOrg resolves the organization identity from a registrant contact,
-// handling ccTLD name-field promotion and registry artifact filtering.
-// Returns "" when nothing usable is present.
-func RegistrantOrg(c Contact, domain string) string {
-	if c.Organization != "" && !isRegistryArtifact(c.Organization, domain) {
-		return c.Organization
+// cleanRegistryArtifact removes registry artifacts from an observed registrant organization.
+func cleanRegistryArtifact(c Contact, domain string) string {
+	if isRegistryArtifact(c.Organization, domain) {
+		return ""
 	}
-	if holderInRegistrantName(domain) {
-		return c.Name
-	}
-	return ""
+	return c.Organization
 }
 
-// ContactEmail finds the best non-privacy email across a result's contacts.
-// Prefers registrant, then admin, tech, billing.
-func ContactEmail(r Result) (email string, sawProxy bool) {
-	for _, c := range r.AllContacts() {
-		classified := classifyEmail(c.Email)
+// registrantIdentity returns the best display identity without changing the
+// observed registrant name or organization fields.
+func registrantIdentity(c Contact) string {
+	return preferNonPrivacy(c.Organization, c.Name)
+}
+
+func preferredContactEmail(r DomainResult) (email, role string) {
+	roles := [...]string{"registrant", "administrative", "technical", "billing"}
+	privacyRole := ""
+	for i, contact := range r.AllContacts() {
+		classified := classifyEmail(contact.Email)
 		switch {
-		case classified == PrivacyRedaction:
-			sawProxy = true
-		case classified != "":
-			return classified, sawProxy
+		case classified == "":
+			continue
+		case classified != PrivacyRedaction:
+			return classified, roles[i]
+		case privacyRole == "":
+			privacyRole = roles[i]
 		}
 	}
-	return "", sawProxy
+	if privacyRole != "" {
+		return PrivacyRedaction, privacyRole
+	}
+	return "", ""
 }
 
 func classifyEmail(raw string) string {
@@ -60,9 +66,9 @@ func IsEmail(s string) bool {
 	return err == nil
 }
 
-// NormalizeRegistrar cleans up registrar names. Strips Nominet-style
+// normalizeRegistrar cleans up registrar names. Strips Nominet-style
 // "[Tag = X]" suffixes, keeping only the IPS tag when present.
-func NormalizeRegistrar(name string) string {
+func normalizeRegistrar(name string) string {
 	name = strings.TrimSpace(name)
 	match := nominetTagPattern.FindStringSubmatch(name)
 	if match == nil {
@@ -202,105 +208,7 @@ func ContainsRedactionMarker(raw string) bool {
 	return false
 }
 
-// --- ISOC-IL (.il) fallback ---
-
-// applyISOCILFallback fills empty Registrant org/email for .il domains from
-// the raw RPSL descr/e-mail block, which likexian/whois-parser does not map
-// onto Registrant.
-func applyISOCILFallback(r *Result, rawText string) {
-	dns := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(r.Domain), "."))
-	if !strings.HasSuffix(dns, ".il") {
-		return
-	}
-	if r.Registrant.Organization != "" && r.Registrant.Email != "" {
-		return
-	}
-
-	var holder map[string]string
-	for _, p := range parseRPSLParagraphs(rawText) {
-		if p["first_descr"] != "" {
-			holder = p
-			break
-		}
-	}
-	if holder == nil {
-		return
-	}
-
-	if r.Registrant.Organization == "" {
-		org := strings.TrimSpace(holder["first_descr"])
-		if runes := []rune(org); len(runes) > 255 {
-			org = strings.TrimSpace(string(runes[:255]))
-		}
-		r.Registrant.Organization = org
-	}
-
-	if r.Registrant.Email == "" {
-		deobfuscated := strings.ReplaceAll(holder["e-mail"], " AT ", "@")
-		if classifyEmail(deobfuscated) != "" {
-			r.Registrant.Email = deobfuscated
-		}
-	}
-}
-
-// parseRPSLParagraphs splits raw WHOIS/RPSL text into key:value paragraph
-// maps. Used for ISOC-IL fallback and IP WHOIS (future). No third-party
-// library exists for RPSL paragraph parsing — it's a niche wire format.
-func parseRPSLParagraphs(raw string) []map[string]string {
-	var paragraphs []map[string]string
-	current := map[string]string{}
-
-	for line := range strings.SplitSeq(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			if len(current) > 0 {
-				paragraphs = append(paragraphs, current)
-				current = map[string]string{}
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "%") || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(parts[0]))
-		value := strings.TrimSpace(parts[1])
-		if key == "descr" {
-			if _, seen := current["first_descr"]; !seen {
-				current["first_descr"] = value
-			}
-		}
-		current[key] = value
-	}
-	if len(current) > 0 {
-		paragraphs = append(paragraphs, current)
-	}
-	return paragraphs
-}
-
-// --- ccTLD and registry artifact rules ---
-
-// registrantNameCCTLDs lists ccTLDs where the holder org is placed in the
-// Name field instead of Organization.
-var registrantNameCCTLDs = []string{
-	".cn", ".hr", ".jp", ".kr",
-	".fr", ".re", ".pm", ".tf", ".wf", ".yt",
-	".ca", ".dk", ".ee", ".fi", ".gg",
-	".xn--fiqs8s", ".cl",
-}
-
-func holderInRegistrantName(dns string) bool {
-	dns = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(dns), "."))
-	for _, suffix := range registrantNameCCTLDs {
-		if strings.HasSuffix(dns, suffix) {
-			return true
-		}
-	}
-	return false
-}
+// --- Registry artifact rules ---
 
 // registryHandleCCTLDs are ccTLDs where the parser mis-maps opaque NIC
 // handles or national tax IDs into Registrant.Organization (.se publishes

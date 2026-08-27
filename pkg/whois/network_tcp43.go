@@ -42,28 +42,11 @@ func parseTCP43NetworkResult(target networkTarget, raw, server string) (NetworkR
 		Sources:      []string{"whois"},
 		Raw:          raw,
 	}
-	result.Clean()
+	result.Normalize()
 	if err := requireContainingAllocation(result, target); err != nil {
 		return NetworkResult{}, err
 	}
 	return result, nil
-}
-
-func parseTCP43Fields(raw string) map[string][]string {
-	fields := make(map[string][]string)
-	for line := range strings.SplitSeq(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "%") || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, ":")
-		if !ok || strings.TrimSpace(value) == "" {
-			continue
-		}
-		key = strings.ToLower(strings.TrimSpace(key))
-		fields[key] = append(fields[key], strings.TrimSpace(value))
-	}
-	return fields
 }
 
 func containingTCP43Range(fields map[string][]string, target networkTarget) (netip.Addr, netip.Addr, bool) {
@@ -156,10 +139,12 @@ func organizationContacts(fields map[string][]string) []NetworkContact {
 			continue
 		}
 		contacts = append(contacts, NetworkContact{
-			Roles:        []string{organization.role},
-			Kind:         "org",
-			Direct:       true,
-			Organization: clearIfPrivacy(organization.value),
+			Roles:  []string{organization.role},
+			Kind:   "org",
+			Direct: true,
+			Contact: Contact{
+				Organization: organization.value,
+			},
 		})
 	}
 	return contacts
@@ -182,7 +167,9 @@ func individualContacts(fields map[string][]string) []NetworkContact {
 				Roles:  []string{field.role},
 				Kind:   "individual",
 				Direct: true,
-				Name:   clearIfPrivacy(value),
+				Contact: Contact{
+					Name: value,
+				},
 			})
 		}
 	}
@@ -206,11 +193,13 @@ func emailContacts(fields map[string][]string) []NetworkContact {
 	for _, field := range emailFields {
 		for _, value := range fields[field.key] {
 			email := firstEmail(value)
-			if email == "" || IsPrivacy(email) {
+			if email == "" {
 				continue
 			}
 			contacts = append(contacts, NetworkContact{
-				Roles: []string{field.role}, Direct: true, Email: email,
+				Roles:   []string{field.role},
+				Direct:  true,
+				Contact: Contact{Email: email},
 			})
 		}
 	}
@@ -222,15 +211,6 @@ func firstEmail(value string) string {
 		token = strings.Trim(token, "<>,;()")
 		if IsEmail(token) {
 			return token
-		}
-	}
-	return ""
-}
-
-func firstField(fields map[string][]string, keys ...string) string {
-	for _, key := range keys {
-		if values := fields[key]; len(values) > 0 {
-			return values[0]
 		}
 	}
 	return ""
