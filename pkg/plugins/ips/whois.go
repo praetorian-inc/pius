@@ -82,7 +82,7 @@ func networkResultFinding(result whois.NetworkResult) plugins.Finding {
 }
 
 func networkPreseeds(result whois.NetworkResult) []plugins.Finding {
-	candidates := networkPreseedCandidates(result.Contacts, whois.PreferredNetworkRole(result.Contacts))
+	candidates := networkPreseedCandidates(result.PreferredContacts())
 	candidates = strutil.UniqueFunc(candidates, func(candidate networkPreseedCandidate) [2]string {
 		return [2]string{candidate.field, strings.ToLower(candidate.value)}
 	})
@@ -94,19 +94,12 @@ func networkPreseeds(result whois.NetworkResult) []plugins.Finding {
 	return findings
 }
 
-func networkPreseedCandidates(contacts []whois.NetworkContact, preferredRole string) []networkPreseedCandidate {
+func networkPreseedCandidates(contacts []whois.NetworkContact) []networkPreseedCandidate {
 	var candidates []networkPreseedCandidate
 	for _, contact := range contacts {
-		if !eligibleNetworkContact(contact, preferredRole) {
-			continue
-		}
 		candidates = append(candidates, contactPreseedCandidates(contact)...)
 	}
 	return candidates
-}
-
-func eligibleNetworkContact(contact whois.NetworkContact, preferredRole string) bool {
-	return contact.Direct && contact.HasRole(preferredRole) && !contact.IsMaintainer() && !contact.IsPrivacyProtected()
 }
 
 func contactPreseedCandidates(contact whois.NetworkContact) []networkPreseedCandidate {
@@ -128,23 +121,27 @@ func contactPreseedCandidates(contact whois.NetworkContact) []networkPreseedCand
 }
 
 func validNetworkPreseedCandidate(candidate networkPreseedCandidate) bool {
-	if candidate.value == "" || whois.IsPrivacy(candidate.value) {
+	if candidate.value == "" {
 		return false
 	}
 	return candidate.field != "email" || whois.IsEmail(candidate.value)
 }
 
 func contactIdentityCandidate(contact whois.NetworkContact, role string) networkPreseedCandidate {
+	identity := contact.Identity()
+	field := ""
 	switch contact.Kind {
 	case "org":
-		return networkPreseedCandidate{field: "company", role: role, value: cmp.Or(contact.Organization, contact.Name), status: contact.Status}
+		field = "company"
 	case "individual":
-		return networkPreseedCandidate{field: "name", role: role, value: contact.Name, status: contact.Status}
+		field = "name"
 	default:
-		if contact.Organization != "" {
-			return networkPreseedCandidate{field: "company", role: role, value: contact.Organization, status: contact.Status}
+		if identity != "" {
+			field = "company"
 		}
-		return networkPreseedCandidate{}
+	}
+	return networkPreseedCandidate{
+		field: field, role: role, value: identity, status: contact.Status,
 	}
 }
 

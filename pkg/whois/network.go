@@ -17,16 +17,6 @@ func ValidateNetworkTarget(query string) error {
 	return err
 }
 
-// PreferredNetworkRole returns customer when a direct customer contact has a usable identity.
-func PreferredNetworkRole(contacts []NetworkContact) string {
-	for _, contact := range contacts {
-		if contact.Direct && contact.HasRole("customer") && contact.hasUsefulIdentity() {
-			return "customer"
-		}
-	}
-	return "registrant"
-}
-
 // LookupNetwork resolves an IP or CIDR using the default WHOIS cascade.
 // It is retained as a compatibility wrapper around WHOIS.LookupNetwork.
 func LookupNetwork(ctx context.Context, query string, opts ...Option) (NetworkResult, error) {
@@ -82,7 +72,7 @@ func (w *WHOIS) doNetworkLookup(ctx context.Context, client WHOISClient, state *
 
 	state.result.Merge(result)
 	state.resolved = true
-	return client.Name() == SourceRDAP && hasUsefulNetworkIdentity(result.Contacts)
+	return client.Name() == SourceRDAP && result.hasUsefulIdentity()
 }
 
 func (state *networkLookupState) finish() (NetworkResult, error) {
@@ -145,17 +135,4 @@ func requireContainingAllocation(result NetworkResult, target networkTarget) err
 		return fmt.Errorf("%w: %s-%s does not contain %s", ErrAllocationDoesNotContainTarget, start, end, target.query)
 	}
 	return nil
-}
-
-func hasUsefulNetworkIdentity(contacts []NetworkContact) bool {
-	preferredRole := PreferredNetworkRole(contacts)
-	for _, contact := range contacts {
-		if !contact.Direct || !contact.HasRole(preferredRole) || contact.IsMaintainer() {
-			continue
-		}
-		if contact.hasUsefulIdentity() {
-			return true
-		}
-	}
-	return false
 }

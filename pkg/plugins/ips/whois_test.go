@@ -117,6 +117,17 @@ func TestNetworkPreseeds_PrefersCustomerOverRegistrant(t *testing.T) {
 	assert.Equal(t, "Example Customer", findings[0].Value)
 }
 
+func TestNetworkPreseeds_PrefersRealNameOverPrivateOrganization(t *testing.T) {
+	findings := networkPreseeds(whois.NetworkResult{Contacts: []whois.NetworkContact{{
+		Roles: []string{"registrant"}, Kind: "org", Direct: true,
+		Contact: whois.Contact{Organization: whois.PrivacyRedaction, Name: "Example Networks"},
+	}}})
+
+	require.Len(t, findings, 1)
+	assert.Equal(t, "whois+company", findings[0].Data["preseed_type"])
+	assert.Equal(t, "Example Networks", findings[0].Value)
+}
+
 func TestNetworkPreseeds_OmitsPrivacyProtectedContacts(t *testing.T) {
 	for _, status := range []string{"private", "removed", "obscured"} {
 		t.Run(status, func(t *testing.T) {

@@ -89,20 +89,25 @@ func TestLastAddress(t *testing.T) {
 	}
 }
 
-func TestPreferredNetworkRole_IgnoresPrivacyProtectedCustomer(t *testing.T) {
-	contacts := []NetworkContact{
+func TestNetworkResult_PreferredContactsIgnoresPrivacyProtectedCustomer(t *testing.T) {
+	result := NetworkResult{Contacts: []NetworkContact{
 		{
 			Roles: []string{"customer"}, Status: []string{"private"}, Direct: true,
 			Contact: Contact{Name: "Private Customer"},
 		},
-		{Roles: []string{"registrant"}, Direct: true, Contact: Contact{Name: "Public Registrant"}},
-	}
+		{
+			Roles: []string{"registrant"}, Kind: "individual", Direct: true,
+			Contact: Contact{Name: "Public Registrant"},
+		},
+	}}
 
-	assert.Equal(t, "registrant", PreferredNetworkRole(contacts))
+	contacts := result.PreferredContacts()
+	require.Len(t, contacts, 1)
+	assert.Equal(t, "Public Registrant", contacts[0].Identity())
 }
 
-func TestPreferredNetworkRole_IgnoresRedactedCustomer(t *testing.T) {
-	contacts := []NetworkContact{
+func TestNetworkResult_PreferredContactsIgnoresRedactedCustomer(t *testing.T) {
+	result := NetworkResult{Contacts: []NetworkContact{
 		{
 			Roles: []string{"customer"}, Kind: "org", Direct: true,
 			Contact: Contact{Organization: PrivacyRedaction},
@@ -111,27 +116,29 @@ func TestPreferredNetworkRole_IgnoresRedactedCustomer(t *testing.T) {
 			Roles: []string{"registrant"}, Kind: "org", Direct: true,
 			Contact: Contact{Organization: "Public Registrant"},
 		},
-	}
+	}}
 
-	assert.Equal(t, "registrant", PreferredNetworkRole(contacts))
+	contacts := result.PreferredContacts()
+	require.Len(t, contacts, 1)
+	assert.Equal(t, "Public Registrant", contacts[0].Identity())
 }
 
-func TestHasUsefulNetworkIdentity_IgnoresPrivacyProtectedContact(t *testing.T) {
-	contacts := []NetworkContact{{
+func TestNetworkResult_HasUsefulIdentityIgnoresPrivacyProtectedContact(t *testing.T) {
+	result := NetworkResult{Contacts: []NetworkContact{{
 		Roles: []string{"registrant"}, Status: []string{"private"}, Kind: "org", Direct: true,
 		Contact: Contact{Name: "Private Customer"},
-	}}
+	}}}
 
-	assert.False(t, hasUsefulNetworkIdentity(contacts))
+	assert.False(t, result.hasUsefulIdentity())
 }
 
-func TestHasUsefulNetworkIdentity_IgnoresRedactedContact(t *testing.T) {
-	contacts := []NetworkContact{{
+func TestNetworkResult_HasUsefulIdentityIgnoresRedactedContact(t *testing.T) {
+	result := NetworkResult{Contacts: []NetworkContact{{
 		Roles: []string{"registrant"}, Kind: "org", Direct: true,
 		Contact: Contact{Organization: PrivacyRedaction, Email: PrivacyRedaction},
-	}}
+	}}}
 
-	assert.False(t, hasUsefulNetworkIdentity(contacts))
+	assert.False(t, result.hasUsefulIdentity())
 }
 
 func TestNetworkResultMerge_PreservesServerAttribution(t *testing.T) {

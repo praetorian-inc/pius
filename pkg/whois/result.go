@@ -83,7 +83,7 @@ func (r *DomainResult) Merge(other DomainResult) {
 
 func (r *DomainResult) Normalize() {
 	r.Domain = strings.TrimSpace(r.Domain)
-	r.Registrar = strings.TrimSpace(r.Registrar)
+	r.Registrar = NormalizeRegistrar(r.Registrar)
 	r.Created = strings.TrimSpace(r.Created)
 	r.Updated = strings.TrimSpace(r.Updated)
 	r.Expiration = strings.TrimSpace(r.Expiration)
@@ -96,6 +96,9 @@ func (r *DomainResult) Normalize() {
 	r.Admin = r.Admin.Normalize()
 	r.Tech = r.Tech.Normalize()
 	r.Billing = r.Billing.Normalize()
+	if isRegistryArtifact(r.Registrant.Organization, r.Domain) {
+		r.Registrant.Organization = ""
+	}
 	r.populateDerivedFields()
 }
 

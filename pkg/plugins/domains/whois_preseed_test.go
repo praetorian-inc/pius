@@ -59,3 +59,42 @@ func TestExtractPreseeds_JustificationOmitsUnknownWhoisServer(t *testing.T) {
 		`WHOIS records "ACME-CORP" as the registrant contact company`,
 		findings[0].Confidences[0].Justification)
 }
+
+func TestBuildWhoisResultFinding_PreservesContactRoles(t *testing.T) {
+	result := whois.DomainResult{
+		Domain:     "example.com",
+		Registrant: whois.Contact{Email: "proxy@withheldforprivacy.com"},
+		Admin:      whois.Contact{Email: "admin@example.com"},
+	}
+	result.Normalize()
+
+	finding := buildWhoisResultFinding(result, "")
+
+	registrant, ok := finding.Data["registrant"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, whois.PrivacyRedaction, registrant["email"])
+	assert.Equal(t, "admin@example.com", finding.Data["contact_email"])
+	assert.Equal(t, "administrative", finding.Data["contact_email_role"])
+
+	preseeds := extractPreseeds(result)
+	require.Len(t, preseeds, 1)
+	assert.Equal(t, "admin@example.com", preseeds[0].Value)
+	assert.Equal(t, "whois+email", preseeds[0].Data["preseed_type"])
+}
+
+func TestBuildWhoisResultFinding_NameOnlyRegistrantRemainsTypedAsName(t *testing.T) {
+	result := whois.DomainResult{
+		Domain:     "acme.cn",
+		Registrant: whois.Contact{Name: "Acme Holdings Ltd."},
+	}
+	result.Normalize()
+
+	finding := buildWhoisResultFinding(result, "Acme Holdings Ltd.")
+
+	assert.Equal(t, "Acme Holdings Ltd.", finding.Data["registrant_identity"])
+	assert.Equal(t, "unverifiable", finding.Data["corroboration"])
+	preseeds := extractPreseeds(result)
+	require.Len(t, preseeds, 1)
+	assert.Equal(t, "whois+name", preseeds[0].Data["preseed_type"])
+	assert.Equal(t, "Acme Holdings Ltd.", preseeds[0].Value)
+}

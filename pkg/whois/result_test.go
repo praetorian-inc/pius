@@ -92,6 +92,23 @@ func TestDomainResult_NormalizePopulatesDerivedFields(t *testing.T) {
 	assert.Equal(t, "administrative", result.ContactEmailRole)
 }
 
+func TestDomainResult_NormalizeCleansRegistrantAndRegistrarArtifacts(t *testing.T) {
+	result := DomainResult{
+		Domain:    "example.se",
+		Registrar: "Example Registrar [Tag = EXAMPLE]",
+		Registrant: Contact{
+			Organization: "DIDEP2435-002435",
+			Name:         "Example Networks",
+		},
+	}
+
+	result.Normalize()
+
+	assert.Empty(t, result.Registrant.Organization)
+	assert.Equal(t, "Example Networks", result.RegistrantIdentity)
+	assert.Equal(t, "EXAMPLE", result.Registrar)
+}
+
 func TestDomainResult_NormalizeDefaultsUnavailableContactEmailToRegistrantPrivacy(t *testing.T) {
 	tests := []struct {
 		name   string

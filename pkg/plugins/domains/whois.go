@@ -51,8 +51,7 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	return findings, nil
 }
 
-// WhoisFindingData wraps a whois.Result with corroboration metadata for the
-// Finding payload.
+// WhoisFindingData wraps a domain registration result with corroboration metadata.
 type WhoisFindingData struct {
 	whois.DomainResult
 	Corroboration string `json:"corroboration,omitempty"`
@@ -68,17 +67,9 @@ func buildWhoisResultFinding(r whois.DomainResult, pivotOrg string) plugins.Find
 		}
 	}
 
-	// Normalize privacy on the registrant fields before emitting.
-	org := whois.RegistrantOrg(r.Registrant, r.Domain)
-	r.Registrant.Organization = whois.NormalizePrivacy(org)
-	r.Registrant.Country = whois.NormalizePrivacy(r.Registrant.Country)
-	r.Registrant.Province = whois.NormalizePrivacy(r.Registrant.Province)
-	r.Registrant.City = whois.NormalizePrivacy(r.Registrant.City)
-	r.Registrar = whois.NormalizeRegistrar(r.Registrar)
-
 	fd := WhoisFindingData{DomainResult: r}
 	if pivotOrg != "" {
-		fd.Corroboration = whois.Corroborate(pivotOrg, org)
+		fd.Corroboration = whois.Corroborate(pivotOrg, r.Registrant.Organization)
 	}
 
 	return plugins.Finding{
@@ -102,12 +93,8 @@ func extractPreseeds(r whois.DomainResult) []plugins.Finding {
 	// Collect all valid candidates, then dedupe by {field, value}.
 	var all []candidate
 	for i, c := range contacts {
-		org := c.Organization
-		if i == 0 {
-			org = whois.RegistrantOrg(c, r.Domain)
-		}
 		for _, cd := range []candidate{
-			{"company", roles[i], org},
+			{"company", roles[i], c.Organization},
 			{"name", roles[i], c.Name},
 			{"email", roles[i], c.Email},
 		} {

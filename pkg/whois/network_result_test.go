@@ -101,6 +101,18 @@ func TestNetworkResult_Normalize(t *testing.T) {
 	assert.Equal(t, normalized, result)
 }
 
+func TestNetworkContact_IdentityPrefersRealNameOverPrivateOrganization(t *testing.T) {
+	contact := NetworkContact{
+		Kind: "org",
+		Contact: Contact{
+			Organization: PrivacyRedaction,
+			Name:         "Example Networks",
+		},
+	}
+
+	assert.Equal(t, "Example Networks", contact.Identity())
+}
+
 func TestNetworkContact_JSONFlattensContact(t *testing.T) {
 	contact := NetworkContact{
 		Handle: "CONTACT-1",

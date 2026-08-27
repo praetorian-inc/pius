@@ -77,6 +77,31 @@ func (r *NetworkResult) Merge(other NetworkResult) {
 	r.Sources = mergeNetworkSources(r.Sources, other.Sources)
 }
 
+// PreferredContacts returns direct, usable contacts for the most specific ownership role.
+func (r NetworkResult) PreferredContacts() []NetworkContact {
+	role := r.preferredContactRole()
+	contacts := make([]NetworkContact, 0, len(r.Contacts))
+	for _, contact := range r.Contacts {
+		if contact.eligibleForRole(role) {
+			contacts = append(contacts, contact)
+		}
+	}
+	return contacts
+}
+
+func (r NetworkResult) preferredContactRole() string {
+	for _, contact := range r.Contacts {
+		if contact.eligibleForRole("customer") {
+			return "customer"
+		}
+	}
+	return "registrant"
+}
+
+func (r NetworkResult) hasUsefulIdentity() bool {
+	return len(r.PreferredContacts()) > 0
+}
+
 // NetworkContact is an organization or person named by a network registration.
 type NetworkContact struct {
 	Handle string   `json:"handle,omitempty"`
@@ -121,21 +146,28 @@ func (c NetworkContact) IsPrivacyProtected() bool {
 	return false
 }
 
-func (c NetworkContact) hasUsefulIdentity() bool {
-	if c.IsPrivacyProtected() {
-		return false
-	}
-
+// Identity returns the usable organization or person represented by the contact.
+func (c NetworkContact) Identity() string {
 	identity := ""
 	switch c.Kind {
 	case "org":
 		identity = preferNonPrivacy(c.Organization, c.Name)
 	case "individual":
 		identity = c.Name
+	default:
+		identity = c.Organization
 	}
-	hasIdentity := identity != "" && identity != PrivacyRedaction
-	hasEmail := IsEmail(c.Email) && c.Email != PrivacyRedaction
-	return hasIdentity || hasEmail
+	if identity == PrivacyRedaction {
+		return ""
+	}
+	return identity
+}
+
+func (c NetworkContact) eligibleForRole(role string) bool {
+	if !c.Direct || !c.HasRole(role) || c.IsMaintainer() || c.IsPrivacyProtected() {
+		return false
+	}
+	return c.Identity() != "" || IsEmail(c.Email) && c.Email != PrivacyRedaction
 }
 
 func mergeNetworkSources(base, other []string) []string {
