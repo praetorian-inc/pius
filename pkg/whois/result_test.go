@@ -43,9 +43,10 @@ func TestResult_Normalize(t *testing.T) {
 			Organization: "Example Inc.",
 			Email:        "admin@example.com",
 		},
-		Admin:            Contact{Name: PrivacyRedaction},
-		ContactEmail:     "admin@example.com",
-		ContactEmailRole: "registrant",
+		Admin:              Contact{Name: PrivacyRedaction},
+		RegistrantIdentity: "Example Inc.",
+		ContactEmail:       "admin@example.com",
+		ContactEmailRole:   "registrant",
 	}, result)
 }
 
@@ -71,6 +72,7 @@ func TestResult_NormalizeAllowsProviderFallback(t *testing.T) {
 	assert.Equal(t, []string{"ns1.example.com"}, primary.NameServers)
 	assert.Equal(t, []string{"active"}, primary.Status)
 	assert.Equal(t, "Jane Doe", primary.Registrant.Name)
+	assert.Equal(t, "Jane Doe", primary.RegistrantIdentity)
 }
 
 func TestResult_NormalizePopulatesDerivedFields(t *testing.T) {
@@ -86,7 +88,9 @@ func TestResult_NormalizePopulatesDerivedFields(t *testing.T) {
 
 	result.Normalize()
 
-	assert.Equal(t, "Acme Holdings Ltd.", result.Registrant.Organization)
+	assert.Empty(t, result.Registrant.Organization)
+	assert.Equal(t, "Acme Holdings Ltd.", result.Registrant.Name)
+	assert.Equal(t, "Acme Holdings Ltd.", result.RegistrantIdentity)
 	assert.Equal(t, "EXAMPLE", result.Registrar)
 	assert.Equal(t, PrivacyRedaction, result.Registrant.Email)
 	assert.Equal(t, "admin@example.com", result.ContactEmail)

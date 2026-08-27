@@ -10,23 +10,24 @@ import (
 // to the whois/<domain> file in Guard and is designed to be incrementally
 // filled by multiple providers (RDAP, TCP-43, Whoxy, WhoisFreaks, etc.).
 type Result struct {
-	Domain           string   `json:"domain"`
-	Registrar        string   `json:"registrar,omitempty"`
-	Registrant       Contact  `json:"registrant"`
-	Admin            Contact  `json:"admin"`
-	Tech             Contact  `json:"tech"`
-	Billing          Contact  `json:"billing"`
-	Created          string   `json:"created,omitempty"`
-	Updated          string   `json:"updated,omitempty"`
-	Expiration       string   `json:"expiration,omitempty"`
-	NameServers      []string `json:"nameservers,omitempty"`
-	Status           []string `json:"status,omitempty"`
-	DNSSEC           string   `json:"dnssec,omitempty"`
-	WhoisServer      string   `json:"whois_server,omitempty"`
-	Sources          []string `json:"sources,omitempty"`
-	Unregistered     bool     `json:"unregistered,omitempty"`
-	ContactEmail     string   `json:"contact_email,omitempty"`
-	ContactEmailRole string   `json:"contact_email_role,omitempty"`
+	Domain             string   `json:"domain"`
+	Registrar          string   `json:"registrar,omitempty"`
+	Registrant         Contact  `json:"registrant"`
+	Admin              Contact  `json:"admin"`
+	Tech               Contact  `json:"tech"`
+	Billing            Contact  `json:"billing"`
+	Created            string   `json:"created,omitempty"`
+	Updated            string   `json:"updated,omitempty"`
+	Expiration         string   `json:"expiration,omitempty"`
+	NameServers        []string `json:"nameservers,omitempty"`
+	Status             []string `json:"status,omitempty"`
+	DNSSEC             string   `json:"dnssec,omitempty"`
+	WhoisServer        string   `json:"whois_server,omitempty"`
+	Sources            []string `json:"sources,omitempty"`
+	Unregistered       bool     `json:"unregistered,omitempty"`
+	RegistrantIdentity string   `json:"registrant_identity,omitempty"`
+	ContactEmail       string   `json:"contact_email,omitempty"`
+	ContactEmailRole   string   `json:"contact_email_role,omitempty"`
 }
 
 // AllContacts returns the four contact roles in order: registrant, admin, tech, billing.
@@ -86,6 +87,7 @@ func (r *Result) Normalize() {
 
 func (r *Result) populateDerivedFields() {
 	r.Registrant.Organization = RegistrantOrg(r.Registrant, r.Domain)
+	r.RegistrantIdentity = RegistrantIdentity(r.Registrant)
 
 	email, role, sawPrivacy := preferredContactEmail(*r)
 	if email == "" && sawPrivacy {

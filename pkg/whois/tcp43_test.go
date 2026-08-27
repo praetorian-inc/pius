@@ -112,6 +112,49 @@ func TestTCP43Raw_RegressionOrdinaryChainUnaffected(t *testing.T) {
 	assert.Equal(t, registrar, server)
 }
 
+func TestTCP43Lookup_AppliesDNSPTFallback(t *testing.T) {
+	const registry = "whois.dns.pt"
+	stubTCP43RawFn(t, map[string]string{
+		defaultServer: "refer: " + registry + "\n",
+		registry: `Domain: sketchers.pt
+Domain Status: Registered
+Creation Date: 05/04/2016 09:55:53
+Expiration Date: 04/04/2027 23:59:53
+Owner Name: Skechers USA
+Owner Country Code: US
+Name Server: alan.ns.cloudflare.com
+`,
+	})
+
+	result, err := tcp43Lookup(context.Background(), "sketchers.pt")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Skechers USA", result.Registrant.Name)
+	assert.Empty(t, result.Registrant.Organization)
+	assert.Equal(t, "Skechers USA", result.RegistrantIdentity)
+	assert.Equal(t, registry, result.WhoisServer)
+}
+
+func TestApplyTCP43RegistryFallback_ISOCIL(t *testing.T) {
+	result := Result{Domain: "example.co.il"}
+	raw := `domain: example.co.il
+descr: Example Company Ltd
+e-mail: admin AT example.co.il
+
+person: Technical Contact
+e-mail: tech@example.co.il
+`
+
+	applyTCP43RegistryFallback(&result, raw)
+	result.Normalize()
+
+	assert.Equal(t, "Example Company Ltd", result.Registrant.Organization)
+	assert.Equal(t, "Example Company Ltd", result.RegistrantIdentity)
+	assert.Equal(t, "admin@example.co.il", result.Registrant.Email)
+	assert.Equal(t, "admin@example.co.il", result.ContactEmail)
+	assert.Equal(t, "registrant", result.ContactEmailRole)
+}
+
 // The returned server must be the one that answered the returned record — the
 // deepest server reached, not the bootstrap server the chain started from and
 // not the referral target that was never successfully queried.

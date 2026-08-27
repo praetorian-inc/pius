@@ -124,17 +124,49 @@ func TestOrgSimilarity(t *testing.T) {
 }
 
 func TestRegistrantOrg(t *testing.T) {
-	// Normal: org field present.
-	c := Contact{Organization: "Acme Corp", Name: "Domain Admin"}
-	assert.Equal(t, "Acme Corp", RegistrantOrg(c, "example.com"))
+	assert.Equal(t, "Acme Corp", RegistrantOrg(
+		Contact{Organization: "Acme Corp", Name: "Domain Admin"},
+		"example.com",
+	))
+	assert.Empty(t, RegistrantOrg(Contact{Organization: "DIDEP2435-002435"}, "example.se"))
+}
 
-	// ccTLD name promotion: .cn puts holder in the Name field.
-	c2 := Contact{Name: "Acme Holdings Ltd."}
-	assert.Equal(t, "Acme Holdings Ltd.", RegistrantOrg(c2, "acme.cn"))
+func TestRegistrantIdentity(t *testing.T) {
+	tests := []struct {
+		name    string
+		contact Contact
+		want    string
+	}{
+		{
+			name:    "prefers organization",
+			contact: Contact{Organization: "Acme Corp", Name: "Domain Admin"},
+			want:    "Acme Corp",
+		},
+		{
+			name:    "falls back to name",
+			contact: Contact{Name: "John Smith"},
+			want:    "John Smith",
+		},
+		{
+			name: "prefers real name over private organization",
+			contact: Contact{
+				Organization: PrivacyRedaction,
+				Name:         "John Smith",
+			},
+			want: "John Smith",
+		},
+		{
+			name:    "preserves privacy",
+			contact: Contact{Organization: PrivacyRedaction},
+			want:    PrivacyRedaction,
+		},
+	}
 
-	// No org, no name promotion for .com.
-	c3 := Contact{Name: "John Smith"}
-	assert.Equal(t, "", RegistrantOrg(c3, "example.com"))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.want, RegistrantIdentity(test.contact))
+		})
+	}
 }
 
 func TestContactEmail(t *testing.T) {

@@ -49,23 +49,6 @@ func parseTCP43NetworkResult(target networkTarget, raw, server string) (NetworkR
 	return result, nil
 }
 
-func parseTCP43Fields(raw string) map[string][]string {
-	fields := make(map[string][]string)
-	for line := range strings.SplitSeq(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "%") || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, ":")
-		if !ok || strings.TrimSpace(value) == "" {
-			continue
-		}
-		key = strings.ToLower(strings.TrimSpace(key))
-		fields[key] = append(fields[key], strings.TrimSpace(value))
-	}
-	return fields
-}
-
 func containingTCP43Range(fields map[string][]string, target networkTarget) (netip.Addr, netip.Addr, bool) {
 	if start, end, ok := addressFieldRange(fields, target); ok {
 		return start, end, true
@@ -222,15 +205,6 @@ func firstEmail(value string) string {
 		token = strings.Trim(token, "<>,;()")
 		if IsEmail(token) {
 			return token
-		}
-	}
-	return ""
-}
-
-func firstField(fields map[string][]string, keys ...string) string {
-	for _, key := range keys {
-		if values := fields[key]; len(values) > 0 {
-			return values[0]
 		}
 	}
 	return ""

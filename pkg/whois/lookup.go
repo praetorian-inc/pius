@@ -51,7 +51,7 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 		slog.Debug("RDAP lookup failed, will rely on TCP-43", "domain", domain, "error", rdapErr)
 	}
 
-	tcp43Result, tcp43Raw, tcp43Err := tcp43Lookup(ctx, domain)
+	tcp43Result, tcp43Err := tcp43Lookup(ctx, domain)
 	if tcp43Err != nil && isDomainNotFound(tcp43Err) {
 		return Result{Domain: domain, Unregistered: true}, nil
 	}
@@ -66,7 +66,6 @@ func Lookup(ctx context.Context, domain string, opts ...Option) (Result, error) 
 	}
 
 	result := mergeResults(domain, rdapResult, rdapErr, tcp43Result, tcp43Err)
-	applyISOCILFallback(&result, tcp43Raw)
 	result.Normalize()
 	return result, nil
 }
