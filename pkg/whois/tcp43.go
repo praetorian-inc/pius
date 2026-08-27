@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -23,57 +24,43 @@ const (
 	maxResponseBytes = 1 << 20 // 1 MiB
 )
 
-// TCP43Client implements the port-43 registration lookup.
-//
-// It follows RDAP because its records are unstructured text and its referral
-// chains are fragile, but it carries registrant email far more often, which is
-// exactly the field RDAP tends to withhold.
 type TCP43Client struct{}
 
-// NewTCP43Client returns a port-43 resolver. It takes no HTTP client: this
-// leg speaks the WHOIS wire protocol directly.
 func NewTCP43Client() *TCP43Client { return &TCP43Client{} }
 
 func (r *TCP43Client) Name() string { return SourceTCP43 }
 
-// LookupDomain owns the ISOC-IL fallback. That fallback re-parses the raw WHOIS text
-// as RPSL, so it can only run where the raw text is in scope — which is here,
-// and no longer in the orchestrator. Keeping it in the leg that produced the
-// text is why WHOISClient can return just (Result, error) without plumbing raw
-// string through the whole cascade.
 func (r *TCP43Client) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
-	result, raw, err := tcp43Lookup(ctx, domain)
+	result, err = tcp43Lookup(ctx, domain)
 	if err != nil {
 		return DomainResult{}, err
 	}
-	applyISOCILFallback(&result, raw)
 	result.Sources = []string{SourceTCP43}
 	return result, nil
 }
 
 // tcp43Lookup performs a raw TCP port-43 WHOIS lookup with referral following,
 // then parses the result into a Result.
-// tcp43Lookup returns both the parsed Result and the raw WHOIS text. The raw
-// text is needed for ISOC-IL fallback parsing but is not persisted on Result.
-func tcp43Lookup(ctx context.Context, domain string) (DomainResult, string, error) {
+func tcp43Lookup(ctx context.Context, domain string) (DomainResult, error) {
 	raw, server, err := tcp43Raw(ctx, domain)
 	if err != nil {
-		return DomainResult{}, "", err
+		return DomainResult{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return DomainResult{}, "", err
+		return DomainResult{}, err
 	}
 
 	parsed, err := whoisparser.Parse(raw)
 	if err != nil {
-		return DomainResult{}, "", fmt.Errorf("whois parse failed for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("whois parse failed for %s: %w", domain, err)
 	}
 	result := mapParsedToResult(domain, parsed)
 	result.WhoisServer = server
+	applyTCP43DomainFallback(&result, raw)
 	result.Normalize()
-	return result, raw, nil
+	return result, nil
 }
 
 func mapParsedToResult(domain string, info whoisparser.WhoisInfo) DomainResult {
@@ -162,19 +149,55 @@ func parseTCP43NetworkResult(target networkTarget, raw, server string) (NetworkR
 
 func parseTCP43Fields(raw string) map[string][]string {
 	fields := make(map[string][]string)
-	for line := range strings.SplitSeq(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "%") || strings.HasPrefix(line, "#") {
-			continue
+	for field := range scanTCP43Fields(raw) {
+		if field.value != "" {
+			fields[field.key] = append(fields[field.key], field.value)
 		}
-		key, value, ok := strings.Cut(line, ":")
-		if !ok || strings.TrimSpace(value) == "" {
-			continue
-		}
-		key = strings.ToLower(strings.TrimSpace(key))
-		fields[key] = append(fields[key], strings.TrimSpace(value))
 	}
 	return fields
+}
+
+type tcp43Field struct {
+	paragraph int
+	key       string
+	value     string
+}
+
+func scanTCP43Fields(raw string) iter.Seq[tcp43Field] {
+	return func(yield func(tcp43Field) bool) {
+		paragraph := 0
+		paragraphHasFields := false
+		for line := range strings.SplitSeq(raw, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				if paragraphHasFields {
+					paragraph++
+					paragraphHasFields = false
+				}
+				continue
+			}
+			if isTCP43Comment(line) {
+				continue
+			}
+			key, value, ok := strings.Cut(line, ":")
+			if !ok {
+				continue
+			}
+			paragraphHasFields = true
+			field := tcp43Field{
+				paragraph: paragraph,
+				key:       strings.ToLower(strings.TrimSpace(key)),
+				value:     strings.TrimSpace(value),
+			}
+			if !yield(field) {
+				return
+			}
+		}
+	}
+}
+
+func isTCP43Comment(line string) bool {
+	return strings.HasPrefix(line, "%") || strings.HasPrefix(line, "#")
 }
 
 func containingTCP43Range(fields map[string][]string, target networkTarget) (netip.Addr, netip.Addr, bool) {

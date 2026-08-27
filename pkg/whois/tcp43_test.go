@@ -34,6 +34,73 @@ func stubTCP43RawFn(t *testing.T, responses map[string]string) *[]string {
 	return &dialed
 }
 
+func TestTCP43Lookup_AppliesDNSPTFallback(t *testing.T) {
+	const registry = "whois.dns.pt"
+	stubTCP43RawFn(t, map[string]string{
+		defaultServer: "refer: " + registry + "\n",
+		registry: `Domain: example.pt
+Domain Status: Registered
+Creation Date: 05/04/2016 09:55:53
+Expiration Date: 04/04/2027 23:59:53
+Owner Name: Example Networks
+Owner Address: 1 Example Street
+Owner Locality: Lisbon
+Owner ZipCode: 1000-001
+Owner Locality ZipCode: Lisbon
+Owner Country Code: PT
+Admin Name: Example Registrar
+Admin Country Code: PT
+Name Server: ns1.example.com
+`,
+	})
+
+	result, err := tcp43Lookup(context.Background(), "example.pt")
+
+	require.NoError(t, err)
+	assert.Equal(t, registry, result.WhoisServer)
+	assert.Equal(t, "Example Networks", result.Registrant.Name)
+	assert.Equal(t, "Example Networks", result.RegistrantIdentity)
+	assert.Equal(t, "1 Example Street", result.Registrant.Street)
+	assert.Equal(t, "Lisbon", result.Registrant.City)
+	assert.Equal(t, "Lisbon", result.Registrant.Province)
+	assert.Equal(t, "1000-001", result.Registrant.PostalCode)
+	assert.Equal(t, "PT", result.Registrant.Country)
+	assert.Equal(t, "Example Registrar", result.Admin.Name)
+	assert.Equal(t, "PT", result.Admin.Country)
+}
+
+func TestApplyTCP43DomainFallback_DispatchesByTLD(t *testing.T) {
+	result := DomainResult{Domain: "example.co.il"}
+	const raw = `% registry record
+domain: example.co.il
+
+# holder record
+descr: Example Ltd.
+e-mail: admin AT example.com
+`
+
+	applyTCP43DomainFallback(&result, raw)
+
+	assert.Equal(t, "Example Ltd.", result.Registrant.Organization)
+	assert.Equal(t, "admin@example.com", result.Registrant.Email)
+}
+
+func TestApplyDNSPTFallback_PreservesParsedValues(t *testing.T) {
+	result := DomainResult{
+		Domain: "example.pt",
+		Registrant: Contact{
+			Name:    "Parsed Owner",
+			Country: "GB",
+		},
+	}
+
+	applyTCP43DomainFallback(&result, "Owner Name: Fallback Owner\nOwner Address: 1 Main St\nOwner Country Code: US\n")
+
+	assert.Equal(t, "Parsed Owner", result.Registrant.Name)
+	assert.Equal(t, "GB", result.Registrant.Country)
+	assert.Equal(t, "1 Main St", result.Registrant.Street)
+}
+
 // ENG-5450: a referral naming the bootstrap server with a trailing root dot
 // (e.g. "whois.iana.org.") must still be recognized as the bootstrap server.
 // DNS names are equal under a trailing dot; strings.EqualFold disagrees,
