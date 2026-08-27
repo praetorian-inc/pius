@@ -100,7 +100,7 @@ func TestWhoxyResolver_Success(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":1,"raw_whois":` + jsonQuote(t, whoxyRawRecord) + `}`))
 	})
 
-	result, err := r.Lookup(context.Background(), "example.com")
+	result, err := r.LookupDomain(context.Background(), "example.com")
 	require.NoError(t, err)
 
 	assert.Contains(t, gotQuery, "key=test-key")
@@ -123,7 +123,7 @@ func TestWhoxyResolver_ZeroBalanceIsAFailure(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":0,"status_reason":"Zero Account Balance"}`))
 	})
 
-	_, err := r.Lookup(context.Background(), "example.com")
+	_, err := r.LookupDomain(context.Background(), "example.com")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Zero Account Balance")
@@ -132,7 +132,7 @@ func TestWhoxyResolver_ZeroBalanceIsAFailure(t *testing.T) {
 func TestWhoxyResolver_NoCredential(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "")
 
-	_, err := NewWhoxyClient(nil, "").Lookup(context.Background(), "example.com")
+	_, err := NewWhoxyClient(nil, "").LookupDomain(context.Background(), "example.com")
 
 	assert.ErrorIs(t, err, ErrNoCredential)
 }
@@ -153,7 +153,7 @@ func TestWhoxyResolver_EmptyRecordIsNotAnAnswer(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":1,"raw_whois":""}`))
 	})
 
-	result, err := r.Lookup(context.Background(), "example.com")
+	result, err := r.LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	assert.Empty(t, result.Domain, "an empty record must not end the fallback route")
@@ -164,7 +164,7 @@ func TestWhoxyResolver_HTTPError(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 
-	_, err := r.Lookup(context.Background(), "example.com")
+	_, err := r.LookupDomain(context.Background(), "example.com")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "429")
@@ -181,7 +181,7 @@ func TestWhoxyResolver_ErrorsDoNotLeakAPIKey(t *testing.T) {
 	r := NewWhoxyClient(nil, "super-secret-key")
 	r.baseURL = url
 
-	_, err := r.Lookup(context.Background(), "example.com")
+	_, err := r.LookupDomain(context.Background(), "example.com")
 
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "super-secret-key")

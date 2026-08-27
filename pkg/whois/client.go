@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"time"
 )
 
 // WHOISDomainOnlyClient is one source of domain registration data.
 type WHOISDomainOnlyClient interface {
 	Name() string
-	Lookup(ctx context.Context, domain string) (Result, error)
+	LookupDomain(ctx context.Context, domain string) (Result, error)
 }
 
 // WHOISClient supports both domain and network registration lookups.
@@ -19,9 +20,55 @@ type WHOISClient interface {
 	LookupNetwork(ctx context.Context, query string) (NetworkResult, error)
 }
 
-// Client is retained as a compatibility alias for the original domain client
-// interface.
-type Client = WHOISDomainOnlyClient
+// Domain is a configured sequence of Domain lookups. Lookup consults each named
+// source in this fixed order: RDAP, TCP-43, Whoxy, WhoisFreaks, then WhoisXML.
+// Naming every source makes both the order and the cost of an incomplete lookup
+// explicit.
+type Domain struct {
+	RDAPClient        WHOISClient
+	TCP43Client       WHOISClient
+	WhoxyClient       WHOISDomainOnlyClient
+	WhoisFreaksClient WHOISDomainOnlyClient
+	WhoisXMLClient    WHOISDomainOnlyClient
+
+	// httpClient builds whichever default lookups the caller did not supply.
+	httpClient *http.Client
+}
+
+// Option configures WHOIS lookups.
+type Option = func(*Domain)
+
+// New builds the WHOIS sequence, filling each lookup the caller left unset
+// with its default implementation. Callers may pass ad hoc configuration
+// functions when direct field assignment is not convenient.
+func New(opts ...Option) *Domain {
+	w := &Domain{}
+	for _, o := range opts {
+		o(w)
+	}
+
+	if w.RDAPClient == nil {
+		w.RDAPClient = NewRDAPClient(w.httpClient)
+	}
+	if w.TCP43Client == nil {
+		w.TCP43Client = NewTCP43Client()
+	}
+	if w.WhoxyClient == nil {
+		w.WhoxyClient = NewWhoxyClient(w.httpClient, "")
+	}
+	if w.WhoisFreaksClient == nil {
+		w.WhoisFreaksClient = NewWhoisFreaksClient(w.httpClient, "")
+	}
+	if w.WhoisXMLClient == nil {
+		w.WhoisXMLClient = NewWhoisXMLClient(w.httpClient, "")
+	}
+	return w
+}
+
+// WithHTTPClient sets the HTTP client used by the HTTP-based lookups.
+func WithHTTPClient(c *http.Client) Option {
+	return func(w *Domain) { w.httpClient = c }
+}
 
 // ErrNoCredential reports that a provider has no API key configured, so it
 // cannot be consulted. It is not a lookup failure: the chain skips the provider

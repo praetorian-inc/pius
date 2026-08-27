@@ -108,7 +108,7 @@ func TestWhoisFreaksLookup_Success(t *testing.T) {
 	t.Setenv("WHOISFREAKS_API_KEY", "test-key")
 	overrideWhoisFreaksBaseURL(t, srv.URL)
 
-	result, err := NewWhoisFreaksClient(srv.Client(), "").Lookup(context.Background(), "example.com")
+	result, err := NewWhoisFreaksClient(srv.Client(), "").LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
 
@@ -199,7 +199,7 @@ func TestWhoisFreaksLookup_UnregisteredDomain(t *testing.T) {
 	t.Setenv("WHOISFREAKS_API_KEY", "test-key")
 	overrideWhoisFreaksBaseURL(t, srv.URL)
 
-	result, err := NewWhoisFreaksClient(srv.Client(), "").Lookup(context.Background(), "not-registered-xyz.com")
+	result, err := NewWhoisFreaksClient(srv.Client(), "").LookupDomain(context.Background(), "not-registered-xyz.com")
 
 	require.NoError(t, err)
 	assert.True(t, result.Unregistered)
@@ -260,7 +260,7 @@ func TestWhoisFreaksLookup_PrivacyRedacted(t *testing.T) {
 	t.Setenv("WHOISFREAKS_API_KEY", "test-key")
 	overrideWhoisFreaksBaseURL(t, srv.URL)
 
-	result, err := NewWhoisFreaksClient(srv.Client(), "").Lookup(context.Background(), "private-domain.com")
+	result, err := NewWhoisFreaksClient(srv.Client(), "").LookupDomain(context.Background(), "private-domain.com")
 
 	require.NoError(t, err)
 
@@ -305,7 +305,7 @@ func TestWhoisFreaksLookup_APIError401(t *testing.T) {
 	t.Setenv("WHOISFREAKS_API_KEY", "bad-key")
 	overrideWhoisFreaksBaseURL(t, srv.URL)
 
-	result, err := NewWhoisFreaksClient(srv.Client(), "").Lookup(context.Background(), "example.com")
+	result, err := NewWhoisFreaksClient(srv.Client(), "").LookupDomain(context.Background(), "example.com")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "401")
@@ -323,7 +323,7 @@ func TestWhoisFreaksLookup_RateLimit429(t *testing.T) {
 	t.Setenv("WHOISFREAKS_API_KEY", "test-key")
 	overrideWhoisFreaksBaseURL(t, srv.URL)
 
-	result, err := NewWhoisFreaksClient(srv.Client(), "").Lookup(context.Background(), "example.com")
+	result, err := NewWhoisFreaksClient(srv.Client(), "").LookupDomain(context.Background(), "example.com")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "429")
@@ -346,7 +346,7 @@ func TestWhoisFreaksLookup_StatusFalse(t *testing.T) {
 	t.Setenv("WHOISFREAKS_API_KEY", "bad-key")
 	overrideWhoisFreaksBaseURL(t, srv.URL)
 
-	result, err := NewWhoisFreaksClient(srv.Client(), "").Lookup(context.Background(), "example.com")
+	result, err := NewWhoisFreaksClient(srv.Client(), "").LookupDomain(context.Background(), "example.com")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsuccessful status")
@@ -364,7 +364,7 @@ func TestWhoisFreaksLookup_StatusFalse(t *testing.T) {
 func TestWhoisFreaksLookup_NoAPIKey(t *testing.T) {
 	t.Setenv("WHOISFREAKS_API_KEY", "")
 
-	result, err := NewWhoisFreaksClient(http.DefaultClient, "").Lookup(context.Background(), "example.com")
+	result, err := NewWhoisFreaksClient(http.DefaultClient, "").LookupDomain(context.Background(), "example.com")
 
 	assert.ErrorIs(t, err, ErrNoCredential)
 	assert.Equal(t, Result{}, result)
@@ -399,7 +399,7 @@ func TestWhoisFreaksLookup_Integration(t *testing.T) {
 		t.Skip("WHOISFREAKS_API_KEY not set; skipping integration test")
 	}
 
-	result, err := NewWhoisFreaksClient(http.DefaultClient, "").Lookup(context.Background(), "google.com")
+	result, err := NewWhoisFreaksClient(http.DefaultClient, "").LookupDomain(context.Background(), "google.com")
 
 	require.NoError(t, err)
 	assert.Equal(t, "google.com", result.Domain)

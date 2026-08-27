@@ -111,7 +111,7 @@ type whoisXMLContact struct {
 // dataErrorMissingWhois is WhoisXML's marker for "no WHOIS data available".
 const dataErrorMissingWhois = "MISSING_WHOIS_DATA"
 
-func (r *WhoisXMLClient) Lookup(ctx context.Context, domain string) (result Result, err error) {
+func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (result Result, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
 	apiKey := r.resolveAPIKey()

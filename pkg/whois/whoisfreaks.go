@@ -88,13 +88,13 @@ type whoisFreaksContact struct {
 	Phone        string `json:"phone"`
 }
 
-// Lookup queries the WhoisFreaks v2.0 Live WHOIS API for domain registration
+// LookupDomain queries the WhoisFreaks v2.0 Live WHOIS API for domain registration
 // data.
 //
 // A missing key is ErrNoCredential, not a silent empty result: the two are
 // indistinguishable to a caller, and an operator who configured this provider
 // needs to find out it is not actually serving traffic.
-func (r *WhoisFreaksClient) Lookup(ctx context.Context, domain string) (result Result, err error) {
+func (r *WhoisFreaksClient) LookupDomain(ctx context.Context, domain string) (result Result, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
 	apiKey := r.resolveAPIKey()

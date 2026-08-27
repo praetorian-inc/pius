@@ -24,7 +24,7 @@ type fakeWHOISClient struct {
 
 func (f *fakeWHOISClient) Name() string { return f.name }
 
-func (f *fakeWHOISClient) Lookup(_ context.Context, _ string) (Result, error) {
+func (f *fakeWHOISClient) LookupDomain(_ context.Context, _ string) (Result, error) {
 	f.calls++
 	return f.result, f.err
 }
@@ -76,8 +76,8 @@ func unkeyed(name string) *fakeWHOISClient {
 
 // withCommercialLookups makes the free lookups silent and assigns the supplied
 // lookups to Whoxy, WhoisFreaks, and WhoisXML, in that fixed order.
-func withCommercialLookups(lookups ...Client) *WHOIS {
-	commercial := []Client{
+func withCommercialLookups(lookups ...WHOISDomainOnlyClient) *Domain {
+	commercial := []WHOISDomainOnlyClient{
 		silent(ProviderWhoxy),
 		silent(ProviderWhoisFreaks),
 		silent(ProviderWhoisXML),
@@ -120,7 +120,7 @@ func TestCascade_ContinuesWhileIncomplete(t *testing.T) {
 		},
 	}
 
-	res, err := withCommercialLookups(first, second, third).Lookup(context.Background(), "example.com")
+	res, err := withCommercialLookups(first, second, third).LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, first.calls)
@@ -143,7 +143,7 @@ func TestCascade_StopsWhenComplete(t *testing.T) {
 	second := answering(ProviderWhoisFreaks)
 	third := answering(ProviderWhoisXML)
 
-	res, err := withCommercialLookups(first, second, third).Lookup(context.Background(), "example.com")
+	res, err := withCommercialLookups(first, second, third).LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	assert.Equal(t, ProviderWhoxy, res.Registrar)
@@ -166,7 +166,7 @@ func TestCascade_PassesThroughToNext(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			second := complete(ProviderWhoisFreaks)
 
-			res, err := withCommercialLookups(tc.first, second).Lookup(context.Background(), "example.com")
+			res, err := withCommercialLookups(tc.first, second).LookupDomain(context.Background(), "example.com")
 
 			require.NoError(t, err)
 			assert.Equal(t, ProviderWhoisFreaks, res.Registrar)
@@ -184,7 +184,7 @@ func TestCascade_Exhaustion(t *testing.T) {
 	second := silent(ProviderWhoisFreaks)
 	third := unkeyed(ProviderWhoisXML)
 
-	res, err := withCommercialLookups(first, second, third).Lookup(context.Background(), "example.com")
+	res, err := withCommercialLookups(first, second, third).LookupDomain(context.Background(), "example.com")
 
 	require.Error(t, err)
 	assert.Equal(t, Result{}, res)
@@ -210,7 +210,7 @@ func TestCascade_PartialResultSurvivesAFailedTail(t *testing.T) {
 	w.WhoisFreaksClient = silent(ProviderWhoisFreaks)
 	w.WhoisXMLClient = unkeyed(ProviderWhoisXML)
 
-	res, err := w.Lookup(context.Background(), "example.com")
+	res, err := w.LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err, "a partial record is a result, not a failure")
 	assert.Equal(t, SourceRDAP, res.Registrar)
@@ -227,7 +227,7 @@ func TestCascade_UnregisteredBelievedWhenNothingResolved(t *testing.T) {
 	}
 	second := complete(ProviderWhoisFreaks)
 
-	res, err := withCommercialLookups(first, second).Lookup(context.Background(), "gone.com")
+	res, err := withCommercialLookups(first, second).LookupDomain(context.Background(), "gone.com")
 
 	require.NoError(t, err)
 	assert.True(t, res.Unregistered)
@@ -253,7 +253,7 @@ func TestCascade_UnregisteredDiscardedAfterARecord(t *testing.T) {
 	w.WhoisFreaksClient = silent(ProviderWhoisFreaks)
 	w.WhoisXMLClient = denier
 
-	res, err := w.Lookup(context.Background(), "example.com")
+	res, err := w.LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, denier.calls)
@@ -293,7 +293,7 @@ func TestCascade_ScrubsBeforeMerging(t *testing.T) {
 	w.WhoisFreaksClient = silent(ProviderWhoisFreaks)
 	w.WhoisXMLClient = real
 
-	res, err := w.Lookup(context.Background(), "example.com")
+	res, err := w.LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	assert.Equal(t, "Example Corp", res.Registrant.Organization,
@@ -311,7 +311,7 @@ func TestCascade_StopsOnCancelledContext(t *testing.T) {
 	first := complete(ProviderWhoxy)
 	second := complete(ProviderWhoisFreaks)
 
-	_, err := withCommercialLookups(first, second).Lookup(ctx, "example.com")
+	_, err := withCommercialLookups(first, second).LookupDomain(ctx, "example.com")
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
@@ -334,7 +334,7 @@ func TestCascade_EveryConsultedProviderIsBilled(t *testing.T) {
 	second := answering(ProviderWhoisFreaks)
 	third := answering(ProviderWhoisXML)
 
-	res, err := withCommercialLookups(first, second, third).Lookup(context.Background(), "example.com")
+	res, err := withCommercialLookups(first, second, third).LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	require.False(t, res.isComplete(), "the record never reached completeness")
@@ -350,7 +350,7 @@ func TestCascade_EveryConsultedProviderIsBilled(t *testing.T) {
 func TestCascade_MissingCredentialCostsNothing(t *testing.T) {
 	t.Setenv("WHOISXML_API_KEY", "")
 
-	_, err := NewWhoisXMLClient(nil, "").Lookup(context.Background(), "example.com")
+	_, err := NewWhoisXMLClient(nil, "").LookupDomain(context.Background(), "example.com")
 
 	assert.ErrorIs(t, err, ErrNoCredential,
 		"an unkeyed resolver declines before building a request")
@@ -365,7 +365,7 @@ func TestWHOIS_AcceptsFakeLookups(t *testing.T) {
 	w.TCP43Client = failing(SourceTCP43)
 	w.WhoxyClient = failing(ProviderWhoxy)
 
-	res, err := w.Lookup(context.Background(), "example.com")
+	res, err := w.LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	assert.Equal(t, SourceRDAP, res.Registrar)
@@ -385,7 +385,7 @@ func TestLookupUsesFixedOrder(t *testing.T) {
 	w.WhoisFreaksClient = freaks
 	w.WhoisXMLClient = xml
 
-	result, err := w.Lookup(context.Background(), "example.com")
+	result, err := w.LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{
@@ -399,7 +399,7 @@ func TestLookupUsesFixedOrder(t *testing.T) {
 
 func TestNewAcceptsInformalOptions(t *testing.T) {
 	rdap := silent(SourceRDAP)
-	w := New(func(w *WHOIS) {
+	w := New(func(w *Domain) {
 		w.RDAPClient = rdap
 	})
 

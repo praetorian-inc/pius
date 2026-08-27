@@ -76,7 +76,7 @@ func TestLogLookup_ClassifiesEveryOutcome(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			records := captureLogs(t, slog.LevelInfo, func() {
-				result, err := tc.resolver.Lookup(context.Background(), "example.com")
+				result, err := tc.resolver.LookupDomain(context.Background(), "example.com")
 				logLookup(tc.resolver.Name(), "example.com", time.Now(), &result, &err)
 			})
 
@@ -129,7 +129,7 @@ func TestResolvers_EmitOneRecordEachThroughLookup(t *testing.T) {
 	unkeyedXML := NewWhoisXMLClient(nil, "")
 
 	records := captureLogs(t, slog.LevelInfo, func() {
-		_, err := withCommercialLookups(whoxy, freaks, unkeyedXML).Lookup(context.Background(), "example.com")
+		_, err := withCommercialLookups(whoxy, freaks, unkeyedXML).LookupDomain(context.Background(), "example.com")
 		require.Error(t, err, "no leg had a record")
 	})
 

@@ -31,15 +31,7 @@ func NewRDAPClient(httpClient *http.Client) *RDAPClient {
 
 func (r *RDAPClient) Name() string { return SourceRDAP }
 
-func (r *RDAPClient) LookupNetwork(ctx context.Context, query string) (NetworkResult, error) {
-	target, err := parseNetworkTarget(query)
-	if err != nil {
-		return NetworkResult{}, err
-	}
-	return rdapNetworkLookup(ctx, r.httpClient, target)
-}
-
-func (r *RDAPClient) Lookup(ctx context.Context, domain string) (result Result, err error) {
+func (r *RDAPClient) LookupDomain(ctx context.Context, domain string) (result Result, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
 	result, err = rdapLookup(ctx, r.httpClient, domain)
@@ -172,75 +164,12 @@ func extractContact(entities []rdap.Entity, role string) Contact {
 	return contactFromVCard(e.VCard)
 }
 
-func contactFromVCard(vcard *rdap.VCard) Contact {
-	contact := Contact{
-		Name:         vcard.Name(),
-		Organization: extractOrgFromVCard(vcard),
-		Street:       vcard.StreetAddress(),
-		PostalCode:   vcard.PostalCode(),
+func (r *RDAPClient) LookupNetwork(ctx context.Context, query string) (NetworkResult, error) {
+	target, err := parseNetworkTarget(query)
+	if err != nil {
+		return NetworkResult{}, err
 	}
-	contact.Country, contact.Province, contact.City = extractAddressFromVCard(vcard)
-	if contact.Street == "" && contact.City == "" && contact.Province == "" && contact.PostalCode == "" {
-		contact.Street = addressLabelFromVCard(vcard)
-	}
-	return contact.Clean()
-}
-
-func addressLabelFromVCard(vcard *rdap.VCard) string {
-	for _, property := range vcard.Get("adr") {
-		for _, label := range property.Parameters["label"] {
-			lines := make([]string, 0, strings.Count(label, "\n")+1)
-			for line := range strings.Lines(label) {
-				if line = strings.TrimSpace(line); line != "" {
-					lines = append(lines, line)
-				}
-			}
-			if len(lines) > 0 {
-				return strings.Join(lines, ", ")
-			}
-		}
-	}
-	return ""
-}
-
-func extractOrgFromVCard(vcard *rdap.VCard) string {
-	props := vcard.Get("org")
-	if len(props) == 0 {
-		return ""
-	}
-	if v, ok := props[0].Value.(string); ok {
-		return v
-	}
-	return ""
-}
-
-func extractAddressFromVCard(vcard *rdap.VCard) (country, province, city string) {
-	adrProps := vcard.Get("adr")
-	if len(adrProps) == 0 {
-		return vcard.Country(), "", ""
-	}
-	if params := adrProps[0].Parameters; params != nil {
-		if cc, ok := params["cc"]; ok && len(cc) > 0 {
-			country = cc[0]
-		}
-	}
-	// RFC 6350 adr structured value: [pobox, ext, street, locality, region, postal, country]
-	if addrSlice, ok := adrProps[0].Value.([]any); ok {
-		if len(addrSlice) > 3 {
-			if v, ok := addrSlice[3].(string); ok {
-				city = v
-			}
-		}
-		if len(addrSlice) > 4 {
-			if v, ok := addrSlice[4].(string); ok {
-				province = v
-			}
-		}
-	}
-	if country == "" {
-		country = vcard.Country()
-	}
-	return country, province, city
+	return rdapNetworkLookup(ctx, r.httpClient, target)
 }
 
 func rdapNetworkLookup(ctx context.Context, httpClient *http.Client, target networkTarget) (NetworkResult, error) {
@@ -353,4 +282,75 @@ func firstVCardValue(vcard *rdap.VCard, name string) string {
 		return ""
 	}
 	return values[0]
+}
+
+func contactFromVCard(vcard *rdap.VCard) Contact {
+	contact := Contact{
+		Name:         vcard.Name(),
+		Organization: extractOrgFromVCard(vcard),
+		Street:       vcard.StreetAddress(),
+		PostalCode:   vcard.PostalCode(),
+	}
+	contact.Country, contact.Province, contact.City = extractAddressFromVCard(vcard)
+	if contact.Street == "" && contact.City == "" && contact.Province == "" && contact.PostalCode == "" {
+		contact.Street = addressLabelFromVCard(vcard)
+	}
+	return contact.Clean()
+}
+
+func addressLabelFromVCard(vcard *rdap.VCard) string {
+	for _, property := range vcard.Get("adr") {
+		for _, label := range property.Parameters["label"] {
+			lines := make([]string, 0, strings.Count(label, "\n")+1)
+			for line := range strings.Lines(label) {
+				if line = strings.TrimSpace(line); line != "" {
+					lines = append(lines, line)
+				}
+			}
+			if len(lines) > 0 {
+				return strings.Join(lines, ", ")
+			}
+		}
+	}
+	return ""
+}
+
+func extractOrgFromVCard(vcard *rdap.VCard) string {
+	props := vcard.Get("org")
+	if len(props) == 0 {
+		return ""
+	}
+	if v, ok := props[0].Value.(string); ok {
+		return v
+	}
+	return ""
+}
+
+func extractAddressFromVCard(vcard *rdap.VCard) (country, province, city string) {
+	adrProps := vcard.Get("adr")
+	if len(adrProps) == 0 {
+		return vcard.Country(), "", ""
+	}
+	if params := adrProps[0].Parameters; params != nil {
+		if cc, ok := params["cc"]; ok && len(cc) > 0 {
+			country = cc[0]
+		}
+	}
+	// RFC 6350 adr structured value: [pobox, ext, street, locality, region, postal, country]
+	if addrSlice, ok := adrProps[0].Value.([]any); ok {
+		if len(addrSlice) > 3 {
+			if v, ok := addrSlice[3].(string); ok {
+				city = v
+			}
+		}
+		if len(addrSlice) > 4 {
+			if v, ok := addrSlice[4].(string); ok {
+				province = v
+			}
+		}
+	}
+	if country == "" {
+		country = vcard.Country()
+	}
+	return country, province, city
 }

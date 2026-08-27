@@ -5,62 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"time"
 
 	whoisparser "github.com/likexian/whois-parser"
 	"github.com/openrdap/rdap"
 )
 
-// WHOIS is a configured sequence of WHOIS lookups. Lookup consults each named
-// source in this fixed order: RDAP, TCP-43, Whoxy, WhoisFreaks, then WhoisXML.
-// Naming every source makes both the order and the cost of an incomplete lookup
-// explicit.
-type WHOIS struct {
-	RDAPClient        WHOISClient
-	TCP43Client       WHOISClient
-	WhoxyClient       WHOISDomainOnlyClient
-	WhoisFreaksClient WHOISDomainOnlyClient
-	WhoisXMLClient    WHOISDomainOnlyClient
-
-	// httpClient builds whichever default lookups the caller did not supply.
-	httpClient *http.Client
-}
-
-// Option configures WHOIS lookups.
-type Option = func(*WHOIS)
-
-// New builds the WHOIS sequence, filling each lookup the caller left unset
-// with its default implementation. Callers may pass ad hoc configuration
-// functions when direct field assignment is not convenient.
-func New(opts ...Option) *WHOIS {
-	w := &WHOIS{}
-	for _, o := range opts {
-		o(w)
-	}
-
-	if w.RDAPClient == nil {
-		w.RDAPClient = NewRDAPClient(w.httpClient)
-	}
-	if w.TCP43Client == nil {
-		w.TCP43Client = NewTCP43Client()
-	}
-	if w.WhoxyClient == nil {
-		w.WhoxyClient = NewWhoxyClient(w.httpClient, "")
-	}
-	if w.WhoisFreaksClient == nil {
-		w.WhoisFreaksClient = NewWhoisFreaksClient(w.httpClient, "")
-	}
-	if w.WhoisXMLClient == nil {
-		w.WhoisXMLClient = NewWhoisXMLClient(w.httpClient, "")
-	}
-	return w
-}
-
-// WithHTTPClient sets the HTTP client used by the HTTP-based lookups.
-func WithHTTPClient(c *http.Client) Option {
-	return func(w *WHOIS) { w.httpClient = c }
-}
 
 // lookupState holds the mutable state for one cascade walk. Keeping it local to
 // Lookup allows a configured WHOIS to be reused safely by concurrent callers.
@@ -71,10 +21,10 @@ type lookupState struct {
 	unregistered bool
 }
 
-// Lookup resolves domain registration data by walking w's configured cascade
+// LookupDomain resolves domain registration data by walking w's configured cascade
 // and merging each leg's answer into a single record, stopping as soon as the
 // record is complete.
-func (w *WHOIS) Lookup(ctx context.Context, domain string) (Result, error) {
+func (w *Domain) LookupDomain(ctx context.Context, domain string) (Result, error) {
 	domain = RootDomain(domain)
 	if domain == "" {
 		return Result{}, fmt.Errorf("whois: no registrable domain")
@@ -104,13 +54,13 @@ func (w *WHOIS) Lookup(ctx context.Context, domain string) (Result, error) {
 // doLookup runs one leg and folds its answer into state, reporting whether the
 // cascade should stop. Scrub-then-merge-then-check is order-sensitive, so the
 // operation is kept in one method rather than repeated for each kind of leg.
-func (w *WHOIS) doLookup(ctx context.Context, domain string, r WHOISDomainOnlyClient, state *lookupState) (stop bool) {
+func (w *Domain) doLookup(ctx context.Context, domain string, r WHOISDomainOnlyClient, state *lookupState) (stop bool) {
 	if err := ctx.Err(); err != nil {
 		state.errs = append(state.errs, err)
 		return true
 	}
 
-	res, err := r.Lookup(ctx, domain)
+	res, err := r.LookupDomain(ctx, domain)
 	if err != nil {
 		if isDomainNotFound(err) {
 			state.unregistered = true

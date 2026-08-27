@@ -137,7 +137,7 @@ func (r *WhoxyClient) ReverseLookup(ctx context.Context, field, value string, pa
 	return response, nil
 }
 
-func (r *WhoxyClient) Lookup(ctx context.Context, domain string) (result Result, err error) {
+func (r *WhoxyClient) LookupDomain(ctx context.Context, domain string) (result Result, err error) {
 	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
 
 	apiKey := r.getAPIKey()

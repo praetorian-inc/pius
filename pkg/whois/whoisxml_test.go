@@ -57,7 +57,7 @@ func TestWhoisXMLResolver_Success(t *testing.T) {
 		_, _ = w.Write([]byte(whoisXMLRecordJSON))
 	})
 
-	result, err := r.Lookup(context.Background(), "example.com")
+	result, err := r.LookupDomain(context.Background(), "example.com")
 	require.NoError(t, err)
 
 	assert.Contains(t, gotQuery, "apiKey=test-key")
@@ -88,7 +88,7 @@ func TestWhoisXMLResolver_HardRefreshOffByDefault(t *testing.T) {
 		_, _ = w.Write([]byte(whoisXMLRecordJSON))
 	})
 
-	_, err := r.Lookup(context.Background(), "example.com")
+	_, err := r.LookupDomain(context.Background(), "example.com")
 	require.NoError(t, err)
 
 	assert.NotContains(t, gotQuery, "_hardRefresh",
@@ -102,7 +102,7 @@ func TestWhoisXMLResolver_HardRefreshWhenEnabled(t *testing.T) {
 		_, _ = w.Write([]byte(whoisXMLRecordJSON))
 	})
 
-	_, err := r.WithHardRefresh(true).Lookup(context.Background(), "example.com")
+	_, err := r.WithHardRefresh(true).LookupDomain(context.Background(), "example.com")
 	require.NoError(t, err)
 
 	assert.Contains(t, gotQuery, "_hardRefresh=1")
@@ -117,7 +117,7 @@ func TestWhoisXMLResolver_CreditExhaustionOnHTTP200(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ErrorMessage":{"errorCode":"AUTHENTICATE_06","msg":"Access restricted"}}`))
 	})
 
-	_, err := r.Lookup(context.Background(), "example.com")
+	_, err := r.LookupDomain(context.Background(), "example.com")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "AUTHENTICATE_06")
@@ -138,7 +138,7 @@ func TestWhoisXMLResolver_RecordMentioningErrorCodeIsNotAFailure(t *testing.T) {
 		}}`))
 	})
 
-	result, err := r.Lookup(context.Background(), "example.com")
+	result, err := r.LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	assert.Equal(t, "example.com", result.Domain)
@@ -157,7 +157,7 @@ func TestWhoisXMLResolver_MissingDataMeansUnregistered(t *testing.T) {
 		_, _ = w.Write([]byte(`{"WhoisRecord":{"domainName":"example.com","dataError":"MISSING_WHOIS_DATA"}}`))
 	})
 
-	result, err := r.Lookup(context.Background(), "example.com")
+	result, err := r.LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	assert.True(t, result.Unregistered)
@@ -171,7 +171,7 @@ func TestWhoisXMLResolver_EmptyRecordIsNotAnAnswer(t *testing.T) {
 		_, _ = w.Write([]byte(`{"WhoisRecord":{}}`))
 	})
 
-	result, err := r.Lookup(context.Background(), "example.com")
+	result, err := r.LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
 	assert.Empty(t, result.Domain)
@@ -206,7 +206,7 @@ func TestWhoisXMLResolver_TakesContactsFromRegistryData(t *testing.T) {
 		}`))
 	})
 
-	result, err := r.Lookup(context.Background(), "example.co.kr")
+	result, err := r.LookupDomain(context.Background(), "example.co.kr")
 	require.NoError(t, err)
 
 	assert.Equal(t, "Registry Org", result.Registrant.Organization,
@@ -241,7 +241,7 @@ func TestWhoisXMLResolver_TopLevelContactsWinOverRegistryData(t *testing.T) {
 		}`))
 	})
 
-	result, err := r.Lookup(context.Background(), "example.com")
+	result, err := r.LookupDomain(context.Background(), "example.com")
 	require.NoError(t, err)
 
 	assert.Equal(t, "Registrar Level Org", result.Registrant.Organization)
@@ -267,7 +267,7 @@ func TestWhoisXMLResolver_FillsFromRegistryData(t *testing.T) {
 		}`))
 	})
 
-	result, err := r.Lookup(context.Background(), "example.com")
+	result, err := r.LookupDomain(context.Background(), "example.com")
 	require.NoError(t, err)
 
 	assert.Equal(t, "RESERVED-Internet Assigned Numbers Authority", result.Registrar,
@@ -279,7 +279,7 @@ func TestWhoisXMLResolver_FillsFromRegistryData(t *testing.T) {
 func TestWhoisXMLResolver_NoCredential(t *testing.T) {
 	t.Setenv("WHOISXML_API_KEY", "")
 
-	_, err := NewWhoisXMLClient(nil, "").Lookup(context.Background(), "example.com")
+	_, err := NewWhoisXMLClient(nil, "").LookupDomain(context.Background(), "example.com")
 
 	assert.ErrorIs(t, err, ErrNoCredential)
 }
@@ -300,7 +300,7 @@ func TestWhoisXMLResolver_ErrorsDoNotLeakAPIKey(t *testing.T) {
 	r := NewWhoisXMLClient(nil, "super-secret-key")
 	r.baseURL = url
 
-	_, err := r.Lookup(context.Background(), "example.com")
+	_, err := r.LookupDomain(context.Background(), "example.com")
 
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "super-secret-key")
@@ -341,7 +341,7 @@ func TestWhoisXMLResolver_OtherErrorCodesAreReported(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ErrorMessage":{"errorCode":"AUTHENTICATE_01","msg":"Invalid API key"}}`))
 	})
 
-	_, err := r.Lookup(context.Background(), "example.com")
+	_, err := r.LookupDomain(context.Background(), "example.com")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "AUTHENTICATE_01")
@@ -371,7 +371,7 @@ func TestWhoisXMLResolver_RegistryDataSurvivesRegistrarLevelMissingData(t *testi
 		}`))
 	})
 
-	result, err := r.Lookup(context.Background(), "example.co.kr")
+	result, err := r.LookupDomain(context.Background(), "example.co.kr")
 	require.NoError(t, err)
 
 	assert.False(t, result.Unregistered,
