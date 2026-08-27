@@ -6,21 +6,24 @@ import (
 )
 
 type DomainResult struct {
-	Domain       string   `json:"domain"`
-	Registrar    string   `json:"registrar,omitempty"`
-	Registrant   Contact  `json:"registrant"`
-	Admin        Contact  `json:"admin"`
-	Tech         Contact  `json:"tech"`
-	Billing      Contact  `json:"billing"`
-	Created      string   `json:"created,omitempty"`
-	Updated      string   `json:"updated,omitempty"`
-	Expiration   string   `json:"expiration,omitempty"`
-	NameServers  []string `json:"nameservers,omitempty"`
-	Status       []string `json:"status,omitempty"`
-	DNSSEC       string   `json:"dnssec,omitempty"`
-	WhoisServer  string   `json:"whois_server,omitempty"`
-	Sources      []string `json:"sources,omitempty"`
-	Unregistered bool     `json:"unregistered,omitempty"`
+	Domain             string   `json:"domain"`
+	Registrar          string   `json:"registrar,omitempty"`
+	Registrant         Contact  `json:"registrant"`
+	Admin              Contact  `json:"admin"`
+	Tech               Contact  `json:"tech"`
+	Billing            Contact  `json:"billing"`
+	Created            string   `json:"created,omitempty"`
+	Updated            string   `json:"updated,omitempty"`
+	Expiration         string   `json:"expiration,omitempty"`
+	NameServers        []string `json:"nameservers,omitempty"`
+	Status             []string `json:"status,omitempty"`
+	DNSSEC             string   `json:"dnssec,omitempty"`
+	WhoisServer        string   `json:"whois_server,omitempty"`
+	Sources            []string `json:"sources,omitempty"`
+	Unregistered       bool     `json:"unregistered,omitempty"`
+	RegistrantIdentity string   `json:"registrant_identity,omitempty"`
+	ContactEmail       string   `json:"contact_email,omitempty"`
+	ContactEmailRole   string   `json:"contact_email_role,omitempty"`
 }
 
 func (r *DomainResult) AllContacts() [4]Contact {
@@ -29,7 +32,7 @@ func (r *DomainResult) AllContacts() [4]Contact {
 
 // Reports whether the record has enough information to be considered complete.
 func (r *DomainResult) isComplete() bool {
-	return r.Registrant.Organization != "" || r.Registrant.Name != "" &&
+	return (r.Registrant.Organization != "" || r.Registrant.Name != "") &&
 		r.Registrant.Email != "" &&
 		r.Registrar != "" &&
 		r.Expiration != "" &&
@@ -75,6 +78,7 @@ func (r *DomainResult) Merge(other DomainResult) {
 	r.Billing = mergeContact(r.Billing, other.Billing)
 
 	r.Sources = append(r.Sources, other.Sources...)
+	r.populateDerivedFields()
 }
 
 func (r *DomainResult) Normalize() {
@@ -92,6 +96,12 @@ func (r *DomainResult) Normalize() {
 	r.Admin = r.Admin.Normalize()
 	r.Tech = r.Tech.Normalize()
 	r.Billing = r.Billing.Normalize()
+	r.populateDerivedFields()
+}
+
+func (r *DomainResult) populateDerivedFields() {
+	r.RegistrantIdentity = preferNonPrivacy(r.Registrant.Organization, r.Registrant.Name)
+	r.ContactEmail, r.ContactEmailRole = preferredContactEmail(*r)
 }
 
 // Contact holds registration contact information for a single role.
@@ -128,14 +138,14 @@ func (c Contact) Normalize() Contact {
 
 func mergeContact(base, other Contact) Contact {
 	return Contact{
-		Organization: cmp.Or(base.Organization, other.Organization),
-		Name:         cmp.Or(base.Name, other.Name),
-		Email:        cmp.Or(base.Email, other.Email),
-		Country:      cmp.Or(base.Country, other.Country),
-		Province:     cmp.Or(base.Province, other.Province),
-		City:         cmp.Or(base.City, other.City),
-		Street:       cmp.Or(base.Street, other.Street),
-		PostalCode:   cmp.Or(base.PostalCode, other.PostalCode),
-		Phone:        cmp.Or(base.Phone, other.Phone),
+		Organization: preferNonPrivacy(base.Organization, other.Organization),
+		Name:         preferNonPrivacy(base.Name, other.Name),
+		Email:        preferNonPrivacy(base.Email, other.Email),
+		Country:      preferNonPrivacy(base.Country, other.Country),
+		Province:     preferNonPrivacy(base.Province, other.Province),
+		City:         preferNonPrivacy(base.City, other.City),
+		Street:       preferNonPrivacy(base.Street, other.Street),
+		PostalCode:   preferNonPrivacy(base.PostalCode, other.PostalCode),
+		Phone:        preferNonPrivacy(base.Phone, other.Phone),
 	}
 }

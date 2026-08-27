@@ -76,15 +76,6 @@ func buildWhoisResultFinding(r whois.DomainResult, pivotOrg string) plugins.Find
 	r.Registrant.City = whois.NormalizePrivacy(r.Registrant.City)
 	r.Registrar = whois.NormalizeRegistrar(r.Registrar)
 
-	// Find the best non-privacy email across all contacts.
-	email, sawProxy := whois.ContactEmail(r)
-	switch {
-	case email != "":
-		r.Registrant.Email = email
-	case sawProxy || r.Registrant.Organization == whois.PrivacyRedaction:
-		r.Registrant.Email = whois.PrivacyRedaction
-	}
-
 	fd := WhoisFindingData{DomainResult: r}
 	if pivotOrg != "" {
 		fd.Corroboration = whois.Corroborate(pivotOrg, org)

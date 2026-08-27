@@ -43,6 +43,10 @@ func TestResult_Clean(t *testing.T) {
 			Organization: "Example Inc.",
 			Email:        "admin@example.com",
 		},
+		Admin:              Contact{Name: PrivacyRedaction},
+		RegistrantIdentity: "Example Inc.",
+		ContactEmail:       "admin@example.com",
+		ContactEmailRole:   "registrant",
 	}, result)
 }
 
@@ -68,4 +72,73 @@ func TestResult_CleanAllowsProviderFallback(t *testing.T) {
 	assert.Equal(t, []string{"ns1.example.com"}, primary.NameServers)
 	assert.Equal(t, []string{"active"}, primary.Status)
 	assert.Equal(t, "Jane Doe", primary.Registrant.Name)
+	assert.Equal(t, "Jane Doe", primary.RegistrantIdentity)
+}
+
+func TestDomainResult_NormalizePopulatesDerivedFields(t *testing.T) {
+	result := DomainResult{
+		Registrant: Contact{
+			Organization: "REDACTED FOR PRIVACY",
+			Name:         "Jane Doe",
+			Email:        "proxy@withheldforprivacy.com",
+		},
+		Admin: Contact{Email: "admin@example.com"},
+	}
+
+	result.Normalize()
+
+	assert.Equal(t, "Jane Doe", result.RegistrantIdentity)
+	assert.Equal(t, "admin@example.com", result.ContactEmail)
+	assert.Equal(t, "administrative", result.ContactEmailRole)
+}
+
+func TestDomainResult_NormalizePreservesPrivateContactEmail(t *testing.T) {
+	result := DomainResult{Tech: Contact{Email: "domains@markmonitor.com"}}
+
+	result.Normalize()
+
+	assert.Equal(t, PrivacyRedaction, result.ContactEmail)
+	assert.Equal(t, "technical", result.ContactEmailRole)
+}
+
+func TestDomainResult_MergeContactPrefersRealValues(t *testing.T) {
+	private := Contact{
+		Organization: PrivacyRedaction,
+		Name:         PrivacyRedaction,
+		Email:        PrivacyRedaction,
+		Country:      PrivacyRedaction,
+		Province:     PrivacyRedaction,
+		City:         PrivacyRedaction,
+		Street:       PrivacyRedaction,
+		PostalCode:   PrivacyRedaction,
+		Phone:        PrivacyRedaction,
+	}
+	fallback := Contact{
+		Organization: "Fallback Inc.",
+		Name:         "Jane Doe",
+		Email:        "jane@example.com",
+		Country:      "US",
+		Province:     "Texas",
+		City:         "Austin",
+		Street:       "1 Main St",
+		PostalCode:   "78701",
+		Phone:        "+1-555-0100",
+	}
+	primary := DomainResult{Registrant: private}
+
+	primary.Merge(DomainResult{Registrant: fallback})
+
+	assert.Equal(t, fallback, primary.Registrant)
+	assert.Equal(t, "Fallback Inc.", primary.RegistrantIdentity)
+	assert.Equal(t, "jane@example.com", primary.ContactEmail)
+	assert.Equal(t, "registrant", primary.ContactEmailRole)
+}
+
+func TestDomainResult_MergeContactPreservesPrimaryRealValues(t *testing.T) {
+	primary := DomainResult{Registrant: Contact{Organization: "Primary Inc."}}
+
+	primary.Merge(DomainResult{Registrant: Contact{Organization: "Fallback Inc."}})
+
+	assert.Equal(t, "Primary Inc.", primary.Registrant.Organization)
+	assert.Equal(t, "Primary Inc.", primary.RegistrantIdentity)
 }

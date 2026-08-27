@@ -268,21 +268,22 @@ func TestWhoisFreaksLookup_PrivacyRedacted(t *testing.T) {
 	assert.Equal(t, "REDACTED FOR PRIVACY", result.Registrant.Organization)
 	assert.Equal(t, "REDACTED FOR PRIVACY", result.Registrant.Name)
 
-	// Scrub the contacts.
 	result.Normalize()
 
-	// After scrub: all contact fields should be cleared.
-	for _, c := range result.AllContacts() {
-		assert.Empty(t, c.Organization, "Organization should be empty after scrub")
-		assert.Empty(t, c.Name, "Name should be empty after scrub")
-		assert.Empty(t, c.Email, "Email should be empty after scrub")
-		assert.Empty(t, c.Country, "Country should be empty after scrub")
-		assert.Empty(t, c.Province, "Province should be empty after scrub")
-		assert.Empty(t, c.City, "City should be empty after scrub")
-		assert.Empty(t, c.Street, "Street should be empty after scrub")
-		assert.Empty(t, c.PostalCode, "PostalCode should be empty after scrub")
-		assert.Empty(t, c.Phone, "Phone should be empty after scrub")
+	for _, contact := range result.AllContacts() {
+		assert.Equal(t, PrivacyRedaction, contact.Organization)
+		assert.Equal(t, PrivacyRedaction, contact.Name)
+		assert.Equal(t, PrivacyRedaction, contact.Email)
+		assert.Equal(t, PrivacyRedaction, contact.Country)
+		assert.Equal(t, PrivacyRedaction, contact.Province)
+		assert.Equal(t, PrivacyRedaction, contact.City)
+		assert.Equal(t, PrivacyRedaction, contact.Street)
+		assert.Equal(t, PrivacyRedaction, contact.PostalCode)
+		assert.Equal(t, PrivacyRedaction, contact.Phone)
 	}
+	assert.Equal(t, PrivacyRedaction, result.RegistrantIdentity)
+	assert.Equal(t, PrivacyRedaction, result.ContactEmail)
+	assert.Equal(t, "registrant", result.ContactEmailRole)
 
 	// Non-contact fields remain populated.
 	assert.Equal(t, "Privacy Registrar LLC", result.Registrar)
