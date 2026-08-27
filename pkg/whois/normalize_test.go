@@ -137,33 +137,6 @@ func TestRegistrantOrg(t *testing.T) {
 	assert.Equal(t, "", RegistrantOrg(c3, "example.com"))
 }
 
-func TestContactEmail(t *testing.T) {
-	r := DomainResult{
-		Registrant: Contact{Email: "admin@example.com"},
-		Admin:      Contact{Email: "tech@example.com"},
-	}
-	email, proxy := ContactEmail(r)
-	assert.Equal(t, "admin@example.com", email)
-	assert.False(t, proxy)
-
-	// Privacy email in registrant, real in admin.
-	r2 := DomainResult{
-		Registrant: Contact{Email: "proxy@withheldforprivacy.com"},
-		Admin:      Contact{Email: "real@example.com"},
-	}
-	email2, proxy2 := ContactEmail(r2)
-	assert.Equal(t, "real@example.com", email2)
-	assert.True(t, proxy2)
-
-	// All privacy.
-	r3 := DomainResult{
-		Registrant: Contact{Email: "proxy@withheldforprivacy.com"},
-	}
-	email3, proxy3 := ContactEmail(r3)
-	assert.Equal(t, "", email3)
-	assert.True(t, proxy3)
-}
-
 func TestIsPlausibleDomain(t *testing.T) {
 	assert.True(t, IsPlausibleDomain("example.com"))
 	assert.True(t, IsPlausibleDomain("sub.example.co.uk"))

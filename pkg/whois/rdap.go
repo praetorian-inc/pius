@@ -193,7 +193,7 @@ func rdapNetworkLookup(ctx context.Context, httpClient *http.Client, target netw
 	result := mapRDAPToNetworkResult(target.query, network)
 	result.Server = rdapResponseServer(response)
 	result.RDAPServer = result.Server
-	result.Clean()
+	result.Normalize()
 	if err := requireContainingAllocation(result, target); err != nil {
 		return NetworkResult{}, err
 	}
@@ -258,17 +258,10 @@ func networkContactFromEntity(entity *rdap.Entity, direct bool) NetworkContact {
 		return contact
 	}
 
-	base := contactFromVCard(entity.VCard)
+	contact.Contact = contactFromVCard(entity.VCard)
 	contact.Kind = firstVCardValue(entity.VCard, "kind")
-	contact.Organization = base.Organization
-	contact.Name = base.Name
-	contact.Email = normalizePrivacy(entity.VCard.Email())
-	contact.Phone = normalizePrivacy(strings.TrimPrefix(entity.VCard.Tel(), "tel:"))
-	contact.Country = base.Country
-	contact.Province = base.Province
-	contact.City = base.City
-	contact.Street = base.Street
-	contact.PostalCode = base.PostalCode
+	contact.Email = entity.VCard.Email()
+	contact.Phone = strings.TrimPrefix(entity.VCard.Tel(), "tel:")
 	return contact
 }
 

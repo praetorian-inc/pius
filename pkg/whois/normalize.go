@@ -30,7 +30,7 @@ func RegistrantOrg(c Contact, domain string) string {
 func preferredContactEmail(r DomainResult) (email, role string) {
 	roles := [...]string{"registrant", "administrative", "technical", "billing"}
 	for i, contact := range r.AllContacts() {
-		if contact.Email != "" && contact.Email != PrivacyRedaction {
+		if IsEmail(contact.Email) && contact.Email != PrivacyRedaction {
 			return contact.Email, roles[i]
 		}
 	}
@@ -246,7 +246,7 @@ func applyISOCILFallback(r *DomainResult, rawText string) {
 
 	if r.Registrant.Email == "" {
 		deobfuscated := strings.ReplaceAll(holder["e-mail"], " AT ", "@")
-		if classifyEmail(deobfuscated) != "" {
+		if IsEmail(deobfuscated) {
 			r.Registrant.Email = deobfuscated
 		}
 	}

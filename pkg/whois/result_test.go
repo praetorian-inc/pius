@@ -92,13 +92,24 @@ func TestDomainResult_NormalizePopulatesDerivedFields(t *testing.T) {
 	assert.Equal(t, "administrative", result.ContactEmailRole)
 }
 
-func TestDomainResult_NormalizePreservesPrivateContactEmail(t *testing.T) {
-	result := DomainResult{Tech: Contact{Email: "domains@markmonitor.com"}}
+func TestDomainResult_NormalizeDefaultsUnavailableContactEmailToRegistrantPrivacy(t *testing.T) {
+	tests := []struct {
+		name   string
+		result DomainResult
+	}{
+		{name: "missing"},
+		{name: "malformed", result: DomainResult{Registrant: Contact{Email: "not-an-email"}}},
+		{name: "redacted", result: DomainResult{Tech: Contact{Email: "domains@markmonitor.com"}}},
+	}
 
-	result.Normalize()
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.result.Normalize()
 
-	assert.Equal(t, PrivacyRedaction, result.ContactEmail)
-	assert.Equal(t, "technical", result.ContactEmailRole)
+			assert.Equal(t, PrivacyRedaction, test.result.ContactEmail)
+			assert.Equal(t, "registrant", test.result.ContactEmailRole)
+		})
+	}
 }
 
 func TestDomainResult_MergeContactPrefersRealValues(t *testing.T) {
