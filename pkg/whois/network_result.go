@@ -98,6 +98,10 @@ func (r NetworkResult) preferredContactRole() string {
 	return "registrant"
 }
 
+func (r NetworkResult) hasAllocation() bool {
+	return r.StartAddress != "" && r.EndAddress != ""
+}
+
 func (r NetworkResult) hasUsefulIdentity() bool {
 	return len(r.PreferredContacts()) > 0
 }

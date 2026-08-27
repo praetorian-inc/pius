@@ -105,3 +105,7 @@ func hasMarkerToken(lower string) bool {
 	}
 	return false
 }
+
+func isNotEmptyOrPrivate(s string) bool {
+	return s != "" && s != PrivacyRedaction
+}

@@ -25,10 +25,9 @@ func LookupNetwork(ctx context.Context, query string, opts ...Option) (NetworkRe
 
 // networkLookupState holds the mutable state for one network cascade walk.
 type networkLookupState struct {
-	target   networkTarget
-	result   NetworkResult
-	errs     []error
-	resolved bool
+	target networkTarget
+	result NetworkResult
+	errs   []error
 }
 
 // LookupNetwork resolves an IP or CIDR through the configured RDAP and TCP-43
@@ -71,12 +70,11 @@ func (w *WHOIS) doNetworkLookup(ctx context.Context, client WHOISClient, state *
 	}
 
 	state.result.Merge(result)
-	state.resolved = true
 	return client.Name() == SourceRDAP && result.hasUsefulIdentity()
 }
 
 func (state *networkLookupState) finish() (NetworkResult, error) {
-	if state.resolved {
+	if state.result.hasAllocation() {
 		state.result.Query = state.target.query
 		state.result.Normalize()
 		return state.result, nil

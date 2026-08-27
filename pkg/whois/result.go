@@ -64,10 +64,6 @@ func (r *DomainResult) hasRegistrationData() bool {
 	return false
 }
 
-func isNotEmptyOrPrivate(s string) bool {
-	return s != "" && s != PrivacyRedaction
-}
-
 // Merge fills empty fields on r from other, used to chain providers.
 // Non-empty fields on r are never overwritten. Sources are accumulated.
 func (r *DomainResult) Merge(other DomainResult) {
