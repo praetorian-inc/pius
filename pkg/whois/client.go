@@ -31,8 +31,11 @@ type WHOIS struct {
 	WhoisFreaksClient WHOISDomainOnlyClient
 	WhoisXMLClient    WHOISDomainOnlyClient
 
-	// httpClient builds whichever default lookups the caller did not supply.
-	httpClient *http.Client
+	// These fields build whichever default lookups the caller did not supply.
+	httpClient        *http.Client
+	whoxyAPIKey       string
+	whoisXMLAPIKey    string
+	whoisFreaksAPIKey string
 }
 
 // Option configures WHOIS lookups.
@@ -54,13 +57,13 @@ func New(opts ...Option) *WHOIS {
 		w.TCP43Client = NewTCP43Client()
 	}
 	if w.WhoxyClient == nil {
-		w.WhoxyClient = NewWhoxyClient(w.httpClient, "")
+		w.WhoxyClient = NewWhoxyClient(w.httpClient, w.whoxyAPIKey)
 	}
 	if w.WhoisFreaksClient == nil {
-		w.WhoisFreaksClient = NewWhoisFreaksClient(w.httpClient, "")
+		w.WhoisFreaksClient = NewWhoisFreaksClient(w.httpClient, w.whoisFreaksAPIKey)
 	}
 	if w.WhoisXMLClient == nil {
-		w.WhoisXMLClient = NewWhoisXMLClient(w.httpClient, "")
+		w.WhoisXMLClient = NewWhoisXMLClient(w.httpClient, w.whoisXMLAPIKey)
 	}
 	return w
 }
@@ -68,6 +71,21 @@ func New(opts ...Option) *WHOIS {
 // WithHTTPClient sets the HTTP client used by the HTTP-based lookups.
 func WithHTTPClient(c *http.Client) Option {
 	return func(w *WHOIS) { w.httpClient = c }
+}
+
+// WithWhoxyAPIKey sets the Whoxy API key used by the default client.
+func WithWhoxyAPIKey(apiKey string) Option {
+	return func(w *WHOIS) { w.whoxyAPIKey = apiKey }
+}
+
+// WithWhoisXMLAPIKey sets the WhoisXML API key used by the default client.
+func WithWhoisXMLAPIKey(apiKey string) Option {
+	return func(w *WHOIS) { w.whoisXMLAPIKey = apiKey }
+}
+
+// WithWhoisFreaksAPIKey sets the WhoisFreaks API key used by the default client.
+func WithWhoisFreaksAPIKey(apiKey string) Option {
+	return func(w *WHOIS) { w.whoisFreaksAPIKey = apiKey }
 }
 
 // ErrNoCredential reports that a provider has no API key configured, so it
@@ -97,9 +115,9 @@ const (
 // registry has nothing to give anyone" are the same event under a binary flag,
 // and telling them apart is the whole point of measuring.
 const (
-	outcomeFound = "found"
-	outcomeEmpty = "empty"
-	outcomeError = "error"
+	outcomeFound   = "found"
+	outcomeEmpty   = "empty"
+	outcomeError   = "error"
 	outcomeSkipped = "skipped"
 )
 

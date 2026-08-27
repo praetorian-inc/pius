@@ -18,11 +18,12 @@ func init() {
 // WHOIS sequence, emitting structured WHOIS results and preseed findings.
 type WhoisPlugin struct {
 	HTTPClient *http.Client
+	options    []whois.Option
 }
 
-// NewWhoisPlugin creates a WhoisPlugin with an injectable HTTP client.
-func NewWhoisPlugin(httpClient *http.Client) *WhoisPlugin {
-	return &WhoisPlugin{HTTPClient: httpClient}
+// NewWhoisPlugin creates a WhoisPlugin with an injectable HTTP client and WHOIS options.
+func NewWhoisPlugin(httpClient *http.Client, opts ...whois.Option) *WhoisPlugin {
+	return &WhoisPlugin{HTTPClient: httpClient, options: opts}
 }
 
 func (p *WhoisPlugin) Name() string                     { return "whois" }
@@ -33,10 +34,8 @@ func (p *WhoisPlugin) Mode() string                     { return plugins.ModePas
 func (p *WhoisPlugin) Accepts(input plugins.Input) bool { return input.Domain != "" }
 
 func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	var opts []func(*whois.WHOIS)
-	if p.HTTPClient != nil {
-		opts = append(opts, whois.WithHTTPClient(p.HTTPClient))
-	}
+	opts := append([]whois.Option{}, p.options...)
+	opts = append(opts, whois.WithHTTPClient(p.HTTPClient))
 
 	result, err := whois.New(opts...).LookupDomain(ctx, input.Domain)
 	if err != nil {
