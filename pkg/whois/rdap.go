@@ -6,9 +6,39 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"time"
 
 	"github.com/openrdap/rdap"
 )
+
+// RDAPClient implements the RDAP registration lookup. It satisfies
+// WHOISLookup so tests can substitute a fake without touching the network.
+//
+// RDAP leads the cascade because it returns structured fields and standardized
+// dates. It rarely carries registrant email, which is what the later legs are
+// for.
+type RDAPClient struct {
+	httpClient *http.Client
+}
+
+// NewRDAPClient returns an RDAP resolver. A nil httpClient uses the rdap
+// package's default.
+func NewRDAPClient(httpClient *http.Client) *RDAPClient {
+	return &RDAPClient{httpClient: httpClient}
+}
+
+func (r *RDAPClient) Name() string { return SourceRDAP }
+
+func (r *RDAPClient) Lookup(ctx context.Context, domain string) (result Result, err error) {
+	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
+
+	result, err = rdapLookup(ctx, r.httpClient, domain)
+	if err != nil {
+		return Result{}, err
+	}
+	result.Sources = []string{SourceRDAP}
+	return result, nil
+}
 
 // rdapLookup performs an RDAP domain lookup, following registrar "related"
 // links when the registry response lacks registrant data (common under GDPR).
@@ -176,4 +206,3 @@ func extractAddressFromVCard(vcard *rdap.VCard) (country, province, city string)
 	}
 	return country, province, city
 }
-

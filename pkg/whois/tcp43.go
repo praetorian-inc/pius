@@ -22,6 +22,36 @@ const (
 	maxResponseBytes = 1 << 20 // 1 MiB
 )
 
+// TCP43Client implements the port-43 registration lookup.
+//
+// It follows RDAP because its records are unstructured text and its referral
+// chains are fragile, but it carries registrant email far more often, which is
+// exactly the field RDAP tends to withhold.
+type TCP43Client struct{}
+
+// NewTCP43Client returns a port-43 resolver. It takes no HTTP client: this
+// leg speaks the WHOIS wire protocol directly.
+func NewTCP43Client() *TCP43Client { return &TCP43Client{} }
+
+func (r *TCP43Client) Name() string { return SourceTCP43 }
+
+// Lookup owns the ISOC-IL fallback. That fallback re-parses the raw WHOIS text
+// as RPSL, so it can only run where the raw text is in scope — which is here,
+// and no longer in the orchestrator. Keeping it in the leg that produced the
+// text is why WHOISLookup can return just (Result, error) without plumbing raw
+// string through the whole cascade.
+func (r *TCP43Client) Lookup(ctx context.Context, domain string) (result Result, err error) {
+	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
+
+	result, raw, err := tcp43Lookup(ctx, domain)
+	if err != nil {
+		return Result{}, err
+	}
+	applyISOCILFallback(&result, raw)
+	result.Sources = []string{SourceTCP43}
+	return result, nil
+}
+
 // tcp43Lookup performs a raw TCP port-43 WHOIS lookup with referral following,
 // then parses the result into a Result.
 // tcp43Lookup returns both the parsed Result and the raw WHOIS text. The raw
