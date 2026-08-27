@@ -40,12 +40,6 @@ func TestIsPrivacy(t *testing.T) {
 		{"redacted text", "DATA REDACTED", true},
 		{"not disclosed", "Not Disclosed", true},
 
-		// Contact-form placeholders.
-		{"request email form", "Select Request Email Form at example.com", true},
-		{"contact domain holder", "Select Contact Domain Holder link at example.com", true},
-		{"query RDDS", "Please query the RDDS service of the registrar of record", true},
-		{"query WHOIS", "Please query the WHOIS service of the registrar of record", true},
-
 		// Edge: "privacy" alone is NOT a marker (legitimate orgs use it).
 		{"privacy in name", "Privacy International", false},
 

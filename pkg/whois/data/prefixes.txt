@@ -100,8 +100,6 @@ On behalf of
 Pending Renewal or Deletion
 PERFECT PRIVACY, LLC
 Personal Information
-Please query the RDDS service
-Please query the WHOIS service
 Privacidad Whois
 Privacidad Whois sl
 Privacy Administrator
@@ -141,8 +139,6 @@ Registry Services, LLC
 Safenames Ltd
 SASU
 SEARS BRANDS LLC
-Select Contact Domain Holder
-Select Request Email Form
 Sears Holdings Technical Center
 See PrivacyGuardian.org
 Serverplan
