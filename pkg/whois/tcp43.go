@@ -31,8 +31,6 @@ func NewTCP43Client() *TCP43Client { return &TCP43Client{} }
 func (r *TCP43Client) Name() string { return SourceTCP43 }
 
 func (r *TCP43Client) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
-	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
-
 	result, err = tcp43Lookup(ctx, domain)
 	if err != nil {
 		return DomainResult{}, err

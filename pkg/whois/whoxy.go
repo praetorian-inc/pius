@@ -12,7 +12,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"time"
 
 	whoisparser "github.com/likexian/whois-parser"
 
@@ -138,8 +137,6 @@ func (r *WhoxyClient) ReverseLookup(ctx context.Context, field, value string, pa
 }
 
 func (r *WhoxyClient) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
-	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
-
 	apiKey := r.getAPIKey()
 	if apiKey == "" {
 		return DomainResult{}, ErrNoCredential

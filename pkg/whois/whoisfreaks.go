@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"time"
 )
 
 // whoisFreaksBaseURL is the WhoisFreaks v2.0 Live WHOIS API endpoint.
@@ -95,8 +94,6 @@ type whoisFreaksContact struct {
 // indistinguishable to a caller, and an operator who configured this provider
 // needs to find out it is not actually serving traffic.
 func (r *WhoisFreaksClient) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
-	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
-
 	apiKey := r.resolveAPIKey()
 	if apiKey == "" {
 		return DomainResult{}, ErrNoCredential

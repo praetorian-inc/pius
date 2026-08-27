@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"time"
 )
 
 // whoisXMLBaseURL is the WhoisXML API v1 Live WHOIS endpoint. It is a var so
@@ -112,8 +111,6 @@ type whoisXMLContact struct {
 const dataErrorMissingWhois = "MISSING_WHOIS_DATA"
 
 func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
-	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
-
 	apiKey := r.resolveAPIKey()
 	if apiKey == "" {
 		return DomainResult{}, ErrNoCredential

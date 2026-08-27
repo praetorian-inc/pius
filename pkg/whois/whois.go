@@ -59,7 +59,11 @@ func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomain
 		return true
 	}
 
+	started := time.Now()
 	res, err := r.LookupDomain(ctx, domain)
+	res.Normalize()
+	logLookup(r.Name(), domain, started, res, err)
+
 	if err != nil {
 		if isDomainNotFound(err) {
 			state.unregistered = true
@@ -86,7 +90,6 @@ func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomain
 		return false
 	}
 
-	res.Normalize()
 	if !res.hasSubstance() {
 		return false
 	}

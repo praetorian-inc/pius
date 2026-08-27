@@ -33,7 +33,7 @@ func preferredContactEmail(r DomainResult) (email, role string) {
 			return contact.Email, contact.Role
 		}
 	}
-	return PrivacyRedaction, "registrant"
+	return "", ""
 }
 
 func normalizePrivacy(v string) string {
@@ -52,6 +52,9 @@ func preferNonPrivacy(base, other string) string {
 }
 
 func trimStrings(arr []string) []string {
+	if len(arr) == 0 {
+		return arr
+	}
 	res := make([]string, 0, len(arr))
 	for i := range arr {
 		v := strings.TrimSpace(arr[i])

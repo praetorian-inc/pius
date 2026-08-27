@@ -120,9 +120,6 @@ func (r *DomainResult) Normalize() {
 
 func (r *DomainResult) populateDerivedFields() {
 	r.RegistrantIdentity = preferNonPrivacy(r.Registrant.Organization, r.Registrant.Name)
-	if r.RegistrantIdentity == "" {
-		r.RegistrantIdentity = PrivacyRedaction
-	}
 	r.ContactEmail, r.ContactEmailRole = preferredContactEmail(*r)
 }
 

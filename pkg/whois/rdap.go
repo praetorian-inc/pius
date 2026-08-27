@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/openrdap/rdap"
 )
@@ -31,8 +30,6 @@ func NewRDAPClient(httpClient *http.Client) *RDAPClient {
 func (r *RDAPClient) Name() string { return SourceRDAP }
 
 func (r *RDAPClient) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
-	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
-
 	result, err = rdapLookup(ctx, r.httpClient, domain)
 	if err != nil {
 		return DomainResult{}, err

@@ -77,7 +77,7 @@ func TestLogLookup_ClassifiesEveryOutcome(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			records := captureLogs(t, slog.LevelInfo, func() {
 				result, err := tc.resolver.LookupDomain(context.Background(), "example.com")
-				logLookup(tc.resolver.Name(), "example.com", time.Now(), &result, &err)
+				logLookup(tc.resolver.Name(), "example.com", time.Now(), result, err)
 			})
 
 			require.Len(t, lookupRecords(records), 1, "exactly one record per resolver call")
@@ -96,8 +96,7 @@ func TestLogLookup_ClassifiesEveryOutcome(t *testing.T) {
 func TestLogLookup_EmittedAtInfo(t *testing.T) {
 	records := captureLogs(t, slog.LevelInfo, func() {
 		result := completeResult(ProviderWhoxy)
-		var err error
-		logLookup(ProviderWhoxy, "example.com", time.Now(), &result, &err)
+		logLookup(ProviderWhoxy, "example.com", time.Now(), result, nil)
 	})
 
 	require.Len(t, lookupRecords(records), 1)
@@ -156,7 +155,7 @@ func TestLogLookup_NeverLogsTheAPIKey(t *testing.T) {
 	records := captureLogs(t, slog.LevelDebug, func() {
 		var result DomainResult
 		err := errors.New(`Get "https://api.whoxy.com/?key=` + key + `&whois=example.com": dial error`)
-		logLookup(ProviderWhoxy, "example.com", time.Now(), &result, &err)
+		logLookup(ProviderWhoxy, "example.com", time.Now(), result, err)
 	})
 
 	require.Len(t, lookupRecords(records), 1)

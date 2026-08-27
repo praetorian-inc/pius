@@ -264,12 +264,6 @@ func TestWhoisFreaksLookup_PrivacyRedacted(t *testing.T) {
 
 	require.NoError(t, err)
 
-	// Before scrub: contact fields are populated with privacy placeholders.
-	assert.Equal(t, "REDACTED FOR PRIVACY", result.Registrant.Organization)
-	assert.Equal(t, "REDACTED FOR PRIVACY", result.Registrant.Name)
-
-	result.Normalize()
-
 	for _, contact := range result.AllContacts() {
 		assert.Equal(t, PrivacyRedaction, contact.Organization)
 		assert.Equal(t, PrivacyRedaction, contact.Name)
