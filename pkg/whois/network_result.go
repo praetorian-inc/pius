@@ -2,7 +2,6 @@ package whois
 
 import (
 	"cmp"
-	"fmt"
 	"slices"
 	"strings"
 )
@@ -79,7 +78,11 @@ func (r *NetworkResult) Merge(other NetworkResult) {
 
 // PreferredContacts returns direct, usable contacts for the most specific ownership role.
 func (r NetworkResult) PreferredContacts() []NetworkContact {
-	role := r.preferredContactRole()
+	return r.ContactsForRole(r.preferredContactRole())
+}
+
+// ContactsForRole returns direct, usable contacts for role.
+func (r NetworkResult) ContactsForRole(role string) []NetworkContact {
 	contacts := make([]NetworkContact, 0, len(r.Contacts))
 	for _, contact := range r.Contacts {
 		if contact.eligibleForRole(role) {
@@ -126,7 +129,7 @@ func (c NetworkContact) normalize() NetworkContact {
 }
 
 func (c NetworkContact) IsEmpty() bool {
-	return c.Organization == "" && c.Name == "" && c.Email == "" && len(c.Status) == 0
+	return c.Contact == (Contact{}) && len(c.Status) == 0
 }
 
 func (c NetworkContact) HasRole(role string) bool {
@@ -188,11 +191,27 @@ func mergeNetworkSources(base, other []string) []string {
 	return out
 }
 
+type networkContactKey struct {
+	handle  string
+	roles   string
+	status  string
+	kind    string
+	direct  bool
+	contact Contact
+}
+
 func mergeNetworkContacts(base, other []NetworkContact) []NetworkContact {
-	seen := make(map[string]bool, len(base)+len(other))
+	seen := make(map[networkContactKey]bool, len(base)+len(other))
 	out := make([]NetworkContact, 0, len(base)+len(other))
 	for _, contact := range append(slices.Clone(base), other...) {
-		key := fmt.Sprintf("%s\x00%v\x00%s\x00%t\x00%s\x00%s\x00%s", contact.Handle, contact.Roles, contact.Kind, contact.Direct, contact.Organization, contact.Name, contact.Email)
+		key := networkContactKey{
+			handle:  contact.Handle,
+			roles:   strings.Join(contact.Roles, "\x00"),
+			status:  strings.Join(contact.Status, "\x00"),
+			kind:    contact.Kind,
+			direct:  contact.Direct,
+			contact: contact.Contact,
+		}
 		if contact.IsEmpty() || seen[key] {
 			continue
 		}

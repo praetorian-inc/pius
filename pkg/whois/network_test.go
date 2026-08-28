@@ -123,6 +123,41 @@ func TestNetworkResult_PreferredContactsIgnoresRedactedCustomer(t *testing.T) {
 	assert.Equal(t, "Public Registrant", contacts[0].Identity())
 }
 
+func TestNetworkResult_ContactsForRoleAppliesEligibilityPolicy(t *testing.T) {
+	result := NetworkResult{Contacts: []NetworkContact{
+		{
+			Handle: "EXAMPLE-MNT", Roles: []string{"customer"}, Kind: "org", Direct: true,
+			Contact: Contact{Organization: "Maintainer"},
+		},
+		{
+			Roles: []string{"customer"}, Status: []string{"private"}, Kind: "org", Direct: true,
+			Contact: Contact{Organization: "Private Customer"},
+		},
+		{
+			Roles: []string{"customer"}, Kind: "org",
+			Contact: Contact{Organization: "Indirect Customer"},
+		},
+		{
+			Roles: []string{"customer"}, Kind: "individual", Direct: true,
+			Contact: Contact{Name: "Public Customer"},
+		},
+		{
+			Roles: []string{"customer"}, Kind: "group", Direct: true,
+			Contact: Contact{Email: "network@example.com"},
+		},
+		{
+			Roles: []string{"registrant"}, Kind: "org", Direct: true,
+			Contact: Contact{Organization: "Public Registrant"},
+		},
+	}}
+
+	contacts := result.ContactsForRole("customer")
+
+	require.Len(t, contacts, 2)
+	assert.Equal(t, "Public Customer", contacts[0].Identity())
+	assert.Equal(t, "network@example.com", contacts[1].Email)
+}
+
 func TestNetworkResult_HasUsefulIdentityIgnoresPrivacyProtectedContact(t *testing.T) {
 	result := NetworkResult{Contacts: []NetworkContact{{
 		Roles: []string{"registrant"}, Status: []string{"private"}, Kind: "org", Direct: true,
@@ -421,6 +456,20 @@ func TestNetworkContactFromVCard_UsesAddressLabelFallback(t *testing.T) {
 			assert.Equal(t, test.want, contact.Street)
 		})
 	}
+}
+
+func TestMapRDAPToNetworkResult_PreservesPhoneOnlyEntity(t *testing.T) {
+	vcard, err := rdap.NewVCard([]byte(
+		`["vcard",[["version",{},"text","4.0"],["tel",{"type":"voice"},"uri","tel:+1-555-0100"]]]`,
+	))
+	require.NoError(t, err)
+
+	result := mapRDAPToNetworkResult("8.8.8.8", &rdap.IPNetwork{Entities: []rdap.Entity{{
+		Handle: "EXAMPLE-TECH", Roles: []string{"technical"}, VCard: vcard,
+	}}})
+
+	require.Len(t, result.Contacts, 1)
+	assert.Equal(t, "+1-555-0100", result.Contacts[0].Phone)
 }
 
 func TestMapRDAPToNetworkResult_PreservesPrivateEntityWithoutVCard(t *testing.T) {

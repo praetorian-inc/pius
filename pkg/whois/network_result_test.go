@@ -46,6 +46,13 @@ func TestNetworkResult_Normalize(t *testing.T) {
 					Email:        " domains@markmonitor.com ",
 				},
 			},
+			{
+				Roles: []string{" technical "},
+				Contact: Contact{
+					Phone:  " +1-555-0100 ",
+					Street: " 1 Main St ",
+				},
+			},
 			{Contact: Contact{Name: " "}},
 		},
 		Sources: []string{" rdap ", " ", " whois "},
@@ -90,6 +97,13 @@ func TestNetworkResult_Normalize(t *testing.T) {
 					Email:        PrivacyRedaction,
 				},
 			},
+			{
+				Roles: []string{"technical"},
+				Contact: Contact{
+					Phone:  "+1-555-0100",
+					Street: "1 Main St",
+				},
+			},
 		},
 		Sources: []string{"rdap", "whois"},
 		Raw:     " raw response \n",
@@ -98,6 +112,41 @@ func TestNetworkResult_Normalize(t *testing.T) {
 	normalized := result
 	result.Normalize()
 	assert.Equal(t, normalized, result)
+}
+
+func TestNetworkResult_MergePreservesDistinctPartialContacts(t *testing.T) {
+	result := NetworkResult{Contacts: []NetworkContact{{
+		Roles:   []string{"technical"},
+		Contact: Contact{Phone: "+1-555-0100"},
+	}}}
+
+	result.Merge(NetworkResult{Contacts: []NetworkContact{{
+		Roles:   []string{"technical"},
+		Contact: Contact{Phone: "+1-555-0101"},
+	}}})
+
+	require.Len(t, result.Contacts, 2)
+	assert.Equal(t, "+1-555-0100", result.Contacts[0].Phone)
+	assert.Equal(t, "+1-555-0101", result.Contacts[1].Phone)
+}
+
+func TestNetworkContact_IsEmptyPreservesPartialEvidence(t *testing.T) {
+	tests := []struct {
+		name    string
+		contact NetworkContact
+		empty   bool
+	}{
+		{name: "empty", contact: NetworkContact{}, empty: true},
+		{name: "phone only", contact: NetworkContact{Contact: Contact{Phone: "+1-555-0100"}}},
+		{name: "address only", contact: NetworkContact{Contact: Contact{Street: "1 Main St"}}},
+		{name: "status only", contact: NetworkContact{Status: []string{"private"}}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.empty, test.contact.IsEmpty())
+		})
+	}
 }
 
 func TestNetworkContact_IdentityPrefersRealNameOverPrivateOrganization(t *testing.T) {

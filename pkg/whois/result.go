@@ -41,10 +41,21 @@ type DomainContact struct {
 	Contact
 }
 
-// Reports whether the merged record has enough information to stop the cascade.
-func (r *DomainResult) isComplete() bool {
-	return isNotEmptyOrPrivate(r.RegistrantIdentity) || (isNotEmptyOrPrivate(r.ContactEmail) &&
-		isNotEmptyOrPrivate(r.Registrar))
+const (
+	relaxedCompletion = false
+	strictCompletion  = true
+)
+
+// isComplete reports whether the record has enough public ownership data to stop the cascade.
+// Strict completion requires both identity and email; relaxed completion accepts either.
+func (r *DomainResult) isComplete(strict bool) bool {
+	hasRegistrar := hasPublicValue(r.Registrar)
+	hasIdentity := hasPublicValue(r.RegistrantIdentity)
+	hasEmail := hasPublicValue(r.ContactEmail)
+	if strict {
+		return hasIdentity && hasEmail && hasRegistrar
+	}
+	return (hasIdentity || hasEmail) && hasRegistrar
 }
 
 // hasRegistrationData distinguishes a partial registration record from an empty response.

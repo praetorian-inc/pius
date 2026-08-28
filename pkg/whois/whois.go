@@ -30,19 +30,19 @@ func (w *WHOIS) LookupDomain(ctx context.Context, domain string) (DomainResult, 
 
 	state := lookupState{}
 
-	if w.doDomainLookup(ctx, domain, w.RDAPClient, &state) {
+	if w.doDomainLookup(ctx, domain, w.RDAPClient, strictCompletion, &state) {
 		return state.finish(domain)
 	}
-	if w.doDomainLookup(ctx, domain, w.TCP43Client, &state) {
+	if w.doDomainLookup(ctx, domain, w.TCP43Client, relaxedCompletion, &state) {
 		return state.finish(domain)
 	}
-	if w.doDomainLookup(ctx, domain, w.WhoxyClient, &state) {
+	if w.doDomainLookup(ctx, domain, w.WhoxyClient, relaxedCompletion, &state) {
 		return state.finish(domain)
 	}
-	if w.doDomainLookup(ctx, domain, w.WhoisFreaksClient, &state) {
+	if w.doDomainLookup(ctx, domain, w.WhoisFreaksClient, relaxedCompletion, &state) {
 		return state.finish(domain)
 	}
-	if w.doDomainLookup(ctx, domain, w.WhoisXMLClient, &state) {
+	if w.doDomainLookup(ctx, domain, w.WhoisXMLClient, relaxedCompletion, &state) {
 		return state.finish(domain)
 	}
 
@@ -52,7 +52,7 @@ func (w *WHOIS) LookupDomain(ctx context.Context, domain string) (DomainResult, 
 // doDomainLookup runs one leg and folds its answer into state, reporting whether the
 // cascade should stop. Normalization, logging, merging, and completion remain ordered
 // here rather than repeated for each provider.
-func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomainOnlyClient, state *lookupState) (stop bool) {
+func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomainOnlyClient, strict bool, state *lookupState) (stop bool) {
 	if err := ctx.Err(); err != nil {
 		state.errs = append(state.errs, err)
 		return true
@@ -91,7 +91,7 @@ func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomain
 
 	state.result.Merge(res)
 	state.result.Domain = domain
-	return state.result.isComplete()
+	return state.result.isComplete(strict)
 }
 
 // isDomainNotFound reports whether err definitively means the domain is not

@@ -44,8 +44,20 @@ func answering(name string) *fakeWHOISClient {
 	}
 }
 
-// complete returns a leg whose record satisfies isComplete, so the cascade has
-// no reason to consult anything after it.
+func mostlyComplete(name string) *fakeWHOISClient {
+	return &fakeWHOISClient{
+		name: name,
+		result: DomainResult{
+			Domain:     "example.com",
+			Registrar:  name,
+			Registrant: Contact{Organization: "Example Corp"},
+			Sources:    []string{name},
+		},
+	}
+}
+
+// complete returns a leg whose record satisfies strict completion, so the cascade
+// has no reason to consult anything after it.
 func complete(name string) *fakeWHOISClient {
 	return &fakeWHOISClient{name: name, result: completeResult(name)}
 }
@@ -152,6 +164,40 @@ func TestCascade_StopsWhenComplete(t *testing.T) {
 	assert.Equal(t, 1, first.calls)
 	assert.Zero(t, second.calls, "a complete record leaves nothing to fill")
 	assert.Zero(t, third.calls)
+}
+
+func TestCascade_UsesStrictCompletionOnlyBeforeTCP43(t *testing.T) {
+	rdap := mostlyComplete(SourceRDAP)
+	tcp43 := silent(SourceTCP43)
+	whoxy := complete(ProviderWhoxy)
+
+	w := New()
+	w.RDAPClient = rdap
+	w.TCP43Client = tcp43
+	w.WhoxyClient = whoxy
+
+	result, err := w.LookupDomain(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Example Corp", result.RegistrantIdentity)
+	assert.Equal(t, 1, rdap.calls)
+	assert.Equal(t, 1, tcp43.calls, "RDAP must provide both identity and email to skip TCP-43")
+	assert.Zero(t, whoxy.calls, "mostly complete free results must stop before paid providers")
+}
+
+func TestCascade_UsesRelaxedCompletionBetweenPaidProviders(t *testing.T) {
+	whoxy := mostlyComplete(ProviderWhoxy)
+	whoisFreaks := complete(ProviderWhoisFreaks)
+	whoisXML := complete(ProviderWhoisXML)
+
+	result, err := withCommercialLookups(whoxy, whoisFreaks, whoisXML).
+		LookupDomain(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Example Corp", result.RegistrantIdentity)
+	assert.Equal(t, 1, whoxy.calls)
+	assert.Zero(t, whoisFreaks.calls, "mostly complete paid results must stop the cascade")
+	assert.Zero(t, whoisXML.calls)
 }
 
 func TestCascade_LeavesUnavailableRegistrantDataEmpty(t *testing.T) {
@@ -389,7 +435,7 @@ func TestCascade_EveryConsultedProviderIsBilled(t *testing.T) {
 	res, err := withCommercialLookups(first, second, third).LookupDomain(context.Background(), "example.com")
 
 	require.NoError(t, err)
-	require.False(t, res.isComplete(), "the record never reached completeness")
+	require.False(t, res.isComplete(relaxedCompletion), "the record never reached completeness")
 
 	assert.Equal(t, 1, first.calls)
 	assert.Equal(t, 1, second.calls, "billed even though the first already answered")
@@ -506,54 +552,73 @@ func TestNewBuildsTheDefaultCascade(t *testing.T) {
 // added here bills more providers on every lookup that lacks it.
 func TestResultIsComplete(t *testing.T) {
 	tests := []struct {
-		name     string
-		result   DomainResult
-		complete bool
+		name        string
+		result      DomainResult
+		wantRelaxed bool
+		wantStrict  bool
 	}{
 		{
-			name:     "public registrant identity",
-			result:   DomainResult{RegistrantIdentity: "Example Corp"},
-			complete: true,
+			name: "public identity, email, and registrar",
+			result: DomainResult{
+				RegistrantIdentity: "Example Corp",
+				ContactEmail:       "admin@example.com",
+				Registrar:          "Example Registrar",
+			},
+			wantRelaxed: true,
+			wantStrict:  true,
 		},
 		{
-			name:     "public email and registrar",
-			result:   DomainResult{ContactEmail: "admin@example.com", Registrar: "Example Registrar"},
-			complete: true,
+			name: "public identity and registrar",
+			result: DomainResult{
+				RegistrantIdentity: "Example Corp",
+				Registrar:          "Example Registrar",
+			},
+			wantRelaxed: true,
 		},
 		{
-			name: "email and registrar compensate for private identity",
+			name: "public email and registrar",
+			result: DomainResult{
+				ContactEmail: "admin@example.com",
+				Registrar:    "Example Registrar",
+			},
+			wantRelaxed: true,
+		},
+		{
+			name: "public email and registrar with private identity",
 			result: DomainResult{
 				RegistrantIdentity: PrivacyRedaction,
 				ContactEmail:       "admin@example.com",
 				Registrar:          "Example Registrar",
 			},
-			complete: true,
+			wantRelaxed: true,
 		},
 		{
-			name: "identity compensates for private email and registrar",
+			name: "public identity and registrar with private email",
 			result: DomainResult{
 				RegistrantIdentity: "Example Corp",
 				ContactEmail:       PrivacyRedaction,
-				Registrar:          PrivacyRedaction,
+				Registrar:          "Example Registrar",
 			},
-			complete: true,
+			wantRelaxed: true,
 		},
 		{name: "empty", result: DomainResult{}},
-		{name: "private identity", result: DomainResult{RegistrantIdentity: PrivacyRedaction}},
+		{name: "identity without registrar", result: DomainResult{RegistrantIdentity: "Example Corp"}},
 		{name: "email without registrar", result: DomainResult{ContactEmail: "admin@example.com"}},
-		{name: "registrar without email", result: DomainResult{Registrar: "Example Registrar"}},
+		{name: "registrar without ownership", result: DomainResult{Registrar: "Example Registrar"}},
 		{
-			name: "public email with private registrar",
+			name: "public identity and email with private registrar",
 			result: DomainResult{
-				ContactEmail: "admin@example.com",
-				Registrar:    PrivacyRedaction,
+				RegistrantIdentity: "Example Corp",
+				ContactEmail:       "admin@example.com",
+				Registrar:          PrivacyRedaction,
 			},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert.Equal(t, test.complete, test.result.isComplete())
+			assert.Equal(t, test.wantRelaxed, test.result.isComplete(relaxedCompletion))
+			assert.Equal(t, test.wantStrict, test.result.isComplete(strictCompletion))
 		})
 	}
 }
