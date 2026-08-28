@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -46,6 +47,21 @@ func NewNoRetry() *Client {
 	}
 }
 
+// sensitiveQueryKeys is the set of query-parameter names (lowercased) whose
+// values are credentials that must be redacted from a URL before it appears in
+// an error message or log. Lookup is whole-key against the lowercased key.
+var sensitiveQueryKeys = map[string]struct{}{
+	"key":          {},
+	"apikey":       {},
+	"api_key":      {},
+	"token":        {},
+	"access_token": {},
+	"apitoken":     {},
+	"x-api-key":    {},
+	"secret":       {},
+	"password":     {},
+}
+
 // sanitizeURL redacts sensitive query parameters (API keys, tokens) from URLs
 // to prevent accidental credential exposure in error messages and logs.
 func sanitizeURL(rawURL string) string {
@@ -55,9 +71,14 @@ func sanitizeURL(rawURL string) string {
 	}
 	q := parsed.Query()
 	redacted := false
-	for _, key := range []string{"key", "apikey", "api_key", "token", "access_token"} {
-		if q.Has(key) {
-			q.Set(key, "REDACTED")
+	// Match is case-insensitive and whole-key: lowercase each actual query key
+	// and test whole-key membership in sensitiveQueryKeys. This closes the
+	// camelCase apiKey gap (WhoisFreaks' param name) that an exact-case lookup
+	// missed. Substring matching is deliberately avoided so legitimate params
+	// such as keyword=, monkey=, or query= are preserved.
+	for k := range q {
+		if _, ok := sensitiveQueryKeys[strings.ToLower(k)]; ok {
+			q.Set(k, "REDACTED")
 			redacted = true
 		}
 	}
