@@ -14,9 +14,8 @@ type WHOISDomainOnlyClient interface {
 	LookupDomain(ctx context.Context, domain string) (DomainResult, error)
 }
 
-// WHOISDomainHistoryClient is a source of historical domain registration data.
 type WHOISDomainHistoryClient interface {
-	Name() string
+	WHOISDomainOnlyClient
 	LookupDomainHistory(ctx context.Context, domain string) ([]DomainHistoryRecord, error)
 }
 

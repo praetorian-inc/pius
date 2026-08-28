@@ -28,6 +28,9 @@ const (
 	// Value is the domain name; Data includes registration dates, contacts, and source metadata.
 	FindingWhoisResult FindingType = "whois-result"
 
+	// FindingWhoisHistory carries historical domain registration records.
+	FindingWhoisHistory FindingType = "whois-history"
+
 	// FindingIPWhoisResult carries structured WHOIS/RDAP allocation data for an IP or CIDR.
 	FindingIPWhoisResult FindingType = "ip-whois-result"
 
