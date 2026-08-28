@@ -306,7 +306,8 @@ func contactFromVCard(vcard *rdap.VCard) Contact {
 	if contact.Street == "" && contact.City == "" && contact.Province == "" && contact.PostalCode == "" {
 		contact.Street = addressLabelFromVCard(vcard)
 	}
-	return contact.Normalize()
+	contact.Normalize()
+	return contact
 }
 
 func addressLabelFromVCard(vcard *rdap.VCard) string {

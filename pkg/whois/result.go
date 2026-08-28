@@ -114,10 +114,10 @@ func (r *DomainResult) Normalize() {
 	r.Status = trimStrings(r.Status)
 	r.NameServers = trimStrings(r.NameServers)
 	r.Sources = trimStrings(r.Sources)
-	r.Registrant = r.Registrant.Normalize()
-	r.Admin = r.Admin.Normalize()
-	r.Tech = r.Tech.Normalize()
-	r.Billing = r.Billing.Normalize()
+	r.Registrant.Normalize()
+	r.Admin.Normalize()
+	r.Tech.Normalize()
+	r.Billing.Normalize()
 	if isRegistryArtifact(r.Registrant.Organization, r.Domain) {
 		r.Registrant.Organization = ""
 	}
@@ -147,18 +147,16 @@ func (c Contact) IsEmpty() bool {
 	return c.Organization == "" && c.Name == "" && c.Email == ""
 }
 
-func (c Contact) Normalize() Contact {
-	return Contact{
-		Organization: normalizePrivacy(c.Organization),
-		Name:         normalizePrivacy(c.Name),
-		Email:        normalizePrivacy(c.Email),
-		Country:      normalizePrivacy(c.Country),
-		Province:     normalizePrivacy(c.Province),
-		City:         normalizePrivacy(c.City),
-		Street:       normalizePrivacy(c.Street),
-		PostalCode:   normalizePrivacy(c.PostalCode),
-		Phone:        normalizePrivacy(c.Phone),
-	}
+func (c *Contact) Normalize() {
+	c.Organization = normalizePrivacy(c.Organization)
+	c.Name = normalizePrivacy(c.Name)
+	c.Email = normalizePrivacy(c.Email)
+	c.Country = normalizePrivacy(c.Country)
+	c.Province = normalizePrivacy(c.Province)
+	c.City = normalizePrivacy(c.City)
+	c.Street = normalizePrivacy(c.Street)
+	c.PostalCode = normalizePrivacy(c.PostalCode)
+	c.Phone = normalizePrivacy(c.Phone)
 }
 
 func mergeContact(base, other Contact) Contact {

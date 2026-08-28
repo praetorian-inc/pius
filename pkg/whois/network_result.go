@@ -42,11 +42,10 @@ func (r *NetworkResult) Normalize() {
 	r.WhoisServer = strings.TrimSpace(r.WhoisServer)
 	r.Sources = trimStrings(r.Sources)
 
-	contacts := make([]NetworkContact, 0, len(r.Contacts))
-	for _, contact := range r.Contacts {
-		contacts = append(contacts, contact.normalize())
+	for i := range r.Contacts {
+		r.Contacts[i].normalize()
 	}
-	r.Contacts = mergeNetworkContacts(nil, contacts)
+	r.Contacts = mergeNetworkContacts(nil, r.Contacts)
 }
 
 // Merge fills gaps from other while preserving the receiver as the base
@@ -119,13 +118,13 @@ type NetworkContact struct {
 	Contact
 }
 
-func (c NetworkContact) normalize() NetworkContact {
+func (c *NetworkContact) normalize() {
 	c.Handle = strings.TrimSpace(c.Handle)
 	c.Roles = trimStrings(c.Roles)
 	c.Status = trimStrings(c.Status)
 	c.Kind = strings.TrimSpace(c.Kind)
-	c.Contact = c.Contact.Normalize()
-	return c
+	contact := &c.Contact
+	contact.Normalize()
 }
 
 func (c NetworkContact) IsEmpty() bool {
