@@ -77,12 +77,18 @@ func normalizeDN(s string) string {
 // Certificate is a parsed certificate as returned by the provider. Every field
 // is opaque, untrusted provider data; nothing here is parsed from real DER/PEM.
 type Certificate struct {
-	Subject               DN
-	Issuer                DN
-	SerialNumber          string // hex; blanked by chain validation if non-hex
-	NotBefore             time.Time
-	NotAfter              time.Time
-	SignatureAlgorithm    string
+	Subject            DN
+	Issuer             DN
+	SerialNumber       string // hex; blanked by chain validation if non-hex
+	NotBefore          time.Time
+	NotAfter           time.Time
+	SignatureAlgorithm string
+	// AuthenticationType is the provider's DV/OV/self-signed-CA classification of
+	// the certificate — one of "domain" | "organization" | "self-signed-ca". It is
+	// opaque, untrusted provider data (never derived from a real certificate) and
+	// is exposed for issuer-anomaly / DV-vs-OV heuristics; never gate a trust or
+	// authorization decision on it.
+	AuthenticationType    string
 	PublicKeyAlgorithm    string
 	PublicKeyBits         int
 	KeyUsage              []string
@@ -92,7 +98,7 @@ type Certificate struct {
 	// SubjectAltNames are opaque, untrusted strings carried faithfully; never
 	// logged raw and never auto-promoted to trusted hostnames (security T8).
 	SubjectAltNames []string
-	ChainOrder      string // "leaf"|"intermediate"|"root" — drives the §3.7 root check
+	ChainOrder      string // "end-user"|"intermediate"|"root" — drives the §3.7 root check
 }
 
 // SSLOptions selects what an ssl/live lookup returns.
@@ -129,9 +135,17 @@ type Usage struct {
 
 // --- Unexported provider DTOs -------------------------------------------------
 //
-// These mirror the raw WhoisFreaks JSON. The exact shapes and tags are VERIFIED
-// against the 2026-08-06 captured fixture in Batch 3 (ssl.go owns DTO→Certificate
-// mapping); they are defined here so the data model lives in one file.
+// These mirror the raw WhoisFreaks JSON. The shapes and json tags below are
+// pinned to the vendor's rendered-docs SSL Certificate API wire format recorded
+// in the OFFSEC-2444 wire-format comment (a leaf→root sslCertificates[] array
+// where each cert nests publicKey and extensions objects). ssl.go owns the
+// DTO→Certificate mapping; the DTOs live here so the data model stays in one
+// file.
+//
+// Exactly TWO tags still require confirmation against a LIVE response and are
+// marked [VERIFY] at their fields: the raw-cert key (sslRaw) — the docs' raw
+// sample carried no raw field — and the CRL key (crlDistributionPoints) — the
+// docs' extensions sample showed only authorityInfoAccess, no CRL key.
 
 // dnDTO is the provider's representation of a distinguished name.
 type dnDTO struct {
@@ -141,28 +155,69 @@ type dnDTO struct {
 	Raw          string   `json:"raw"`
 }
 
-// sslCertDTO is a single certificate entry in the provider response.
-type sslCertDTO struct {
-	Subject               dnDTO    `json:"subject"`
-	Issuer                dnDTO    `json:"issuer"`
-	SerialNumber          string   `json:"serialNumber"`
-	NotBefore             string   `json:"notBefore"`
-	NotAfter              string   `json:"notAfter"`
-	SignatureAlgorithm    string   `json:"signatureAlgorithm"`
-	PublicKeyAlgorithm    string   `json:"publicKeyAlgorithm"`
-	PublicKeyBits         int      `json:"publicKeyBits"`
-	KeyUsage              []string `json:"keyUsage"`
-	ExtKeyUsage           []string `json:"extendedKeyUsage"`
+// publicKeyDTO is the provider's nested publicKey object. keySize is a
+// unit-suffixed STRING (e.g. "256 bit"), NOT an integer — parseKeyBits (ssl.go)
+// extracts the leading digits on read so a naive int json field cannot fail the
+// whole unmarshal with an UnmarshalTypeError.
+type publicKeyDTO struct {
+	KeySize      string `json:"keySize"`
+	KeyAlgorithm string `json:"keyAlgorithm"`
+}
+
+// authorityInfoAccessDTO is the provider's extensions.authorityInfoAccess object:
+// CA-issuer URLs and OCSP responder URLs.
+type authorityInfoAccessDTO struct {
+	Issuers []string `json:"issuers"`
+	OCSP    []string `json:"ocsp"`
+}
+
+// subjectAltNamesDTO is the provider's extensions.subjectAlternativeNames object.
+// Only dnsNames is mapped today; other SAN kinds are unmapped (YAGNI).
+type subjectAltNamesDTO struct {
+	DNSNames []string `json:"dnsNames"`
+}
+
+// extensionsDTO is the provider's nested extensions object.
+type extensionsDTO struct {
+	AuthorityKeyIdentifier  string                 `json:"authorityKeyIdentifier"`
+	SubjectKeyIdentifier    string                 `json:"subjectKeyIdentifier"`
+	KeyUsages               []string               `json:"keyUsages"`
+	ExtendedKeyUsages       []string               `json:"extendedKeyUsages"`
+	AuthorityInfoAccess     authorityInfoAccessDTO `json:"authorityInfoAccess"`
+	SubjectAlternativeNames subjectAltNamesDTO     `json:"subjectAlternativeNames"`
+	CertificatePolicies     []struct {
+		PolicyID string `json:"policyId"`
+	} `json:"certificatePolicies"`
+	// CRLDistributionPoints: [VERIFY] live. The rendered docs did NOT confirm this
+	// key — their extensions sample showed only authorityInfoAccess, no CRL field.
+	// "crlDistributionPoints" is a best-guess tag; confirm against a live response.
 	CRLDistributionPoints []string `json:"crlDistributionPoints"`
-	OCSPServers           []string `json:"ocspServers"`
-	SubjectAltNames       []string `json:"subjectAltNames"`
-	ChainOrder            string   `json:"chainOrder"`
+}
+
+// sslCertDTO is a single certificate entry in the provider response. Its shape
+// mirrors the vendor's rendered-docs wire format: nested subject/issuer,
+// publicKey, and extensions objects, with a unit-suffixed keySize and
+// non-RFC3339 validity dates that ssl.go parses on read.
+type sslCertDTO struct {
+	Subject            dnDTO         `json:"subject"`
+	Issuer             dnDTO         `json:"issuer"`
+	SerialNumber       string        `json:"serialNumber"`
+	SignatureAlgorithm string        `json:"signatureAlgorithm"`
+	AuthenticationType string        `json:"authenticationType"`
+	ValidityStartDate  string        `json:"validityStartDate"`
+	ValidityEndDate    string        `json:"validityEndDate"`
+	PublicKey          publicKeyDTO  `json:"publicKey"`
+	Extensions         extensionsDTO `json:"extensions"`
+	ChainOrder         string        `json:"chainOrder"`
 }
 
 // sslLiveResponse is the top-level ssl/live response body.
 type sslLiveResponse struct {
 	SSLCertificates []sslCertDTO `json:"sslCertificates"`
-	SSLRaw          string       `json:"sslRaw"`
+	// SSLRaw: [VERIFY] live. The docs did NOT reveal which field carries the raw
+	// OpenSSL output — a sslRaw=true sample showed no raw field — so "sslRaw" is a
+	// best-guess tag; confirm against a live response before relying on it.
+	SSLRaw string `json:"sslRaw"`
 }
 
 // usageResponse is the raw account-usage response body.

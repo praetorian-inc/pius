@@ -23,7 +23,11 @@ const (
 // Response headers carrying the provider's rate-limit signals.
 const (
 	headerRemaining = "x-ratelimit-remaining"
-	headerReset     = "x-ratelimit-reset"
+	// headerReset is [VERIFY] live: the vendor's rendered docs named the reset
+	// signal "x-ratelimit-remaining-time", not "x-ratelimit-reset". This value is
+	// a best guess kept pending confirmation against a live 429 response; do not
+	// change it without that evidence.
+	headerReset = "x-ratelimit-reset"
 )
 
 // Backoff clamps (security T7). Parsed provider reset values are never trusted

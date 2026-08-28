@@ -65,12 +65,12 @@ func serveSSL(t *testing.T, status int, body []byte) (*Client, *CreditMeter) {
 	return c, meter
 }
 
-// wellLinkedChain is a clean leaf->intermediate->intermediate->self-signed-root
+// wellLinkedChain is a clean end-user->intermediate->intermediate->self-signed-root
 // chain (4 entries) with all-hex serials: validateChain classifies it valid with
-// no anomalies.
+// no anomalies. The leaf's chainOrder is the vendor's real "end-user" label.
 func wellLinkedChain() []sslCertDTO {
 	return []sslCertDTO{
-		certDTO("leaf.example", "Intermediate CA 1", "1a2b", "leaf"),
+		certDTO("leaf.example", "Intermediate CA 1", "1a2b", "end-user"),
 		certDTO("Intermediate CA 1", "Intermediate CA 2", "0af9", "intermediate"),
 		certDTO("Intermediate CA 2", "Example Root CA", "0bde", "intermediate"),
 		certDTO("Example Root CA", "Example Root CA", "deadBEEF", "root"),
@@ -82,7 +82,7 @@ func wellLinkedChain() []sslCertDTO {
 func TestSSLLive_LeafOnly(t *testing.T) {
 	t.Parallel()
 
-	leaf := certDTO("leaf.example", "Intermediate CA 1", "1a2b", "leaf")
+	leaf := certDTO("leaf.example", "Intermediate CA 1", "1a2b", "end-user")
 	c, meter := serveSSL(t, http.StatusOK, sslBody(t, []sslCertDTO{leaf}, ""))
 
 	res, err := c.SSLLive(context.Background(), "example.com", SSLOptions{})
@@ -174,7 +174,7 @@ func TestSSLLive_RawPEM(t *testing.T) {
 	// Synthetic, obviously-fake CERTIFICATE block — never a private key and never a
 	// real captured cert (fixture hygiene T4).
 	const rawPEM = "-----BEGIN CERTIFICATE-----\nU1lOVEhFVElDX0ZBS0VfQ0VSVA==\n-----END CERTIFICATE-----\n"
-	leaf := certDTO("leaf.example", "Intermediate CA 1", "1a2b", "leaf")
+	leaf := certDTO("leaf.example", "Intermediate CA 1", "1a2b", "end-user")
 
 	t.Run("Raw:true returns the raw PEM verbatim", func(t *testing.T) {
 		t.Parallel()
@@ -203,7 +203,7 @@ func TestSSLLive_ChainBroken(t *testing.T) {
 
 	// cert[1].Issuer ("Mismatched Issuer") != cert[2].Subject ("Intermediate B").
 	certs := []sslCertDTO{
-		certDTO("leaf.example", "Intermediate A", "1a", "leaf"),
+		certDTO("leaf.example", "Intermediate A", "1a", "end-user"),
 		certDTO("Intermediate A", "Mismatched Issuer", "2b", "intermediate"),
 		certDTO("Intermediate B", "Example Root CA", "3c", "intermediate"),
 		certDTO("Example Root CA", "Example Root CA", "4d", "root"),
@@ -281,17 +281,111 @@ func TestSSLLive_MalformedBodyNeverPanics(t *testing.T) {
 	}
 }
 
+// pinnedSSLResponse is a LITERAL ssl/live response body in the exact wire shape
+// pinned from the vendor's rendered docs (OFFSEC-2444 wire-format comment): a
+// leaf→root sslCertificates[] with nested publicKey (unit-suffixed keySize) and
+// nested extensions (keyUsages, extendedKeyUsages, authorityInfoAccess.ocsp,
+// subjectAlternativeNames.dnsNames), authenticationType "domain", chainOrder
+// "end-user", and an UNPADDED validityStartDate. It is a hand-written string on
+// purpose — NOT json.Marshal(sslLiveResponse{...}) — so it exercises the real
+// json tags rather than round-tripping through whatever tags happen to exist.
+const pinnedSSLResponse = `{
+  "domainName": "example.com",
+  "queryTime": "2024-09-8 00:00:00 UTC",
+  "sslCertificates": [
+    {
+      "chainOrder": "end-user",
+      "authenticationType": "domain",
+      "validityStartDate": "2024-09-7 23:03:18 UTC",
+      "validityEndDate": "2025-09-7 23:03:18 UTC",
+      "serialNumber": "01:AF:9C:DE",
+      "signatureAlgorithm": "SHA256-RSA",
+      "subject": { "commonName": "leaf.example.com", "organization": ["Example Inc"], "country": ["US"] },
+      "issuer": { "commonName": "Example Intermediate CA", "organization": ["Example CA"], "country": ["US"] },
+      "publicKey": { "keySize": "256 bit", "keyAlgorithm": "ECDSA" },
+      "extensions": {
+        "authorityKeyIdentifier": "AK:ID:00",
+        "subjectKeyIdentifier": "SK:ID:00",
+        "keyUsages": ["digitalSignature", "keyEncipherment"],
+        "extendedKeyUsages": ["serverAuth", "clientAuth"],
+        "authorityInfoAccess": {
+          "issuers": ["http://ca.example/issuer.crt"],
+          "ocsp": ["http://ocsp.example", "http://ocsp2.example"]
+        },
+        "subjectAlternativeNames": { "dnsNames": ["leaf.example.com", "www.example.com"] },
+        "certificatePolicies": [ { "policyId": "2.23.140.1.2.1" } ]
+      }
+    }
+  ]
+}`
+
+// TestMapCertificate_PinnedWireFormat is the teeth of the wire-format fix. It
+// unmarshals the LITERAL pinnedSSLResponse (a Go string constant, never built by
+// marshalling the DTO) into sslLiveResponse, maps cert[0], and asserts the nested
+// vendor shape flattened correctly: the unit-suffixed keySize parsed to bits, the
+// key algorithm carried, SANs read from extensions.subjectAlternativeNames.dnsNames,
+// OCSP from extensions.authorityInfoAccess.ocsp, key usages populated,
+// authenticationType carried, and the UNPADDED validity date parsed to the exact
+// instant. Against the previous FLAT DTO these tags do not match the nested JSON,
+// so every one of these assertions fails; it passes only when the DTO nesting and
+// mapCertificate flattening are both correct. Routing the fixture through
+// json.Marshal(sslLiveResponse{...}) would have hidden the bug — hence the literal.
+func TestMapCertificate_PinnedWireFormat(t *testing.T) {
+	t.Parallel()
+
+	var resp sslLiveResponse
+	require.NoError(t, json.Unmarshal([]byte(pinnedSSLResponse), &resp),
+		"the pinned wire-format body must unmarshal into sslLiveResponse")
+	require.Len(t, resp.SSLCertificates, 1, "the pinned body carries exactly one certificate")
+
+	got := mapCertificate(resp.SSLCertificates[0])
+
+	// publicKey is a nested object whose keySize is a unit-suffixed STRING.
+	assert.Equal(t, 256, got.PublicKeyBits, `keySize "256 bit" must parse to 256 bits`)
+	assert.Equal(t, "ECDSA", got.PublicKeyAlgorithm, "publicKey.keyAlgorithm must carry")
+
+	// SANs live under extensions.subjectAlternativeNames.dnsNames.
+	assert.Equal(t, []string{"leaf.example.com", "www.example.com"}, got.SubjectAltNames,
+		"SubjectAltNames must read from extensions.subjectAlternativeNames.dnsNames")
+
+	// OCSP responders live under extensions.authorityInfoAccess.ocsp.
+	assert.Equal(t, []string{"http://ocsp.example", "http://ocsp2.example"}, got.OCSPServers,
+		"OCSPServers must read from extensions.authorityInfoAccess.ocsp")
+
+	// Key usages live under extensions.keyUsages / extensions.extendedKeyUsages.
+	assert.Equal(t, []string{"digitalSignature", "keyEncipherment"}, got.KeyUsage,
+		"KeyUsage must read from extensions.keyUsages")
+	assert.Equal(t, []string{"serverAuth", "clientAuth"}, got.ExtKeyUsage,
+		"ExtKeyUsage must read from extensions.extendedKeyUsages")
+
+	// Top-level scalars.
+	assert.Equal(t, "domain", got.AuthenticationType, `authenticationType "domain" must carry`)
+	assert.Equal(t, "end-user", got.ChainOrder, `chainOrder "end-user" must carry`)
+	assert.Equal(t, "01:AF:9C:DE", got.SerialNumber, "serialNumber must carry verbatim")
+	assert.Equal(t, "SHA256-RSA", got.SignatureAlgorithm, "signatureAlgorithm must carry")
+	assert.Equal(t, "leaf.example.com", got.Subject.CommonName, "subject.commonName must carry")
+	assert.Equal(t, "Example Intermediate CA", got.Issuer.CommonName, "issuer.commonName must carry")
+
+	// The UNPADDED validity date must parse to the exact instant.
+	wantNotBefore := time.Date(2024, 9, 7, 23, 3, 18, 0, time.UTC)
+	require.False(t, got.NotBefore.IsZero(), "an unpadded validityStartDate must parse to a non-zero time")
+	assert.True(t, wantNotBefore.Equal(got.NotBefore),
+		"NotBefore must parse to 2024-09-07T23:03:18Z, got %s", got.NotBefore)
+}
+
 // TestMapCertificate_FieldFidelity is the T8 faithful-carry test. It builds a
-// FULLY populated provider DTO — every one of the 14 sslCertDTO fields set to a
-// distinct sentinel — calls mapCertificate DIRECTLY (no SSLLive / httptest), and
-// asserts every output field carries its exact input, unswapped and unmodified.
+// FULLY populated provider DTO in the nested wire shape — distinct sentinels in
+// every leaf field, including nested publicKey and extensions — calls
+// mapCertificate DIRECTLY (no SSLLive / httptest), and asserts every output field
+// carries its exact input, unswapped and unmodified.
 //
-// The existing certDTO helper populates only 4 fields, so it cannot express this
-// full fixture; the DTO is built inline on purpose. Distinct-per-field sentinels
-// mean a mis-wire (Subject<->Issuer, KeyUsage<->ExtKeyUsage, NotBefore<->NotAfter)
-// is caught rather than masked by identical values. SubjectAltNames carries a
-// wildcard AND an injection-shaped element with an embedded newline; the mapper
-// must carry those bytes verbatim — never sanitized, escaped, or reordered (T8).
+// The certDTO helper populates only 4 fields, so it cannot express this full
+// fixture; the DTO is built inline on purpose. Distinct-per-field sentinels mean
+// a mis-wire (Subject<->Issuer, KeyUsage<->ExtKeyUsage, NotBefore<->NotAfter) is
+// caught rather than masked by identical values. SubjectAltNames (now under
+// extensions.subjectAlternativeNames.dnsNames) carries a wildcard AND an
+// injection-shaped element with an embedded newline; the mapper must carry those
+// bytes verbatim — never sanitized, escaped, or reordered (T8).
 func TestMapCertificate_FieldFidelity(t *testing.T) {
 	t.Parallel()
 
@@ -326,21 +420,31 @@ func TestMapCertificate_FieldFidelity(t *testing.T) {
 		Raw:          "CN=issuer.raw.sentinel",
 	}
 
+	keyUsages := []string{"KU_digitalSignature", "KU_keyEncipherment"}
+	extKeyUsages := []string{"EKU_serverAuth"}
+	crl := []string{"http://crl.example/sentinel.crl"}
+	ocsp := []string{"http://ocsp.example/sentinel"}
+
 	d := sslCertDTO{
-		Subject:               subjectDTO,
-		Issuer:                issuerDTO,
-		SerialNumber:          "SERIAL_1a2b3c",
-		NotBefore:             notBeforeStr,
-		NotAfter:              notAfterStr,
-		SignatureAlgorithm:    "SIG_ALGO_SENTINEL",
-		PublicKeyAlgorithm:    "PUBKEY_ALGO_SENTINEL",
-		PublicKeyBits:         4096,
-		KeyUsage:              []string{"KU_digitalSignature", "KU_keyEncipherment"},
-		ExtKeyUsage:           []string{"EKU_serverAuth"},
-		CRLDistributionPoints: []string{"http://crl.example/sentinel.crl"},
-		OCSPServers:           []string{"http://ocsp.example/sentinel"},
-		SubjectAltNames:       sans,
-		ChainOrder:            "intermediate",
+		Subject:            subjectDTO,
+		Issuer:             issuerDTO,
+		SerialNumber:       "SERIAL_1a2b3c",
+		SignatureAlgorithm: "SIG_ALGO_SENTINEL",
+		AuthenticationType: "organization",
+		ValidityStartDate:  notBeforeStr,
+		ValidityEndDate:    notAfterStr,
+		PublicKey: publicKeyDTO{
+			KeySize:      "4096 bit",
+			KeyAlgorithm: "PUBKEY_ALGO_SENTINEL",
+		},
+		Extensions: extensionsDTO{
+			KeyUsages:               keyUsages,
+			ExtendedKeyUsages:       extKeyUsages,
+			AuthorityInfoAccess:     authorityInfoAccessDTO{OCSP: ocsp},
+			SubjectAlternativeNames: subjectAltNamesDTO{DNSNames: sans},
+			CRLDistributionPoints:   crl,
+		},
+		ChainOrder: "intermediate",
 	}
 
 	got := mapCertificate(d)
@@ -360,19 +464,26 @@ func TestMapCertificate_FieldFidelity(t *testing.T) {
 	assert.False(t, got.NotBefore.Equal(got.NotAfter), "the two timestamp fields must not be swapped")
 
 	assert.Equal(t, d.SignatureAlgorithm, got.SignatureAlgorithm)
-	assert.Equal(t, d.PublicKeyAlgorithm, got.PublicKeyAlgorithm)
-	assert.Equal(t, d.PublicKeyBits, got.PublicKeyBits)
-	assert.Equal(t, d.KeyUsage, got.KeyUsage)
-	assert.Equal(t, d.ExtKeyUsage, got.ExtKeyUsage)
+	assert.Equal(t, d.AuthenticationType, got.AuthenticationType, "authenticationType must carry")
+
+	// publicKey is nested; keyAlgorithm carries verbatim and keySize is parsed.
+	assert.Equal(t, d.PublicKey.KeyAlgorithm, got.PublicKeyAlgorithm)
+	assert.Equal(t, 4096, got.PublicKeyBits, `keySize "4096 bit" must parse to 4096`)
+
+	// extensions is nested; each list is read from its nested home.
+	assert.Equal(t, d.Extensions.KeyUsages, got.KeyUsage)
+	assert.Equal(t, d.Extensions.ExtendedKeyUsages, got.ExtKeyUsage)
 	assert.NotEqual(t, got.KeyUsage, got.ExtKeyUsage, "KeyUsage and ExtKeyUsage must not be conflated")
-	assert.Equal(t, d.CRLDistributionPoints, got.CRLDistributionPoints)
-	assert.Equal(t, d.OCSPServers, got.OCSPServers)
+	assert.Equal(t, d.Extensions.CRLDistributionPoints, got.CRLDistributionPoints)
+	assert.Equal(t, d.Extensions.AuthorityInfoAccess.OCSP, got.OCSPServers)
 	assert.Equal(t, d.ChainOrder, got.ChainOrder)
 
 	// SubjectAltNames must be byte-identical: same length, same order, every
 	// element unmodified — including the wildcard and the injection-shaped string.
 	require.Len(t, got.SubjectAltNames, len(sans), "no SAN may be dropped or added")
 	assert.Equal(t, sans, got.SubjectAltNames, "SubjectAltNames must be carried byte-identical (T8)")
+	assert.Equal(t, d.Extensions.SubjectAlternativeNames.DNSNames, got.SubjectAltNames,
+		"SubjectAltNames must read from extensions.subjectAlternativeNames.dnsNames")
 	assert.Equal(t, sanInjection, got.SubjectAltNames[2], "the injection-shaped SAN is carried verbatim")
 	assert.Contains(t, got.SubjectAltNames[2], "\n", "the embedded newline must survive — no sanitization")
 }
@@ -382,8 +493,9 @@ func TestMapCertificate_FieldFidelity(t *testing.T) {
 // time; empty / whitespace-only input yields the zero time; an unrecognized
 // string yields the zero time WITHOUT panicking; and a valid value wrapped in
 // whitespace still parses. Assertions are on IsZero()/instant equality, never a
-// golden formatted string. The seven valid inputs are one representative per
-// entry in certTimeLayouts (ssl.go), in the same order.
+// golden formatted string. The first ten valid inputs are one representative per
+// entry in certTimeLayouts (ssl.go), in the same source order — including the
+// vendor's UNPADDED-day, trailing-zone wire format.
 func TestParseCertTime_TolerantContract(t *testing.T) {
 	t.Parallel()
 
@@ -398,9 +510,17 @@ func TestParseCertTime_TolerantContract(t *testing.T) {
 		{"RFC3339Nano", "2024-01-02T15:04:05.123456789Z", false, time.Date(2024, 1, 2, 15, 4, 5, 123456789, time.UTC)},
 		{"no-zone T-separated", "2024-01-02T15:04:05", false, time.Date(2024, 1, 2, 15, 4, 5, 0, time.UTC)},
 		{"space-separated datetime", "2024-01-02 15:04:05", false, time.Date(2024, 1, 2, 15, 4, 5, 0, time.UTC)},
-		{"space datetime with zone", "2024-01-02 15:04:05 UTC", false, time.Date(2024, 1, 2, 15, 4, 5, 0, time.UTC)},
+		{"space datetime with zone (padded day)", "2024-01-02 15:04:05 UTC", false, time.Date(2024, 1, 2, 15, 4, 5, 0, time.UTC)},
+		{"unpadded day with zone (vendor wire format)", "2024-09-7 23:03:18 UTC", false, time.Date(2024, 9, 7, 23, 3, 18, 0, time.UTC)},
+		{"unpadded month and day with zone", "2015-6-4 11:04:38 UTC", false, time.Date(2015, 6, 4, 11, 4, 38, 0, time.UTC)},
+		{"unpadded day, no zone", "2024-09-7 23:03:18", false, time.Date(2024, 9, 7, 23, 3, 18, 0, time.UTC)},
 		{"unix date style", "Jan  2 15:04:05 2024 UTC", false, time.Date(2024, 1, 2, 15, 4, 5, 0, time.UTC)},
 		{"date only", "2024-01-02", false, time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)},
+
+		// The two vendor samples the wire-format comment pins must both parse
+		// (padded month + unpadded day + trailing UTC).
+		{"vendor validity start", "2024-09-7 23:03:18 UTC", false, time.Date(2024, 9, 7, 23, 3, 18, 0, time.UTC)},
+		{"vendor validity (padded month, unpadded day)", "2015-06-4 11:04:38 UTC", false, time.Date(2015, 6, 4, 11, 4, 38, 0, time.UTC)},
 
 		// (d) a valid value wrapped in whitespace still parses (TrimSpace).
 		{"valid value wrapped in whitespace", "  2024-01-02T15:04:05Z  ", false, time.Date(2024, 1, 2, 15, 4, 5, 0, time.UTC)},

@@ -48,7 +48,7 @@ func TestValidateChain_GoldenPath(t *testing.T) {
 	t.Parallel()
 
 	certs := []Certificate{
-		mkCert("leaf.example", "Example Intermediate CA", "1a2b", "leaf"),
+		mkCert("leaf.example", "Example Intermediate CA", "1a2b", "end-user"),
 		mkCert("Example Intermediate CA", "Example Root CA", "0af9", "intermediate"),
 		mkCert("Example Root CA", "Example Root CA", "deadBEEF", "root"),
 	}
@@ -72,7 +72,7 @@ func TestValidateChain_MidChainLinkBreak(t *testing.T) {
 	t.Parallel()
 
 	certs := []Certificate{
-		mkCert("leaf.example", "Intermediate A", "1a", "leaf"),
+		mkCert("leaf.example", "Intermediate A", "1a", "end-user"),
 		mkCert("Intermediate A", "Mismatched Issuer", "2b", "intermediate"), // Issuer != next Subject
 		mkCert("Intermediate B", "Example Root CA", "3c", "intermediate"),
 		mkCert("Example Root CA", "Example Root CA", "4d", "root"),
@@ -103,7 +103,7 @@ func TestValidateChain_ActalisMisassembled(t *testing.T) {
 
 	const badSerial = "Signature Algorithm: sha256WithRSAEncryption"
 	certs := []Certificate{
-		mkCert("leaf.example", "Intermediate 1", "1a2b", "leaf"),
+		mkCert("leaf.example", "Intermediate 1", "1a2b", "end-user"),
 		mkCert("Intermediate 1", "Intermediate 2", "0af9", "intermediate"),
 		mkCert("Intermediate 2", "Real Root CA", "0bde", "intermediate"), // prior issuer = Real Root CA
 		mkCert("Fake Root CA", "Fake Root CA", badSerial, "root"),        // self-signed, subject != prior issuer, non-hex serial
@@ -138,7 +138,7 @@ func TestValidateChain_RootNotSelfSigned(t *testing.T) {
 	t.Parallel()
 
 	certs := []Certificate{
-		mkCert("leaf.example", "Intermediate CA", "1a", "leaf"),
+		mkCert("leaf.example", "Intermediate CA", "1a", "end-user"),
 		mkCert("Intermediate CA", "Root CA", "2b", "intermediate"),
 		mkCert("Root CA", "Different Issuer", "3c", "root"), // subject==prior issuer, but issuer != subject
 	}
@@ -198,7 +198,7 @@ func TestValidateChain_RootBothDefects(t *testing.T) {
 	t.Parallel()
 
 	certs := []Certificate{
-		mkCert("leaf.example", "Intermediate CA", "1a", "leaf"),
+		mkCert("leaf.example", "Intermediate CA", "1a", "end-user"),
 		mkCert("Intermediate CA", "Root CA", "2b", "intermediate"),
 		mkCert("Fake Root", "Other Issuer", "3c", "root"), // not self-signed AND subject != prior issuer
 	}
@@ -240,7 +240,7 @@ func TestValidateChain_SerialRegexBoundaries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			certs := []Certificate{mkCert("leaf.example", "Intermediate CA", tt.serial, "leaf")}
+			certs := []Certificate{mkCert("leaf.example", "Intermediate CA", tt.serial, "end-user")}
 			valid, anomalies, out := validateChain(certs)
 
 			assertValidInvariant(t, valid, anomalies)
@@ -270,7 +270,7 @@ func genLinkedChain(count int) []Certificate {
 	for i := 0; i < count; i++ {
 		order := "intermediate"
 		if i == 0 {
-			order = "leaf"
+			order = "end-user"
 		}
 		certs[i] = mkCert(
 			fmt.Sprintf("node-%d", i),
@@ -360,7 +360,7 @@ func TestValidateChain_EmptyNilAndSingle(t *testing.T) {
 
 	t.Run("single valid leaf is self-consistent", func(t *testing.T) {
 		t.Parallel()
-		certs := []Certificate{mkCert("leaf.example", "Intermediate CA", "1a2b", "leaf")}
+		certs := []Certificate{mkCert("leaf.example", "Intermediate CA", "1a2b", "end-user")}
 		valid, anomalies, out := validateChain(certs)
 		assert.True(t, valid)
 		assert.Empty(t, anomalies)
@@ -379,14 +379,14 @@ func TestValidateChain_DoesNotMutateInput(t *testing.T) {
 
 	const badSerial = "Signature Algorithm: sha256WithRSAEncryption"
 	certs := []Certificate{
-		mkCert("leaf.example", "Intermediate 1", "1a2b", "leaf"),
+		mkCert("leaf.example", "Intermediate 1", "1a2b", "end-user"),
 		mkCert("Intermediate 1", "Intermediate 2", "0af9", "intermediate"),
 		mkCert("Intermediate 2", "Real Root CA", "0bde", "intermediate"),
 		mkCert("Fake Root CA", "Fake Root CA", badSerial, "root"),
 	}
 
 	wantSerials := []string{"1a2b", "0af9", "0bde", badSerial}
-	wantOrders := []string{"leaf", "intermediate", "intermediate", "root"}
+	wantOrders := []string{"end-user", "intermediate", "intermediate", "root"}
 
 	_, _, out := validateChain(certs)
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,16 +17,22 @@ import (
 var errNoCertificates = errors.New("whoisfreaks: response contained no certificates")
 
 // certTimeLayouts are the timestamp formats accepted for a certificate's
-// notBefore/notAfter, tried in order. The exact provider format is [VERIFY]
-// pending a captured fixture, so parsing is tolerant and non-fatal: an
-// unrecognized value yields the zero time rather than an error (see
-// parseCertTime).
+// validityStartDate/validityEndDate, tried in order. The vendor's rendered docs
+// pin the wire format to a non-RFC3339 datetime with an UNPADDED day and a
+// trailing zone literal — e.g. "2024-09-7 23:03:18 UTC" — so the padded
+// "2006-01-02 ..." layouts alone do not parse it (verified). The list therefore
+// carries both padded and unpadded day/month variants. Parsing stays tolerant
+// and non-fatal: an unrecognized value yields the zero time rather than an
+// error (see parseCertTime).
 var certTimeLayouts = []string{
 	time.RFC3339,
 	time.RFC3339Nano,
 	"2006-01-02T15:04:05",
 	"2006-01-02 15:04:05",
 	"2006-01-02 15:04:05 MST",
+	"2006-01-2 15:04:05 MST", // vendor wire format: padded month, UNPADDED day, zone
+	"2006-1-2 15:04:05 MST",  // fully unpadded month + day, zone
+	"2006-01-2 15:04:05",     // unpadded day, no zone
 	"Jan _2 15:04:05 2006 MST",
 	"2006-01-02",
 }
@@ -112,24 +119,27 @@ func (c *Client) sslLiveURL(domain string, o SSLOptions) string {
 	return c.baseURL + pathSSLLive + "?" + v.Encode()
 }
 
-// mapCertificate maps a provider certificate DTO to the exported Certificate.
-// Every field is carried verbatim as opaque, untrusted data; only the timestamps
-// are parsed (tolerantly, never fatally). No DER/PEM is decoded here.
+// mapCertificate maps a provider certificate DTO to the exported Certificate,
+// flattening the vendor's nested publicKey/extensions objects into the flat
+// Certificate shape. Every field is carried verbatim as opaque, untrusted data;
+// only the validity timestamps and the unit-suffixed key size are parsed (both
+// tolerantly, never fatally). No DER/PEM is decoded here.
 func mapCertificate(d sslCertDTO) Certificate {
 	return Certificate{
 		Subject:               mapDN(d.Subject),
 		Issuer:                mapDN(d.Issuer),
 		SerialNumber:          d.SerialNumber,
-		NotBefore:             parseCertTime(d.NotBefore),
-		NotAfter:              parseCertTime(d.NotAfter),
+		NotBefore:             parseCertTime(d.ValidityStartDate),
+		NotAfter:              parseCertTime(d.ValidityEndDate),
 		SignatureAlgorithm:    d.SignatureAlgorithm,
-		PublicKeyAlgorithm:    d.PublicKeyAlgorithm,
-		PublicKeyBits:         d.PublicKeyBits,
-		KeyUsage:              d.KeyUsage,
-		ExtKeyUsage:           d.ExtKeyUsage,
-		CRLDistributionPoints: d.CRLDistributionPoints,
-		OCSPServers:           d.OCSPServers,
-		SubjectAltNames:       d.SubjectAltNames,
+		AuthenticationType:    d.AuthenticationType,
+		PublicKeyAlgorithm:    d.PublicKey.KeyAlgorithm,
+		PublicKeyBits:         parseKeyBits(d.PublicKey.KeySize),
+		KeyUsage:              d.Extensions.KeyUsages,
+		ExtKeyUsage:           d.Extensions.ExtendedKeyUsages,
+		CRLDistributionPoints: d.Extensions.CRLDistributionPoints,
+		OCSPServers:           d.Extensions.AuthorityInfoAccess.OCSP,
+		SubjectAltNames:       d.Extensions.SubjectAlternativeNames.DNSNames,
 		ChainOrder:            d.ChainOrder,
 	}
 }
@@ -140,11 +150,37 @@ func mapDN(d dnDTO) DN {
 	return DN(d)
 }
 
+// parseKeyBits extracts the integer key size from the vendor's unit-suffixed
+// keySize string (e.g. "256 bit" -> 256, "4096 bit" -> 4096). It trims, then
+// takes the leading run of ASCII digits and Atoi's it; empty input or input with
+// no leading digit (e.g. "" or "unknown") yields 0.
+//
+// Parsing on read is deliberate: keySize is a STRING with a unit on the wire, so
+// a naive `int` json field would raise a fatal UnmarshalTypeError that discards
+// the ENTIRE response. Extracting the number here keeps the whole lookup alive
+// and treats a missing/odd size as a non-fatal 0.
+func parseKeyBits(s string) int {
+	s = strings.TrimSpace(s)
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(s[:i])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // parseCertTime parses a certificate timestamp using certTimeLayouts. It is
 // deliberately non-fatal: an empty or unrecognized value returns the zero
 // time.Time rather than an error, so a single odd timestamp never fails an
-// otherwise good lookup and never panics. [VERIFY] the exact provider format
-// against a captured fixture and tighten the layout list if warranted.
+// otherwise good lookup and never panics. The accepted layouts are pinned to the
+// vendor's rendered-docs wire format (non-RFC3339, unpadded day, trailing zone);
+// the tolerant fallbacks remain in case the provider drifts.
 func parseCertTime(s string) time.Time {
 	s = strings.TrimSpace(s)
 	if s == "" {
