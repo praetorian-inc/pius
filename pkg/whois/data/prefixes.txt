@@ -42,8 +42,8 @@ DNStination Inc.
 Domain  Administrator
 Domain Admin
 Domain Admin / This Domain is For Sale
-Domain Administrator
 DOMAIN ADMINISTRATOR
+Domain Administrator
 Domain Department
 Domain DNS Services Technician
 Domain For Sale
@@ -58,14 +58,14 @@ Domain Protection Services, Inc.
 Domain Registrations
 Domains By Proxy
 GANDI
-GDPR Masked
 GDPR MASKED
+GDPR Masked
 GDPR Masked GDPR Masked
 GDPR Protected
 Get On The Web Limited
 Global Domain Group Privacy Service
-Global Domain Privacy
 GLOBAL DOMAIN PRIVACY
+Global Domain Privacy
 HELLO INTERNET PRIVACY SERVICE https://hello.co/privacy-service
 hidden
 Hostmaster Of The Day
@@ -73,8 +73,8 @@ hostmaster@safenames.net
 HugeDomains.com
 Identity Protection Service
 info@domain-contact.org
-Informa Group plc
 Informa Group Plc
+Informa Group plc
 Informa Middle East Limited
 International Domain
 INWX GmbH
@@ -113,13 +113,13 @@ Privacy service provided by
 Privacy Shield LTD
 PrivacyGuardian.org llc
 Private by Design, LLC
-Private person
 Private Person
+Private person
 Private Registrant
 Private Registration
 PRIVATE REGISTRY AUTHORITY
-Private Tech
 PRIVATE TECH
+Private Tech
 PrivateName Services Inc.
 Promo Privacy
 Protected
@@ -127,10 +127,10 @@ redacted
 Redacted by Privacy
 REDACTED FOR GDPR
 Redacted for GDPR privacy
-Redacted for privacy
-Redacted for Privacy
-Redacted For Privacy
 REDACTED FOR PRIVACY
+Redacted For Privacy
+Redacted for Privacy
+Redacted for privacy
 Redacted for Privacy (Redactado por Privacidad)
 Redacted for Privacy Purposes
 REDACTED FOR PRIVACY REDACTED FOR PRIVACY
@@ -158,8 +158,8 @@ The Goodyear Tire & Rubber Company
 TotalDomain Privacy Ltd
 united-domains Reselling GmbH
 WEB COMMERCE COMMUNICATIONS LIMITED
-web master
 Web Master
+web master
 Webnames Private
 Webnames Services INC
 Weebly, Inc.
