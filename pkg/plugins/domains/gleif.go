@@ -318,7 +318,7 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins
 		Value:  name,
 		Source: "gleif",
 		Data: map[string]any{
-			"preseed_type":           "organization",
+			"preseed_type":           "organization-name",
 			"preseed_title":          name,
 			"lei":                    record.ID,
 			"source":                 "gleif",

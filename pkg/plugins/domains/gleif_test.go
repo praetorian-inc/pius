@@ -170,7 +170,7 @@ func TestGLEIFPlugin_Run_TopLevelWithSubsidiaries(t *testing.T) {
 	for _, f := range findings {
 		assert.Equal(t, plugins.FindingPreseed, f.Type)
 		assert.Equal(t, "gleif", f.Source)
-		assert.Equal(t, "organization", f.Data["preseed_type"])
+		assert.Equal(t, "organization-name", f.Data["preseed_type"])
 		assert.Equal(t, "subsidiary", f.Data["corporate_relationship"])
 		assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(f))
 		require.Len(t, f.Confidences, 2, "resolution and registered relationship are the independent signals")
