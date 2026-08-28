@@ -26,6 +26,22 @@ func TestExtractPreseeds_DropsMonikerPrivacyServices(t *testing.T) {
 	assert.Empty(t, extractPreseeds(r))
 }
 
+func TestExtractPreseeds_DropsRegistryContactAdvisory(t *testing.T) {
+	const advisory = "Please query the RDDS service of the Registrar of Record for contact information."
+	result := whois.DomainResult{
+		Domain:     "example.co",
+		Registrant: whois.Contact{Email: advisory},
+		Admin:      whois.Contact{Email: advisory},
+		Tech:       whois.Contact{Email: advisory},
+		Billing:    whois.Contact{Email: advisory},
+	}
+	result.Normalize()
+
+	assert.Empty(t, result.ContactEmail)
+	assert.Empty(t, extractPreseeds(result))
+	assert.Equal(t, advisory, result.Registrant.Email)
+}
+
 // A preseed justification names the server that answered the WHOIS query, so a
 // reviewer can retrace the claim to the record it came from.
 func TestExtractPreseeds_JustificationNamesWhoisServer(t *testing.T) {

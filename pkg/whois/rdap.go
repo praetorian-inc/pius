@@ -74,7 +74,10 @@ func rdapLookup(ctx context.Context, httpClient *http.Client, domain string) (Do
 }
 
 func mapRDAPToResult(domain string, resp *rdap.Domain) DomainResult {
-	r := DomainResult{Domain: domain}
+	r := DomainResult{
+		Domain: domain,
+		DNSSEC: rdapDNSSEC(resp.SecureDNS),
+	}
 
 	for _, event := range resp.Events {
 		switch event.Action {
@@ -109,6 +112,25 @@ func mapRDAPToResult(domain string, resp *rdap.Domain) DomainResult {
 	return r
 }
 
+func rdapDNSSEC(secureDNS *rdap.SecureDNS) string {
+	if secureDNS == nil {
+		return ""
+	}
+	if secureDNS.DelegationSigned != nil {
+		if *secureDNS.DelegationSigned {
+			return "signed"
+		}
+		return "unsigned"
+	}
+	if secureDNS.ZoneSigned != nil {
+		if *secureDNS.ZoneSigned {
+			return "signed"
+		}
+		return "unsigned"
+	}
+	return ""
+}
+
 func enrichFromRegistrar(ctx context.Context, client *rdap.Client, result *DomainResult, domainResp *rdap.Domain) {
 	var registrarURL string
 	for _, link := range domainResp.Links {
@@ -138,8 +160,8 @@ func enrichFromRegistrar(ctx context.Context, client *rdap.Client, result *Domai
 	}
 
 	registrant := extractContact(d.Entities, "registrant")
-	if !registrant.IsEmpty() {
-		result.Registrant = registrant
+	if registrant != (Contact{}) {
+		result.Registrant = mergeContact(result.Registrant, registrant)
 	}
 }
 
@@ -256,8 +278,6 @@ func networkContactFromEntity(entity *rdap.Entity, direct bool) NetworkContact {
 
 	contact.Contact = contactFromVCard(entity.VCard)
 	contact.Kind = firstVCardValue(entity.VCard, "kind")
-	contact.Email = entity.VCard.Email()
-	contact.Phone = strings.TrimPrefix(entity.VCard.Tel(), "tel:")
 	return contact
 }
 
@@ -277,6 +297,8 @@ func contactFromVCard(vcard *rdap.VCard) Contact {
 	contact := Contact{
 		Name:         vcard.Name(),
 		Organization: extractOrgFromVCard(vcard),
+		Email:        vcard.Email(),
+		Phone:        strings.TrimPrefix(vcard.Tel(), "tel:"),
 		Street:       vcard.StreetAddress(),
 		PostalCode:   vcard.PostalCode(),
 	}

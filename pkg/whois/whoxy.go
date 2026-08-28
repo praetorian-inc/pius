@@ -13,8 +13,6 @@ import (
 	"slices"
 	"strings"
 
-	whoisparser "github.com/likexian/whois-parser"
-
 	httpclient "github.com/praetorian-inc/pius/pkg/client"
 )
 
@@ -189,15 +187,14 @@ func (r *WhoxyClient) LookupDomain(ctx context.Context, domain string) (result D
 		return DomainResult{}, nil
 	}
 
-	parsed, err := whoisparser.Parse(wr.Raw)
+	result, err = parseRawDomainResult(domain, wr.Raw)
 	if err != nil {
-		if errors.Is(err, whoisparser.ErrNotFoundDomain) {
+		if isDomainNotFound(err) {
 			return DomainResult{Domain: domain, Unregistered: true}, nil
 		}
 		return DomainResult{}, fmt.Errorf("whoxy: parsing record for %s: %w", domain, err)
 	}
 
-	result = mapParsedToResult(domain, parsed)
 	result.Sources = []string{ProviderWhoxy}
 	return result, nil
 }

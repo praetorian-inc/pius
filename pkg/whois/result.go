@@ -56,7 +56,7 @@ func (r *DomainResult) hasRegistrationData() bool {
 		return true
 	}
 	for _, contact := range r.AllContacts() {
-		if !contact.IsEmpty() {
+		if contact.Contact != (Contact{}) {
 			return true
 		}
 	}

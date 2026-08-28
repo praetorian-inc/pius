@@ -5,15 +5,16 @@ import (
 	"strings"
 )
 
-var tcp43DomainFallbacks = map[string]func(*DomainResult, string){
-	"il": applyISOCILFallback, // ISOC-IL publishes holder data in RPSL fields the primary parser ignores.
-	"pt": applyDNSPTFallback,  // DNS.PT publishes registrant data under "Owner" fields the primary parser ignores.
+var rawDomainFallbacks = map[string]func(*DomainResult, rawDomainRecord){
+	"cl": applyNICChileFallback, // NIC Chile uses registry-specific labels rejected by the primary parser.
+	"il": applyISOCILFallback,   // ISOC-IL publishes holder data in RPSL fields the primary parser ignores.
+	"pt": applyDNSPTFallback,    // DNS.PT publishes registrant data under "Owner" fields the primary parser ignores.
 }
 
-func applyTCP43DomainFallback(result *DomainResult, raw string) {
-	fallback, ok := tcp43DomainFallbacks[topLevelDomain(result.Domain)]
+func applyRawDomainFallback(result *DomainResult, record rawDomainRecord) {
+	fallback, ok := rawDomainFallbacks[topLevelDomain(result.Domain)]
 	if ok {
-		fallback(result, raw)
+		fallback(result, record)
 	}
 }
 
@@ -26,13 +27,13 @@ func topLevelDomain(domain string) string {
 }
 
 // applyISOCILFallback fills empty registrant fields from the RPSL holder block.
-func applyISOCILFallback(result *DomainResult, raw string) {
+func applyISOCILFallback(result *DomainResult, record rawDomainRecord) {
 	if result.Registrant.Organization != "" && result.Registrant.Email != "" {
 		return
 	}
 
 	var holder map[string]string
-	for _, paragraph := range parseRPSLParagraphs(raw) {
+	for _, paragraph := range parseRPSLParagraphs(record.raw) {
 		if paragraph["first_descr"] != "" {
 			holder = paragraph
 			break
@@ -58,9 +59,21 @@ func applyISOCILFallback(result *DomainResult, raw string) {
 	}
 }
 
+func applyNICChileFallback(result *DomainResult, record rawDomainRecord) {
+	fields := record.fields
+	result.Registrant.Name = cmp.Or(result.Registrant.Name, firstField(fields, "registrant name"))
+	result.Registrant.Organization = cmp.Or(result.Registrant.Organization, firstField(fields, "registrant organisation"))
+	result.Registrar = cmp.Or(result.Registrar, firstField(fields, "registrar name"))
+	result.Created = cmp.Or(result.Created, firstField(fields, "creation date"))
+	result.Expiration = cmp.Or(result.Expiration, firstField(fields, "expiration date"))
+	if len(result.NameServers) == 0 {
+		result.NameServers = append([]string(nil), fields["name server"]...)
+	}
+}
+
 // applyDNSPTFallback fills fields from DNS.PT's Owner and Admin labels.
-func applyDNSPTFallback(result *DomainResult, raw string) {
-	fields := parseTCP43Fields(raw)
+func applyDNSPTFallback(result *DomainResult, record rawDomainRecord) {
+	fields := record.fields
 	fillDNSPTContact(&result.Registrant, fields, "owner")
 	fillDNSPTContact(&result.Admin, fields, "admin")
 }

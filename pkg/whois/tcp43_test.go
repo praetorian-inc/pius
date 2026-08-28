@@ -38,20 +38,7 @@ func TestTCP43Lookup_AppliesDNSPTFallback(t *testing.T) {
 	const registry = "whois.dns.pt"
 	stubTCP43RawFn(t, map[string]string{
 		defaultServer: "refer: " + registry + "\n",
-		registry: `Domain: example.pt
-Domain Status: Registered
-Creation Date: 05/04/2016 09:55:53
-Expiration Date: 04/04/2027 23:59:53
-Owner Name: Example Networks
-Owner Address: 1 Example Street
-Owner Locality: Lisbon
-Owner ZipCode: 1000-001
-Owner Locality ZipCode: Lisbon
-Owner Country Code: PT
-Admin Name: Example Registrar
-Admin Country Code: PT
-Name Server: ns1.example.com
-`,
+		registry:      readDomainFixture(t, "dns_pt.raw"),
 	})
 
 	result, err := tcp43Lookup(context.Background(), "example.pt")
@@ -67,9 +54,55 @@ Name Server: ns1.example.com
 	assert.Equal(t, "PT", result.Registrant.Country)
 	assert.Equal(t, "Example Registrar", result.Admin.Name)
 	assert.Equal(t, "PT", result.Admin.Country)
+	assert.Equal(t, []string{"ns1.example.net", "ns2.example.net"}, result.NameServers)
 }
 
-func TestApplyTCP43DomainFallback_DispatchesByTLD(t *testing.T) {
+func TestTCP43Lookup_PreservesRegistryCORecordAfterRegistrarFailure(t *testing.T) {
+	const registry = "whois.registry.co"
+	stubTCP43RawFn(t, map[string]string{
+		defaultServer: "refer: " + registry + "\n",
+		registry:      readDomainFixture(t, "registry_co.raw"),
+	})
+
+	result, err := tcp43Lookup(context.Background(), "example.co")
+
+	require.NoError(t, err)
+	assert.Equal(t, registry, result.WhoisServer)
+	assert.Equal(t, "Example Registrar, LLC", result.Registrar)
+	assert.Equal(t, "unsigned", result.DNSSEC)
+	assert.Empty(t, result.RegistrantIdentity)
+	assert.Empty(t, result.ContactEmail)
+}
+
+func TestTCP43Lookup_RecoversNICChileRecord(t *testing.T) {
+	const registry = "whois.nic.cl"
+	stubTCP43RawFn(t, map[string]string{
+		defaultServer: "refer: " + registry + "\n",
+		registry:      readDomainFixture(t, "nic_cl.raw"),
+	})
+
+	result, err := tcp43Lookup(context.Background(), "example.cl")
+
+	require.NoError(t, err)
+	assert.Equal(t, registry, result.WhoisServer)
+	assert.Equal(t, "Example Media LLC", result.RegistrantIdentity)
+	assert.Equal(t, "Example Registrar", result.Registrar)
+}
+
+func TestTCP43Lookup_RejectsRegistryDenial(t *testing.T) {
+	const registry = "whois.nic.ch"
+	stubTCP43RawFn(t, map[string]string{
+		defaultServer: "refer: " + registry + "\n",
+		registry:      readDomainFixture(t, "nic_ch_denied.raw"),
+	})
+
+	result, err := tcp43Lookup(context.Background(), "example.ch")
+
+	assert.ErrorIs(t, err, errRegistryAccessDenied)
+	assert.Equal(t, DomainResult{}, result)
+}
+
+func TestApplyRawDomainFallback_DispatchesByTLD(t *testing.T) {
 	result := DomainResult{Domain: "example.co.il"}
 	const raw = `% registry record
 domain: example.co.il
@@ -79,7 +112,7 @@ descr: Example Ltd.
 e-mail: admin AT example.com
 `
 
-	applyTCP43DomainFallback(&result, raw)
+	applyRawDomainFallback(&result, newRawDomainRecord(raw))
 
 	assert.Equal(t, "Example Ltd.", result.Registrant.Organization)
 	assert.Equal(t, "admin@example.com", result.Registrant.Email)
@@ -94,11 +127,30 @@ func TestApplyDNSPTFallback_PreservesParsedValues(t *testing.T) {
 		},
 	}
 
-	applyTCP43DomainFallback(&result, "Owner Name: Fallback Owner\nOwner Address: 1 Main St\nOwner Country Code: US\n")
+	const raw = "Owner Name: Fallback Owner\nOwner Address: 1 Main St\nOwner Country Code: US\n"
+	applyRawDomainFallback(&result, newRawDomainRecord(raw))
 
 	assert.Equal(t, "Parsed Owner", result.Registrant.Name)
 	assert.Equal(t, "GB", result.Registrant.Country)
 	assert.Equal(t, "1 Main St", result.Registrant.Street)
+}
+
+func TestTCP43Raw_RegistryTimeoutDoesNotSalvageBootstrap(t *testing.T) {
+	const registry = "whois.nic.net.sb"
+	original := tcp43RawFn
+	tcp43RawFn = func(_ context.Context, _ string, server string) (string, error) {
+		if server == defaultServer {
+			return "refer: " + registry + "\n", nil
+		}
+		return "", context.DeadlineExceeded
+	}
+	t.Cleanup(func() { tcp43RawFn = original })
+
+	raw, server, err := tcp43Raw(context.Background(), "example.sb")
+
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Empty(t, raw)
+	assert.Empty(t, server)
 }
 
 // ENG-5450: a referral naming the bootstrap server with a trailing root dot

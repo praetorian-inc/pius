@@ -234,6 +234,41 @@ func TestCascade_PartialResultSurvivesAFailedTail(t *testing.T) {
 	assert.Equal(t, "example.com", res.Domain)
 }
 
+func TestCascade_PhoneOnlyContactSurvivesFailedTail(t *testing.T) {
+	w := New()
+	w.RDAPClient = &fakeWHOISClient{
+		name:   SourceRDAP,
+		result: DomainResult{Billing: Contact{Phone: "+1.4155550100"}},
+	}
+	w.TCP43Client = failing(SourceTCP43)
+	w.WhoxyClient = failing(ProviderWhoxy)
+	w.WhoisFreaksClient = failing(ProviderWhoisFreaks)
+	w.WhoisXMLClient = failing(ProviderWhoisXML)
+
+	result, err := w.LookupDomain(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, "+1.4155550100", result.Billing.Phone)
+}
+
+func TestCascade_UsesDNSPTFallbackFromWhoxyAfterTCPFailure(t *testing.T) {
+	whoxyResult, err := parseRawDomainResult("example.pt", readDomainFixture(t, "dns_pt.raw"))
+	require.NoError(t, err)
+
+	w := New()
+	w.RDAPClient = failing(SourceRDAP)
+	w.TCP43Client = failing(SourceTCP43)
+	w.WhoxyClient = &fakeWHOISClient{name: ProviderWhoxy, result: whoxyResult}
+	w.WhoisFreaksClient = failing(ProviderWhoisFreaks)
+	w.WhoisXMLClient = failing(ProviderWhoisXML)
+
+	result, err := w.LookupDomain(context.Background(), "example.pt")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Example Networks", result.RegistrantIdentity)
+	assert.Equal(t, "Example Registrar", result.Admin.Name)
+}
+
 // TestCascade_UnregisteredBelievedWhenNothingResolved: with no competing
 // evidence, a provider's not-registered verdict stands, and it ends the cascade
 // rather than paying the remaining providers to re-confirm it.
@@ -442,24 +477,55 @@ func TestNewBuildsTheDefaultCascade(t *testing.T) {
 // TestResultIsComplete pins the stop condition. It is a cost dial: every field
 // added here bills more providers on every lookup that lacks it.
 func TestResultIsComplete(t *testing.T) {
-	full := completeResult(ProviderWhoxy)
-	require.True(t, full.isComplete())
-
-	for _, tc := range []struct {
-		name  string
-		strip func(*DomainResult)
+	tests := []struct {
+		name     string
+		result   DomainResult
+		complete bool
 	}{
-		{"no registrant identity", func(r *DomainResult) { r.RegistrantIdentity = "" }},
-		{"private registrant identity", func(r *DomainResult) { r.RegistrantIdentity = PrivacyRedaction }},
-		{"no contact email", func(r *DomainResult) { r.ContactEmail = "" }},
-		{"private contact email", func(r *DomainResult) { r.ContactEmail = PrivacyRedaction }},
-		{"no registrar", func(r *DomainResult) { r.Registrar = "" }},
-		{"private registrar", func(r *DomainResult) { r.Registrar = PrivacyRedaction }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := completeResult(ProviderWhoxy)
-			tc.strip(&r)
-			assert.False(t, r.isComplete(), "a missing field must keep the cascade walking")
+		{
+			name:     "public registrant identity",
+			result:   DomainResult{RegistrantIdentity: "Example Corp"},
+			complete: true,
+		},
+		{
+			name:     "public email and registrar",
+			result:   DomainResult{ContactEmail: "admin@example.com", Registrar: "Example Registrar"},
+			complete: true,
+		},
+		{
+			name: "email and registrar compensate for private identity",
+			result: DomainResult{
+				RegistrantIdentity: PrivacyRedaction,
+				ContactEmail:       "admin@example.com",
+				Registrar:          "Example Registrar",
+			},
+			complete: true,
+		},
+		{
+			name: "identity compensates for private email and registrar",
+			result: DomainResult{
+				RegistrantIdentity: "Example Corp",
+				ContactEmail:       PrivacyRedaction,
+				Registrar:          PrivacyRedaction,
+			},
+			complete: true,
+		},
+		{name: "empty", result: DomainResult{}},
+		{name: "private identity", result: DomainResult{RegistrantIdentity: PrivacyRedaction}},
+		{name: "email without registrar", result: DomainResult{ContactEmail: "admin@example.com"}},
+		{name: "registrar without email", result: DomainResult{Registrar: "Example Registrar"}},
+		{
+			name: "public email with private registrar",
+			result: DomainResult{
+				ContactEmail: "admin@example.com",
+				Registrar:    PrivacyRedaction,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.complete, test.result.isComplete())
 		})
 	}
 }

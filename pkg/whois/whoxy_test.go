@@ -22,6 +22,9 @@ Registrar: Example Registrar, Inc.
 Registrant Organization: Example Corp
 Registrant Name: Jane Doe
 Registrant Email: jane@example.com
+Registrant Phone: +1.4155550100
+Registrant Street: 1 Example Street
+Registrant Postal Code: 94105
 Registrant Country: US
 Registrant State/Province: CA
 Registrant City: San Francisco
@@ -110,8 +113,74 @@ func TestWhoxyResolver_Success(t *testing.T) {
 	assert.Equal(t, "Example Registrar, Inc.", result.Registrar)
 	assert.Equal(t, "Example Corp", result.Registrant.Organization)
 	assert.Equal(t, "Jane Doe", result.Registrant.Name)
+	assert.Equal(t, "jane@example.com", result.Registrant.Email)
+	assert.Equal(t, "+1.4155550100", result.Registrant.Phone)
+	assert.Equal(t, "1 Example Street", result.Registrant.Street)
+	assert.Equal(t, "94105", result.Registrant.PostalCode)
+	assert.Equal(t, "whois.example-registrar.com", result.WhoisServer)
+	assert.Equal(t, "unsigned", result.DNSSEC)
 	assert.Equal(t, []string{ProviderWhoxy}, result.Sources)
 	assert.Len(t, result.NameServers, 2)
+}
+
+func TestWhoxyResolver_AppliesDNSPTFallback(t *testing.T) {
+	raw := "Generator: test\nRegistry WHOIS: whois.dns.pt\n\n" + readDomainFixture(t, "dns_pt.raw")
+	r := newWhoxyTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":1,"raw_whois":` + jsonQuote(t, raw) + `}`))
+	})
+
+	result, err := r.LookupDomain(context.Background(), "example.pt")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Example Networks", result.RegistrantIdentity)
+	assert.Equal(t, "1 Example Street", result.Registrant.Street)
+	assert.Equal(t, "1000-001", result.Registrant.PostalCode)
+	assert.Equal(t, "Example Registrar", result.Admin.Name)
+	assert.Equal(t, "whois.dns.pt", result.WhoisServer)
+	assert.Equal(t, []string{"ns1.example.net", "ns2.example.net"}, result.NameServers)
+}
+
+func TestWhoxyResolver_PreservesRegistryCOFields(t *testing.T) {
+	raw := "Generator: test\nRegistry WHOIS: whois.registry.co\n\n" + readDomainFixture(t, "registry_co.raw")
+	r := newWhoxyTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":1,"raw_whois":` + jsonQuote(t, raw) + `}`))
+	})
+
+	result, err := r.LookupDomain(context.Background(), "example.co")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Example Registrar, LLC", result.Registrar)
+	assert.Equal(t, "unsigned", result.DNSSEC)
+	assert.Equal(t, "whois.registry.co", result.WhoisServer)
+	assert.NotEmpty(t, result.Registrant.Email)
+	assert.Empty(t, result.ContactEmail)
+}
+
+func TestWhoxyResolver_RecoversNICChileRecord(t *testing.T) {
+	raw := "Generator: test\nRegistry WHOIS: whois.nic.cl\n\n" + readDomainFixture(t, "nic_cl.raw")
+	r := newWhoxyTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":1,"raw_whois":` + jsonQuote(t, raw) + `}`))
+	})
+
+	result, err := r.LookupDomain(context.Background(), "example.cl")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Example Media LLC", result.RegistrantIdentity)
+	assert.Equal(t, "Example Registrar", result.Registrar)
+	assert.Equal(t, "whois.nic.cl", result.WhoisServer)
+	assert.Equal(t, []string{ProviderWhoxy}, result.Sources)
+}
+
+func TestWhoxyResolver_RejectsRegistryDenial(t *testing.T) {
+	raw := readDomainFixture(t, "nic_ch_denied.raw")
+	r := newWhoxyTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":1,"raw_whois":` + jsonQuote(t, raw) + `}`))
+	})
+
+	result, err := r.LookupDomain(context.Background(), "example.ch")
+
+	assert.ErrorIs(t, err, errRegistryAccessDenied)
+	assert.Equal(t, DomainResult{}, result)
 }
 
 // TestWhoxyResolver_ZeroBalanceIsAFailure is the case that matters

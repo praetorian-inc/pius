@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	whoisparser "github.com/likexian/whois-parser"
-
 	"github.com/praetorian-inc/pius/pkg/lib/netutil"
 )
 
@@ -50,49 +48,12 @@ func tcp43Lookup(ctx context.Context, domain string) (DomainResult, error) {
 		return DomainResult{}, err
 	}
 
-	parsed, err := whoisparser.Parse(raw)
+	result, err := parseRawDomainResult(domain, raw)
 	if err != nil {
 		return DomainResult{}, fmt.Errorf("whois parse failed for %s: %w", domain, err)
 	}
-	result := mapParsedToResult(domain, parsed)
 	result.WhoisServer = server
-	applyTCP43DomainFallback(&result, raw)
-	result.Normalize()
 	return result, nil
-}
-
-func mapParsedToResult(domain string, info whoisparser.WhoisInfo) DomainResult {
-	r := DomainResult{Domain: domain}
-
-	if info.Domain != nil {
-		r.Created = info.Domain.CreatedDate
-		r.Updated = info.Domain.UpdatedDate
-		r.Expiration = info.Domain.ExpirationDate
-		r.NameServers = info.Domain.NameServers
-		r.Status = info.Domain.Status
-	}
-	if info.Registrar != nil {
-		r.Registrar = info.Registrar.Name
-	}
-	r.Registrant = contactFromParsed(info.Registrant)
-	r.Admin = contactFromParsed(info.Administrative)
-	r.Tech = contactFromParsed(info.Technical)
-	r.Billing = contactFromParsed(info.Billing)
-	return r
-}
-
-func contactFromParsed(c *whoisparser.Contact) Contact {
-	if c == nil {
-		return Contact{}
-	}
-	return Contact{
-		Organization: c.Organization,
-		Name:         c.Name,
-		Email:        c.Email,
-		Country:      c.Country,
-		Province:     c.Province,
-		City:         c.City,
-	}
 }
 
 func (r *TCP43Client) LookupNetwork(ctx context.Context, query string) (NetworkResult, error) {
