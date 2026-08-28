@@ -86,6 +86,8 @@ Use `pkg/client.Client` for HTTP requests. Provides:
 - 10MB response limit
 - User-Agent header
 
+Exception: a provider client that carries its secret in the query string (e.g. `pkg/whoisfreaks`, whose `apiKey` rides as a `?apiKey=` query param) deliberately owns a small, leak-free transport instead of `pkg/client.Client`. That way a transport `*url.Error` — which embeds the full keyed request URL — is never `%w`-wrapped into a returned or logged error. Reach for this pattern only when the credential is unavoidably in the URL.
+
 ### Cache System
 
 `pkg/cache/Cache` manages local file caching for RPSL databases:

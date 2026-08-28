@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -16,7 +17,10 @@ import (
 // starts from this value, and only the test-only WithBaseURL replaces it. The
 // scheme is fixed https:// so a production Client can never be pointed at a
 // plaintext endpoint, and no runtime scheme check is required because the value
-// is not attacker- or config-reachable in production.
+// is not attacker- or config-reachable in production. WithBaseURL additionally
+// enforces at construction that any override is https (or a loopback http
+// endpoint for tests), so the query-string apiKey can never be put on the wire
+// in cleartext through the exported API either.
 const defaultBaseURL = "https://api.whoisfreaks.com"
 
 const (
@@ -51,6 +55,10 @@ var (
 	errRequestFailed    = errors.New("whoisfreaks: request failed")
 	errResponseTooLarge = errors.New("whoisfreaks: response exceeded size limit")
 	errMissingAPIKey    = errors.New("whoisfreaks: WithAPIKey is required")
+	// errInsecureBaseURL is set on the Client (via optErr) when WithBaseURL is
+	// given a base that would put the query-string apiKey on the wire in
+	// cleartext — anything that is neither https nor a loopback http endpoint.
+	errInsecureBaseURL = errors.New("whoisfreaks: WithBaseURL requires an https endpoint (or a loopback http endpoint for tests)")
 )
 
 // Client is a WhoisFreaks SSL-certificate API client. It owns its own
@@ -64,6 +72,9 @@ type Client struct {
 	http    *http.Client
 	limiter Limiter
 	meter   *CreditMeter
+	// optErr records the first option error (e.g. an insecure WithBaseURL) so New
+	// can reject the construction; a nil optErr means every option applied cleanly.
+	optErr error
 }
 
 // Option configures a Client during New. Options are applied in order after the
@@ -111,8 +122,47 @@ func WithCreditMeter(m *CreditMeter) Option {
 // WithBaseURL overrides the API base URL. It is TEST-ONLY: production code must
 // rely on the hardcoded https:// defaultBaseURL (security T5). It exists so
 // tests can point the client at an httptest.Server.
+//
+// It hardens the exported API against putting the query-string apiKey on the
+// wire in cleartext: an override is accepted only when it is https (any host) or
+// a loopback http endpoint (localhost / 127.0.0.1 / ::1, which is what an
+// httptest.Server serves). Any other value — notably a plaintext http:// to a
+// remote host — leaves baseURL untouched and records errInsecureBaseURL so New
+// fails rather than silently leaking the key.
 func WithBaseURL(raw string) Option {
-	return func(c *Client) { c.baseURL = raw }
+	return func(c *Client) {
+		u, err := url.Parse(raw)
+		if err != nil {
+			c.optErr = errInsecureBaseURL
+			return
+		}
+		switch u.Scheme {
+		case "https":
+			c.baseURL = raw
+		case "http":
+			if isLoopbackHost(u.Hostname()) {
+				c.baseURL = raw
+				return
+			}
+			c.optErr = errInsecureBaseURL
+		default:
+			c.optErr = errInsecureBaseURL
+		}
+	}
+}
+
+// isLoopbackHost reports whether host is a loopback endpoint safe for plaintext
+// http in tests: the literal "localhost", or an IP that net.ParseIP classifies
+// as loopback (127.0.0.0/8, ::1). host is url.URL.Hostname() output, so it is
+// already stripped of any port and IPv6 brackets.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
 }
 
 // New constructs a Client. It installs the secure defaults first — an owned
@@ -129,6 +179,11 @@ func New(opts ...Option) (*Client, error) {
 	}
 	for _, opt := range opts {
 		opt(c)
+	}
+	// Reject an insecure WithBaseURL before anything else: a base that would leak
+	// the query-string apiKey in cleartext must never yield a usable Client.
+	if c.optErr != nil {
+		return nil, c.optErr
 	}
 	if c.apiKey == "" {
 		return nil, errMissingAPIKey

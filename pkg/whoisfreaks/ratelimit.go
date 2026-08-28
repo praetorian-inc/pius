@@ -91,6 +91,15 @@ func (l *headerLimiter) Wait(ctx context.Context, cat Category) error {
 	s.mu.Lock()
 	remaining := s.remaining
 	resetAt := s.resetAt
+	// Reserve the token under the SAME lock that read remaining: concurrent
+	// callers therefore cannot all observe the same positive remaining and
+	// stampede past an exhausted window. This local decrement is a conservative
+	// floor between responses only — Observe re-syncs remaining to the provider's
+	// authoritative value on the next response, so an over-decrement here can make
+	// pacing slightly more cautious but never less.
+	if remaining > 0 {
+		s.remaining--
+	}
 	s.mu.Unlock()
 
 	// Tokens available, or we have no window to honor yet: proceed (still

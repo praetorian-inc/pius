@@ -380,3 +380,26 @@ func TestHeaderLimiter_Concurrent_RaceClean(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Wait reserves a token under the same lock that reads it (SEC-BE-002): each Wait
+// on a positive window decrements remaining, so concurrent callers cannot all see
+// the same positive value and stampede. This is asserted deterministically via
+// readState — no timing dependency — with a far-future reset so remaining>0 is the
+// only thing driving the decrement.
+func TestHeaderLimiter_Wait_ReservesTokenUnderLock(t *testing.T) {
+	t.Parallel()
+
+	l := newHeaderLimiter()
+	h := http.Header{}
+	h.Set(headerRemaining, "2")
+	h.Set(headerReset, nsString(5*time.Minute)) // far-future window; remaining drives Wait
+	l.Observe(CatLive, h, http.StatusOK)
+
+	require.NoError(t, l.Wait(context.Background(), CatLive))
+	rem, _ := readState(l.state(CatLive))
+	assert.Equal(t, 1, rem, "first Wait must reserve one token (2 -> 1)")
+
+	require.NoError(t, l.Wait(context.Background(), CatLive))
+	rem, _ = readState(l.state(CatLive))
+	assert.Equal(t, 0, rem, "second Wait must reserve the last token (1 -> 0)")
+}

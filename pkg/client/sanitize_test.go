@@ -12,8 +12,8 @@ func TestSanitizeURL_EdgeCases(t *testing.T) {
 		name     string
 		input    string
 		expected string
-		contains []string    // strings that MUST be in output
-		excludes []string    // strings that MUST NOT be in output
+		contains []string // strings that MUST be in output
+		excludes []string // strings that MUST NOT be in output
 	}{
 		{
 			name:     "basic key param",
@@ -88,8 +88,9 @@ func TestSanitizeURL_EdgeCases(t *testing.T) {
 			input: "https://api.example.com/search?KEY=UPPERCASE_SECRET&query=test",
 			// Intended behavior change (OFFSEC-2444 / T013): matching is now
 			// case-insensitive whole-key, so an uppercase KEY normalizes to "key"
-			// and its value is redacted. The original key NAME is preserved.
-			contains: []string{"REDACTED", "query=test"},
+			// and its value is redacted. The original key NAME is preserved, so the
+			// pair is "KEY=REDACTED" (not "key=REDACTED") — pinned below.
+			contains: []string{"REDACTED", "KEY=REDACTED", "query=test"},
 			excludes: []string{"UPPERCASE_SECRET"},
 		},
 		{

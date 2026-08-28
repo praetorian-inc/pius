@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -355,4 +356,179 @@ func TestDo_CallerCancellationDuringRequest_SurfacesContextError(t *testing.T) {
 	assertKeyFree(t, err, sentinel)
 	assert.NotContains(t, err.Error(), "api.whoisfreaks.com",
 		"the surfaced error must not carry the request host")
+}
+
+// TestNew_NilInjectionsPreserveSecureDefaults is the TEST-002 nil-guard case. Each
+// injection option (WithHTTPClient, WithCreditMeter, WithRateLimiter) IGNORES a nil
+// argument so the secure per-client default installed by New survives. Passing all
+// three as nil at once exercises every nil-guard branch, then a happy-path Usage
+// proves the preserved default transport/limiter/meter actually carry a request.
+func TestNew_NilInjectionsPreserveSecureDefaults(t *testing.T) {
+	t.Parallel()
+
+	const sentinel = "WF_NILGUARD_SENTINEL"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"remaining":900,"used":100,"total":1000}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := New(
+		WithAPIKey(sentinel),
+		WithBaseURL(srv.URL),
+		WithHTTPClient(nil),
+		WithCreditMeter(nil),
+		WithRateLimiter(nil),
+	)
+	require.NoError(t, err, "nil injections must not fail construction")
+	require.NotNil(t, c)
+
+	// All three nil-guard branches preserved the secure per-client defaults.
+	assert.NotNil(t, c.http, "a nil *http.Client must not clobber the owned default")
+	assert.NotNil(t, c.limiter, "a nil Limiter must not clobber the per-client default")
+	assert.NotNil(t, c.meter, "a nil *CreditMeter must not clobber the per-client default")
+
+	// And the happy path actually flows through those preserved defaults.
+	usage, err := c.Usage(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, Usage{Remaining: 900, Used: 100, Total: 1000}, usage,
+		"Usage must succeed through the default transport/limiter/meter")
+}
+
+// spyLimiter is a test double implementing Limiter. It records the ORDER of
+// Wait/Observe calls and captures what Observe saw (status code, the
+// x-ratelimit-remaining header value, and the category on each call), so a test
+// can prove an injected limiter — not the package default — is consulted and that
+// Wait runs before the request while Observe runs after it. It is safe for
+// concurrent use.
+type spyLimiter struct {
+	mu            sync.Mutex
+	calls         []string
+	waitCats      []Category
+	observeCats   []Category
+	observeStatus int
+	observeRemain string
+}
+
+func (s *spyLimiter) Wait(_ context.Context, cat Category) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, "wait")
+	s.waitCats = append(s.waitCats, cat)
+	return nil
+}
+
+func (s *spyLimiter) Observe(cat Category, h http.Header, statusCode int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, "observe")
+	s.observeCats = append(s.observeCats, cat)
+	s.observeStatus = statusCode
+	s.observeRemain = h.Get(headerRemaining)
+}
+
+// snapshot returns copies of the recorded state under the lock so an assertion
+// never races the (single) request goroutine.
+func (s *spyLimiter) snapshot() (calls []string, waitCats, observeCats []Category, status int, remain string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.calls...),
+		append([]Category(nil), s.waitCats...),
+		append([]Category(nil), s.observeCats...),
+		s.observeStatus, s.observeRemain
+}
+
+// TestWithRateLimiter_SpyConsulted is the TEST-003 case: it injects a spyLimiter
+// via the exported WithRateLimiter and proves both request paths (SSLLive and
+// Usage) consult THAT limiter — Wait before the request, Observe after — using
+// category CatLive. Subtest A additionally pins that Observe saw the 200 status
+// and the x-ratelimit-remaining header value the server sent.
+func TestWithRateLimiter_SpyConsulted(t *testing.T) {
+	t.Parallel()
+
+	t.Run("SSLLive consults the injected limiter", func(t *testing.T) {
+		t.Parallel()
+
+		spy := &spyLimiter{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set(headerRemaining, "42")
+			_, _ = w.Write([]byte(`{"sslCertificates":[{"subject":{"commonName":"leaf.example"},"issuer":{"commonName":"Example CA"},"serialNumber":"1a2b","chainOrder":"leaf"}]}`))
+		}))
+		t.Cleanup(srv.Close)
+
+		c, err := New(WithAPIKey("WF_SPY_SENTINEL"), WithBaseURL(srv.URL), WithRateLimiter(spy))
+		require.NoError(t, err)
+
+		res, err := c.SSLLive(context.Background(), "example.com", SSLOptions{})
+		require.NoError(t, err)
+		require.NotNil(t, res)
+
+		calls, waitCats, observeCats, status, remain := spy.snapshot()
+		assert.Equal(t, []string{"wait", "observe"}, calls,
+			"Wait must run before the request and Observe after — proving the spy, not the default, was used")
+		assert.Equal(t, http.StatusOK, status, "Observe must see the response status code")
+		assert.Equal(t, "42", remain, "Observe must see the x-ratelimit-remaining header value")
+		assert.Equal(t, []Category{CatLive}, waitCats, "SSLLive paces on CatLive")
+		assert.Equal(t, []Category{CatLive}, observeCats, "SSLLive observes on CatLive")
+	})
+
+	t.Run("Usage consults the injected limiter", func(t *testing.T) {
+		t.Parallel()
+
+		spy := &spyLimiter{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"remaining":900,"used":100,"total":1000}`))
+		}))
+		t.Cleanup(srv.Close)
+
+		c, err := New(WithAPIKey("WF_SPY_SENTINEL"), WithBaseURL(srv.URL), WithRateLimiter(spy))
+		require.NoError(t, err)
+
+		_, err = c.Usage(context.Background())
+		require.NoError(t, err)
+
+		calls, waitCats, observeCats, status, _ := spy.snapshot()
+		assert.Equal(t, []string{"wait", "observe"}, calls,
+			"Wait must run before the request and Observe after")
+		assert.Equal(t, http.StatusOK, status, "Observe must see the response status code")
+		assert.Equal(t, []Category{CatLive}, waitCats, "Usage paces on CatLive")
+		assert.Equal(t, []Category{CatLive}, observeCats, "Usage observes on CatLive")
+	})
+}
+
+// TestWithBaseURL_SchemeEnforcement is the SEC-BE-001 case: the exported
+// WithBaseURL must not let the query-string apiKey ride on the wire in cleartext.
+// A plaintext http:// to a remote host is rejected with errInsecureBaseURL; a
+// plain https:// base is accepted; and a loopback http endpoint (what an
+// httptest.Server serves) is accepted so tests still work.
+func TestWithBaseURL_SchemeEnforcement(t *testing.T) {
+	t.Parallel()
+
+	t.Run("plaintext http to a remote host is rejected", func(t *testing.T) {
+		t.Parallel()
+		c, err := New(WithAPIKey("WF_ANY_SENTINEL"), WithBaseURL("http://evil.example.com"))
+		assert.Nil(t, c, "an insecure base must not yield a usable client")
+		assert.ErrorIs(t, err, errInsecureBaseURL)
+	})
+
+	t.Run("https to any host is accepted", func(t *testing.T) {
+		t.Parallel()
+		c, err := New(WithAPIKey("WF_ANY_SENTINEL"), WithBaseURL("https://api.example.com"))
+		require.NoError(t, err)
+		require.NotNil(t, c)
+		assert.Equal(t, "https://api.example.com", c.baseURL)
+	})
+
+	t.Run("loopback http (httptest server) is accepted", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		t.Cleanup(srv.Close)
+		c, err := New(WithAPIKey("WF_ANY_SENTINEL"), WithBaseURL(srv.URL))
+		require.NoError(t, err)
+		require.NotNil(t, c)
+		assert.Equal(t, srv.URL, c.baseURL, "a loopback http endpoint must be accepted unchanged")
+	})
 }

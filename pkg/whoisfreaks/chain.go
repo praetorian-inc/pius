@@ -39,6 +39,14 @@ const maxProcessedChainCerts = 16
 // serials (ascending index), then Rule 2 root defects. When the terminal cert is
 // a root, the gap between it and the prior cert is reported once — as a Rule 2
 // "root subject≠prior issuer", never also as a Rule 1 "link break".
+//
+// The branching here is deliberately elevated: validateChain composes three
+// independent classification rules (adjacent-link, serial sanitization,
+// terminal-root sanity) plus a truncation guard under one fixed, documented
+// anomaly-ordering contract. It is kept in a single body on purpose so that the
+// anomaly ordering and the shared in-place sanitization of out stay correct;
+// splitting it would scatter the ordering contract across helpers. Nesting stays
+// shallow (depth 2) and every branch is exhaustively pinned by chain_test.go.
 func validateChain(certs []Certificate) (valid bool, anomalies []string, out []Certificate) {
 	if len(certs) == 0 {
 		return true, nil, nil // vacuously self-consistent; ssl.go decides meaning
