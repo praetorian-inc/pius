@@ -70,10 +70,10 @@ func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomain
 		}
 
 		if errors.Is(err, ErrNoCredential) {
-			slog.Debug("WHOIS leg skipped: no credential",
+			slog.Info("WHOIS leg skipped: no credential",
 				"resolver", r.Name(), "domain", domain)
 		} else {
-			slog.Debug("WHOIS leg failed",
+			slog.Info("WHOIS leg failed",
 				"resolver", r.Name(), "domain", domain, "error", err)
 		}
 

@@ -458,6 +458,34 @@ func TestNewAcceptsInformalOptions(t *testing.T) {
 	assert.Same(t, rdap, w.RDAPClient)
 }
 
+func TestNewPassesAPIKeysToDefaultProviderClients(t *testing.T) {
+	w := New(
+		WithWhoxyAPIKey("whoxy-option"),
+		WithWhoisXMLAPIKey("xml-option"),
+		WithWhoisFreaksAPIKey("freaks-option"),
+	)
+
+	assert.Equal(t, "whoxy-option", w.WhoxyClient.(*WhoxyClient).apiKey)
+	assert.Equal(t, "xml-option", w.WhoisXMLClient.(*WhoisXMLClient).apiKey)
+	assert.Equal(t, "freaks-option", w.WhoisFreaksClient.(*WhoisFreaksClient).apiKey)
+}
+
+func TestExplicitAPIKeysTakePrecedenceOverEnvironment(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "whoxy-env")
+	t.Setenv("WHOISXML_API_KEY", "xml-env")
+	t.Setenv("WHOISFREAKS_API_KEY", "freaks-env")
+
+	w := New(
+		WithWhoxyAPIKey("whoxy-option"),
+		WithWhoisXMLAPIKey("xml-option"),
+		WithWhoisFreaksAPIKey("freaks-option"),
+	)
+
+	assert.Equal(t, "whoxy-option", w.WhoxyClient.(*WhoxyClient).getAPIKey())
+	assert.Equal(t, "xml-option", w.WhoisXMLClient.(*WhoisXMLClient).resolveAPIKey())
+	assert.Equal(t, "freaks-option", w.WhoisFreaksClient.(*WhoisFreaksClient).resolveAPIKey())
+}
+
 func TestNewBuildsTheDefaultCascade(t *testing.T) {
 	w := New()
 
