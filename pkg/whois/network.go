@@ -39,38 +39,36 @@ func (w *WHOIS) LookupNetwork(ctx context.Context, query string) (NetworkResult,
 	}
 
 	state := networkLookupState{target: target}
-	if w.doNetworkLookup(ctx, w.RDAPClient, &state) {
+	w.doNetworkLookup(ctx, w.RDAPClient, &state)
+	if ctx.Err() != nil || state.result.hasPreferredContact() {
 		return state.finish()
 	}
-	if w.doNetworkLookup(ctx, w.TCP43Client, &state) {
-		return state.finish()
-	}
+
+	w.doNetworkLookup(ctx, w.TCP43Client, &state)
 	return state.finish()
 }
 
-// doNetworkLookup runs one network leg, validates its allocation and merges it
-// into state. A useful RDAP identity ends the cascade before TCP-43 is needed.
-func (w *WHOIS) doNetworkLookup(ctx context.Context, client WHOISClient, state *networkLookupState) (stop bool) {
+// doNetworkLookup runs one network leg, validates its allocation, and merges it into state.
+func (w *WHOIS) doNetworkLookup(ctx context.Context, client WHOISClient, state *networkLookupState) {
 	if err := ctx.Err(); err != nil {
 		state.errs = append(state.errs, err)
-		return true
+		return
 	}
 
 	result, err := client.LookupNetwork(ctx, state.target.query)
 	if err != nil {
 		state.errs = append(state.errs, err)
-		return ctx.Err() != nil
+		return
 	}
 
 	result.Query = state.target.query
 	result.Normalize()
 	if err := requireContainingAllocation(result, state.target); err != nil {
 		state.errs = append(state.errs, fmt.Errorf("%s network lookup: %w", client.Name(), err))
-		return false
+		return
 	}
 
 	state.result.Merge(result)
-	return client.Name() == SourceRDAP && result.hasUsefulIdentity()
 }
 
 func (state *networkLookupState) finish() (NetworkResult, error) {

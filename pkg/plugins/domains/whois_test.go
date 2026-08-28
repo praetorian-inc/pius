@@ -73,8 +73,8 @@ type unavailableWhoisClient struct{}
 
 func (*unavailableWhoisClient) Name() string { return "unavailable" }
 
-func (*unavailableWhoisClient) LookupDomain(context.Context, string) (whois.Result, error) {
-	return whois.Result{}, whois.ErrNoCredential
+func (*unavailableWhoisClient) LookupDomain(context.Context, string) (whois.DomainResult, error) {
+	return whois.DomainResult{}, whois.ErrNoCredential
 }
 
 func (*unavailableWhoisClient) LookupNetwork(context.Context, string) (whois.NetworkResult, error) {

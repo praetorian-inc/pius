@@ -105,7 +105,7 @@ func (r NetworkResult) hasAllocation() bool {
 	return r.StartAddress != "" && r.EndAddress != ""
 }
 
-func (r NetworkResult) hasUsefulIdentity() bool {
+func (r NetworkResult) hasPreferredContact() bool {
 	return len(r.PreferredContacts()) > 0
 }
 

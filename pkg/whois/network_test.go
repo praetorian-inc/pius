@@ -158,22 +158,22 @@ func TestNetworkResult_ContactsForRoleAppliesEligibilityPolicy(t *testing.T) {
 	assert.Equal(t, "network@example.com", contacts[1].Email)
 }
 
-func TestNetworkResult_HasUsefulIdentityIgnoresPrivacyProtectedContact(t *testing.T) {
+func TestNetworkResult_HasPreferredContactIgnoresPrivacyProtectedContact(t *testing.T) {
 	result := NetworkResult{Contacts: []NetworkContact{{
 		Roles: []string{"registrant"}, Status: []string{"private"}, Kind: "org", Direct: true,
 		Contact: Contact{Name: "Private Customer"},
 	}}}
 
-	assert.False(t, result.hasUsefulIdentity())
+	assert.False(t, result.hasPreferredContact())
 }
 
-func TestNetworkResult_HasUsefulIdentityIgnoresRedactedContact(t *testing.T) {
+func TestNetworkResult_HasPreferredContactIgnoresRedactedContact(t *testing.T) {
 	result := NetworkResult{Contacts: []NetworkContact{{
 		Roles: []string{"registrant"}, Kind: "org", Direct: true,
 		Contact: Contact{Organization: PrivacyRedaction, Email: PrivacyRedaction},
 	}}}
 
-	assert.False(t, result.hasUsefulIdentity())
+	assert.False(t, result.hasPreferredContact())
 }
 
 func TestNetworkResultMerge_PreservesServerAttribution(t *testing.T) {
@@ -240,6 +240,23 @@ func TestWHOISLookupNetwork_RDAPOnlySuccess(t *testing.T) {
 	assert.Zero(t, tcp43Client.networkCalls)
 }
 
+func TestWHOISLookupNetwork_RDAPEmailOnlyContactStopsBeforeTCP43(t *testing.T) {
+	rdapClient := &fakeWHOISClient{name: SourceRDAP, networkResult: validNetworkResult(SourceRDAP, NetworkContact{
+		Roles: []string{"registrant"}, Direct: true,
+		Contact: Contact{Email: "network@example.com"},
+	})}
+	tcp43Client := &fakeWHOISClient{name: SourceTCP43, networkErr: errors.New("must not run")}
+
+	result, err := networkWHOIS(rdapClient, tcp43Client).LookupNetwork(context.Background(), "8.8.8.8")
+
+	require.NoError(t, err)
+	contacts := result.PreferredContacts()
+	require.Len(t, contacts, 1)
+	assert.Equal(t, "network@example.com", contacts[0].Email)
+	assert.Equal(t, 1, rdapClient.networkCalls)
+	assert.Zero(t, tcp43Client.networkCalls)
+}
+
 func TestWHOISLookupNetwork_PartialSuccessSurvivesFailedTail(t *testing.T) {
 	rdapClient := &fakeWHOISClient{name: SourceRDAP, networkResult: validNetworkResult(SourceRDAP)}
 	tcp43Client := &fakeWHOISClient{name: SourceTCP43, networkErr: errors.New("TCP-43 unavailable")}
@@ -277,7 +294,7 @@ func TestWHOISLookupNetwork_StopsOnCancelledContext(t *testing.T) {
 	assert.Zero(t, tcp43Client.networkCalls)
 }
 
-func TestLookupNetwork_SuccessfulRDAPWithoutUsefulIdentityFallsBackToTCP43(t *testing.T) {
+func TestLookupNetwork_SuccessfulRDAPWithoutPreferredContactFallsBackToTCP43(t *testing.T) {
 	original := tcp43RawFn
 	tcp43RawFn = func(_ context.Context, query, server string) (string, error) {
 		switch {
