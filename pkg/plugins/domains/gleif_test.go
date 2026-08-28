@@ -88,6 +88,7 @@ func makeLEI(id, name, jurisdiction string, hasParentLink bool) leiRecord {
 		Attributes: leiAttributes{
 			Entity: leiEntity{
 				LegalName:    leiLegalName{Name: name},
+				LegalAddress: leiAddress{Country: jurisdiction},
 				Jurisdiction: jurisdiction,
 				Status:       "ACTIVE",
 			},
@@ -165,16 +166,22 @@ func TestGLEIFPlugin_Run_TopLevelWithSubsidiaries(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	require.Len(t, findings, 2)
-	for _, f := range findings {
+	require.Len(t, findings, 3)
+	primaryFinding := findings[0]
+	assert.Equal(t, "Acme Corp", primaryFinding.Value)
+	assert.NotContains(t, primaryFinding.Data, "corporate_relationship")
+	assert.NotContains(t, primaryFinding.Data, "corporate_parent")
+
+	for _, f := range findings[1:] {
 		assert.Equal(t, plugins.FindingPreseed, f.Type)
 		assert.Equal(t, "gleif", f.Source)
-		assert.Equal(t, "subsidiary", f.Data["corporate_relationship"])
+		assert.Equal(t, "organization-name", f.Data["preseed_type"])
+		assert.NotContains(t, f.Data, "corporate_relationship")
 		assert.Equal(t, plugins.ConfidenceHigh, plugins.TotalConfidence(f))
 		require.Len(t, f.Confidences, 2, "resolution and registered relationship are the independent signals")
 		assert.False(t, plugins.NeedsReview(f))
 	}
-	names := []string{findings[0].Value, findings[1].Value}
+	names := []string{findings[1].Value, findings[2].Value}
 	assert.Contains(t, names, "Acme Subsidiary A")
 	assert.Contains(t, names, "Acme Subsidiary B")
 }
@@ -208,11 +215,14 @@ func TestGLEIFPlugin_Run_WithDirectParent(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	require.Len(t, findings, 1)
-	assert.Equal(t, plugins.FindingPreseed, findings[0].Type)
-	assert.Equal(t, "Acme Holdings", findings[0].Value)
-	assert.Equal(t, "direct-parent", findings[0].Data["corporate_relationship"])
-	assert.Equal(t, "LEI_PARENT", findings[0].Data["lei"])
+	require.Len(t, findings, 2)
+	assert.NotContains(t, findings[0].Data, "corporate_relationship")
+	assert.Equal(t, "Acme Holdings", findings[0].Data["corporate_parent"])
+	assert.Equal(t, plugins.FindingPreseed, findings[1].Type)
+	assert.Equal(t, "Acme Holdings", findings[1].Value)
+	assert.NotContains(t, findings[1].Data, "corporate_relationship")
+	assert.Equal(t, "LEI_PARENT", findings[1].Data["lei"])
+	assert.NotContains(t, findings[1].Data, "corporate_parent")
 }
 
 func TestGLEIFPlugin_Run_WithUltimateParent(t *testing.T) {
@@ -247,13 +257,16 @@ func TestGLEIFPlugin_Run_WithUltimateParent(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
 
-	require.Len(t, findings, 2)
-	relTypes := map[string]string{}
-	for _, f := range findings {
-		relTypes[f.Data["corporate_relationship"].(string)] = f.Value
+	require.Len(t, findings, 3)
+	assert.Equal(t, "Acme Corp", findings[0].Value)
+	assert.Equal(t, "Acme Holdings", findings[1].Value)
+	assert.Equal(t, "Global Conglomerate Inc", findings[2].Value)
+	assert.Equal(t, "Acme Holdings", findings[0].Data["corporate_parent"])
+	for _, finding := range findings {
+		assert.NotContains(t, finding.Data, "corporate_relationship")
 	}
-	assert.Equal(t, "Acme Holdings", relTypes["direct-parent"])
-	assert.Equal(t, "Global Conglomerate Inc", relTypes["ultimate-parent"])
+	assert.NotContains(t, findings[1].Data, "corporate_parent")
+	assert.NotContains(t, findings[2].Data, "corporate_parent")
 }
 
 func TestGLEIFPlugin_Run_PaginatedChildren(t *testing.T) {
@@ -292,10 +305,10 @@ func TestGLEIFPlugin_Run_PaginatedChildren(t *testing.T) {
 	p := newGLEIFPlugin(srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
-	assert.Len(t, findings, 6)
+	assert.Len(t, findings, 7)
 	for _, f := range findings {
 		assert.Equal(t, plugins.FindingPreseed, f.Type)
-		assert.Equal(t, "subsidiary", f.Data["corporate_relationship"])
+		assert.NotContains(t, f.Data, "corporate_relationship")
 	}
 }
 
@@ -365,7 +378,7 @@ func TestGLEIFPlugin_Run_ContextCanceled(t *testing.T) {
 	}
 }
 
-func TestGLEIFPlugin_Run_PreseedData_ContainsJurisdiction(t *testing.T) {
+func TestGLEIFPlugin_Run_PreseedData_ContainsCountry(t *testing.T) {
 	primary := makeLEI("LEI001", "Acme Corp", "US", false)
 	child := makeLEI("LEI010", "Acme UK", "GB", false)
 
@@ -396,8 +409,63 @@ func TestGLEIFPlugin_Run_PreseedData_ContainsJurisdiction(t *testing.T) {
 		}
 	}
 	require.NotNil(t, preseed, "expected preseed finding for subsidiary")
-	assert.Equal(t, "GB", preseed.Data["jurisdiction"])
+	assert.Equal(t, "GB", preseed.Data["country"])
 	assert.Equal(t, "LEI010", preseed.Data["lei"])
+}
+
+func TestGLEIFPlugin_RecordToPreseed_EnrichesOrganization(t *testing.T) {
+	p := newGLEIFPlugin("")
+	p.primaryName = "Acme Holdings"
+	record := makeLEI("LEI010", "Acme GmbH", "DE", false)
+	record.Attributes.Entity.OtherNames = []leiLegalName{{Name: "Acme Germany"}}
+	record.Attributes.Entity.TransliteratedOtherNames = []leiLegalName{{Name: "ACME GMBH"}}
+	record.Attributes.Entity.Industry = "Manufacturing"
+	record.Attributes.Entity.KnownWebsites = []string{"https://acme.example"}
+	record.Attributes.Entity.HeadquartersAddress = leiAddress{
+		AddressLines: []string{"Main Street 1", "Building A"},
+		City:         "Frankfurt",
+		Region:       "HE",
+		Country:      "DE",
+		PostalCode:   "60311",
+	}
+
+	finding := p.recordToPreseed(record, "subsidiary", "Acme Holdings")
+
+	assert.Equal(t, []string{"Acme Germany", "ACME GMBH"}, finding.Data["alternate_names"])
+	assert.Equal(t, "Manufacturing", finding.Data["industry"])
+	assert.Equal(t, []string{"https://acme.example"}, finding.Data["known_websites"])
+	assert.Equal(t, "Main Street 1, Building A", finding.Data["street_address"])
+	assert.Equal(t, "Frankfurt", finding.Data["city"])
+	assert.Equal(t, "HE", finding.Data["province"])
+	assert.Equal(t, "DE", finding.Data["country"])
+	assert.Equal(t, "60311", finding.Data["postal_code"])
+	assert.Equal(t, "https://search.gleif.org/#/record/LEI010", finding.Data["external_reference"])
+	assert.Equal(t, "gleif", finding.Data["source"])
+}
+
+func TestGLEIFPlugin_RecordToPreseed_FallsBackToLegalAddress(t *testing.T) {
+	p := newGLEIFPlugin("")
+	record := makeLEI("LEI010", "Acme GmbH", "DE", false)
+	record.Attributes.Entity.LegalAddress = leiAddress{
+		AddressLines: []string{"Legal Street 2"},
+		City:         "Berlin",
+		Country:      "DE",
+	}
+
+	finding := p.recordToPreseed(record, "subsidiary", "Acme Holdings")
+
+	assert.Equal(t, "Legal Street 2", finding.Data["street_address"])
+	assert.Equal(t, "Berlin", finding.Data["city"])
+}
+
+func TestGLEIFPlugin_RecordToPreseed_OmitsUnavailableOptionalData(t *testing.T) {
+	p := newGLEIFPlugin("")
+	finding := p.recordToPreseed(makeLEI("LEI010", "Acme GmbH", "", false), "subsidiary", "")
+
+	assert.NotContains(t, finding.Data, "alternate_names")
+	assert.NotContains(t, finding.Data, "industry")
+	assert.NotContains(t, finding.Data, "known_websites")
+	assert.NotContains(t, finding.Data, "street_address")
 }
 
 // ── Confidence decomposition tests ──────────────────────────────────────────
@@ -430,9 +498,9 @@ func TestGLEIFPlugin_Run_ConfidenceSignals_Parent(t *testing.T) {
 	p := newGLEIFPlugin(srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
 	require.NoError(t, err)
-	require.Len(t, findings, 1)
+	require.Len(t, findings, 2)
 
-	f := findings[0]
+	f := findings[1]
 	require.Len(t, f.Confidences, 2)
 	assert.Equal(t, 15, f.Confidences[0].Score)
 	assert.Contains(t, f.Confidences[0].Justification, "top candidate")
@@ -526,16 +594,18 @@ func TestGLEIFPlugin_Run_SiblingDiscovery(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Nielsen US LLC"})
 	require.NoError(t, err)
 
-	preseedRelTypes := map[string]string{}
+	corporateParents := map[string]string{}
 	for _, f := range findings {
 		require.Equal(t, plugins.FindingPreseed, f.Type)
-		preseedRelTypes[f.Value] = f.Data["corporate_relationship"].(string)
+		assert.NotContains(t, f.Data, "corporate_relationship")
+		if corporateParent, ok := f.Data["corporate_parent"].(string); ok {
+			corporateParents[f.Value] = corporateParent
+		}
 	}
-
-	assert.Equal(t, "direct-parent", preseedRelTypes["Nielsen Holdings"])
-	assert.Equal(t, "sibling", preseedRelTypes["Nielsen Finance BV"])
-	assert.Equal(t, "sibling", preseedRelTypes["Nielsen Holdings Inc"])
-	assert.NotContains(t, preseedRelTypes, "Nielsen US LLC", "primary should not appear as a sibling")
+	assert.Equal(t, "Nielsen Holdings", corporateParents["Nielsen US LLC"])
+	assert.Equal(t, "Nielsen Holdings", corporateParents["Nielsen Finance BV"])
+	assert.Equal(t, "Nielsen Holdings", corporateParents["Nielsen Holdings Inc"])
+	assert.NotContains(t, corporateParents, "Nielsen Holdings")
 }
 
 func TestGLEIFPlugin_Run_SiblingDiscovery_UltimateParent(t *testing.T) {
@@ -576,16 +646,18 @@ func TestGLEIFPlugin_Run_SiblingDiscovery_UltimateParent(t *testing.T) {
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme US"})
 	require.NoError(t, err)
 
-	preseedValues := map[string]bool{}
+	corporateParents := map[string]string{}
 	for _, f := range findings {
 		if f.Type == plugins.FindingPreseed {
-			preseedValues[f.Value] = true
+			assert.NotContains(t, f.Data, "corporate_relationship")
+			if corporateParent, ok := f.Data["corporate_parent"].(string); ok {
+				corporateParents[f.Value] = corporateParent
+			}
 		}
 	}
-
-	assert.Contains(t, preseedValues, "Acme Holdings", "direct parent")
-	assert.Contains(t, preseedValues, "Global Corp", "ultimate parent")
-	assert.Contains(t, preseedValues, "Acme EU", "sibling via direct parent")
-	assert.Contains(t, preseedValues, "Beta Holdings", "sibling via ultimate parent")
-	assert.NotContains(t, preseedValues, "Acme US", "primary excluded from siblings")
+	assert.Equal(t, "Acme Holdings", corporateParents["Acme US"])
+	assert.Equal(t, "Acme Holdings", corporateParents["Acme EU"])
+	assert.Equal(t, "Global Corp", corporateParents["Beta Holdings"])
+	assert.NotContains(t, corporateParents, "Acme Holdings")
+	assert.NotContains(t, corporateParents, "Global Corp")
 }

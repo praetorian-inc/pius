@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"strings"
 
 	"github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/lib/strutil"
@@ -84,15 +85,18 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	p.primaryName = primary.Attributes.Entity.LegalName.Name
 	p.candidateRank = candidateRank
 
-	var findings []plugins.Finding
+	findings := []plugins.Finding{p.recordToPreseed(*primary, "primary", "")}
 
-	parentLEIs := p.enrichParents(ctx, primary, &findings)
+	parents, directParentName := p.enrichParents(ctx, primary, &findings)
+	if directParentName != "" {
+		findings[0].Data["corporate_parent"] = directParentName
+	}
 
-	if err := p.enrichChildren(ctx, primary.ID, "", "subsidiary", &findings); err != nil {
+	if err := p.enrichChildren(ctx, primary.ID, "", "subsidiary", p.primaryName, &findings); err != nil {
 		return uniqueFindings(findings), err
 	}
-	for _, parentLEI := range parentLEIs {
-		if err := p.enrichChildren(ctx, parentLEI, primary.ID, "sibling", &findings); err != nil {
+	for _, parent := range parents {
+		if err := p.enrichChildren(ctx, parent.lei, primary.ID, "sibling", parent.name, &findings); err != nil {
 			return uniqueFindings(findings), err
 		}
 	}
@@ -100,53 +104,61 @@ func (p *GLEIFPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	return uniqueFindings(findings), nil
 }
 
+type gleifParent struct {
+	lei  string
+	name string
+}
+
 // enrichParents fetches direct and ultimate parent entities, emits findings for
-// each, and returns their LEIs for sibling discovery. Best-effort: errors log
-// and continue.
-func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, findings *[]plugins.Finding) []string {
+// each, and returns their confirmed GLEIF names for primary and sibling metadata.
+// Best-effort: errors log and continue.
+func (p *GLEIFPlugin) enrichParents(ctx context.Context, primary *leiRecord, findings *[]plugins.Finding) ([]gleifParent, string) {
 	if !hasParent(primary) {
-		return nil
+		return nil, ""
 	}
 
 	directLEI, err := p.getDirectParent(ctx, primary.ID)
 	if err != nil {
 		log.Printf("[gleif] direct parent failed for %s: %v", primary.ID, err)
-		return nil
+		return nil, ""
 	}
 	if directLEI == "" {
-		return nil
+		return nil, ""
 	}
 
-	parentLEIs := []string{directLEI}
-	p.emitRelated(ctx, directLEI, "direct-parent", findings)
+	directParentName := p.emitRelated(ctx, directLEI, "direct-parent", findings)
+	parents := []gleifParent{{lei: directLEI, name: directParentName}}
 
 	ultimateLEI, err := p.getUltimateParent(ctx, primary.ID)
 	if err != nil {
 		log.Printf("[gleif] ultimate parent failed for %s: %v", primary.ID, err)
 	} else if ultimateLEI != "" && ultimateLEI != directLEI {
-		parentLEIs = append(parentLEIs, ultimateLEI)
-		p.emitRelated(ctx, ultimateLEI, "ultimate-parent", findings)
+		ultimateParentName := p.emitRelated(ctx, ultimateLEI, "ultimate-parent", findings)
+		parents = append(parents, gleifParent{lei: ultimateLEI, name: ultimateParentName})
 	}
 
-	return parentLEIs
+	return parents, directParentName
 }
 
-// emitRelated fetches a single LEI record and emits a preseed finding.
-func (p *GLEIFPlugin) emitRelated(ctx context.Context, lei, relation string, findings *[]plugins.Finding) {
+// emitRelated fetches a single LEI record, emits a preseed finding, and returns
+// the legal name GLEIF supplied for that record.
+func (p *GLEIFPlugin) emitRelated(ctx context.Context, lei, relation string, findings *[]plugins.Finding) string {
 	record, err := p.getRecord(ctx, lei)
 	if err != nil {
 		log.Printf("[gleif] %s record failed for %s: %v", relation, lei, err)
-		return
+		return ""
 	}
-	finding := p.recordToPreseed(*record, relation)
-	if finding.Value != "" {
-		*findings = append(*findings, finding)
+	finding := p.recordToPreseed(*record, relation, "")
+	if finding.Value == "" {
+		return ""
 	}
+	*findings = append(*findings, finding)
+	return record.Attributes.Entity.LegalName.Name
 }
 
 // enrichChildren fetches children of lei, emits findings for each (skipping
 // excludeLEI), and returns a context error if the context is cancelled.
-func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relation string, findings *[]plugins.Finding) error {
+func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relation, corporateParent string, findings *[]plugins.Finding) error {
 	children, err := p.getChildren(ctx, lei)
 	if err != nil && ctx.Err() != nil {
 		return ctx.Err()
@@ -155,7 +167,7 @@ func (p *GLEIFPlugin) enrichChildren(ctx context.Context, lei, excludeLEI, relat
 		if child.ID == excludeLEI || child.Attributes.Entity.LegalName.Name == "" {
 			continue
 		}
-		*findings = append(*findings, p.recordToPreseed(child, relation))
+		*findings = append(*findings, p.recordToPreseed(child, relation, corporateParent))
 	}
 	return nil
 }
@@ -309,21 +321,27 @@ func hasParent(record *leiRecord) bool {
 
 // recordToPreseed converts a GLEIF LEI record to a FindingPreseed with
 // decomposed confidence signals. Reads enrichment state from p.
-func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins.Finding {
-	name := record.Attributes.Entity.LegalName.Name
+func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation, corporateParent string) plugins.Finding {
+	entity := record.Attributes.Entity
+	name := entity.LegalName.Name
+	data := map[string]any{
+		"preseed_type":       "organization-name",
+		"preseed_title":      name,
+		"lei":                record.ID,
+		"source":             "gleif",
+		"external_reference": fmt.Sprintf("https://search.gleif.org/#/record/%s", url.PathEscape(record.ID)),
+	}
+	if corporateParent != "" {
+		data["corporate_parent"] = corporateParent
+	}
+
 	f := plugins.Finding{
 		Type:   plugins.FindingPreseed,
 		Value:  name,
 		Source: "gleif",
-		Data: map[string]any{
-			"preseed_type":           "whois+company",
-			"preseed_title":          name,
-			"lei":                    record.ID,
-			"jurisdiction":           record.Attributes.Entity.Jurisdiction,
-			"corporate_relationship": relation,
-			"corporate_parent":       p.primaryName,
-		},
+		Data:   data,
 	}
+	addEntityData(f.Data, entity)
 
 	// Signal 1: Name resolution quality — how well fuzzycompletions matched.
 	if p.candidateRank == 0 {
@@ -356,6 +374,52 @@ func (p *GLEIFPlugin) recordToPreseed(record leiRecord, relation string) plugins
 	return f
 }
 
+func addEntityData(data map[string]any, entity leiEntity) {
+	if alternateNames := collectAlternateNames(entity); len(alternateNames) > 0 {
+		data["alternate_names"] = alternateNames
+	}
+	if entity.Industry != "" {
+		data["industry"] = entity.Industry
+	}
+	if len(entity.KnownWebsites) > 0 {
+		data["known_websites"] = entity.KnownWebsites
+	}
+
+	address := preferredAddress(entity)
+	addIfPresent(data, "country", address.Country)
+	addIfPresent(data, "province", address.Region)
+	addIfPresent(data, "city", address.City)
+	addIfPresent(data, "street_address", strings.Join(address.AddressLines, ", "))
+	addIfPresent(data, "postal_code", address.PostalCode)
+}
+
+func collectAlternateNames(entity leiEntity) []string {
+	names := make([]string, 0, len(entity.OtherNames)+len(entity.TransliteratedOtherNames))
+	for _, alternateName := range append(entity.OtherNames, entity.TransliteratedOtherNames...) {
+		if alternateName.Name != "" {
+			names = append(names, alternateName.Name)
+		}
+	}
+	return strutil.Unique(names)
+}
+
+func preferredAddress(entity leiEntity) leiAddress {
+	if entity.HeadquartersAddress.hasData() {
+		return entity.HeadquartersAddress
+	}
+	return entity.LegalAddress
+}
+
+func (a leiAddress) hasData() bool {
+	return len(a.AddressLines) > 0 || a.City != "" || a.Region != "" || a.Country != "" || a.PostalCode != ""
+}
+
+func addIfPresent(data map[string]any, key, value string) {
+	if value != "" {
+		data[key] = value
+	}
+}
+
 // ── API response types ─────────────────────────────────────────────────────────
 
 type leiRecord struct {
@@ -369,13 +433,27 @@ type leiAttributes struct {
 }
 
 type leiEntity struct {
-	LegalName    leiLegalName `json:"legalName"`
-	Jurisdiction string       `json:"jurisdiction"`
-	Status       string       `json:"status"`
+	LegalName                leiLegalName   `json:"legalName"`
+	OtherNames               []leiLegalName `json:"otherNames"`
+	TransliteratedOtherNames []leiLegalName `json:"transliteratedOtherNames"`
+	LegalAddress             leiAddress     `json:"legalAddress"`
+	HeadquartersAddress      leiAddress     `json:"headquartersAddress"`
+	Jurisdiction             string         `json:"jurisdiction"`
+	Industry                 string         `json:"industry"`
+	KnownWebsites            []string       `json:"knownWebsites"`
+	Status                   string         `json:"status"`
 }
 
 type leiLegalName struct {
 	Name string `json:"name"`
+}
+
+type leiAddress struct {
+	AddressLines []string `json:"addressLines"`
+	City         string   `json:"city"`
+	Region       string   `json:"region"`
+	Country      string   `json:"country"`
+	PostalCode   string   `json:"postalCode"`
 }
 
 type leiRelationships struct {
