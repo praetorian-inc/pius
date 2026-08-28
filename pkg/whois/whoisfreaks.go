@@ -10,11 +10,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 )
 
-// whoisFreaksBaseURL is the WhoisFreaks v2.0 Live WHOIS API endpoint.
-// It is a var so tests can point it at httptest.Server.
-var whoisFreaksBaseURL = "https://api.whoisfreaks.com/v2.0/whois/live"
+// Provider endpoints are vars so tests can point them at httptest.Server.
+var (
+	whoisFreaksBaseURL        = "https://api.whoisfreaks.com/v2.0/whois/live"
+	whoisFreaksHistoryBaseURL = "https://api.whoisfreaks.com/v2.0/whois/history"
+)
 
 // WhoisFreaksClient looks up live WHOIS through the WhoisFreaks v2.0 API.
 //
@@ -23,9 +26,10 @@ var whoisFreaksBaseURL = "https://api.whoisfreaks.com/v2.0/whois/live"
 // limit shared across its products, so it sits behind the incumbent rather than
 // ahead of it.
 type WhoisFreaksClient struct {
-	httpClient *http.Client
-	apiKey     string
-	baseURL    string
+	httpClient     *http.Client
+	apiKey         string
+	baseURL        string
+	historyBaseURL string
 }
 
 // NewWhoisFreaksClient returns a WhoisFreaks resolver. An empty apiKey falls
@@ -48,11 +52,129 @@ func (r *WhoisFreaksClient) hasCredential() bool { return r.resolveAPIKey() != "
 
 func (r *WhoisFreaksClient) apiBase() string { return cmp.Or(r.baseURL, whoisFreaksBaseURL) }
 
-// whoisFreaksResponse mirrors the WhoisFreaks v2.0 Live WHOIS JSON response.
+// LookupDomain queries the WhoisFreaks v2.0 Live WHOIS API for domain registration
+// data.
 //
-// Status is reported in the body rather than the status code, so an
-// unsuccessful payload arrives as an HTTP 200 and the status field — not the
-// status code — decides.
+// A missing key is ErrNoCredential, not a silent empty result: the two are
+// indistinguishable to a caller, and an operator who configured this provider
+// needs to find out it is not actually serving traffic.
+func (r *WhoisFreaksClient) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
+	var response whoisFreaksResponse
+	if err := r.lookupDomainJSON(ctx, "live", r.apiBase(), domain, &response); err != nil {
+		return DomainResult{}, err
+	}
+	if !response.Status {
+		return DomainResult{}, fmt.Errorf("whoisfreaks: API returned unsuccessful status for %s", domain)
+	}
+	if response.DomainRegistered == "no" {
+		return DomainResult{Domain: domain, Unregistered: true}, nil
+	}
+	return mapWhoisFreaksToResult(domain, response), nil
+}
+
+// LookupDomainHistory queries WhoisFreaks for up to 30 historical WHOIS records, newest first.
+func (r *WhoisFreaksClient) LookupDomainHistory(ctx context.Context, domain string) ([]DomainHistoryRecord, error) {
+	var response whoisFreaksHistoryResponse
+	if err := r.lookupDomainJSON(ctx, "history", r.historyAPIBase(), domain, &response); err != nil {
+		return nil, err
+	}
+	if !response.Status {
+		return nil, fmt.Errorf("whoisfreaks: history API returned unsuccessful status for %s", domain)
+	}
+
+	records := make([]DomainHistoryRecord, 0, len(response.Records))
+	for _, record := range response.Records {
+		result := mapWhoisFreaksToResult(cmp.Or(record.DomainName, domain), record.whoisFreaksResponse)
+		if registry := record.RegistryData; registry != nil {
+			result.Merge(mapWhoisFreaksToResult(cmp.Or(registry.DomainName, domain), registry.whoisFreaksResponse))
+		}
+		result.Unregistered = strings.EqualFold(record.DomainRegistered, "no") && !result.hasRegistrationData()
+		records = append(records, DomainHistoryRecord{
+			DomainResult: result,
+			QueryTime:    cmp.Or(record.QueryTime, record.registryQueryTime()),
+		})
+	}
+	return normalizeDomainHistory(domain, ProviderWhoisFreaks, records), nil
+}
+
+func mapWhoisFreaksToResult(domain string, response whoisFreaksResponse) DomainResult {
+	return DomainResult{
+		Domain:      domain,
+		Registrar:   response.DomainRegistrar.RegistrarName,
+		Created:     response.CreateDate,
+		Updated:     response.UpdateDate,
+		Expiration:  response.ExpiryDate,
+		WhoisServer: response.WhoisServer,
+		NameServers: response.NameServers,
+		Status:      response.DomainStatus,
+		Sources:     []string{ProviderWhoisFreaks},
+		Registrant:  mapWhoisFreaksContact(response.Registrant),
+		Admin:       mapWhoisFreaksContact(response.Admin),
+		Tech:        mapWhoisFreaksContact(response.Tech),
+		Billing:     mapWhoisFreaksContact(response.Billing),
+	}
+}
+
+func mapWhoisFreaksContact(contact whoisFreaksContact) Contact {
+	return Contact{
+		Organization: contact.Company,
+		Name:         contact.Name,
+		Email:        contact.EmailAddress,
+		Country:      cmp.Or(contact.CountryCode, contact.CountryName),
+		Province:     contact.State,
+		City:         contact.City,
+		Street:       cmp.Or(contact.Street, contact.MailingAddress),
+		PostalCode:   contact.ZipCode,
+		Phone:        contact.Phone,
+	}
+}
+
+func (r *WhoisFreaksClient) historyAPIBase() string {
+	return cmp.Or(r.historyBaseURL, whoisFreaksHistoryBaseURL)
+}
+
+func (r *WhoisFreaksClient) lookupDomainJSON(ctx context.Context, operation, endpoint, domain string, out any) error {
+	apiKey := r.resolveAPIKey()
+	if apiKey == "" {
+		return ErrNoCredential
+	}
+
+	params := url.Values{}
+	params.Set("apiKey", apiKey)
+	params.Set("domainName", domain)
+	reqURL := endpoint + "?" + params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return fmt.Errorf("whoisfreaks: building %s request for %s: %w", operation, domain, err)
+	}
+
+	httpClient := cmp.Or(r.httpClient, http.DefaultClient)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return fmt.Errorf("whoisfreaks: %s request failed for %s: %w", operation, domain, urlErr.Err)
+		}
+		return fmt.Errorf("whoisfreaks: %s request failed for %s", operation, domain)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("whoisfreaks: %s API returned HTTP %d for %s", operation, resp.StatusCode, domain)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return fmt.Errorf("whoisfreaks: reading %s response for %s: %w", operation, domain, err)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("whoisfreaks: decoding %s response for %s: %w", operation, domain, err)
+	}
+	return nil
+}
+
+// whoisFreaksResponse mirrors the WhoisFreaks v2.0 Live WHOIS JSON response.
 type whoisFreaksResponse struct {
 	Status           bool                 `json:"status"`
 	DomainName       string               `json:"domain_name"`
@@ -70,114 +192,43 @@ type whoisFreaksResponse struct {
 	Billing          whoisFreaksContact   `json:"billing_contact"`
 }
 
+type whoisFreaksHistoryResponse struct {
+	Status  bool                       `json:"status"`
+	Records []whoisFreaksHistoryRecord `json:"whois_domains_historical"`
+}
+
+type whoisFreaksHistoryRecord struct {
+	whoisFreaksResponse
+	QueryTime    string                  `json:"query_time"`
+	RegistryData *whoisFreaksHistoryData `json:"registry_data"`
+}
+
+func (r whoisFreaksHistoryRecord) registryQueryTime() string {
+	if r.RegistryData == nil {
+		return ""
+	}
+	return r.RegistryData.QueryTime
+}
+
+type whoisFreaksHistoryData struct {
+	whoisFreaksResponse
+	QueryTime string `json:"query_time"`
+}
+
 type whoisFreaksRegistrar struct {
 	RegistrarName string `json:"registrar_name"`
 }
 
 type whoisFreaksContact struct {
-	Name         string `json:"name"`
-	Company      string `json:"company"`
-	EmailAddress string `json:"email_address"`
-	Street       string `json:"street"`
-	City         string `json:"city"`
-	State        string `json:"state"`
-	ZipCode      string `json:"zip_code"`
-	CountryName  string `json:"country_name"`
-	CountryCode  string `json:"country_code"`
-	Phone        string `json:"phone"`
-}
-
-// LookupDomain queries the WhoisFreaks v2.0 Live WHOIS API for domain registration
-// data.
-//
-// A missing key is ErrNoCredential, not a silent empty result: the two are
-// indistinguishable to a caller, and an operator who configured this provider
-// needs to find out it is not actually serving traffic.
-func (r *WhoisFreaksClient) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
-	apiKey := r.resolveAPIKey()
-	if apiKey == "" {
-		return DomainResult{}, ErrNoCredential
-	}
-
-	params := url.Values{}
-	params.Set("apiKey", apiKey)
-	params.Set("domainName", domain)
-	reqURL := r.apiBase() + "?" + params.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return DomainResult{}, fmt.Errorf("whoisfreaks: building request for %s: %w", domain, err)
-	}
-
-	httpClient := cmp.Or(r.httpClient, http.DefaultClient)
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		// Unwrap *url.Error before reporting. WhoisFreaks authenticates with a
-		// query parameter, so Go renders a transport failure as
-		// `Get "<full url>": <cause>` — with the API key embedded in it.
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
-			return DomainResult{}, fmt.Errorf("whoisfreaks: request failed for %s: %w", domain, urlErr.Err)
-		}
-		return DomainResult{}, fmt.Errorf("whoisfreaks: request failed for %s", domain)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return DomainResult{}, fmt.Errorf("whoisfreaks: API returned HTTP %d for %s", resp.StatusCode, domain)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return DomainResult{}, fmt.Errorf("whoisfreaks: reading response for %s: %w", domain, err)
-	}
-
-	var wfResp whoisFreaksResponse
-	if err := json.Unmarshal(body, &wfResp); err != nil {
-		return DomainResult{}, fmt.Errorf("whoisfreaks: decoding response for %s: %w", domain, err)
-	}
-
-	// Reported inside an HTTP 200. Trusting the status code here would record a
-	// provider-side failure as "this domain has no data".
-	if !wfResp.Status {
-		return DomainResult{}, fmt.Errorf("whoisfreaks: API returned unsuccessful status for %s", domain)
-	}
-
-	if wfResp.DomainRegistered == "no" {
-		return DomainResult{Domain: domain, Unregistered: true}, nil
-	}
-
-	return mapWhoisFreaksToResult(domain, wfResp), nil
-}
-
-func mapWhoisFreaksToResult(domain string, wf whoisFreaksResponse) DomainResult {
-	return DomainResult{
-		Domain:      domain,
-		Registrar:   wf.DomainRegistrar.RegistrarName,
-		Created:     wf.CreateDate,
-		Updated:     wf.UpdateDate,
-		Expiration:  wf.ExpiryDate,
-		WhoisServer: wf.WhoisServer,
-		NameServers: wf.NameServers,
-		Status:      wf.DomainStatus,
-		Sources:     []string{ProviderWhoisFreaks},
-		Registrant:  mapWhoisFreaksContact(wf.Registrant),
-		Admin:       mapWhoisFreaksContact(wf.Admin),
-		Tech:        mapWhoisFreaksContact(wf.Tech),
-		Billing:     mapWhoisFreaksContact(wf.Billing),
-	}
-}
-
-func mapWhoisFreaksContact(c whoisFreaksContact) Contact {
-	return Contact{
-		Organization: c.Company,
-		Name:         c.Name,
-		Email:        c.EmailAddress,
-		Country:      c.CountryCode,
-		Province:     c.State,
-		City:         c.City,
-		Street:       c.Street,
-		PostalCode:   c.ZipCode,
-		Phone:        c.Phone,
-	}
+	Name           string `json:"name"`
+	Company        string `json:"company"`
+	EmailAddress   string `json:"email_address"`
+	Street         string `json:"street"`
+	MailingAddress string `json:"mailing_address"`
+	City           string `json:"city"`
+	State          string `json:"state"`
+	ZipCode        string `json:"zip_code"`
+	CountryName    string `json:"country_name"`
+	CountryCode    string `json:"country_code"`
+	Phone          string `json:"phone"`
 }

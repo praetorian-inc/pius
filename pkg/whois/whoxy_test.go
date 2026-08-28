@@ -256,6 +256,80 @@ func TestWhoxyResolver_ErrorsDoNotLeakAPIKey(t *testing.T) {
 	assert.NotContains(t, err.Error(), "super-secret-key")
 }
 
+func TestWhoxyClient_LookupDomainHistory(t *testing.T) {
+	client := newWhoxyTestResolver(t, func(w http.ResponseWriter, req *http.Request) {
+		assert.Equal(t, "test-key", req.URL.Query().Get("key"))
+		assert.Equal(t, "example.com", req.URL.Query().Get("history"))
+		assert.Empty(t, req.URL.Query().Get("whois"))
+		_, _ = w.Write([]byte(`{
+			"status": 1,
+			"whois_records": [
+				{
+					"query_time": "2024-01-01 00:00:00",
+					"domain_name": "example.com",
+					"domain_registrar": {"registrar_name": "Old Registrar"}
+				},
+				{
+					"query_time": "2025-01-01 00:00:00",
+					"domain_name": "example.com",
+					"create_date": "1995-08-14",
+					"domain_registrar": {
+						"registrar_name": "Current Registrar",
+						"whois_server": "whois.current.example"
+					},
+					"registrant_contact": {
+						"full_name": "Jane Doe",
+						"company_name": "Example Corp",
+						"email_address": "jane@example.com",
+						"mailing_address": "1 Example Way",
+						"city_name": "San Francisco",
+						"state_name": "CA",
+						"zip_code": "94105",
+						"country_code": "US",
+						"phone_number": "+1.5555550100"
+					},
+					"name_servers": ["ns1.example.com"],
+					"domain_status": ["clientTransferProhibited"]
+				}
+			]
+		}`))
+	})
+
+	records, err := client.LookupDomainHistory(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	require.Len(t, records, 2)
+	assert.Equal(t, "2025-01-01 00:00:00", records[0].QueryTime)
+	assert.Equal(t, "Current Registrar", records[0].Registrar)
+	assert.Equal(t, "whois.current.example", records[0].WhoisServer)
+	assert.Equal(t, "Example Corp", records[0].Registrant.Organization)
+	assert.Equal(t, "Jane Doe", records[0].Registrant.Name)
+	assert.Equal(t, "jane@example.com", records[0].Registrant.Email)
+	assert.Equal(t, "US", records[0].Registrant.Country)
+	assert.Equal(t, "1 Example Way", records[0].Registrant.Street)
+	assert.Equal(t, []string{ProviderWhoxy}, records[0].Sources)
+	assert.Equal(t, "Old Registrar", records[1].Registrar)
+}
+
+func TestWhoxyClient_LookupDomainHistoryRequiresCredential(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "")
+
+	_, err := NewWhoxyClient(nil, "").LookupDomainHistory(context.Background(), "example.com")
+
+	assert.ErrorIs(t, err, ErrNoCredential)
+}
+
+func TestWhoxyClient_LookupDomainHistoryRejectsProviderError(t *testing.T) {
+	client := newWhoxyTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":0,"status_reason":"Zero Account Balance"}`))
+	})
+
+	_, err := client.LookupDomainHistory(context.Background(), "example.com")
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "Zero Account Balance")
+}
+
 // jsonQuote renders s as a JSON string literal.
 func jsonQuote(t *testing.T, s string) string {
 	t.Helper()
