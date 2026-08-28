@@ -1,0 +1,22 @@
+% IANA WHOIS server
+% This query returned 1 object
+
+refer:
+
+domain:       ZZ
+
+organisation: Example TLD Registry
+address:      1 Registry Street
+
+contact:      administrative
+name:         TLD Administrator
+organisation: Example TLD Registry
+e-mail:       tld-admin@example.test
+
+nserver:      NS1.EXAMPLE.TEST 192.0.2.53
+
+whois:
+
+status:       ACTIVE
+created:      2000-01-01
+source:       IANA

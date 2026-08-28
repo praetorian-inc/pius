@@ -1,6 +1,7 @@
 package whois
 
 import (
+	"cmp"
 	"net"
 	"net/mail"
 	"regexp"
@@ -26,32 +27,42 @@ func RegistrantOrg(c Contact, domain string) string {
 	return ""
 }
 
-// ContactEmail finds the best non-privacy email across a result's contacts.
-// Prefers registrant, then admin, tech, billing.
-func ContactEmail(r Result) (email string, sawProxy bool) {
-	for _, c := range r.AllContacts() {
-		classified := classifyEmail(c.Email)
-		switch {
-		case classified == PrivacyRedaction:
-			sawProxy = true
-		case classified != "":
-			return classified, sawProxy
+func preferredContactEmail(r DomainResult) (email, role string) {
+	for _, contact := range r.AllContacts() {
+		if IsEmail(contact.Email) && contact.Email != PrivacyRedaction {
+			return contact.Email, contact.Role
 		}
 	}
-	return "", sawProxy
+	return "", ""
 }
 
-func classifyEmail(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	if IsPrivacy(raw) {
+func normalizePrivacy(v string) string {
+	v = strings.TrimSpace(v)
+	if IsPrivacy(v) {
 		return PrivacyRedaction
 	}
-	if IsEmail(raw) {
-		return raw
+	return v
+}
+
+func preferNonPrivacy(base, other string) string {
+	if base == PrivacyRedaction {
+		return cmp.Or(other, base)
 	}
-	return ""
+	return cmp.Or(base, other)
+}
+
+func trimStrings(arr []string) []string {
+	if len(arr) == 0 {
+		return arr
+	}
+	res := make([]string, 0, len(arr))
+	for i := range arr {
+		v := strings.TrimSpace(arr[i])
+		if v != "" {
+			res = append(res, v)
+		}
+	}
+	return res
 }
 
 // IsEmail reports whether s is a syntactically valid email address.
@@ -200,85 +211,6 @@ func ContainsRedactionMarker(raw string) bool {
 		}
 	}
 	return false
-}
-
-// --- ISOC-IL (.il) fallback ---
-
-// applyISOCILFallback fills empty Registrant org/email for .il domains from
-// the raw RPSL descr/e-mail block, which likexian/whois-parser does not map
-// onto Registrant.
-func applyISOCILFallback(r *Result, rawText string) {
-	dns := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(r.Domain), "."))
-	if !strings.HasSuffix(dns, ".il") {
-		return
-	}
-	if r.Registrant.Organization != "" && r.Registrant.Email != "" {
-		return
-	}
-
-	var holder map[string]string
-	for _, p := range parseRPSLParagraphs(rawText) {
-		if p["first_descr"] != "" {
-			holder = p
-			break
-		}
-	}
-	if holder == nil {
-		return
-	}
-
-	if r.Registrant.Organization == "" {
-		org := strings.TrimSpace(holder["first_descr"])
-		if runes := []rune(org); len(runes) > 255 {
-			org = strings.TrimSpace(string(runes[:255]))
-		}
-		r.Registrant.Organization = org
-	}
-
-	if r.Registrant.Email == "" {
-		deobfuscated := strings.ReplaceAll(holder["e-mail"], " AT ", "@")
-		if classifyEmail(deobfuscated) != "" {
-			r.Registrant.Email = deobfuscated
-		}
-	}
-}
-
-// parseRPSLParagraphs splits raw WHOIS/RPSL text into key:value paragraph
-// maps. Used for ISOC-IL fallback and IP WHOIS (future). No third-party
-// library exists for RPSL paragraph parsing — it's a niche wire format.
-func parseRPSLParagraphs(raw string) []map[string]string {
-	var paragraphs []map[string]string
-	current := map[string]string{}
-
-	for line := range strings.SplitSeq(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			if len(current) > 0 {
-				paragraphs = append(paragraphs, current)
-				current = map[string]string{}
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "%") || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(parts[0]))
-		value := strings.TrimSpace(parts[1])
-		if key == "descr" {
-			if _, seen := current["first_descr"]; !seen {
-				current["first_descr"] = value
-			}
-		}
-		current[key] = value
-	}
-	if len(current) > 0 {
-		paragraphs = append(paragraphs, current)
-	}
-	return paragraphs
 }
 
 // --- ccTLD and registry artifact rules ---

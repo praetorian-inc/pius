@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"time"
 )
 
 // whoisXMLBaseURL is the WhoisXML API v1 Live WHOIS endpoint. It is a var so
@@ -111,12 +110,10 @@ type whoisXMLContact struct {
 // dataErrorMissingWhois is WhoisXML's marker for "no WHOIS data available".
 const dataErrorMissingWhois = "MISSING_WHOIS_DATA"
 
-func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (result Result, err error) {
-	defer logLookup(r.Name(), domain, time.Now(), &result, &err)
-
+func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
 	apiKey := r.resolveAPIKey()
 	if apiKey == "" {
-		return Result{}, ErrNoCredential
+		return DomainResult{}, ErrNoCredential
 	}
 
 	params := url.Values{}
@@ -130,7 +127,7 @@ func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (resul
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return Result{}, fmt.Errorf("whoisxml: building request for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("whoisxml: building request for %s: %w", domain, err)
 	}
 
 	httpClient := cmp.Or(r.httpClient, http.DefaultClient)
@@ -141,24 +138,24 @@ func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (resul
 		// `Get "<full url>": <cause>` with the API key embedded.
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
-			return Result{}, fmt.Errorf("whoisxml: request failed for %s: %w", domain, urlErr.Err)
+			return DomainResult{}, fmt.Errorf("whoisxml: request failed for %s: %w", domain, urlErr.Err)
 		}
-		return Result{}, fmt.Errorf("whoisxml: request failed for %s", domain)
+		return DomainResult{}, fmt.Errorf("whoisxml: request failed for %s", domain)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return Result{}, fmt.Errorf("whoisxml: API returned HTTP %d for %s", resp.StatusCode, domain)
+		return DomainResult{}, fmt.Errorf("whoisxml: API returned HTTP %d for %s", resp.StatusCode, domain)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return Result{}, fmt.Errorf("whoisxml: reading response for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("whoisxml: reading response for %s: %w", domain, err)
 	}
 
 	var wx whoisXMLResponse
 	if err := json.Unmarshal(body, &wx); err != nil {
-		return Result{}, fmt.Errorf("whoisxml: decoding response for %s: %w", domain, err)
+		return DomainResult{}, fmt.Errorf("whoisxml: decoding response for %s: %w", domain, err)
 	}
 
 	// Checked on the decoded envelope rather than by scanning the payload for a
@@ -166,7 +163,7 @@ func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (resul
 	// loose substrings against a successful body is how a valid record gets
 	// misread as a failure.
 	if e := wx.ErrorMessage; e != nil && e.ErrorCode != "" {
-		return Result{}, fmt.Errorf("whoisxml: %s for %s: %s", e.ErrorCode, domain, e.Msg)
+		return DomainResult{}, fmt.Errorf("whoisxml: %s for %s: %s", e.ErrorCode, domain, e.Msg)
 	}
 
 	rec := wx.WhoisRecord
@@ -198,7 +195,8 @@ func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (resul
 	// thin registry sets dataError at the registrar level while registryData
 	// carries the actual record, so testing dataError first would throw away a
 	// usable answer — and worse, report a live domain as unregistered.
-	if result.hasSubstance() {
+	result.Normalize()
+	if result.hasRegistrationData() {
 		return result, nil
 	}
 
@@ -210,15 +208,15 @@ func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (resul
 		// an earlier lookup already
 		// returned a record, so it is only believed when nothing else resolved
 		// the domain at all.
-		return Result{Domain: domain, Unregistered: true}, nil
+		return DomainResult{Domain: domain, Unregistered: true}, nil
 	}
 
 	// Answered, but holds nothing usable — Lookup should continue.
-	return Result{}, nil
+	return DomainResult{}, nil
 }
 
-func mapWhoisXMLToResult(domain string, rec whoisXMLRecord) Result {
-	return Result{
+func mapWhoisXMLToResult(domain string, rec whoisXMLRecord) DomainResult {
+	return DomainResult{
 		Domain:      domain,
 		Registrar:   rec.RegistrarName,
 		Created:     rec.CreatedDate,

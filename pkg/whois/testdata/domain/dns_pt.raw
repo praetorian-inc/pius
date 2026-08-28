@@ -1,0 +1,19 @@
+Domain: example.pt
+Domain Status: Registered
+Creation Date: 05/04/2016 09:55:53
+Expiration Date: 04/04/2027 23:59:53
+Owner Name: Example Networks
+Owner Address: 1 Example Street
+Owner Locality: Lisbon
+Owner ZipCode: 1000-001
+Owner Locality ZipCode: Lisbon
+Owner Country Code: PT
+Admin Name: Example Registrar
+Admin Address: 2 Example Street
+Admin Locality: Lisbon
+Admin ZipCode: 1000-002
+Admin Locality ZipCode: Lisbon
+Admin Country Code: PT
+
+Name Server: ns1.example.net | IPv4:  and IPv6:
+Name Server: ns2.example.net | IPv4:  and IPv6:

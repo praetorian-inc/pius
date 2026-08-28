@@ -14,36 +14,35 @@ import (
 // lookupState holds the mutable state for one cascade walk. Keeping it local to
 // Lookup allows a configured WHOIS to be reused safely by concurrent callers.
 type lookupState struct {
-	result       Result
+	result       DomainResult
 	errs         []error
-	resolved     bool
 	unregistered bool
 }
 
 // LookupDomain resolves domain registration data by walking w's configured cascade
 // and merging each leg's answer into a single record, stopping as soon as the
 // record is complete.
-func (w *WHOIS) LookupDomain(ctx context.Context, domain string) (Result, error) {
+func (w *WHOIS) LookupDomain(ctx context.Context, domain string) (DomainResult, error) {
 	domain = RootDomain(domain)
 	if domain == "" {
-		return Result{}, fmt.Errorf("whois: no registrable domain")
+		return DomainResult{}, fmt.Errorf("whois: no registrable domain")
 	}
 
 	state := lookupState{}
 
-	if w.doDomainLookup(ctx, domain, w.RDAPClient, &state) {
+	if w.doDomainLookup(ctx, domain, w.RDAPClient, strictCompletion, &state) {
 		return state.finish(domain)
 	}
-	if w.doDomainLookup(ctx, domain, w.TCP43Client, &state) {
+	if w.doDomainLookup(ctx, domain, w.TCP43Client, relaxedCompletion, &state) {
 		return state.finish(domain)
 	}
-	if w.doDomainLookup(ctx, domain, w.WhoxyClient, &state) {
+	if w.doDomainLookup(ctx, domain, w.WhoxyClient, relaxedCompletion, &state) {
 		return state.finish(domain)
 	}
-	if w.doDomainLookup(ctx, domain, w.WhoisFreaksClient, &state) {
+	if w.doDomainLookup(ctx, domain, w.WhoisFreaksClient, relaxedCompletion, &state) {
 		return state.finish(domain)
 	}
-	if w.doDomainLookup(ctx, domain, w.WhoisXMLClient, &state) {
+	if w.doDomainLookup(ctx, domain, w.WhoisXMLClient, relaxedCompletion, &state) {
 		return state.finish(domain)
 	}
 
@@ -51,15 +50,19 @@ func (w *WHOIS) LookupDomain(ctx context.Context, domain string) (Result, error)
 }
 
 // doDomainLookup runs one leg and folds its answer into state, reporting whether the
-// cascade should stop. Scrub-then-merge-then-check is order-sensitive, so the
-// operation is kept in one method rather than repeated for each kind of leg.
-func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomainOnlyClient, state *lookupState) (stop bool) {
+// cascade should stop. Normalization, logging, merging, and completion remain ordered
+// here rather than repeated for each provider.
+func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomainOnlyClient, strict bool, state *lookupState) (stop bool) {
 	if err := ctx.Err(); err != nil {
 		state.errs = append(state.errs, err)
 		return true
 	}
 
+	started := time.Now()
 	res, err := r.LookupDomain(ctx, domain)
+	res.Normalize()
+	logLookup(r.Name(), domain, started, res, err)
+
 	if err != nil {
 		if isDomainNotFound(err) {
 			state.unregistered = true
@@ -79,24 +82,16 @@ func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomain
 	}
 
 	if res.Unregistered {
-		if !state.resolved {
+		if !state.result.hasRegistrationData() {
 			state.unregistered = true
 			return true
 		}
 		return false
 	}
 
-	if !res.hasSubstance() {
-		return false
-	}
-
-	res.ScrubContacts()
-
 	state.result.Merge(res)
 	state.result.Domain = domain
-	state.resolved = true
-
-	return state.result.isComplete()
+	return state.result.isComplete(strict)
 }
 
 // isDomainNotFound reports whether err definitively means the domain is not
@@ -115,19 +110,19 @@ func isDomainNotFound(err error) bool {
 	return false
 }
 
-func (state *lookupState) finish(domain string) (Result, error) {
+func (state *lookupState) finish(domain string) (DomainResult, error) {
 	if state.unregistered {
-		return Result{Domain: domain, Unregistered: true}, nil
+		return DomainResult{Domain: domain, Unregistered: true}, nil
 	}
 
 	// Success requires that some lookup actually contributed data. A sequence
 	// where every lookup either failed or held nothing is a failed lookup, not a
 	// record that happens to be empty.
-	if !state.resolved {
+	if !state.result.hasRegistrationData() {
 		if joined := errors.Join(state.errs...); joined != nil {
-			return Result{}, fmt.Errorf("whois: all methods failed for %s: %w", domain, joined)
+			return DomainResult{}, fmt.Errorf("whois: all methods failed for %s: %w", domain, joined)
 		}
-		return Result{}, fmt.Errorf("whois: no source had a record for %s", domain)
+		return DomainResult{}, fmt.Errorf("whois: no source had a record for %s", domain)
 	}
 
 	state.result.Domain = domain

@@ -263,26 +263,22 @@ func TestWhoisFreaksLookup_PrivacyRedacted(t *testing.T) {
 	result, err := NewWhoisFreaksClient(srv.Client(), "").LookupDomain(context.Background(), "private-domain.com")
 
 	require.NoError(t, err)
+	result.Normalize()
 
-	// Before scrub: contact fields are populated with privacy placeholders.
-	assert.Equal(t, "REDACTED FOR PRIVACY", result.Registrant.Organization)
-	assert.Equal(t, "REDACTED FOR PRIVACY", result.Registrant.Name)
-
-	// Scrub the contacts.
-	result.ScrubContacts()
-
-	// After scrub: all contact fields should be cleared.
-	for _, c := range result.AllContacts() {
-		assert.Empty(t, c.Organization, "Organization should be empty after scrub")
-		assert.Empty(t, c.Name, "Name should be empty after scrub")
-		assert.Empty(t, c.Email, "Email should be empty after scrub")
-		assert.Empty(t, c.Country, "Country should be empty after scrub")
-		assert.Empty(t, c.Province, "Province should be empty after scrub")
-		assert.Empty(t, c.City, "City should be empty after scrub")
-		assert.Empty(t, c.Street, "Street should be empty after scrub")
-		assert.Empty(t, c.PostalCode, "PostalCode should be empty after scrub")
-		assert.Empty(t, c.Phone, "Phone should be empty after scrub")
+	for _, contact := range result.AllContacts() {
+		assert.Equal(t, PrivacyRedaction, contact.Organization)
+		assert.Equal(t, PrivacyRedaction, contact.Name)
+		assert.Equal(t, PrivacyRedaction, contact.Email)
+		assert.Equal(t, PrivacyRedaction, contact.Country)
+		assert.Equal(t, PrivacyRedaction, contact.Province)
+		assert.Equal(t, PrivacyRedaction, contact.City)
+		assert.Equal(t, PrivacyRedaction, contact.Street)
+		assert.Equal(t, PrivacyRedaction, contact.PostalCode)
+		assert.Equal(t, PrivacyRedaction, contact.Phone)
 	}
+	assert.Equal(t, PrivacyRedaction, result.RegistrantIdentity)
+	assert.Empty(t, result.ContactEmail)
+	assert.Empty(t, result.ContactEmailRole)
 
 	// Non-contact fields remain populated.
 	assert.Equal(t, "Privacy Registrar LLC", result.Registrar)
@@ -309,7 +305,7 @@ func TestWhoisFreaksLookup_APIError401(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "401")
-	assert.Equal(t, Result{}, result)
+	assert.Equal(t, DomainResult{}, result)
 }
 
 // TestWhoisFreaksLookup_RateLimit429 verifies that an HTTP 429 response
@@ -327,7 +323,7 @@ func TestWhoisFreaksLookup_RateLimit429(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "429")
-	assert.Equal(t, Result{}, result)
+	assert.Equal(t, DomainResult{}, result)
 }
 
 // TestWhoisFreaksLookup_StatusFalse verifies that an HTTP 200 response with
@@ -350,7 +346,7 @@ func TestWhoisFreaksLookup_StatusFalse(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsuccessful status")
-	assert.Equal(t, Result{}, result)
+	assert.Equal(t, DomainResult{}, result)
 }
 
 // TestWhoisFreaksLookup_NoAPIKey verifies that an unkeyed resolver declines
@@ -367,7 +363,7 @@ func TestWhoisFreaksLookup_NoAPIKey(t *testing.T) {
 	result, err := NewWhoisFreaksClient(http.DefaultClient, "").LookupDomain(context.Background(), "example.com")
 
 	assert.ErrorIs(t, err, ErrNoCredential)
-	assert.Equal(t, Result{}, result)
+	assert.Equal(t, DomainResult{}, result)
 }
 
 // TestWhoisFreaksLookup_ExplicitKeyBeatsEnv covers the Guard requirement: the

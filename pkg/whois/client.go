@@ -11,7 +11,7 @@ import (
 // WHOISDomainOnlyClient is one source of domain registration data.
 type WHOISDomainOnlyClient interface {
 	Name() string
-	LookupDomain(ctx context.Context, domain string) (Result, error)
+	LookupDomain(ctx context.Context, domain string) (DomainResult, error)
 }
 
 // WHOISClient supports both domain and network registration lookups.
@@ -120,25 +120,19 @@ const (
 	outcomeSkipped = "skipped"
 )
 
-// logLookup emits exactly one record per lookup call, at Info so it survives
-// production log levels. CloudWatch aggregates these into per-provider success,
-// breakage and unkeyed rates, which is what tells an operator whether a
-// configured providers are earning their cost.
-//
-// Called via defer with named returns, so every exit path is counted — an early
-// ErrNoCredential included. It never inspects the error text, only its kind, so
-// a provider that authenticates with a query parameter cannot leak its key here.
-func logLookup(name, domain string, started time.Time, result *Result, err *error) {
+// logLookup records one provider outcome without logging error text that may
+// contain a provider API key.
+func logLookup(name, domain string, started time.Time, result DomainResult, err error) {
 	outcome := outcomeFound
 	switch {
-	case err != nil && errors.Is(*err, ErrNoCredential):
+	case errors.Is(err, ErrNoCredential):
 		outcome = outcomeSkipped
-	case err != nil && *err != nil:
+	case err != nil:
 		outcome = outcomeError
 	case result.Unregistered:
 		// A definitive not-registered verdict answered the question.
 		outcome = outcomeFound
-	case !result.hasSubstance():
+	case !result.hasRegistrationData():
 		outcome = outcomeEmpty
 	}
 

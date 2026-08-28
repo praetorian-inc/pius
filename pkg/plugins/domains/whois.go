@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
@@ -51,43 +52,25 @@ func (p *WhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.F
 	return findings, nil
 }
 
-// WhoisFindingData wraps a whois.Result with corroboration metadata for the
-// Finding payload.
+// WhoisFindingData wraps a domain registration result with corroboration metadata.
 type WhoisFindingData struct {
-	whois.Result
+	whois.DomainResult
 	Corroboration string `json:"corroboration,omitempty"`
 }
 
-func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
+func buildWhoisResultFinding(r whois.DomainResult, pivotOrg string) plugins.Finding {
 	if r.Unregistered {
 		return plugins.Finding{
 			Type:   plugins.FindingWhoisResult,
 			Value:  r.Domain,
 			Source: "whois",
-			Data:   plugins.FindingData(whois.Result{Domain: r.Domain, Unregistered: true}),
+			Data:   plugins.FindingData(whois.DomainResult{Domain: r.Domain, Unregistered: true}),
 		}
 	}
 
-	// Normalize privacy on the registrant fields before emitting.
-	org := whois.RegistrantOrg(r.Registrant, r.Domain)
-	r.Registrant.Organization = whois.NormalizePrivacy(org)
-	r.Registrant.Country = whois.NormalizePrivacy(r.Registrant.Country)
-	r.Registrant.Province = whois.NormalizePrivacy(r.Registrant.Province)
-	r.Registrant.City = whois.NormalizePrivacy(r.Registrant.City)
-	r.Registrar = whois.NormalizeRegistrar(r.Registrar)
-
-	// Find the best non-privacy email across all contacts.
-	email, sawProxy := whois.ContactEmail(r)
-	switch {
-	case email != "":
-		r.Registrant.Email = email
-	case sawProxy || r.Registrant.Organization == whois.PrivacyRedaction:
-		r.Registrant.Email = whois.PrivacyRedaction
-	}
-
-	fd := WhoisFindingData{Result: r}
+	fd := WhoisFindingData{DomainResult: r}
 	if pivotOrg != "" {
-		fd.Corroboration = whois.Corroborate(pivotOrg, org)
+		fd.Corroboration = whois.Corroborate(pivotOrg, r.Registrant.Organization)
 	}
 
 	return plugins.Finding{
@@ -100,39 +83,20 @@ func buildWhoisResultFinding(r whois.Result, pivotOrg string) plugins.Finding {
 
 const confWhoisServerRecord = 85
 
-func extractPreseeds(r whois.Result) []plugins.Finding {
-	type candidate struct {
-		field, role, value string
+type preseedCandidate struct {
+	field string
+	role  string
+	value string
+}
+
+func extractPreseeds(r whois.DomainResult) []plugins.Finding {
+	var candidates []preseedCandidate
+	for _, contact := range r.AllContacts() {
+		candidates = append(candidates, contactPreseedCandidates(contact)...)
 	}
 
-	roles := [4]string{"registrant", "administrative", "technical", "billing"}
-	contacts := r.AllContacts()
-
-	// Collect all valid candidates, then dedupe by {field, value}.
-	var all []candidate
-	for i, c := range contacts {
-		org := c.Organization
-		if i == 0 {
-			org = whois.RegistrantOrg(c, r.Domain)
-		}
-		for _, cd := range []candidate{
-			{"company", roles[i], org},
-			{"name", roles[i], c.Name},
-			{"email", roles[i], c.Email},
-		} {
-			if cd.value == "" || whois.IsPrivacy(cd.value) {
-				continue
-			}
-			if cd.field == "email" && !whois.IsEmail(cd.value) {
-				continue
-			}
-			all = append(all, cd)
-		}
-	}
-
-	// Dedupe: keep first occurrence per {field, value} (preserves the
-	// highest-priority role since contacts are ordered registrant-first).
-	unique := strutil.UniqueFunc(all, func(c candidate) [2]string {
+	// Keep the highest-priority role for each field and value.
+	unique := strutil.UniqueFunc(candidates, func(c preseedCandidate) [2]string {
 		return [2]string{c.field, c.value}
 	})
 
@@ -161,4 +125,16 @@ func extractPreseeds(r whois.Result) []plugins.Finding {
 		findings = append(findings, f)
 	}
 	return findings
+}
+
+func contactPreseedCandidates(contact whois.DomainContact) []preseedCandidate {
+	candidates := []preseedCandidate{
+		{field: "company", role: contact.Role, value: contact.Organization},
+		{field: "name", role: contact.Role, value: contact.Name},
+		{field: "email", role: contact.Role, value: contact.Email},
+	}
+	return slices.DeleteFunc(candidates, func(candidate preseedCandidate) bool {
+		return candidate.value == "" || candidate.value == whois.PrivacyRedaction ||
+			(candidate.field == "email" && !whois.IsEmail(candidate.value))
+	})
 }

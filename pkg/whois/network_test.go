@@ -15,70 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNetworkResult_Clean(t *testing.T) {
-	result := NetworkResult{
-		Query:        " 8.8.8.8 ",
-		StartAddress: " 8.8.8.0 ",
-		EndAddress:   " 8.8.8.255 ",
-		Handle:       " NET-8-8-8-0-1 ",
-		Name:         " EXAMPLE-NET ",
-		Type:         " DIRECT ALLOCATION ",
-		Status:       []string{" active ", " "},
-		Country:      " US ",
-		ParentHandle: " PARENT-1 ",
-		Registry:     " whois.example.com ",
-		Server:       " rdap.example.com ",
-		RDAPServer:   " rdap.example.com ",
-		WhoisServer:  " whois.example.com ",
-		Contacts: []NetworkContact{
-			{
-				Handle:       " CONTACT-1 ",
-				Roles:        []string{" registrant ", " "},
-				Status:       []string{" validated ", " "},
-				Kind:         " org ",
-				Direct:       true,
-				Organization: " Example Networks ",
-				Name:         " ",
-				Email:        " admin@example.com ",
-				Country:      " US ",
-			},
-			{Name: " "},
-		},
-		Sources: []string{" rdap ", " ", " whois "},
-		Raw:     " raw response \n",
-	}
-
-	result.Clean()
-
-	assert.Equal(t, NetworkResult{
-		Query:        "8.8.8.8",
-		StartAddress: "8.8.8.0",
-		EndAddress:   "8.8.8.255",
-		Handle:       "NET-8-8-8-0-1",
-		Name:         "EXAMPLE-NET",
-		Type:         "DIRECT ALLOCATION",
-		Status:       []string{"active"},
-		Country:      "US",
-		ParentHandle: "PARENT-1",
-		Registry:     "whois.example.com",
-		Server:       "rdap.example.com",
-		RDAPServer:   "rdap.example.com",
-		WhoisServer:  "whois.example.com",
-		Contacts: []NetworkContact{{
-			Handle:       "CONTACT-1",
-			Roles:        []string{"registrant"},
-			Status:       []string{"validated"},
-			Kind:         "org",
-			Direct:       true,
-			Organization: "Example Networks",
-			Email:        "admin@example.com",
-			Country:      "US",
-		}},
-		Sources: []string{"rdap", "whois"},
-		Raw:     " raw response \n",
-	}, result)
-}
-
 func TestValidateNetworkTarget(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -153,21 +89,91 @@ func TestLastAddress(t *testing.T) {
 	}
 }
 
-func TestPreferredNetworkRole_IgnoresPrivacyProtectedCustomer(t *testing.T) {
-	contacts := []NetworkContact{
-		{Roles: []string{"customer"}, Status: []string{"private"}, Direct: true, Name: "Private Customer"},
-		{Roles: []string{"registrant"}, Direct: true, Name: "Public Registrant"},
-	}
-
-	assert.Equal(t, "registrant", PreferredNetworkRole(contacts))
-}
-
-func TestHasUsefulNetworkIdentity_IgnoresPrivacyProtectedContact(t *testing.T) {
-	contacts := []NetworkContact{{
-		Roles: []string{"registrant"}, Status: []string{"private"}, Kind: "org", Direct: true, Name: "Private Customer",
+func TestNetworkResult_PreferredContactsIgnoresPrivacyProtectedCustomer(t *testing.T) {
+	result := NetworkResult{Contacts: []NetworkContact{
+		{
+			Roles: []string{"customer"}, Status: []string{"private"}, Direct: true,
+			Contact: Contact{Name: "Private Customer"},
+		},
+		{
+			Roles: []string{"registrant"}, Kind: "individual", Direct: true,
+			Contact: Contact{Name: "Public Registrant"},
+		},
 	}}
 
-	assert.False(t, hasUsefulNetworkIdentity(contacts))
+	contacts := result.PreferredContacts()
+	require.Len(t, contacts, 1)
+	assert.Equal(t, "Public Registrant", contacts[0].Identity())
+}
+
+func TestNetworkResult_PreferredContactsIgnoresRedactedCustomer(t *testing.T) {
+	result := NetworkResult{Contacts: []NetworkContact{
+		{
+			Roles: []string{"customer"}, Kind: "org", Direct: true,
+			Contact: Contact{Organization: PrivacyRedaction},
+		},
+		{
+			Roles: []string{"registrant"}, Kind: "org", Direct: true,
+			Contact: Contact{Organization: "Public Registrant"},
+		},
+	}}
+
+	contacts := result.PreferredContacts()
+	require.Len(t, contacts, 1)
+	assert.Equal(t, "Public Registrant", contacts[0].Identity())
+}
+
+func TestNetworkResult_ContactsForRoleAppliesEligibilityPolicy(t *testing.T) {
+	result := NetworkResult{Contacts: []NetworkContact{
+		{
+			Handle: "EXAMPLE-MNT", Roles: []string{"customer"}, Kind: "org", Direct: true,
+			Contact: Contact{Organization: "Maintainer"},
+		},
+		{
+			Roles: []string{"customer"}, Status: []string{"private"}, Kind: "org", Direct: true,
+			Contact: Contact{Organization: "Private Customer"},
+		},
+		{
+			Roles: []string{"customer"}, Kind: "org",
+			Contact: Contact{Organization: "Indirect Customer"},
+		},
+		{
+			Roles: []string{"customer"}, Kind: "individual", Direct: true,
+			Contact: Contact{Name: "Public Customer"},
+		},
+		{
+			Roles: []string{"customer"}, Kind: "group", Direct: true,
+			Contact: Contact{Email: "network@example.com"},
+		},
+		{
+			Roles: []string{"registrant"}, Kind: "org", Direct: true,
+			Contact: Contact{Organization: "Public Registrant"},
+		},
+	}}
+
+	contacts := result.ContactsForRole("customer")
+
+	require.Len(t, contacts, 2)
+	assert.Equal(t, "Public Customer", contacts[0].Identity())
+	assert.Equal(t, "network@example.com", contacts[1].Email)
+}
+
+func TestNetworkResult_HasPreferredContactIgnoresPrivacyProtectedContact(t *testing.T) {
+	result := NetworkResult{Contacts: []NetworkContact{{
+		Roles: []string{"registrant"}, Status: []string{"private"}, Kind: "org", Direct: true,
+		Contact: Contact{Name: "Private Customer"},
+	}}}
+
+	assert.False(t, result.hasPreferredContact())
+}
+
+func TestNetworkResult_HasPreferredContactIgnoresRedactedContact(t *testing.T) {
+	result := NetworkResult{Contacts: []NetworkContact{{
+		Roles: []string{"registrant"}, Kind: "org", Direct: true,
+		Contact: Contact{Organization: PrivacyRedaction, Email: PrivacyRedaction},
+	}}}
+
+	assert.False(t, result.hasPreferredContact())
 }
 
 func TestNetworkResultMerge_PreservesServerAttribution(t *testing.T) {
@@ -177,7 +183,8 @@ func TestNetworkResultMerge_PreservesServerAttribution(t *testing.T) {
 		RDAPServer: "rdap.db.ripe.net",
 		Sources:    []string{"rdap"},
 		Contacts: []NetworkContact{{
-			Roles: []string{"technical"}, Kind: "group", Direct: true, Name: "Network Operations",
+			Roles: []string{"technical"}, Kind: "group", Direct: true,
+			Contact: Contact{Name: "Network Operations"},
 		}},
 	}
 	tcpResult := NetworkResult{
@@ -186,7 +193,8 @@ func TestNetworkResultMerge_PreservesServerAttribution(t *testing.T) {
 		Sources:     []string{"whois"},
 		Raw:         "raw response",
 		Contacts: []NetworkContact{{
-			Roles: []string{"registrant"}, Kind: "org", Direct: true, Organization: "Example Networks",
+			Roles: []string{"registrant"}, Kind: "org", Direct: true,
+			Contact: Contact{Organization: "Example Networks"},
 		}},
 	}
 
@@ -219,7 +227,8 @@ func networkWHOIS(rdapClient, tcp43Client WHOISClient) *WHOIS {
 
 func TestWHOISLookupNetwork_RDAPOnlySuccess(t *testing.T) {
 	rdapClient := &fakeWHOISClient{name: SourceRDAP, networkResult: validNetworkResult(SourceRDAP, NetworkContact{
-		Roles: []string{"registrant"}, Kind: "org", Direct: true, Organization: "Example Networks",
+		Roles: []string{"registrant"}, Kind: "org", Direct: true,
+		Contact: Contact{Organization: "Example Networks"},
 	})}
 	tcp43Client := &fakeWHOISClient{name: SourceTCP43, networkErr: errors.New("must not run")}
 
@@ -227,6 +236,23 @@ func TestWHOISLookupNetwork_RDAPOnlySuccess(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{SourceRDAP}, result.Sources)
+	assert.Equal(t, 1, rdapClient.networkCalls)
+	assert.Zero(t, tcp43Client.networkCalls)
+}
+
+func TestWHOISLookupNetwork_RDAPEmailOnlyContactStopsBeforeTCP43(t *testing.T) {
+	rdapClient := &fakeWHOISClient{name: SourceRDAP, networkResult: validNetworkResult(SourceRDAP, NetworkContact{
+		Roles: []string{"registrant"}, Direct: true,
+		Contact: Contact{Email: "network@example.com"},
+	})}
+	tcp43Client := &fakeWHOISClient{name: SourceTCP43, networkErr: errors.New("must not run")}
+
+	result, err := networkWHOIS(rdapClient, tcp43Client).LookupNetwork(context.Background(), "8.8.8.8")
+
+	require.NoError(t, err)
+	contacts := result.PreferredContacts()
+	require.Len(t, contacts, 1)
+	assert.Equal(t, "network@example.com", contacts[0].Email)
 	assert.Equal(t, 1, rdapClient.networkCalls)
 	assert.Zero(t, tcp43Client.networkCalls)
 }
@@ -268,7 +294,7 @@ func TestWHOISLookupNetwork_StopsOnCancelledContext(t *testing.T) {
 	assert.Zero(t, tcp43Client.networkCalls)
 }
 
-func TestLookupNetwork_SuccessfulRDAPWithoutUsefulIdentityFallsBackToTCP43(t *testing.T) {
+func TestLookupNetwork_SuccessfulRDAPWithoutPreferredContactFallsBackToTCP43(t *testing.T) {
 	original := tcp43RawFn
 	tcp43RawFn = func(_ context.Context, query, server string) (string, error) {
 		switch {
@@ -291,14 +317,16 @@ func TestLookupNetwork_SuccessfulRDAPWithoutUsefulIdentityFallsBackToTCP43(t *te
 	assert.Equal(t, "whois.example.test", result.WhoisServer)
 	assert.Equal(t, "NET-8-8-8-0-1", result.Handle)
 	assert.Equal(t, []string{"active"}, result.Status)
-	require.Len(t, result.Contacts, 2)
+	require.Len(t, result.Contacts, 3)
 	assert.Equal(t, "ABUSE-1", result.Contacts[0].Handle)
 	assert.Equal(t, []string{"abuse"}, result.Contacts[0].Roles)
 	assert.Equal(t, []string{"validated"}, result.Contacts[0].Status)
 	assert.Equal(t, "group", result.Contacts[0].Kind)
 	assert.Equal(t, "Abuse Desk", result.Contacts[0].Name)
 	assert.Equal(t, "abuse@example.com", result.Contacts[0].Email)
-	assert.Equal(t, "Example Networks", result.Contacts[1].Organization)
+	assert.Equal(t, PrivacyRedaction, result.Contacts[1].Organization)
+	assert.Equal(t, PrivacyRedaction, result.Contacts[1].Email)
+	assert.Equal(t, "Example Networks", result.Contacts[2].Organization)
 }
 
 type rdapResponseRoundTripper struct{}
@@ -324,6 +352,17 @@ func (rdapResponseRoundTripper) RoundTrip(request *http.Request) (*http.Response
 				["fn",{},"text"," Abuse Desk "],
 				["email",{},"text"," abuse@example.com "]
 			]]
+		},{
+			"objectClassName":"entity",
+			"handle":" CUSTOMER-1 ",
+			"roles":[" customer "],
+			"vcardArray":["vcard",[
+				["version",{},"text","4.0"],
+				["kind",{},"text"," org "],
+				["fn",{},"text"," REDACTED FOR PRIVACY "],
+				["org",{},"text"," REDACTED FOR PRIVACY "],
+				["email",{},"text"," domains@markmonitor.com "]
+			]]
 		}]
 	}`
 	return &http.Response{
@@ -346,12 +385,15 @@ func TestParseTCP43NetworkResult_AcceptsCIDRFormInetnum(t *testing.T) {
 	assert.Equal(t, "whois.lacnic.net", result.WhoisServer)
 }
 
-func TestTCP43NetworkContacts_OmitsPrivacyEmail(t *testing.T) {
-	contacts := tcp43NetworkContacts(map[string][]string{
+func TestTCP43NetworkContacts_NormalizesPrivacyEmail(t *testing.T) {
+	result := NetworkResult{Contacts: tcp43NetworkContacts(map[string][]string{
 		"email": {"zzzz03.com@shieldwhois.com"},
-	})
+	})}
 
-	assert.Empty(t, contacts)
+	result.Normalize()
+
+	require.Len(t, result.Contacts, 1)
+	assert.Equal(t, PrivacyRedaction, result.Contacts[0].Email)
 }
 
 func TestLookupNetwork_FallsBackToTCP43(t *testing.T) {
@@ -431,6 +473,20 @@ func TestNetworkContactFromVCard_UsesAddressLabelFallback(t *testing.T) {
 			assert.Equal(t, test.want, contact.Street)
 		})
 	}
+}
+
+func TestMapRDAPToNetworkResult_PreservesPhoneOnlyEntity(t *testing.T) {
+	vcard, err := rdap.NewVCard([]byte(
+		`["vcard",[["version",{},"text","4.0"],["tel",{"type":"voice"},"uri","tel:+1-555-0100"]]]`,
+	))
+	require.NoError(t, err)
+
+	result := mapRDAPToNetworkResult("8.8.8.8", &rdap.IPNetwork{Entities: []rdap.Entity{{
+		Handle: "EXAMPLE-TECH", Roles: []string{"technical"}, VCard: vcard,
+	}}})
+
+	require.Len(t, result.Contacts, 1)
+	assert.Equal(t, "+1-555-0100", result.Contacts[0].Phone)
 }
 
 func TestMapRDAPToNetworkResult_PreservesPrivateEntityWithoutVCard(t *testing.T) {
