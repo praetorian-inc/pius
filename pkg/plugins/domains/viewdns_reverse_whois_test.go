@@ -66,6 +66,50 @@ func TestViewDNSReverseWhoisPlugin_Accepts(t *testing.T) {
 	}
 }
 
+func TestViewDNSReverseWhois_Accepts_InjectedKeyWithoutEnvironment(t *testing.T) {
+	t.Setenv("VIEWDNS_API_KEY", "")
+	require.NoError(t, os.Unsetenv("VIEWDNS_API_KEY"))
+
+	p := NewViewDNSReverseWhoisPlugin(client.New(), "injected-key")
+
+	assert.True(t, p.Accepts(plugins.Input{OrgName: "Acme Corp"}))
+	assert.False(t, p.Accepts(plugins.Input{}))
+}
+
+func TestViewDNSReverseWhois_Run_InjectedKeyTakesPrecedence(t *testing.T) {
+	t.Setenv("VIEWDNS_API_KEY", "environment-key")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "injected-key", r.URL.Query().Get("apikey"))
+		_, _ = w.Write([]byte(`{"response":{"matches":[{"domain":"acme.com"}]}}`))
+	}))
+	defer srv.Close()
+
+	p := NewViewDNSReverseWhoisPlugin(client.New(), "injected-key")
+	p.baseURL = srv.URL
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
+
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "acme.com", findings[0].Value)
+}
+
+func TestViewDNSReverseWhois_Run_EnvironmentFallback(t *testing.T) {
+	t.Setenv("VIEWDNS_API_KEY", "environment-key")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "environment-key", r.URL.Query().Get("apikey"))
+		_, _ = w.Write([]byte(`{"response":{"matches":[{"domain":"acme.com"}]}}`))
+	}))
+	defer srv.Close()
+
+	p := NewViewDNSReverseWhoisPlugin(client.New(), "")
+	p.baseURL = srv.URL
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Acme Corp"})
+
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "acme.com", findings[0].Value)
+}
+
 func TestViewDNSReverseWhois_Run_OrgMode(t *testing.T) {
 	t.Setenv("VIEWDNS_API_KEY", "test-key")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
