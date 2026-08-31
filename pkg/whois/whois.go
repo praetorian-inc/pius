@@ -49,45 +49,6 @@ func (w *WHOIS) LookupDomain(ctx context.Context, domain string) (DomainResult, 
 	return state.finish(domain)
 }
 
-// LookupDomainHistory walks the commercial providers until one returns records.
-func (w *WHOIS) LookupDomainHistory(ctx context.Context, domain string) ([]DomainHistoryRecord, error) {
-	domain = RootDomain(domain)
-	if domain == "" {
-		return nil, fmt.Errorf("whois: no registrable domain")
-	}
-	var errs []error
-
-	results, err := w.doDomainHistoryLookup(ctx, domain, w.WhoxyClient.(WHOISDomainHistoryClient))
-	if err == nil && len(results) > 0 {
-		return results, nil
-	}
-	if err != nil {
-		errs = append(errs, err)
-	}
-
-	results, err = w.doDomainHistoryLookup(ctx, domain, w.WhoisFreaksClient.(WHOISDomainHistoryClient))
-	if err == nil && len(results) > 0 {
-		return results, nil
-	}
-	if err != nil {
-		errs = append(errs, err)
-	}
-
-	results, err = w.doDomainHistoryLookup(ctx, domain, w.WhoisXMLClient.(WHOISDomainHistoryClient))
-	if err == nil && len(results) > 0 {
-		return results, nil
-	}
-	if err != nil {
-		errs = append(errs, err)
-	}
-
-	if len(errs) == 3 {
-		return nil, fmt.Errorf("whois: all history methods failed for %s: %w", domain, errors.Join(errs...))
-	}
-	// If we didn't err on all 3, it means there just are no history records available.
-	return nil, nil
-}
-
 // doDomainLookup runs one leg and folds its answer into state, reporting whether the
 // cascade should stop. Normalization, logging, merging, and completion remain ordered
 // here rather than repeated for each provider.
@@ -131,28 +92,6 @@ func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomain
 	state.result.Merge(res)
 	state.result.Domain = domain
 	return state.result.isComplete(strict)
-}
-
-func (w *WHOIS) doDomainHistoryLookup(ctx context.Context, domain string, client WHOISDomainHistoryClient) ([]DomainHistoryRecord, error) {
-	started := time.Now()
-	records, err := client.LookupDomainHistory(ctx, domain)
-	if err != nil {
-		slog.Info("WHOIS history leg failed",
-			"resolver", client.Name(), "domain", domain,
-			"duration_ms", time.Since(started).Milliseconds())
-		return nil, err
-	}
-	if len(records) == 0 {
-		slog.Info("WHOIS history leg returned no records",
-			"resolver", client.Name(), "domain", domain,
-			"duration_ms", time.Since(started).Milliseconds())
-		return nil, nil
-	}
-
-	slog.Info("WHOIS history leg complete",
-		"resolver", client.Name(), "domain", domain,
-		"duration_ms", time.Since(started).Milliseconds(), "records", len(records))
-	return records, nil
 }
 
 // isDomainNotFound reports whether err definitively means the domain is not

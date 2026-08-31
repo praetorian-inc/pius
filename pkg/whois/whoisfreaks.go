@@ -84,10 +84,16 @@ func (r *WhoisFreaksClient) LookupDomainHistory(ctx context.Context, domain stri
 
 	records := make([]DomainHistoryRecord, 0, len(response.Records))
 	for _, record := range response.Records {
-		result := mapWhoisFreaksToResult(cmp.Or(record.DomainName, domain), record.whoisFreaksResponse)
+		recordDomain := cmp.Or(record.DomainName, domain)
+		result := mapWhoisFreaksToResult(recordDomain, record.whoisFreaksResponse)
+
+		// gTLDs can have some thing registry data that is kept separate from the main record since it is a separate WHOIS server
 		if registry := record.RegistryData; registry != nil {
-			result.Merge(mapWhoisFreaksToResult(cmp.Or(registry.DomainName, domain), registry.whoisFreaksResponse))
+			registryDomain := cmp.Or(registry.DomainName, domain)
+			registryData := mapWhoisFreaksToResult(registryDomain, registry.whoisFreaksResponse)
+			result.Merge(registryData)
 		}
+
 		result.Unregistered = strings.EqualFold(record.DomainRegistered, "no") && !result.hasRegistrationData()
 		records = append(records, DomainHistoryRecord{
 			DomainResult: result,
