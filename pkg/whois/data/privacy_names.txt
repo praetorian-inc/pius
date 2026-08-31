@@ -1,21 +1,22 @@
-registration private
+abuse
+admin
+contact privacy inc. customer
+data protected
+dns admin
 domain admin
 domain administrator
+domain hostmaster
+domain privacy group
+host master
+hostmaster
+identity protection service
+not disclosed
+postmaster
+private registration
+redacted for privacy
+registration private
+statutory masking enabled
+super privacy service ltd c/o migadu
 whois agent
 whois privacy
-data protected
-redacted for privacy
 withheld for privacy
-contact privacy inc. customer
-identity protection service
-domain privacy group
-private registration
-not disclosed
-statutory masking enabled
-admin
-hostmaster
-dns admin
-domain hostmaster
-abuse
-postmaster
-super privacy service ltd c/o migadu

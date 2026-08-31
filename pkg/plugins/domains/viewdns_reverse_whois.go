@@ -1,6 +1,7 @@
 package domains
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,19 +13,22 @@ import (
 )
 
 func init() {
-	plugins.Register("viewdns-reverse-whois", func() plugins.Plugin { return &ViewDNSReverseWhoisPlugin{client: client.New()} })
+	plugins.Register("viewdns-reverse-whois", func() plugins.Plugin {
+		return NewViewDNSReverseWhoisPlugin(client.New(), "")
+	})
 }
 
 // ViewDNSReverseWhoisPlugin discovers related domains via ViewDNS reverse WHOIS.
 // Findings retain the typed pivot for deferred WHOIS corroboration in Guard.
 type ViewDNSReverseWhoisPlugin struct {
 	client  *client.Client
+	apiKey  string
 	baseURL string // overridable for tests
 }
 
-// NewViewDNSReverseWhoisPlugin creates a plugin with an injectable HTTP client.
-func NewViewDNSReverseWhoisPlugin(httpClient *client.Client) *ViewDNSReverseWhoisPlugin {
-	return &ViewDNSReverseWhoisPlugin{client: httpClient}
+// NewViewDNSReverseWhoisPlugin creates a plugin with an injectable HTTP client and API key.
+func NewViewDNSReverseWhoisPlugin(httpClient *client.Client, apiKey string) *ViewDNSReverseWhoisPlugin {
+	return &ViewDNSReverseWhoisPlugin{client: httpClient, apiKey: apiKey}
 }
 
 func (p *ViewDNSReverseWhoisPlugin) apiBase() string {
@@ -43,8 +47,12 @@ func (p *ViewDNSReverseWhoisPlugin) Phase() int       { return 0 }
 func (p *ViewDNSReverseWhoisPlugin) Mode() string     { return plugins.ModePassive }
 
 func (p *ViewDNSReverseWhoisPlugin) Accepts(input plugins.Input) bool {
-	return os.Getenv("VIEWDNS_API_KEY") != "" &&
+	return p.resolveAPIKey() != "" &&
 		(input.OrgName != "" || input.PersonName != "" || input.Email != "")
+}
+
+func (p *ViewDNSReverseWhoisPlugin) resolveAPIKey() string {
+	return cmp.Or(p.apiKey, os.Getenv("VIEWDNS_API_KEY"))
 }
 
 type viewDNSResponse struct {
@@ -56,7 +64,7 @@ type viewDNSResponse struct {
 }
 
 func (p *ViewDNSReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
-	apiKey := os.Getenv("VIEWDNS_API_KEY")
+	apiKey := p.resolveAPIKey()
 	parameters := whoisParametersFromInput(input)
 	if len(parameters) == 0 {
 		return nil, nil
