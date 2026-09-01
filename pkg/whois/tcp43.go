@@ -401,7 +401,8 @@ func initialTCP43Server(ctx context.Context, domain string) (string, error) {
 		return defaultServer, nil
 	}
 
-	tld := domain[strings.LastIndexByte(domain, '.')+1:]
+	domainWithoutRootDot := strings.TrimSuffix(domain, ".")
+	tld := domainWithoutRootDot[strings.LastIndexByte(domainWithoutRootDot, '.')+1:]
 	records, err := lookupWhoisSRVFn(ctx, tld)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {

@@ -50,7 +50,7 @@ func TestTCP43Raw_UsesTLDWhoisSRVBeforeIANA(t *testing.T) {
 		return []*net.SRV{{Target: registry + ".", Port: 43}}, nil
 	}
 
-	record, server, err := tcp43Raw(context.Background(), "example.org.uk")
+	record, server, err := tcp43Raw(context.Background(), "example.org.uk.")
 
 	require.NoError(t, err)
 	assert.Contains(t, record, "Example Inc")
