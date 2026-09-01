@@ -13,13 +13,17 @@ import (
 // counts how many times it was consulted. The count is what proves the cascade
 // stopped, or continued, where it was supposed to.
 type fakeWHOISClient struct {
-	name          string
-	result        DomainResult
-	err           error
-	calls         int
-	networkResult NetworkResult
-	networkErr    error
-	networkCalls  int
+	name           string
+	result         DomainResult
+	err            error
+	calls          int
+	networkResult  NetworkResult
+	networkErr     error
+	networkCalls   int
+	historyRecords []DomainHistoryRecord
+	historyErr     error
+	historyCalls   int
+	historyDomain  string
 }
 
 func (f *fakeWHOISClient) Name() string { return f.name }
@@ -32,6 +36,12 @@ func (f *fakeWHOISClient) LookupDomain(_ context.Context, _ string) (DomainResul
 func (f *fakeWHOISClient) LookupNetwork(_ context.Context, _ string) (NetworkResult, error) {
 	f.networkCalls++
 	return f.networkResult, f.networkErr
+}
+
+func (f *fakeWHOISClient) LookupDomainHistory(_ context.Context, domain string) ([]DomainHistoryRecord, error) {
+	f.historyCalls++
+	f.historyDomain = domain
+	return f.historyRecords, f.historyErr
 }
 
 // answering returns a leg with a partial record: enough to be substantive, not
@@ -457,6 +467,70 @@ func TestCascade_MissingCredentialCostsNothing(t *testing.T) {
 // TestWHOIS_AcceptsFakeLookups is the testability payoff of putting every
 // source behind Client: a unit test replaces the network through direct field
 // assignment.
+func TestLookupDomainHistory_UsesFirstNonEmptyProvider(t *testing.T) {
+	whoxy := &fakeWHOISClient{name: ProviderWhoxy}
+	whoisFreaks := &fakeWHOISClient{name: ProviderWhoisFreaks, historyErr: errors.New("unavailable")}
+	whoisXML := &fakeWHOISClient{
+		name: ProviderWhoisXML,
+		historyRecords: []DomainHistoryRecord{{
+			DomainResult: DomainResult{Domain: "example.com", Registrar: "Example Registrar"},
+		}},
+	}
+
+	records, err := withCommercialLookups(whoxy, whoisFreaks, whoisXML).
+		LookupDomainHistory(context.Background(), "www.example.com")
+
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, "Example Registrar", records[0].Registrar)
+	assert.Equal(t, 1, whoxy.historyCalls)
+	assert.Equal(t, 1, whoisFreaks.historyCalls)
+	assert.Equal(t, 1, whoisXML.historyCalls)
+	assert.Equal(t, "example.com", whoisXML.historyDomain)
+}
+
+func TestLookupDomainHistory_StopsAfterRecords(t *testing.T) {
+	whoxy := &fakeWHOISClient{
+		name: ProviderWhoxy,
+		historyRecords: []DomainHistoryRecord{{
+			DomainResult: DomainResult{Domain: "example.com", Registrar: "Example Registrar"},
+		}},
+	}
+	whoisFreaks := &fakeWHOISClient{name: ProviderWhoisFreaks}
+
+	_, err := withCommercialLookups(whoxy, whoisFreaks).LookupDomainHistory(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, whoxy.historyCalls)
+	assert.Zero(t, whoisFreaks.historyCalls)
+}
+
+func TestLookupDomainHistory_AllEmptyIsSuccessful(t *testing.T) {
+	records, err := withCommercialLookups().LookupDomainHistory(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Empty(t, records)
+}
+
+func TestLookupDomainHistory_AllFailedReturnsError(t *testing.T) {
+	whoxy := &fakeWHOISClient{name: ProviderWhoxy, historyErr: errors.New("whoxy unavailable")}
+	whoisFreaks := &fakeWHOISClient{name: ProviderWhoisFreaks, historyErr: errors.New("whoisfreaks unavailable")}
+	whoisXML := &fakeWHOISClient{name: ProviderWhoisXML, historyErr: ErrNoCredential}
+
+	records, err := withCommercialLookups(whoxy, whoisFreaks, whoisXML).
+		LookupDomainHistory(context.Background(), "example.com")
+
+	require.Error(t, err)
+	assert.Nil(t, records)
+	assert.ErrorContains(t, err, "all history methods failed")
+}
+
+func TestLookupDomainHistory_RejectsInvalidDomain(t *testing.T) {
+	_, err := withCommercialLookups().LookupDomainHistory(context.Background(), "127.0.0.1")
+
+	assert.ErrorContains(t, err, "no registrable domain")
+}
+
 func TestWHOIS_AcceptsFakeLookups(t *testing.T) {
 	w := New()
 	w.RDAPClient = complete(SourceRDAP)

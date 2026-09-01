@@ -306,6 +306,86 @@ func TestWhoisXMLResolver_ErrorsDoNotLeakAPIKey(t *testing.T) {
 	assert.NotContains(t, err.Error(), "super-secret-key")
 }
 
+func TestWhoisXMLClient_LookupDomainHistory(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		assert.Equal(t, "test-key", req.URL.Query().Get("apiKey"))
+		assert.Equal(t, "example.com", req.URL.Query().Get("domainName"))
+		assert.Equal(t, "purchase", req.URL.Query().Get("mode"))
+		_, _ = w.Write([]byte(`{
+			"recordsCount": 2,
+			"records": [
+				{
+					"audit": {"createdDate": "2024-01-01T00:00:00Z"},
+					"domainName": "example.com",
+					"registrarName": "Old Registrar"
+				},
+				{
+					"audit": {"createdDate": "2025-01-01T00:00:00Z"},
+					"domainName": "example.com",
+					"createdDateISO8601": "1995-08-14T04:00:00Z",
+					"expiresDateISO8601": "2027-08-13T04:00:00Z",
+					"registrarName": "Current Registrar",
+					"whoisServer": "whois.current.example",
+					"nameServers": ["ns1.example.com"],
+					"status": ["clientTransferProhibited"],
+					"registrantContact": {
+						"name": "Jane Doe",
+						"organization": "Example Corp",
+						"email": "jane@example.com",
+						"street": "1 Example Way",
+						"city": "San Francisco",
+						"state": "CA",
+						"postalCode": "94105",
+						"country": "US",
+						"telephone": "+1.5555550100"
+					}
+				}
+			]
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewWhoisXMLClient(srv.Client(), "test-key")
+	client.historyBaseURL = srv.URL
+	records, err := client.LookupDomainHistory(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	require.Len(t, records, 2)
+	assert.Equal(t, "2025-01-01T00:00:00Z", records[0].QueryTime)
+	assert.Equal(t, "Current Registrar", records[0].Registrar)
+	assert.Equal(t, "1995-08-14T04:00:00Z", records[0].Created)
+	assert.Equal(t, "2027-08-13T04:00:00Z", records[0].Expiration)
+	assert.Equal(t, "whois.current.example", records[0].WhoisServer)
+	assert.Equal(t, "Example Corp", records[0].Registrant.Organization)
+	assert.Equal(t, "Jane Doe", records[0].Registrant.Name)
+	assert.Equal(t, "US", records[0].Registrant.Country)
+	assert.Equal(t, "1 Example Way", records[0].Registrant.Street)
+	assert.Equal(t, []string{ProviderWhoisXML}, records[0].Sources)
+	assert.Equal(t, "Old Registrar", records[1].Registrar)
+}
+
+func TestWhoisXMLClient_LookupDomainHistoryRequiresCredential(t *testing.T) {
+	t.Setenv("WHOISXML_API_KEY", "")
+
+	_, err := NewWhoisXMLClient(nil, "").LookupDomainHistory(context.Background(), "example.com")
+
+	assert.ErrorIs(t, err, ErrNoCredential)
+}
+
+func TestWhoisXMLClient_LookupDomainHistoryRejectsProviderError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":401,"messages":"Access restricted"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewWhoisXMLClient(srv.Client(), "test-key")
+	client.historyBaseURL = srv.URL
+	_, err := client.LookupDomainHistory(context.Background(), "example.com")
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "Access restricted")
+}
+
 // TestSplitWhoisXMLStatus: WhoisXML returns EPP statuses as one space-separated
 // string, each routinely followed by the ICANN URL documenting it. The URLs are
 // noise, not status.

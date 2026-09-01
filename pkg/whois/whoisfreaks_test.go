@@ -382,6 +382,93 @@ func TestWhoisFreaksLookup_ExplicitKeyBeatsEnv(t *testing.T) {
 		"an injected key works with no environment at all")
 }
 
+func TestWhoisFreaksClient_LookupDomainHistory(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		assert.Equal(t, "test-key", req.URL.Query().Get("apiKey"))
+		assert.Equal(t, "example.com", req.URL.Query().Get("domainName"))
+		_, _ = w.Write([]byte(`{
+			"status": true,
+			"whois_domains_historical": [
+				{
+					"query_time": "2024-01-01 00:00:00",
+					"domain_name": "example.com",
+					"domain_registered": "yes",
+					"domain_registrar": {"registrar_name": "Old Registrar"}
+				},
+				{
+					"query_time": "2025-01-01 00:00:00",
+					"domain_name": "example.com",
+					"domain_registered": "yes",
+					"registrant_contact": {
+						"name": "Jane Doe",
+						"company": "Example Corp",
+						"email_address": "jane@example.com",
+						"mailing_address": "1 Example Way",
+						"country_code": "US"
+					},
+					"registry_data": {
+						"create_date": "1995-08-14",
+						"expiry_date": "2027-08-13",
+						"name_servers": ["ns1.example.com"]
+					}
+				}
+			]
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewWhoisFreaksClient(srv.Client(), "test-key")
+	client.historyBaseURL = srv.URL
+	records, err := client.LookupDomainHistory(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	require.Len(t, records, 2)
+	assert.Equal(t, "2025-01-01 00:00:00", records[0].QueryTime)
+	assert.Equal(t, "1995-08-14", records[0].Created)
+	assert.Equal(t, "2027-08-13", records[0].Expiration)
+	assert.Equal(t, "Example Corp", records[0].Registrant.Organization)
+	assert.Equal(t, "Jane Doe", records[0].Registrant.Name)
+	assert.Equal(t, "jane@example.com", records[0].Registrant.Email)
+	assert.Equal(t, "1 Example Way", records[0].Registrant.Street)
+	assert.Equal(t, []string{ProviderWhoisFreaks}, records[0].Sources)
+	assert.Equal(t, "Old Registrar", records[1].Registrar)
+}
+
+func TestWhoisFreaksClient_LookupDomainHistoryRequiresCredential(t *testing.T) {
+	t.Setenv("WHOISFREAKS_API_KEY", "")
+
+	_, err := NewWhoisFreaksClient(nil, "").LookupDomainHistory(context.Background(), "example.com")
+
+	assert.ErrorIs(t, err, ErrNoCredential)
+}
+
+func TestWhoisFreaksClient_LookupDomainHistoryRejectsProviderError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":false}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewWhoisFreaksClient(srv.Client(), "test-key")
+	client.historyBaseURL = srv.URL
+	_, err := client.LookupDomainHistory(context.Background(), "example.com")
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "unsuccessful status")
+}
+
+func TestWhoisFreaksClient_LookupDomainHistoryErrorsDoNotLeakAPIKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+
+	client := NewWhoisFreaksClient(nil, "super-secret-key")
+	client.historyBaseURL = url
+	_, err := client.LookupDomainHistory(context.Background(), "example.com")
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "super-secret-key")
+}
+
 func TestWhoisFreaksResolver_Name(t *testing.T) {
 	assert.Equal(t, ProviderWhoisFreaks, NewWhoisFreaksClient(nil, "k").Name())
 }

@@ -14,6 +14,11 @@ type WHOISDomainOnlyClient interface {
 	LookupDomain(ctx context.Context, domain string) (DomainResult, error)
 }
 
+type WHOISDomainHistoryClient interface {
+	WHOISDomainOnlyClient
+	LookupDomainHistory(ctx context.Context, domain string) ([]DomainHistoryRecord, error)
+}
+
 // WHOISClient supports both domain and network registration lookups.
 type WHOISClient interface {
 	WHOISDomainOnlyClient

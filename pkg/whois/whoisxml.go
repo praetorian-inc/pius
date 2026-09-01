@@ -13,9 +13,11 @@ import (
 	"strings"
 )
 
-// whoisXMLBaseURL is the WhoisXML API v1 Live WHOIS endpoint. It is a var so
-// tests can point it at an httptest.Server.
-var whoisXMLBaseURL = "https://www.whoisxmlapi.com/whoisserver/WhoisService"
+// Provider endpoints are vars so tests can point them at httptest.Server.
+var (
+	whoisXMLBaseURL        = "https://www.whoisxmlapi.com/whoisserver/WhoisService"
+	whoisXMLHistoryBaseURL = "https://whois-history.whoisxmlapi.com/api/v1"
+)
 
 // WhoisXMLClient looks up live WHOIS through the WhoisXML API.
 //
@@ -23,9 +25,10 @@ var whoisXMLBaseURL = "https://www.whoisxmlapi.com/whoisserver/WhoisService"
 // highest throughput, so it runs last and is reached only when the cheaper
 // providers did not complete the record.
 type WhoisXMLClient struct {
-	httpClient *http.Client
-	apiKey     string
-	baseURL    string
+	httpClient     *http.Client
+	apiKey         string
+	baseURL        string
+	historyBaseURL string
 
 	// hardRefresh forces WhoisXML to re-query the registry rather than serve
 	// its cache. It costs 5 credits against 1 for a normal lookup, so it is off
@@ -56,106 +59,18 @@ func (r *WhoisXMLClient) hasCredential() bool { return r.resolveAPIKey() != "" }
 
 func (r *WhoisXMLClient) apiBase() string { return cmp.Or(r.baseURL, whoisXMLBaseURL) }
 
-type whoisXMLResponse struct {
-	WhoisRecord  whoisXMLRecord `json:"WhoisRecord"`
-	ErrorMessage *whoisXMLError `json:"ErrorMessage,omitempty"`
-}
-
-// whoisXMLError is WhoisXML's error envelope. It arrives with HTTP 200, so the
-// status code alone cannot be trusted to mean success — AUTHENTICATE_06
-// (exhausted or unauthorized account) is reported this way.
-type whoisXMLError struct {
-	ErrorCode string `json:"errorCode"`
-	Msg       string `json:"msg"`
-}
-
-// whoisXMLRecord is one WHOIS record. RegistryData carries the registry's own
-// view and is used only to fill fields the registrar-level record left empty —
-// reserved and thin-registry domains populate one but not the other.
-type whoisXMLRecord struct {
-	DomainName    string              `json:"domainName"`
-	CreatedDate   string              `json:"createdDate"`
-	UpdatedDate   string              `json:"updatedDate"`
-	ExpiresDate   string              `json:"expiresDate"`
-	RegistrarName string              `json:"registrarName"`
-	WhoisServer   string              `json:"whoisServer"`
-	Status        string              `json:"status"`
-	DataError     string              `json:"dataError"`
-	NameServers   whoisXMLNameServers `json:"nameServers"`
-	Registrant    whoisXMLContact     `json:"registrant"`
-	Admin         whoisXMLContact     `json:"administrativeContact"`
-	Tech          whoisXMLContact     `json:"technicalContact"`
-	Billing       whoisXMLContact     `json:"billingContact"`
-
-	RegistryData *whoisXMLRecord `json:"registryData,omitempty"`
-}
-
-type whoisXMLNameServers struct {
-	HostNames []string `json:"hostNames"`
-}
-
-type whoisXMLContact struct {
-	Name         string `json:"name"`
-	Organization string `json:"organization"`
-	Email        string `json:"email"`
-	Street1      string `json:"street1"`
-	City         string `json:"city"`
-	State        string `json:"state"`
-	PostalCode   string `json:"postalCode"`
-	Country      string `json:"country"`
-	CountryCode  string `json:"countryCode"`
-	Telephone    string `json:"telephone"`
-}
-
 // dataErrorMissingWhois is WhoisXML's marker for "no WHOIS data available".
 const dataErrorMissingWhois = "MISSING_WHOIS_DATA"
 
 func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (result DomainResult, err error) {
-	apiKey := r.resolveAPIKey()
-	if apiKey == "" {
-		return DomainResult{}, ErrNoCredential
-	}
-
-	params := url.Values{}
-	params.Set("apiKey", apiKey)
-	params.Set("domainName", domain)
-	params.Set("outputFormat", "JSON")
+	params := url.Values{"outputFormat": {"JSON"}}
 	if r.hardRefresh {
 		params.Set("_hardRefresh", "1")
 	}
-	reqURL := r.apiBase() + "?" + params.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return DomainResult{}, fmt.Errorf("whoisxml: building request for %s: %w", domain, err)
-	}
-
-	httpClient := cmp.Or(r.httpClient, http.DefaultClient)
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		// Unwrap *url.Error first: WhoisXML authenticates with a query
-		// parameter, so a transport failure would otherwise be rendered as
-		// `Get "<full url>": <cause>` with the API key embedded.
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
-			return DomainResult{}, fmt.Errorf("whoisxml: request failed for %s: %w", domain, urlErr.Err)
-		}
-		return DomainResult{}, fmt.Errorf("whoisxml: request failed for %s", domain)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return DomainResult{}, fmt.Errorf("whoisxml: API returned HTTP %d for %s", resp.StatusCode, domain)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return DomainResult{}, fmt.Errorf("whoisxml: reading response for %s: %w", domain, err)
-	}
 
 	var wx whoisXMLResponse
-	if err := json.Unmarshal(body, &wx); err != nil {
-		return DomainResult{}, fmt.Errorf("whoisxml: decoding response for %s: %w", domain, err)
+	if err := r.lookupDomainJSON(ctx, "live", r.apiBase(), domain, params, &wx); err != nil {
+		return DomainResult{}, err
 	}
 
 	// Checked on the decoded envelope rather than by scanning the payload for a
@@ -215,6 +130,40 @@ func (r *WhoisXMLClient) LookupDomain(ctx context.Context, domain string) (resul
 	return DomainResult{}, nil
 }
 
+// LookupDomainHistory queries WhoisXML for up to 30 historical WHOIS records, newest first.
+func (r *WhoisXMLClient) LookupDomainHistory(ctx context.Context, domain string) ([]DomainHistoryRecord, error) {
+	params := url.Values{"mode": {"purchase"}}
+	var response whoisXMLHistoryResponse
+	if err := r.lookupDomainJSON(ctx, "history", r.historyAPIBase(), domain, params, &response); err != nil {
+		return nil, err
+	}
+	if response.Code != 0 {
+		return nil, fmt.Errorf("whoisxml: history API returned code %d for %s: %s", response.Code, domain, response.Messages)
+	}
+
+	records := make([]DomainHistoryRecord, 0, len(response.Records))
+	for _, record := range response.Records {
+		records = append(records, DomainHistoryRecord{
+			QueryTime: cmp.Or(record.Audit.CreatedDate, record.Audit.UpdatedDate),
+			DomainResult: DomainResult{
+				Domain:      record.DomainName,
+				Registrar:   record.RegistrarName,
+				Created:     cmp.Or(record.CreatedDate, record.CreatedDateRaw),
+				Updated:     cmp.Or(record.UpdatedDate, record.UpdatedDateRaw),
+				Expiration:  cmp.Or(record.ExpiresDate, record.ExpiresDateRaw),
+				WhoisServer: record.WhoisServer,
+				NameServers: record.NameServers,
+				Status:      record.Status,
+				Registrant:  mapWhoisXMLHistoryContact(record.Registrant),
+				Admin:       mapWhoisXMLHistoryContact(record.Admin),
+				Tech:        mapWhoisXMLHistoryContact(record.Tech),
+				Billing:     mapWhoisXMLHistoryContact(record.Billing),
+			},
+		})
+	}
+	return normalizeDomainHistory(domain, ProviderWhoisXML, records), nil
+}
+
 func mapWhoisXMLToResult(domain string, rec whoisXMLRecord) DomainResult {
 	return DomainResult{
 		Domain:      domain,
@@ -266,4 +215,155 @@ func mapWhoisXMLContact(c whoisXMLContact) Contact {
 		PostalCode:   c.PostalCode,
 		Phone:        c.Telephone,
 	}
+}
+
+func mapWhoisXMLHistoryContact(contact whoisXMLHistoryContact) Contact {
+	return Contact{
+		Organization: contact.Organization,
+		Name:         contact.Name,
+		Email:        contact.Email,
+		Country:      contact.Country,
+		Province:     contact.State,
+		City:         contact.City,
+		Street:       contact.Street,
+		PostalCode:   contact.PostalCode,
+		Phone:        contact.Telephone,
+	}
+}
+
+func (r *WhoisXMLClient) historyAPIBase() string {
+	return cmp.Or(r.historyBaseURL, whoisXMLHistoryBaseURL)
+}
+
+func (r *WhoisXMLClient) lookupDomainJSON(
+	ctx context.Context,
+	operation string,
+	endpoint string,
+	domain string,
+	params url.Values,
+	out any,
+) error {
+	apiKey := r.resolveAPIKey()
+	if apiKey == "" {
+		return ErrNoCredential
+	}
+
+	params.Set("apiKey", apiKey)
+	params.Set("domainName", domain)
+	reqURL := endpoint + "?" + params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return fmt.Errorf("whoisxml: building %s request for %s: %w", operation, domain, err)
+	}
+
+	httpClient := cmp.Or(r.httpClient, http.DefaultClient)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return fmt.Errorf("whoisxml: %s request failed for %s: %w", operation, domain, urlErr.Err)
+		}
+		return fmt.Errorf("whoisxml: %s request failed for %s", operation, domain)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("whoisxml: %s API returned HTTP %d for %s", operation, resp.StatusCode, domain)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return fmt.Errorf("whoisxml: reading %s response for %s: %w", operation, domain, err)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("whoisxml: decoding %s response for %s: %w", operation, domain, err)
+	}
+	return nil
+}
+
+type whoisXMLResponse struct {
+	WhoisRecord  whoisXMLRecord `json:"WhoisRecord"`
+	ErrorMessage *whoisXMLError `json:"ErrorMessage,omitempty"`
+}
+
+type whoisXMLError struct {
+	ErrorCode string `json:"errorCode"`
+	Msg       string `json:"msg"`
+}
+
+type whoisXMLRecord struct {
+	DomainName    string              `json:"domainName"`
+	CreatedDate   string              `json:"createdDate"`
+	UpdatedDate   string              `json:"updatedDate"`
+	ExpiresDate   string              `json:"expiresDate"`
+	RegistrarName string              `json:"registrarName"`
+	WhoisServer   string              `json:"whoisServer"`
+	Status        string              `json:"status"`
+	DataError     string              `json:"dataError"`
+	NameServers   whoisXMLNameServers `json:"nameServers"`
+	Registrant    whoisXMLContact     `json:"registrant"`
+	Admin         whoisXMLContact     `json:"administrativeContact"`
+	Tech          whoisXMLContact     `json:"technicalContact"`
+	Billing       whoisXMLContact     `json:"billingContact"`
+	RegistryData  *whoisXMLRecord     `json:"registryData,omitempty"`
+}
+
+type whoisXMLNameServers struct {
+	HostNames []string `json:"hostNames"`
+}
+
+type whoisXMLContact struct {
+	Name         string `json:"name"`
+	Organization string `json:"organization"`
+	Email        string `json:"email"`
+	Street1      string `json:"street1"`
+	City         string `json:"city"`
+	State        string `json:"state"`
+	PostalCode   string `json:"postalCode"`
+	Country      string `json:"country"`
+	CountryCode  string `json:"countryCode"`
+	Telephone    string `json:"telephone"`
+}
+
+type whoisXMLHistoryResponse struct {
+	Code     int                     `json:"code"`
+	Messages string                  `json:"messages"`
+	Records  []whoisXMLHistoryRecord `json:"records"`
+}
+
+type whoisXMLHistoryRecord struct {
+	Audit          whoisXMLHistoryAudit   `json:"audit"`
+	DomainName     string                 `json:"domainName"`
+	CreatedDate    string                 `json:"createdDateISO8601"`
+	CreatedDateRaw string                 `json:"createdDateRaw"`
+	UpdatedDate    string                 `json:"updatedDateISO8601"`
+	UpdatedDateRaw string                 `json:"updatedDateRaw"`
+	ExpiresDate    string                 `json:"expiresDateISO8601"`
+	ExpiresDateRaw string                 `json:"expiresDateRaw"`
+	RegistrarName  string                 `json:"registrarName"`
+	WhoisServer    string                 `json:"whoisServer"`
+	NameServers    []string               `json:"nameServers"`
+	Status         []string               `json:"status"`
+	Registrant     whoisXMLHistoryContact `json:"registrantContact"`
+	Admin          whoisXMLHistoryContact `json:"administrativeContact"`
+	Tech           whoisXMLHistoryContact `json:"technicalContact"`
+	Billing        whoisXMLHistoryContact `json:"billingContact"`
+}
+
+type whoisXMLHistoryAudit struct {
+	CreatedDate string `json:"createdDate"`
+	UpdatedDate string `json:"updatedDate"`
+}
+
+type whoisXMLHistoryContact struct {
+	Name         string `json:"name"`
+	Organization string `json:"organization"`
+	Email        string `json:"email"`
+	Street       string `json:"street"`
+	City         string `json:"city"`
+	State        string `json:"state"`
+	PostalCode   string `json:"postalCode"`
+	Country      string `json:"country"`
+	Telephone    string `json:"telephone"`
 }
