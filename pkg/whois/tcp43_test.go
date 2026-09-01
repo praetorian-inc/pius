@@ -3,6 +3,7 @@ package whois
 import (
 	"context"
 	"fmt"
+	"net"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,7 +21,8 @@ func stubTCP43RawFn(t *testing.T, responses map[string]string) *[]string {
 	t.Helper()
 
 	dialed := make([]string, 0, maxReferrals)
-	orig := tcp43RawFn
+	originalRaw := tcp43RawFn
+	originalLookup := lookupWhoisSRVFn
 	tcp43RawFn = func(_ context.Context, _ string, server string) (string, error) {
 		dialed = append(dialed, server)
 		raw, ok := responses[server]
@@ -29,9 +31,44 @@ func stubTCP43RawFn(t *testing.T, responses map[string]string) *[]string {
 		}
 		return raw, nil
 	}
-	t.Cleanup(func() { tcp43RawFn = orig })
+	lookupWhoisSRVFn = func(context.Context, string) ([]*net.SRV, error) { return nil, nil }
+	t.Cleanup(func() {
+		tcp43RawFn = originalRaw
+		lookupWhoisSRVFn = originalLookup
+	})
 
 	return &dialed
+}
+
+func TestTCP43Raw_UsesTLDWhoisSRVBeforeIANA(t *testing.T) {
+	const registry = "whois.nic.uk"
+	dialed := stubTCP43RawFn(t, map[string]string{
+		registry: "Registrant Organization: Example Inc\n",
+	})
+	lookupWhoisSRVFn = func(_ context.Context, tld string) ([]*net.SRV, error) {
+		assert.Equal(t, "uk", tld)
+		return []*net.SRV{{Target: registry + ".", Port: 43}}, nil
+	}
+
+	record, server, err := tcp43Raw(context.Background(), "example.org.uk")
+
+	require.NoError(t, err)
+	assert.Contains(t, record, "Example Inc")
+	assert.Equal(t, registry, server)
+	assert.Equal(t, []string{registry}, *dialed)
+}
+
+func TestTCP43Raw_FallsBackToIANAWithoutWhoisSRV(t *testing.T) {
+	const registry = "whois.nic.example"
+	dialed := stubTCP43RawFn(t, map[string]string{
+		defaultServer: "refer: " + registry + "\n",
+		registry:      "Registrant Organization: Example Inc\n",
+	})
+
+	_, _, err := tcp43Raw(context.Background(), "example.test")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{defaultServer, registry}, *dialed)
 }
 
 func TestTCP43Lookup_AppliesDNSPTFallback(t *testing.T) {
@@ -137,14 +174,19 @@ func TestApplyDNSPTFallback_PreservesParsedValues(t *testing.T) {
 
 func TestTCP43Raw_RegistryTimeoutDoesNotSalvageBootstrap(t *testing.T) {
 	const registry = "whois.nic.net.sb"
-	original := tcp43RawFn
+	originalRaw := tcp43RawFn
+	originalLookup := lookupWhoisSRVFn
+	lookupWhoisSRVFn = func(context.Context, string) ([]*net.SRV, error) { return nil, nil }
 	tcp43RawFn = func(_ context.Context, _ string, server string) (string, error) {
 		if server == defaultServer {
 			return "refer: " + registry + "\n", nil
 		}
 		return "", context.DeadlineExceeded
 	}
-	t.Cleanup(func() { tcp43RawFn = original })
+	t.Cleanup(func() {
+		tcp43RawFn = originalRaw
+		lookupWhoisSRVFn = originalLookup
+	})
 
 	raw, server, err := tcp43Raw(context.Background(), "example.sb")
 

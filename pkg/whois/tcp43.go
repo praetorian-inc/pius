@@ -335,17 +335,23 @@ func firstField(fields map[string][]string, keys ...string) string {
 	return ""
 }
 
-// tcp43Raw follows the WHOIS referral chain from whois.iana.org down to the
-// registrar. Returns the deepest non-bootstrap record obtained along with the
-// server that answered it, so callers can attribute the record to its source.
+// tcp43Raw follows the WHOIS referral chain from the TLD's DNS-advertised
+// WHOIS server, falling back to whois.iana.org, down to the registrar. Returns
+// the deepest non-bootstrap record obtained along with the server that answered
+// it, so callers can attribute the record to its source.
 //
-// Test seam: override tcp43RawFn to drive the referral state machine without
-// real network I/O.
+// Test seams: override these functions to avoid real DNS and TCP requests.
 var tcp43RawFn = tcp43RawDial
+var lookupWhoisSRVFn = lookupWhoisSRV
 
 func tcp43Raw(ctx context.Context, domain string) (string, string, error) {
-	server := defaultServer
+	server, err := initialTCP43Server(ctx, domain)
+	if err != nil {
+		return "", "", err
+	}
 	var lastRaw, lastServer string
+
+	slog.Info("using TCP43 server", "hostname", server)
 
 	for range maxReferrals {
 		if err := ctx.Err(); err != nil {
@@ -390,6 +396,42 @@ func tcp43Raw(ctx context.Context, domain string) (string, string, error) {
 	return lastRaw, lastServer, nil
 }
 
+func initialTCP43Server(ctx context.Context, domain string) (string, error) {
+	if net.ParseIP(domain) != nil {
+		return defaultServer, nil
+	}
+
+	tld := domain[strings.LastIndexByte(domain, '.')+1:]
+	records, err := lookupWhoisSRVFn(ctx, tld)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
+		return defaultServer, nil
+	}
+	if len(records) == 0 {
+		return defaultServer, nil
+	}
+
+	record := records[0]
+	target := strings.TrimSuffix(record.Target, ".")
+	if target == "" || target == "." {
+		return "", fmt.Errorf("whois: TCP43 service unavailable for .%s", tld)
+	}
+	if record.Port == 43 {
+		return target, nil
+	}
+	return net.JoinHostPort(target, fmt.Sprint(record.Port)), nil
+}
+
+// DNS SRV records locate the server for a service by querying
+// _<service>._<protocol>.<domain>. For TCP43 WHOIS, the registered service name
+// is "nicname", so _nicname._tcp.<tld> identifies the TLD's WHOIS server.
+func lookupWhoisSRV(ctx context.Context, tld string) ([]*net.SRV, error) {
+	_, records, err := net.DefaultResolver.LookupSRV(ctx, "nicname", "tcp", tld)
+	return records, err
+}
+
 // tcp43RawDial sends a single WHOIS query over a raw TCP socket on port 43.
 // WHOIS (RFC 3912) is a line-oriented text protocol over raw TCP — there is no
 // higher-level abstraction (no HTTP, no TLS). The SSRF guard on the dialer
@@ -424,21 +466,19 @@ func tcp43RawDial(ctx context.Context, domain, server string) (string, error) {
 	return string(resp), nil
 }
 
-// dialAddr normalizes a WHOIS referral server string into host:43.
+// dialAddr normalizes a WHOIS server string into host:port, defaulting to 43.
 //
 // We don't use url.Parse here because WHOIS referral values are bare hostnames
 // (e.g. "whois.nic.uk"), not URLs. url.Parse("whois.nic.uk") misparses the
-// hostname as a path. Some referrals carry a scheme prefix ("http://...") or
-// an explicit port — we strip both since WHOIS is always tcp/43.
+// hostname as a path.
 func dialAddr(server string) string {
 	server = strings.TrimPrefix(server, "http://")
 	server = strings.TrimPrefix(server, "https://")
 	server = strings.TrimSuffix(server, "/")
-	if host, _, err := net.SplitHostPort(server); err == nil {
-		server = host
-	} else {
-		server = strings.TrimSuffix(strings.TrimPrefix(server, "["), "]")
+	if host, port, err := net.SplitHostPort(server); err == nil {
+		return net.JoinHostPort(host, port)
 	}
+	server = strings.TrimSuffix(strings.TrimPrefix(server, "["), "]")
 	return net.JoinHostPort(server, whoisPort)
 }
 
