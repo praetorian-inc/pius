@@ -407,6 +407,7 @@ func initialTCP43Server(ctx context.Context, domain string) (string, error) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", ctxErr
 		}
+		slog.Warn("error fetching SRV request, using default TCP43 server", "error", err)
 		return defaultServer, nil
 	}
 	if len(records) == 0 {
