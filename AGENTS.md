@@ -30,8 +30,9 @@ go run ./cmd/pius run --org "Acme Corp" --domain acme.com
 go run ./cmd/pius list
 ```
 
-CI (`.github/workflows/ci.yml`) delegates to a shared reusable Go workflow and
-runs only when Go sources, `go.mod`, `go.sum`, lint config, or `Makefile` change.
+CI (`.github/workflows/ci.yml`) delegates to a shared reusable Go workflow.
+On pull requests it runs only when Go sources, `go.mod`, `go.sum`, lint config,
+or `Makefile` change; pushes to `main` and `workflow_dispatch` have no path filter.
 `make lint` runs golangci-lint; the repo carries no lint config file, so defaults apply.
 
 ## Architecture
