@@ -94,7 +94,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 
 // buildWhoxyQueries maps Input fields to the correct Whoxy API parameters.
 func buildWhoxyQueries(input plugins.Input) []whoxyQuery {
-	parameters := whoisParametersFromInput(input)
+	parameters := whoisParametersFromInput(input, stripLegalSuffixPeriods, stripCommas)
 	queries := make([]whoxyQuery, 0, len(parameters))
 	for _, parameter := range parameters {
 		queries = append(queries, whoxyQuery{param: parameter.Field, value: parameter.Value})

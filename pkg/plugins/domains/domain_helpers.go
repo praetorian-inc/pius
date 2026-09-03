@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/praetorian-inc/pius/pkg/lib/strutil"
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/praetorian-inc/pius/pkg/whois"
 	"github.com/praetorian-inc/pius/pkg/whois/data"
@@ -75,9 +76,9 @@ func normalizeWhoisDomain(domain string) string {
 	return strings.TrimSuffix(strings.TrimSpace(strings.ToLower(domain)), ".")
 }
 
-func whoisParametersFromInput(input plugins.Input) []WhoisParameter {
+func whoisParametersFromInput(input plugins.Input, aliases ...func(string) string) []WhoisParameter {
 	var parameters []WhoisParameter
-	for _, value := range reverseWhoisQueryValues(input.OrgName) {
+	for _, value := range reverseWhoisQueryValues(input.OrgName, aliases...) {
 		parameters = append(parameters, WhoisParameter{Field: "company", Value: value})
 	}
 	parameters = append(parameters,
@@ -87,32 +88,39 @@ func whoisParametersFromInput(input plugins.Input) []WhoisParameter {
 	return uniqueWhoisParameters(nil, parameters)
 }
 
-// reverseWhoisQueryValues returns the original value plus a legal-suffix
-// punctuation alias. Reverse-WHOIS indexes match exact strings, so
-// "Example Pharmacy, L.P." misses records stored as "Example Pharmacy, LP".
-func reverseWhoisQueryValues(value string) []string {
+// reverseWhoisQueryValues returns value plus each alias applied to every
+// variant so far. WhoisFreaks only needs suffix-period aliases; Whoxy also
+// needs comma aliases because it treats "Acme, Inc" and "Acme Inc" as
+// different queries. Periods in the name body stay ("123.Net" is not "123Net").
+func reverseWhoisQueryValues(value string, aliases ...func(string) string) []string {
 	value = strings.TrimSpace(value)
 	if value == "" || whois.IsPrivacy(value) {
 		return nil
 	}
 	values := []string{value}
-	if stripped := stripLegalSuffixPunctuation(value); stripped != "" && stripped != value {
-		values = append(values, stripped)
+	for _, alias := range aliases {
+		n := len(values)
+		for i := range n {
+			values = append(values, alias(values[i]))
+		}
 	}
-	return values
+	return strutil.Unique(values)
 }
 
-func stripLegalSuffixPunctuation(name string) string {
+func stripCommas(name string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(name, ",", "")), " ")
+}
+
+func stripLegalSuffixPeriods(name string) string {
 	words := strings.Fields(name)
 	changed := false
 	for i := len(words) - 1; i >= 0; i-- {
-		withoutPeriods := strings.ReplaceAll(words[i], ".", "")
-		suffix := strings.ToLower(strings.TrimSuffix(withoutPeriods, ","))
-		if !data.LegalSuffixes[suffix] {
+		stripped := strings.ReplaceAll(words[i], ".", "")
+		if !data.LegalSuffixes[strings.ToLower(stripped)] {
 			break
 		}
-		if withoutPeriods != words[i] {
-			words[i] = withoutPeriods
+		if stripped != words[i] {
+			words[i] = stripped
 			changed = true
 		}
 	}

@@ -68,6 +68,16 @@ func TestWhoisParametersFromInput_OrgNameLegalSuffixAliases(t *testing.T) {
 			want: []WhoisParameter{
 				{Field: "company", Value: "Example Pharmacy, L.P."},
 				{Field: "company", Value: "Example Pharmacy, LP"},
+				{Field: "company", Value: "Example Pharmacy L.P."},
+				{Field: "company", Value: "Example Pharmacy LP"},
+			},
+		},
+		{
+			name:  "comma before suffix",
+			input: "Acme, Inc",
+			want: []WhoisParameter{
+				{Field: "company", Value: "Acme, Inc"},
+				{Field: "company", Value: "Acme Inc"},
 			},
 		},
 		{
@@ -93,14 +103,21 @@ func TestWhoisParametersFromInput_OrgNameLegalSuffixAliases(t *testing.T) {
 		},
 		{
 			name:  "period outside suffix",
-			input: "Foo.Bar Inc",
-			want:  []WhoisParameter{{Field: "company", Value: "Foo.Bar Inc"}},
+			input: "Foo.Bar Inc.",
+			want: []WhoisParameter{
+				{Field: "company", Value: "Foo.Bar Inc."},
+				{Field: "company", Value: "Foo.Bar Inc"},
+			},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			assert.Equal(t, test.want, whoisParametersFromInput(plugins.Input{OrgName: test.input}))
+			assert.Equal(t, test.want, whoisParametersFromInput(
+				plugins.Input{OrgName: test.input},
+				stripLegalSuffixPeriods,
+				stripCommas,
+			))
 		})
 	}
 }

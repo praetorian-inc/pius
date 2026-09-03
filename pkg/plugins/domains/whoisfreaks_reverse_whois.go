@@ -92,7 +92,7 @@ func (p *WhoisFreaksReverseWhoisPlugin) Run(ctx context.Context, input plugins.I
 }
 
 func buildWhoisFreaksQueries(input plugins.Input) []whoisFreaksQuery {
-	parameters := whoisParametersFromInput(input)
+	parameters := whoisParametersFromInput(input, stripLegalSuffixPeriods)
 	queries := make([]whoisFreaksQuery, 0, len(parameters)+1)
 	for _, parameter := range parameters {
 		switch parameter.Field {

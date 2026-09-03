@@ -199,7 +199,12 @@ func TestWhoxyReverseWhois_Run_QueriesSuffixAliases(t *testing.T) {
 	p := newWhoxyReverseWhoisTestPlugin(srv.Client(), srv.URL)
 	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Example Pharmacy, L.P."})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"Example Pharmacy, L.P.", "Example Pharmacy, LP"}, companies)
+	assert.Equal(t, []string{
+		"Example Pharmacy, L.P.",
+		"Example Pharmacy, LP",
+		"Example Pharmacy L.P.",
+		"Example Pharmacy LP",
+	}, companies)
 
 	var values []string
 	for _, finding := range findings {
