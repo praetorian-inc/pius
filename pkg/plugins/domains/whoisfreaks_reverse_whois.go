@@ -18,16 +18,11 @@ func init() {
 	})
 }
 
-// WhoisFreaksReverseWhoisPlugin discovers related domains via WhoisFreaks reverse WHOIS.
-// Findings retain every typed pivot that returned the domain for deferred
-// WHOIS corroboration in Guard.
 type WhoisFreaksReverseWhoisPlugin struct {
 	client *whois.WhoisFreaksClient
 	apiKey string
 }
 
-// NewWhoisFreaksReverseWhoisPlugin creates a plugin with an injectable HTTP
-// client. apiKey takes precedence over WHOISFREAKS_API_KEY.
 func NewWhoisFreaksReverseWhoisPlugin(httpClient *http.Client, apiKey string) *WhoisFreaksReverseWhoisPlugin {
 	return &WhoisFreaksReverseWhoisPlugin{
 		client: whois.NewWhoisFreaksClient(httpClient, apiKey),

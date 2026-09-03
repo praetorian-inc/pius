@@ -78,7 +78,7 @@ func normalizeWhoisDomain(domain string) string {
 
 func whoisParametersFromInput(input plugins.Input, aliases ...func(string) string) []WhoisParameter {
 	var parameters []WhoisParameter
-	for _, value := range reverseWhoisQueryValues(input.OrgName, aliases...) {
+	for _, value := range reverseWhoisCompanyValues(input.OrgName, aliases...) {
 		parameters = append(parameters, WhoisParameter{Field: "company", Value: value})
 	}
 	parameters = append(parameters,
@@ -88,11 +88,11 @@ func whoisParametersFromInput(input plugins.Input, aliases ...func(string) strin
 	return uniqueWhoisParameters(nil, parameters)
 }
 
-// reverseWhoisQueryValues returns value plus each alias applied to every
+// reverseWhoisCompanyValues returns value plus each alias applied to every
 // variant so far. WhoisFreaks only needs suffix-period aliases; Whoxy also
 // needs comma aliases because it treats "Acme, Inc" and "Acme Inc" as
 // different queries. Periods in the name body stay ("123.Net" is not "123Net").
-func reverseWhoisQueryValues(value string, aliases ...func(string) string) []string {
+func reverseWhoisCompanyValues(value string, aliases ...func(string) string) []string {
 	value = strings.TrimSpace(value)
 	if value == "" || whois.IsPrivacy(value) {
 		return nil
