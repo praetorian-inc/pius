@@ -135,6 +135,7 @@ Most domain plugins run in Phase 0 (independent, concurrent). Late-stage plugins
 | `passive-dns` | SecurityTrails passive DNS | `SECURITYTRAILS_API_KEY` | Passive | Historical subdomain records |
 | `reverse-whois` | ViewDNS reverse WHOIS | `VIEWDNS_API_KEY` | Passive | 50 confidence (unverified → needs-review); registrant email matching |
 | `whoxy-reverse-whois` | Whoxy reverse WHOIS API | `WHOXY_API_KEY` | Passive | Paginated lookup; stale-record filter; 50 confidence (unverified → needs-review) |
+| `whoisfreaks-reverse-whois` | WhoisFreaks reverse WHOIS API | `WHOISFREAKS_API_KEY` | Passive | Exact company/owner/email; org names query both indexes; legal-suffix punctuation aliases; paginated; stale-record filter; 50 confidence (unverified → needs-review) |
 | `builtwith` | BuiltWith tag lookup API | `BUILTWITH_API_KEY` | Passive | Phase 3; correlates domains via shared analytics tracking codes |
 | `dns-brute` | Local DNS resolver | None | **Active** | 50 concurrent goroutines; embedded wordlist |
 | `dns-zone-transfer` | DNS AXFR | None | **Active** | Extracts A, AAAA, CNAME, MX, SRV records |

@@ -67,7 +67,7 @@ For name-resolution plugins where mapping may be ambiguous, attach evidence with
 
 ## Reverse-WHOIS Corroborate-After-Retrieve
 
-The reverse-WHOIS domain plugins (`viewdns-reverse-whois` and `whoxy-reverse-whois`) only retrieve candidates. They never perform inline WHOIS lookups. Every emitted domain receives one 50-point baseline entry for the reverse-WHOIS API result and carries its typed pivots in `Data["reverse_whois_parameters"]` as `{field, value}` objects. Canonical fields are `company`, `name`, and `email`.
+The reverse-WHOIS domain plugins (`viewdns-reverse-whois`, `whoxy-reverse-whois`, and `whoisfreaks-reverse-whois`) only retrieve candidates. They never perform inline WHOIS lookups. Every emitted domain receives one 50-point baseline entry for the reverse-WHOIS API result and carries its typed pivots in `Data["whois_parameters"]` as `{field, value}` objects. Canonical fields are `company`, `name`, and `email`. Organization names are queried against both the company and registrant-name/owner indexes where the provider distinguishes them, and legal-suffix punctuation aliases (`L.P.` / `LP`) are issued as additional exact queries.
 
 `reverseWhoisFindings` in `pkg/plugins/domains/domain_helpers.go` owns normalization, plausibility filtering, deduplication, and baseline scoring. When Whoxy returns one normalized domain for multiple queries, the finding keeps the union of those parameters in deterministic first-seen order but still receives only one baseline confidence entry. Empty and privacy/redaction values are never serialized as provenance.
 

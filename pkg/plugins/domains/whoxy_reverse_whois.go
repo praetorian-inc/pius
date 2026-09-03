@@ -5,7 +5,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"time"
 
 	httpclient "github.com/praetorian-inc/pius/pkg/client"
 	"github.com/praetorian-inc/pius/pkg/lib/strutil"
@@ -95,7 +94,7 @@ func (p *WhoxyReverseWhoisPlugin) Run(ctx context.Context, input plugins.Input) 
 
 // buildWhoxyQueries maps Input fields to the correct Whoxy API parameters.
 func buildWhoxyQueries(input plugins.Input) []whoxyQuery {
-	parameters := whoisParametersFromInput(input)
+	parameters := whoisParametersFromInput(input, stripLegalSuffixPeriods, stripCommas)
 	queries := make([]whoxyQuery, 0, len(parameters))
 	for _, parameter := range parameters {
 		queries = append(queries, whoxyQuery{param: parameter.Field, value: parameter.Value})
@@ -121,7 +120,7 @@ func (p *WhoxyReverseWhoisPlugin) paginateQuery(ctx context.Context, q whoxyQuer
 			totalPages = resp.TotalPages
 		}
 		for _, result := range resp.SearchResult {
-			if result.DomainName != "" && !whoxyRecordStale(result.QueryTime) {
+			if result.DomainName != "" && !reverseWhoisRecordStale(result.QueryTime) {
 				domains = append(domains, result.DomainName)
 			}
 		}
@@ -132,12 +131,4 @@ func (p *WhoxyReverseWhoisPlugin) paginateQuery(ctx context.Context, q whoxyQuer
 	}
 
 	return strutil.Unique(domains), nil
-}
-
-func whoxyRecordStale(queryTime string) bool {
-	t, err := time.Parse(time.DateTime, queryTime)
-	if err != nil {
-		return true
-	}
-	return t.Before(time.Now().AddDate(-10, 0, 0))
 }

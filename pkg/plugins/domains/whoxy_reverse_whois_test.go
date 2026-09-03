@@ -183,6 +183,38 @@ func TestWhoxyReverseWhois_IsRegistered(t *testing.T) {
 	assert.True(t, ok)
 }
 
+func TestWhoxyReverseWhois_Run_QueriesSuffixAliases(t *testing.T) {
+	t.Setenv("WHOXY_API_KEY", "test-key")
+	var companies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		companies = append(companies, r.URL.Query().Get("company"))
+		if r.URL.Query().Get("company") == "Example Pharmacy, LP" {
+			_, _ = w.Write(mockWhoxyPage([]string{"example-pharmacy.org", "example-healthcare.com"}, 1))
+			return
+		}
+		_, _ = w.Write(mockWhoxyPage(nil, 0))
+	}))
+	defer srv.Close()
+
+	p := newWhoxyReverseWhoisTestPlugin(srv.Client(), srv.URL)
+	findings, err := p.Run(context.Background(), plugins.Input{OrgName: "Example Pharmacy, L.P."})
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"Example Pharmacy, L.P.",
+		"Example Pharmacy, LP",
+		"Example Pharmacy L.P.",
+		"Example Pharmacy LP",
+	}, companies)
+
+	var values []string
+	for _, finding := range findings {
+		values = append(values, finding.Value)
+		assert.Equal(t, []WhoisParameter{{Field: "company", Value: "Example Pharmacy, LP"}},
+			findingReverseWhoisParameters(t, finding))
+	}
+	assert.ElementsMatch(t, []string{"example-pharmacy.org", "example-healthcare.com"}, values)
+}
+
 func TestWhoxyReverseWhois_Run_EmailMode(t *testing.T) {
 	t.Setenv("WHOXY_API_KEY", "test-key")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

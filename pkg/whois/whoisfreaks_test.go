@@ -473,6 +473,70 @@ func TestWhoisFreaksResolver_Name(t *testing.T) {
 	assert.Equal(t, ProviderWhoisFreaks, NewWhoisFreaksClient(nil, "k").Name())
 }
 
+func TestWhoisFreaksClient_ReverseLookup(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests++
+		query := req.URL.Query()
+		assert.Equal(t, "test-key", query.Get("apiKey"))
+		assert.Equal(t, "Acme Corp", query.Get("owner"))
+		assert.Equal(t, "true", query.Get("exact"))
+
+		page := query.Get("page")
+		_ = json.NewEncoder(w).Encode(whoisFreaksReverseResponse{
+			TotalPages: 2,
+			Records: []WhoisFreaksReverseResult{
+				{DomainName: "example" + page + ".com", QueryTime: "2025-01-01 00:00:00"},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewWhoisFreaksClient(srv.Client(), "test-key").WithReverseBaseURL(srv.URL)
+	records, err := client.ReverseLookup(context.Background(), "owner", "Acme Corp")
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, requests)
+	assert.Equal(t, []WhoisFreaksReverseResult{
+		{DomainName: "example1.com", QueryTime: "2025-01-01 00:00:00"},
+		{DomainName: "example2.com", QueryTime: "2025-01-01 00:00:00"},
+	}, records)
+}
+
+func TestWhoisFreaksClient_ReverseLookupRequiresCredential(t *testing.T) {
+	t.Setenv("WHOISFREAKS_API_KEY", "")
+
+	_, err := NewWhoisFreaksClient(nil, "").ReverseLookup(context.Background(), "company", "Acme")
+	assert.ErrorIs(t, err, ErrNoCredential)
+}
+
+func TestWhoisFreaksClient_ReverseLookupNotFoundIsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Record Not Found"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewWhoisFreaksClient(srv.Client(), "test-key").WithReverseBaseURL(srv.URL)
+	records, err := client.ReverseLookup(context.Background(), "company", "Unknown")
+
+	require.NoError(t, err)
+	assert.Empty(t, records)
+}
+
+func TestWhoisFreaksClient_ReverseLookupErrorsDoNotLeakAPIKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+
+	client := NewWhoisFreaksClient(nil, "super-secret-key").WithReverseBaseURL(url)
+	_, err := client.ReverseLookup(context.Background(), "email", "admin@secret-corp.com")
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "super-secret-key")
+	assert.NotContains(t, err.Error(), "admin@secret-corp.com")
+}
+
 // TestWhoisFreaksLookup_Integration is a gated integration test that queries
 // the real WhoisFreaks API. It is skipped unless WHOISFREAKS_API_KEY is set
 // in the environment.
