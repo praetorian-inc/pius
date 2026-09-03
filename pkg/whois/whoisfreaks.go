@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,9 +15,12 @@ import (
 )
 
 // Provider endpoints are vars so tests can point them at httptest.Server.
+const maxWhoisFreaksPages = 100
+
 var (
 	whoisFreaksBaseURL        = "https://api.whoisfreaks.com/v2.0/whois/live"
 	whoisFreaksHistoryBaseURL = "https://api.whoisfreaks.com/v2.0/whois/history"
+	whoisFreaksReverseBaseURL = "https://api.whoisfreaks.com/v2.0/whois/reverse"
 )
 
 // WhoisFreaksClient looks up live WHOIS through the WhoisFreaks v2.0 API.
@@ -30,6 +34,7 @@ type WhoisFreaksClient struct {
 	apiKey         string
 	baseURL        string
 	historyBaseURL string
+	reverseBaseURL string
 }
 
 // NewWhoisFreaksClient returns a WhoisFreaks resolver. An empty apiKey falls
@@ -137,6 +142,102 @@ func mapWhoisFreaksContact(contact whoisFreaksContact) Contact {
 
 func (r *WhoisFreaksClient) historyAPIBase() string {
 	return cmp.Or(r.historyBaseURL, whoisFreaksHistoryBaseURL)
+}
+
+func (r *WhoisFreaksClient) reverseAPIBase() string {
+	return cmp.Or(r.reverseBaseURL, whoisFreaksReverseBaseURL)
+}
+
+// WithReverseBaseURL overrides the reverse-WHOIS endpoint. Tests use this to
+// point at an httptest.Server.
+func (r *WhoisFreaksClient) WithReverseBaseURL(baseURL string) *WhoisFreaksClient {
+	r.reverseBaseURL = baseURL
+	return r
+}
+
+// ReverseLookup retrieves records associated with value across all result pages.
+// HTTP 404 is empty output, not an error: WhoisFreaks returns Record Not Found
+// when a pivot has no matches.
+func (r *WhoisFreaksClient) ReverseLookup(ctx context.Context, field, value string) ([]WhoisFreaksReverseResult, error) {
+	var records []WhoisFreaksReverseResult
+	page := 1
+	totalPages := 1
+
+	for {
+		resp, err := r.lookupReverseWhois(ctx, field, value, page)
+		if err != nil {
+			if page == 1 {
+				return nil, err
+			}
+			slog.Warn("whoisfreaks: stopping reverse-WHOIS pagination", "page", page, "error", err)
+			break
+		}
+		if resp.TotalPages > 0 {
+			totalPages = resp.TotalPages
+		}
+		records = append(records, resp.Records...)
+		if len(resp.Records) == 0 || page >= totalPages || page >= maxWhoisFreaksPages {
+			break
+		}
+		page++
+	}
+
+	return records, nil
+}
+
+func (r *WhoisFreaksClient) lookupReverseWhois(ctx context.Context, field, value string, page int) (whoisFreaksReverseResponse, error) {
+	apiKey := r.resolveAPIKey()
+	if apiKey == "" {
+		return whoisFreaksReverseResponse{}, ErrNoCredential
+	}
+
+	params := url.Values{}
+	params.Set("apiKey", apiKey)
+	params.Set(field, value)
+	params.Set("exact", "true")
+	params.Set("page", fmt.Sprint(page))
+	reqURL := strings.TrimRight(r.reverseAPIBase(), "/") + "?" + params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return whoisFreaksReverseResponse{}, fmt.Errorf("whoisfreaks: building reverse-WHOIS request: %w", err)
+	}
+
+	httpClient := cmp.Or(r.httpClient, http.DefaultClient)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		// Do not wrap the transport error: it may contain the query URL and API key.
+		return whoisFreaksReverseResponse{}, fmt.Errorf("whoisfreaks: reverse-WHOIS request failed")
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return whoisFreaksReverseResponse{}, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return whoisFreaksReverseResponse{}, fmt.Errorf("whoisfreaks: reverse-WHOIS API returned HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return whoisFreaksReverseResponse{}, fmt.Errorf("whoisfreaks: reading reverse-WHOIS response: %w", err)
+	}
+	var response whoisFreaksReverseResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return whoisFreaksReverseResponse{}, fmt.Errorf("whoisfreaks: decoding reverse-WHOIS response: %w", err)
+	}
+	return response, nil
+}
+
+type whoisFreaksReverseResponse struct {
+	TotalPages int                        `json:"total_Pages"`
+	Records    []WhoisFreaksReverseResult `json:"whois_domains_historical"`
+}
+
+// WhoisFreaksReverseResult is one domain in a reverse-WHOIS response.
+type WhoisFreaksReverseResult struct {
+	DomainName string `json:"domain_name"`
+	QueryTime  string `json:"query_time"`
 }
 
 func (r *WhoisFreaksClient) lookupDomainJSON(ctx context.Context, operation, endpoint, domain string, out any) error {

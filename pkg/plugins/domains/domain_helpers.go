@@ -3,9 +3,11 @@ package domains
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/praetorian-inc/pius/pkg/plugins"
 	"github.com/praetorian-inc/pius/pkg/whois"
+	"github.com/praetorian-inc/pius/pkg/whois/data"
 )
 
 const WhoisParametersKey = "whois_parameters"
@@ -74,22 +76,58 @@ func normalizeWhoisDomain(domain string) string {
 }
 
 func whoisParametersFromInput(input plugins.Input) []WhoisParameter {
-	raw := []WhoisParameter{
-		{Field: "company", Value: input.OrgName},
-		{Field: "name", Value: input.PersonName},
-		{Field: "email", Value: input.Email},
+	var parameters []WhoisParameter
+	for _, value := range reverseWhoisQueryValues(input.OrgName) {
+		parameters = append(parameters, WhoisParameter{Field: "company", Value: value})
 	}
+	parameters = append(parameters,
+		WhoisParameter{Field: "name", Value: input.PersonName},
+		WhoisParameter{Field: "email", Value: input.Email},
+	)
+	return uniqueWhoisParameters(nil, parameters)
+}
 
-	filtered := []WhoisParameter{}
-	for _, param := range raw {
-		if param.Value == "" || whois.IsPrivacy(param.Value) {
-			continue
+// reverseWhoisQueryValues returns the original value plus a legal-suffix
+// punctuation alias. Reverse-WHOIS indexes match exact strings, so
+// "Example Pharmacy, L.P." misses records stored as "Example Pharmacy, LP".
+func reverseWhoisQueryValues(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" || whois.IsPrivacy(value) {
+		return nil
+	}
+	values := []string{value}
+	if stripped := stripLegalSuffixPunctuation(value); stripped != "" && stripped != value {
+		values = append(values, stripped)
+	}
+	return values
+}
+
+func stripLegalSuffixPunctuation(name string) string {
+	words := strings.Fields(name)
+	changed := false
+	for i := len(words) - 1; i >= 0; i-- {
+		withoutPeriods := strings.ReplaceAll(words[i], ".", "")
+		suffix := strings.ToLower(strings.TrimSuffix(withoutPeriods, ","))
+		if !data.LegalSuffixes[suffix] {
+			break
 		}
-
-		filtered = append(filtered, param)
+		if withoutPeriods != words[i] {
+			words[i] = withoutPeriods
+			changed = true
+		}
 	}
+	if !changed {
+		return name
+	}
+	return strings.Join(words, " ")
+}
 
-	return filtered
+func reverseWhoisRecordStale(queryTime string) bool {
+	t, err := time.Parse(time.DateTime, queryTime)
+	if err != nil {
+		return true
+	}
+	return t.Before(time.Now().AddDate(-10, 0, 0))
 }
 
 func uniqueWhoisParameters(existing, incoming []WhoisParameter) []WhoisParameter {
