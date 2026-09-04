@@ -12,6 +12,7 @@ gandi sas
 id shield
 identity protection service
 moniker privacy services
+not published
 perfect privacy, llc
 privacy hero, inc.
 privacy protect, llc
