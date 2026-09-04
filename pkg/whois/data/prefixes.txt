@@ -1,5 +1,6 @@
 (Redacted for privacy)
 ***
+??
 AbbVie Inc.
 Account Privacy
 Admin DNS
@@ -75,6 +76,7 @@ hidden
 Hostmaster Of The Day
 hostmaster@safenames.net
 HugeDomains.com
+icn-
 Identity Protection Service
 info@domain-contact.org
 Informa Group Plc
@@ -100,7 +102,9 @@ Network Administrator
 Not Disclosed
 Not Disclosed Not Disclosed
 NOT DISCLOSED!
+Not shown
 On behalf of
+petspo
 Pending Renewal or Deletion
 PERFECT PRIVACY, LLC
 Personal Information
@@ -140,6 +144,7 @@ Redacted for Privacy (Redactado por Privacidad)
 Redacted for Privacy Purposes
 REDACTED FOR PRIVACY REDACTED FOR PRIVACY
 Registration Private
+Registrant Organization
 Registry Services, LLC
 Safenames Ltd
 SASU
@@ -163,6 +168,7 @@ The Goodyear Tire & Rubber Company
 TotalDomain Privacy Ltd
 united-domains Reselling GmbH
 User #
+UNET-
 WEB COMMERCE COMMUNICATIONS LIMITED
 Web Master
 web master
