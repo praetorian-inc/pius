@@ -28,7 +28,7 @@ func (f *fakeResolver) Resolve(host string) []string {
 }
 
 func TestDNSBrutePlugin_Interface(t *testing.T) {
-	p := &DNSBrutePlugin{}
+	p := &DNSSubdomainBrutePlugin{}
 	assert.Equal(t, "dns-brute", p.Name())
 	assert.Equal(t, "domain", p.Category())
 	assert.Equal(t, 0, p.Phase())
@@ -36,7 +36,7 @@ func TestDNSBrutePlugin_Interface(t *testing.T) {
 }
 
 func TestDNSBrutePlugin_Accepts(t *testing.T) {
-	p := &DNSBrutePlugin{}
+	p := &DNSSubdomainBrutePlugin{}
 
 	// Requires Domain
 	assert.True(t, p.Accepts(plugins.Input{Domain: "example.com"}))
@@ -73,7 +73,7 @@ func TestDNSBrutePlugin_Run_NoMatch(t *testing.T) {
 	defer func() { _ = server.Shutdown() }()
 	<-started
 
-	p := &DNSBrutePlugin{
+	p := &DNSSubdomainBrutePlugin{
 		resolver: server.PacketConn.LocalAddr().String(),
 		wordlist: []string{"www", "mail", "api"},
 	}
@@ -110,7 +110,7 @@ func TestDNSBrutePlugin_Run_WildcardSkip(t *testing.T) {
 	defer func() { _ = server.Shutdown() }()
 	<-started
 
-	p := &DNSBrutePlugin{
+	p := &DNSSubdomainBrutePlugin{
 		resolver: server.PacketConn.LocalAddr().String(),
 		wordlist: []string{"www", "mail", "api"},
 	}
@@ -128,7 +128,7 @@ func TestDNSBrutePlugin_Run_WildcardSkip(t *testing.T) {
 // (3 findings); post-fix it sees the wildcard via the injected resolver and skips.
 func TestDNSBrutePlugin_Run_InjectedResolver_WildcardRoutedThroughLookup(t *testing.T) {
 	fake := &fakeResolver{fn: func(string) []string { return []string{"1.2.3.4"} }}
-	p := &DNSBrutePlugin{
+	p := &DNSSubdomainBrutePlugin{
 		resolver: "203.0.113.255:9", // reserved/unroutable — must never be queried
 		wordlist: []string{"www", "mail", "api"},
 		lookup:   fake,
@@ -153,7 +153,7 @@ func TestDNSBrutePlugin_Run_InjectedResolver_Resolves(t *testing.T) {
 		}
 		return nil
 	}}
-	p := &DNSBrutePlugin{
+	p := &DNSSubdomainBrutePlugin{
 		resolver: "203.0.113.255:9",
 		wordlist: []string{"www", "mail", "api"},
 		lookup:   fake,
@@ -203,7 +203,7 @@ func TestDNSBrutePlugin_Run(t *testing.T) {
 	defer func() { _ = server.Shutdown() }()
 	<-started
 
-	p := &DNSBrutePlugin{
+	p := &DNSSubdomainBrutePlugin{
 		resolver: server.PacketConn.LocalAddr().String(),
 		wordlist: []string{"www", "mail", "api"},
 	}
