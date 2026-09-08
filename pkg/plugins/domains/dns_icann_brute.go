@@ -156,8 +156,9 @@ func (p *DNSICANNBrutePlugin) resolveCandidates(
 
 	var workers sync.WaitGroup
 	for range concurrency {
-		workers.Add(1)
-		go p.resolveCandidateJobs(ctx, input.Domain, registrableDomainLabel, jobs, findings, &workers)
+		workers.Go(func() {
+			p.resolveCandidateJobs(ctx, input.Domain, registrableDomainLabel, jobs, findings)
+		})
 	}
 
 	scheduleICANNCandidates(ctx, candidates, jobs)
@@ -171,9 +172,7 @@ func (p *DNSICANNBrutePlugin) resolveCandidateJobs(
 	originalDomain, registrableDomainLabel string,
 	jobs <-chan icannCandidate,
 	findings chan<- plugins.Finding,
-	workers *sync.WaitGroup,
 ) {
-	defer workers.Done()
 	for candidate := range jobs {
 		if ctx.Err() != nil {
 			continue
