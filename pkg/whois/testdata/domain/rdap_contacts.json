@@ -1,0 +1,38 @@
+{
+  "rdapConformance": ["rdap_level_0"],
+  "objectClassName": "domain",
+  "ldhName": "example.com",
+  "events": [
+    {"eventAction": "registration", "eventDate": "2021-09-19T12:45:42Z"},
+    {"eventAction": "expiration", "eventDate": "2026-09-19T12:45:42Z"}
+  ],
+  "nameservers": [{"ldhName": "ns1.example.com"}],
+  "status": ["client transfer prohibited"],
+  "entities": [
+    {
+      "objectClassName": "entity",
+      "roles": ["registrar"],
+      "vcardArray": ["vcard", [["version", {}, "text", "4.0"], ["fn", {}, "text", "Example Registrar"]]]
+    },
+    {
+      "objectClassName": "entity",
+      "roles": ["registrant"],
+      "vcardArray": ["vcard", [["version", {}, "text", "4.0"], ["fn", {}, "text", "Registration Private"], ["org", {}, "text", "Domains By Proxy, LLC"]]]
+    },
+    {
+      "objectClassName": "entity",
+      "roles": ["administrative"],
+      "vcardArray": ["vcard", [["version", {}, "text", "4.0"], ["fn", {}, "text", "Example Admin"], ["email", {}, "text", "admin@example.com"]]]
+    },
+    {
+      "objectClassName": "entity",
+      "roles": ["technical"],
+      "vcardArray": ["vcard", [["version", {}, "text", "4.0"], ["fn", {}, "text", "Example Tech"], ["email", {}, "text", "tech@example.com"]]]
+    },
+    {
+      "objectClassName": "entity",
+      "roles": ["billing"],
+      "vcardArray": ["vcard", [["version", {}, "text", "4.0"], ["fn", {}, "text", "Example Billing"], ["email", {}, "text", "billing@example.com"]]]
+    }
+  ]
+}

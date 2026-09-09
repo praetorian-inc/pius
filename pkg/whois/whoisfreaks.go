@@ -90,14 +90,7 @@ func (r *WhoisFreaksClient) LookupDomainHistory(ctx context.Context, domain stri
 	records := make([]DomainHistoryRecord, 0, len(response.Records))
 	for _, record := range response.Records {
 		recordDomain := cmp.Or(record.DomainName, domain)
-		result := mapWhoisFreaksToResult(recordDomain, record.whoisFreaksResponse)
-
-		// gTLDs can have some thing registry data that is kept separate from the main record since it is a separate WHOIS server
-		if registry := record.RegistryData; registry != nil {
-			registryDomain := cmp.Or(registry.DomainName, domain)
-			registryData := mapWhoisFreaksToResult(registryDomain, registry.whoisFreaksResponse)
-			result.Merge(registryData)
-		}
+		result := mapWhoisFreaksToResult(recordDomain, record)
 
 		result.Unregistered = strings.EqualFold(record.DomainRegistered, "no") && !result.hasRegistrationData()
 		records = append(records, DomainHistoryRecord{
@@ -109,7 +102,7 @@ func (r *WhoisFreaksClient) LookupDomainHistory(ctx context.Context, domain stri
 }
 
 func mapWhoisFreaksToResult(domain string, response whoisFreaksResponse) DomainResult {
-	return DomainResult{
+	result := DomainResult{
 		Domain:      domain,
 		Registrar:   response.DomainRegistrar.RegistrarName,
 		Created:     response.CreateDate,
@@ -124,6 +117,11 @@ func mapWhoisFreaksToResult(domain string, response whoisFreaksResponse) DomainR
 		Tech:        mapWhoisFreaksContact(response.Tech),
 		Billing:     mapWhoisFreaksContact(response.Billing),
 	}
+	if response.RegistryData != nil {
+		result.Merge(mapWhoisFreaksToResult(domain, *response.RegistryData))
+		result.Sources = []string{ProviderWhoisFreaks}
+	}
+	return result
 }
 
 func mapWhoisFreaksContact(contact whoisFreaksContact) Contact {
@@ -281,7 +279,7 @@ func (r *WhoisFreaksClient) lookupDomainJSON(ctx context.Context, operation, end
 	return nil
 }
 
-// whoisFreaksResponse mirrors the WhoisFreaks v2.0 Live WHOIS JSON response.
+// Live and historical records share the same registrar/registry response shape.
 type whoisFreaksResponse struct {
 	Status           bool                 `json:"status"`
 	DomainName       string               `json:"domain_name"`
@@ -297,29 +295,20 @@ type whoisFreaksResponse struct {
 	Admin            whoisFreaksContact   `json:"administrative_contact"`
 	Tech             whoisFreaksContact   `json:"technical_contact"`
 	Billing          whoisFreaksContact   `json:"billing_contact"`
+	QueryTime        string               `json:"query_time"`
+	RegistryData     *whoisFreaksResponse `json:"registry_data"`
 }
 
 type whoisFreaksHistoryResponse struct {
-	Status  bool                       `json:"status"`
-	Records []whoisFreaksHistoryRecord `json:"whois_domains_historical"`
+	Status  bool                  `json:"status"`
+	Records []whoisFreaksResponse `json:"whois_domains_historical"`
 }
 
-type whoisFreaksHistoryRecord struct {
-	whoisFreaksResponse
-	QueryTime    string                  `json:"query_time"`
-	RegistryData *whoisFreaksHistoryData `json:"registry_data"`
-}
-
-func (r whoisFreaksHistoryRecord) registryQueryTime() string {
+func (r whoisFreaksResponse) registryQueryTime() string {
 	if r.RegistryData == nil {
 		return ""
 	}
 	return r.RegistryData.QueryTime
-}
-
-type whoisFreaksHistoryData struct {
-	whoisFreaksResponse
-	QueryTime string `json:"query_time"`
 }
 
 type whoisFreaksRegistrar struct {
