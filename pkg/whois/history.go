@@ -24,37 +24,35 @@ func (w *WHOIS) LookupDomainHistory(ctx context.Context, domain string) ([]Domai
 	if domain == "" {
 		return nil, fmt.Errorf("whois: no registrable domain")
 	}
-	var errs []error
+	clients := []WHOISDomainHistoryClient{
+		w.WhoxyClient.(WHOISDomainHistoryClient),
+		w.WhoisFreaksClient.(WHOISDomainHistoryClient),
+		w.WhoisXMLClient.(WHOISDomainHistoryClient),
+	}
+	var lookupErrs []error
+	var hadEmptyResponse bool
 
-	results, err := w.doDomainHistoryLookup(ctx, domain, w.WhoxyClient.(WHOISDomainHistoryClient))
-	if err == nil && len(results) > 0 {
-		return results, nil
-	}
-	if err != nil {
-		errs = append(errs, err)
-	}
-
-	results, err = w.doDomainHistoryLookup(ctx, domain, w.WhoisFreaksClient.(WHOISDomainHistoryClient))
-	if err == nil && len(results) > 0 {
-		return results, nil
-	}
-	if err != nil {
-		errs = append(errs, err)
-	}
-
-	results, err = w.doDomainHistoryLookup(ctx, domain, w.WhoisXMLClient.(WHOISDomainHistoryClient))
-	if err == nil && len(results) > 0 {
-		return results, nil
-	}
-	if err != nil {
-		errs = append(errs, err)
+	for _, client := range clients {
+		results, err := w.doDomainHistoryLookup(ctx, domain, client)
+		if err == nil {
+			if len(results) > 0 {
+				return results, nil
+			}
+			hadEmptyResponse = true
+			continue
+		}
+		if !errors.Is(err, ErrNoCredential) {
+			lookupErrs = append(lookupErrs, err)
+		}
 	}
 
-	if len(errs) == 3 {
-		return nil, fmt.Errorf("whois: all history methods failed for %s: %w", domain, errors.Join(errs...))
+	if joined := errors.Join(lookupErrs...); joined != nil {
+		return nil, fmt.Errorf("whois: history lookup failed for %s: %w", domain, joined)
 	}
-	// If we didn't err on all 3, it means there just are no history records available.
-	return nil, nil
+	if hadEmptyResponse {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("whois: all history methods unavailable for %s: %w", domain, ErrNoCredential)
 }
 
 func (w *WHOIS) doDomainHistoryLookup(ctx context.Context, domain string, client WHOISDomainHistoryClient) ([]DomainHistoryRecord, error) {

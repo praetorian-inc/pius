@@ -75,9 +75,9 @@ func TestWhoisHistoryPlugin_RunEmitsEmptyFinding(t *testing.T) {
 func TestWhoisHistoryPlugin_RunReturnsProviderFailure(t *testing.T) {
 	lookupErr := errors.New("provider unavailable")
 	plugin := newHistoryPlugin(
-		&pluginHistoryClient{name: whois.ProviderWhoxy, err: lookupErr},
+		&pluginHistoryClient{name: whois.ProviderWhoxy},
 		&pluginHistoryClient{name: whois.ProviderWhoisFreaks, err: lookupErr},
-		&pluginHistoryClient{name: whois.ProviderWhoisXML, err: lookupErr},
+		&pluginHistoryClient{name: whois.ProviderWhoisXML, err: whois.ErrNoCredential},
 	)
 
 	findings, err := plugin.Run(context.Background(), plugins.Input{Domain: "example.com"})

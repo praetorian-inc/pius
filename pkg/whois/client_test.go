@@ -512,17 +512,59 @@ func TestLookupDomainHistory_AllEmptyIsSuccessful(t *testing.T) {
 	assert.Empty(t, records)
 }
 
-func TestLookupDomainHistory_AllFailedReturnsError(t *testing.T) {
-	whoxy := &fakeWHOISClient{name: ProviderWhoxy, historyErr: errors.New("whoxy unavailable")}
-	whoisFreaks := &fakeWHOISClient{name: ProviderWhoisFreaks, historyErr: errors.New("whoisfreaks unavailable")}
-	whoisXML := &fakeWHOISClient{name: ProviderWhoisXML, historyErr: ErrNoCredential}
+func TestLookupDomainHistory_ErrorWinsOverEmpty(t *testing.T) {
+	providerErr := errors.New("provider unavailable")
+	tests := []struct {
+		name    string
+		clients []WHOISDomainOnlyClient
+	}{
+		{
+			name: "all providers error",
+			clients: []WHOISDomainOnlyClient{
+				&fakeWHOISClient{name: ProviderWhoxy, historyErr: providerErr},
+				&fakeWHOISClient{name: ProviderWhoisFreaks, historyErr: providerErr},
+				&fakeWHOISClient{name: ProviderWhoisXML, historyErr: providerErr},
+			},
+		},
+		{
+			name: "empty then error",
+			clients: []WHOISDomainOnlyClient{
+				&fakeWHOISClient{name: ProviderWhoxy},
+				&fakeWHOISClient{name: ProviderWhoisFreaks, historyErr: providerErr},
+				&fakeWHOISClient{name: ProviderWhoisXML, historyErr: ErrNoCredential},
+			},
+		},
+		{
+			name: "error then empty",
+			clients: []WHOISDomainOnlyClient{
+				&fakeWHOISClient{name: ProviderWhoxy, historyErr: providerErr},
+				&fakeWHOISClient{name: ProviderWhoisFreaks},
+				&fakeWHOISClient{name: ProviderWhoisXML, historyErr: ErrNoCredential},
+			},
+		},
+	}
 
-	records, err := withCommercialLookups(whoxy, whoisFreaks, whoisXML).
-		LookupDomainHistory(context.Background(), "example.com")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			records, err := withCommercialLookups(tt.clients...).
+				LookupDomainHistory(context.Background(), "example.com")
 
-	require.Error(t, err)
-	assert.Nil(t, records)
-	assert.ErrorContains(t, err, "all history methods failed")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, providerErr)
+			assert.Nil(t, records)
+		})
+	}
+}
+
+func TestLookupDomainHistory_EmptyWithUnavailableProvidersIsSuccessful(t *testing.T) {
+	records, err := withCommercialLookups(
+		&fakeWHOISClient{name: ProviderWhoxy},
+		&fakeWHOISClient{name: ProviderWhoisFreaks, historyErr: ErrNoCredential},
+		&fakeWHOISClient{name: ProviderWhoisXML, historyErr: ErrNoCredential},
+	).LookupDomainHistory(context.Background(), "example.com")
+
+	require.NoError(t, err)
+	assert.Empty(t, records)
 }
 
 func TestLookupDomainHistory_RejectsInvalidDomain(t *testing.T) {
