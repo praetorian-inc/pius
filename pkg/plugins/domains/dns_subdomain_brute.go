@@ -27,17 +27,17 @@ const (
 var dnsDefaultResolver = "8.8.8.8:53"
 
 func init() {
-	plugins.Register("dns-brute", func() plugins.Plugin {
-		return &DNSBrutePlugin{
+	plugins.Register("dns-subdomain-brute", func() plugins.Plugin {
+		return &DNSSubdomainBrutePlugin{
 			resolver: dnsDefaultResolver,
 			wordlist: parseWordlist(defaultWordlist),
 		}
 	})
 }
 
-// DNSBrutePlugin performs active subdomain enumeration by resolving
+// DNSSubdomainBrutePlugin performs active subdomain enumeration by resolving
 // candidate subdomains from an embedded wordlist against a DNS resolver.
-type DNSBrutePlugin struct {
+type DNSSubdomainBrutePlugin struct {
 	resolver string   // DNS resolver address (host:port)
 	wordlist []string // subdomain prefixes to try
 	lookup   Resolver // set by NewDNSBrutePlugin; replaces direct DNS queries
@@ -54,26 +54,26 @@ type Resolver interface {
 // NewDNSBrutePlugin builds the plugin around a caller-supplied resolver. A nil
 // lookup keeps the default DNS client, which is only appropriate when the caller
 // does not need interception.
-func NewDNSBrutePlugin(lookup Resolver) *DNSBrutePlugin {
-	return &DNSBrutePlugin{resolver: dnsDefaultResolver, wordlist: parseWordlist(defaultWordlist), lookup: lookup}
+func NewDNSBrutePlugin(lookup Resolver) *DNSSubdomainBrutePlugin {
+	return &DNSSubdomainBrutePlugin{resolver: dnsDefaultResolver, wordlist: parseWordlist(defaultWordlist), lookup: lookup}
 }
 
-func (p *DNSBrutePlugin) Name() string { return "dns-brute" }
-func (p *DNSBrutePlugin) Description() string {
+func (p *DNSSubdomainBrutePlugin) Name() string { return "dns-brute" }
+func (p *DNSSubdomainBrutePlugin) Description() string {
 	return "Active subdomain brute-force via DNS resolution"
 }
-func (p *DNSBrutePlugin) Category() string { return "domain" }
-func (p *DNSBrutePlugin) Phase() int       { return 0 }
-func (p *DNSBrutePlugin) Mode() string     { return plugins.ModeActive }
+func (p *DNSSubdomainBrutePlugin) Category() string { return "domain" }
+func (p *DNSSubdomainBrutePlugin) Phase() int       { return 0 }
+func (p *DNSSubdomainBrutePlugin) Mode() string     { return plugins.ModeActive }
 
 // Accepts requires a Domain input -- brute-forcing needs a base domain.
-func (p *DNSBrutePlugin) Accepts(input plugins.Input) bool {
+func (p *DNSSubdomainBrutePlugin) Accepts(input plugins.Input) bool {
 	return isDomainName(input.Domain)
 }
 
 // Run resolves each wordlist entry as {word}.{domain} concurrently.
 // Returns a Finding for each subdomain that resolves to at least one A or AAAA record.
-func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
+func (p *DNSSubdomainBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugins.Finding, error) {
 	domain := normalizeDomain(input.Domain)
 
 	// Detect wildcard DNS — if the domain resolves everything, skip brute-force.
@@ -144,7 +144,7 @@ func (p *DNSBrutePlugin) Run(ctx context.Context, input plugins.Input) ([]plugin
 	return findings, nil
 }
 
-func (p *DNSBrutePlugin) wildcardIPs(ctx context.Context, base string) map[string]bool {
+func (p *DNSSubdomainBrutePlugin) wildcardIPs(ctx context.Context, base string) map[string]bool {
 	if p.lookup == nil {
 		return detectWildcard(ctx, base, p.resolver)
 	}
@@ -166,7 +166,7 @@ func (p *DNSBrutePlugin) wildcardIPs(ctx context.Context, base string) map[strin
 // Returns (exists bool, err error).
 // If err != nil, query failed (network/timeout); caller should log/skip.
 // If err == nil && exists == false, domain legitimately does not exist.
-func (p *DNSBrutePlugin) resolve(ctx context.Context, fqdn string) (bool, error) {
+func (p *DNSSubdomainBrutePlugin) resolve(ctx context.Context, fqdn string) (bool, error) {
 	// An injected resolver answers both families in one call and reports failure
 	// as "no addresses", so there is no error to distinguish here.
 	if p.lookup != nil {
