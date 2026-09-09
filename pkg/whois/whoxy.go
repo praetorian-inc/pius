@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/openrdap/rdap"
 	httpclient "github.com/praetorian-inc/pius/pkg/client"
 )
 
@@ -22,10 +23,7 @@ var whoxyBaseURL = "https://api.whoxy.com/"
 
 // WhoxyClient looks up live WHOIS through the Whoxy API.
 //
-// Whoxy returns the registry's raw WHOIS text rather than parsed fields, so the
-// response is run through the same whoisparser mapping the TCP-43 leg uses.
-// The request shape matches the code running in Guard production today
-// (guard-core .../capabilities/whois/whois.go).
+// raw_whois can contain WHOIS text or RDAP JSON. Structured fields supplement either format.
 type WhoxyClient struct {
 	httpClient        *http.Client
 	reverseHTTPClient *httpclient.Client
@@ -120,11 +118,7 @@ func (r *WhoxyClient) LookupDomain(ctx context.Context, domain string) (result D
 	if response.Status != 1 {
 		return DomainResult{}, fmt.Errorf("whoxy: lookup failed for %s: %s", domain, response.StatusReason)
 	}
-	if response.Raw == "" {
-		return DomainResult{}, nil
-	}
-
-	result, err = parseRawDomainResult(domain, response.Raw)
+	result, err = parseWhoxyRaw(domain, response.Raw)
 	if err != nil {
 		if isDomainNotFound(err) {
 			return DomainResult{Domain: domain, Unregistered: true}, nil
@@ -132,6 +126,11 @@ func (r *WhoxyClient) LookupDomain(ctx context.Context, domain string) (result D
 		return DomainResult{}, fmt.Errorf("whoxy: parsing record for %s: %w", domain, err)
 	}
 
+	result.Merge(mapWhoxyToResult(domain, response.whoxyRecord))
+	if !result.hasRegistrationData() {
+		return DomainResult{}, nil
+	}
+	result.Domain = domain
 	result.Sources = []string{ProviderWhoxy}
 	return result, nil
 }
@@ -149,27 +148,50 @@ func (r *WhoxyClient) LookupDomainHistory(ctx context.Context, domain string) ([
 	records := make([]DomainHistoryRecord, 0, len(response.Records))
 	for _, record := range response.Records {
 		records = append(records, DomainHistoryRecord{
-			QueryTime: record.QueryTime,
-			DomainResult: DomainResult{
-				Domain:      record.Domain,
-				Registrar:   record.Registrar.Name,
-				Created:     record.Created,
-				Updated:     record.Updated,
-				Expiration:  record.Expires,
-				WhoisServer: record.Registrar.WhoisServer,
-				NameServers: record.NameServers,
-				Status:      record.Status,
-				Registrant:  mapWhoxyHistoryContact(record.Registrant),
-				Admin:       mapWhoxyHistoryContact(record.Admin),
-				Tech:        mapWhoxyHistoryContact(record.Tech),
-				Billing:     mapWhoxyHistoryContact(record.Billing),
-			},
+			QueryTime:    record.QueryTime,
+			DomainResult: mapWhoxyToResult(record.Domain, record),
 		})
 	}
 	return normalizeDomainHistory(domain, ProviderWhoxy, records), nil
 }
 
-func mapWhoxyHistoryContact(contact whoxyHistoryContact) Contact {
+func parseWhoxyRaw(domain, raw string) (DomainResult, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DomainResult{}, nil
+	}
+	if !strings.HasPrefix(raw, "{") {
+		return parseRawDomainResult(domain, raw)
+	}
+	object, err := rdap.NewDecoder([]byte(raw)).Decode()
+	if err != nil {
+		return DomainResult{}, fmt.Errorf("decoding RDAP: %w", err)
+	}
+	response, ok := object.(*rdap.Domain)
+	if !ok {
+		return DomainResult{}, fmt.Errorf("expected an RDAP domain record")
+	}
+	return mapRDAPToResult(domain, response), nil
+}
+
+func mapWhoxyToResult(domain string, record whoxyRecord) DomainResult {
+	return DomainResult{
+		Domain:      domain,
+		Registrar:   record.Registrar.Name,
+		Created:     record.Created,
+		Updated:     record.Updated,
+		Expiration:  record.Expires,
+		WhoisServer: record.Registrar.WhoisServer,
+		NameServers: record.NameServers,
+		Status:      record.Status,
+		Registrant:  mapWhoxyContact(record.Registrant),
+		Admin:       mapWhoxyContact(record.Admin),
+		Tech:        mapWhoxyContact(record.Tech),
+		Billing:     mapWhoxyContact(record.Billing),
+	}
+}
+
+func mapWhoxyContact(contact whoxyContact) Contact {
 	return Contact{
 		Organization: contact.Company,
 		Name:         contact.Name,
@@ -238,38 +260,39 @@ type WhoxyReverseResult struct {
 
 // whoxyLiveResponse is Whoxy's live-WHOIS envelope.
 type whoxyLiveResponse struct {
+	whoxyRecord
 	Raw          string `json:"raw_whois"`
 	Status       int    `json:"status"`
 	StatusReason string `json:"status_reason"`
 }
 
 type whoxyHistoryResponse struct {
-	Status       int                  `json:"status"`
-	StatusReason string               `json:"status_reason"`
-	Records      []whoxyHistoryRecord `json:"whois_records"`
+	Status       int           `json:"status"`
+	StatusReason string        `json:"status_reason"`
+	Records      []whoxyRecord `json:"whois_records"`
 }
 
-type whoxyHistoryRecord struct {
-	QueryTime   string                `json:"query_time"`
-	Domain      string                `json:"domain_name"`
-	Created     string                `json:"create_date"`
-	Updated     string                `json:"update_date"`
-	Expires     string                `json:"expiry_date"`
-	Registrar   whoxyHistoryRegistrar `json:"domain_registrar"`
-	Registrant  whoxyHistoryContact   `json:"registrant_contact"`
-	Admin       whoxyHistoryContact   `json:"administrative_contact"`
-	Tech        whoxyHistoryContact   `json:"technical_contact"`
-	Billing     whoxyHistoryContact   `json:"billing_contact"`
-	NameServers []string              `json:"name_servers"`
-	Status      []string              `json:"domain_status"`
+type whoxyRecord struct {
+	QueryTime   string         `json:"query_time"`
+	Domain      string         `json:"domain_name"`
+	Created     string         `json:"create_date"`
+	Updated     string         `json:"update_date"`
+	Expires     string         `json:"expiry_date"`
+	Registrar   whoxyRegistrar `json:"domain_registrar"`
+	Registrant  whoxyContact   `json:"registrant_contact"`
+	Admin       whoxyContact   `json:"administrative_contact"`
+	Tech        whoxyContact   `json:"technical_contact"`
+	Billing     whoxyContact   `json:"billing_contact"`
+	NameServers []string       `json:"name_servers"`
+	Status      []string       `json:"domain_status"`
 }
 
-type whoxyHistoryRegistrar struct {
+type whoxyRegistrar struct {
 	Name        string `json:"registrar_name"`
 	WhoisServer string `json:"whois_server"`
 }
 
-type whoxyHistoryContact struct {
+type whoxyContact struct {
 	Name           string `json:"full_name"`
 	Company        string `json:"company_name"`
 	Email          string `json:"email_address"`

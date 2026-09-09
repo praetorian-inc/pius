@@ -45,13 +45,118 @@ func captureLogs(t *testing.T, level slog.Level, fn func()) []map[string]any {
 // lookupRecords keeps only the one-per-resolver completion records, so an
 // unrelated debug line cannot make an assertion pass or fail by accident.
 func lookupRecords(records []map[string]any) []map[string]any {
+	return recordsWithMessage(records, "whois lookup complete")
+}
+
+func recordsWithMessage(records []map[string]any, message string) []map[string]any {
 	var out []map[string]any
 	for _, r := range records {
-		if r["msg"] == "whois lookup complete" {
+		if r["msg"] == message {
 			out = append(out, r)
 		}
 	}
 	return out
+}
+
+func TestPublicFieldCount_ExcludesPrivacyInvalidEmailAndProvenance(t *testing.T) {
+	result := DomainResult{
+		Domain: "example.com", NameServers: []string{"ns2.example.com", "ns1.example.com"},
+		Status: []string{"active", "client transfer prohibited"}, Sources: []string{ProviderWhoxy},
+		Registrant: Contact{Name: "Registration Private", Email: "not an email"},
+		Tech:       Contact{Email: "tech@example.com"},
+	}
+	result.Normalize()
+
+	assert.Equal(t, 3, publicFieldCount(result))
+	assert.Equal(t, "tech@example.com", result.ContactEmail)
+	assert.Equal(t, []string{"ns2.example.com", "ns1.example.com"}, result.NameServers)
+}
+
+func TestLookupContribution_CountsOnlyFieldsAddedToMergedRecord(t *testing.T) {
+	whoxy := &fakeWHOISClient{name: ProviderWhoxy, result: DomainResult{
+		Admin: Contact{Name: "Whoxy Admin"},
+	}}
+	freaks := &fakeWHOISClient{name: ProviderWhoisFreaks, result: DomainResult{
+		Admin: Contact{Name: "Different Admin"},
+	}}
+	xml := &fakeWHOISClient{name: ProviderWhoisXML, result: DomainResult{
+		Created: "2021-09-19", Expiration: "2026-09-19",
+		Tech: Contact{Name: "XML Tech", Phone: "+1.2125550100", Country: "US"},
+	}}
+
+	records := captureLogs(t, slog.LevelInfo, func() {
+		result, err := withCommercialLookups(whoxy, freaks, xml).LookupDomain(t.Context(), "example.com")
+		require.NoError(t, err)
+		assert.Equal(t, "Whoxy Admin", result.Admin.Name)
+	})
+
+	contributions := recordsWithMessage(records, "whois lookup contribution")
+	require.Len(t, contributions, 5)
+	for i, provider := range []string{ProviderWhoxy, ProviderWhoisFreaks, ProviderWhoisXML} {
+		assert.Equal(t, provider, contributions[i+2]["resolver"])
+		assert.Equal(t, "example.com", contributions[i+2]["domain"])
+		assert.Len(t, contributions[i+2], 6)
+	}
+	assert.EqualValues(t, 1, contributions[2]["added_fields"])
+	assert.EqualValues(t, 0, contributions[3]["added_fields"])
+	assert.EqualValues(t, 5, contributions[4]["added_fields"])
+
+	encoded, err := json.Marshal(records)
+	require.NoError(t, err)
+	for _, value := range []string{"Whoxy Admin", "Different Admin", "XML Tech", "+1.2125550100"} {
+		assert.NotContains(t, string(encoded), value)
+	}
+}
+
+func TestLookupContribution_DoesNotCountErrorsOrSkippedProviders(t *testing.T) {
+	freaks := failing(ProviderWhoisFreaks)
+	freaks.result.Admin.Name = "Must not count a failed response"
+	records := captureLogs(t, slog.LevelInfo, func() {
+		_, err := withCommercialLookups(unkeyed(ProviderWhoxy), freaks, answering(ProviderWhoisXML)).LookupDomain(t.Context(), "example.com")
+		require.NoError(t, err)
+	})
+	contributions := recordsWithMessage(records, "whois lookup contribution")
+	require.Len(t, contributions, 3)
+	assert.Equal(t, ProviderWhoisXML, contributions[2]["resolver"])
+	assert.EqualValues(t, 1, contributions[2]["added_fields"])
+	outcomes := lookupRecords(records)
+	assert.Equal(t, outcomeSkipped, outcomes[2]["result"])
+	assert.Equal(t, outcomeError, outcomes[3]["result"])
+}
+
+func TestLookupContribution_RespectsEarlyStopAndStaysWithinOneLookup(t *testing.T) {
+	whoxy, freaks, xml := answering(ProviderWhoxy), complete(ProviderWhoisFreaks), complete(ProviderWhoisXML)
+	client := withCommercialLookups(whoxy, freaks, xml)
+	for range 2 {
+		records := captureLogs(t, slog.LevelInfo, func() {
+			_, err := client.LookupDomain(t.Context(), "example.com")
+			require.NoError(t, err)
+		})
+		contributions := recordsWithMessage(records, "whois lookup contribution")
+		require.Len(t, contributions, 4)
+		assert.EqualValues(t, 1, contributions[2]["added_fields"])
+		assert.EqualValues(t, 4, contributions[3]["added_fields"])
+	}
+	assert.Zero(t, xml.calls)
+}
+
+func TestLookupContribution_RedactionToPublicAndNoOp(t *testing.T) {
+	whoxy := &fakeWHOISClient{name: ProviderWhoxy, result: DomainResult{
+		Admin: Contact{Name: "Registration Private"},
+	}}
+	freaks := &fakeWHOISClient{name: ProviderWhoisFreaks, result: DomainResult{
+		Admin: Contact{Name: "Public Contact"}, Tech: Contact{Name: "Public Contact"},
+	}}
+	xml := &fakeWHOISClient{name: ProviderWhoisXML, result: freaks.result}
+	records := captureLogs(t, slog.LevelInfo, func() {
+		_, err := withCommercialLookups(whoxy, freaks, xml).LookupDomain(t.Context(), "example.com")
+		require.NoError(t, err)
+	})
+	contributions := recordsWithMessage(records, "whois lookup contribution")
+	require.Len(t, contributions, 5)
+	assert.EqualValues(t, 0, contributions[2]["added_fields"])
+	assert.EqualValues(t, 2, contributions[3]["added_fields"])
+	assert.EqualValues(t, 0, contributions[4]["added_fields"])
 }
 
 // TestLogLookup_ClassifiesEveryOutcome is the contract the provider success

@@ -123,6 +123,75 @@ func TestWhoxyResolver_Success(t *testing.T) {
 	assert.Len(t, result.NameServers, 2)
 }
 
+func TestWhoxyResolver_RDAPJSON(t *testing.T) {
+	raw := "\n " + readDomainFixture(t, "rdap_contacts.json")
+	resolver := newWhoxyTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":1,"raw_whois":` + jsonQuote(t, raw) + `}`))
+	})
+
+	result, err := resolver.LookupDomain(t.Context(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Example Registrar", result.Registrar)
+	assert.Equal(t, PrivacyRedaction, result.Registrant.Organization)
+	assert.Equal(t, "admin@example.com", result.Admin.Email)
+	assert.Equal(t, "tech@example.com", result.Tech.Email)
+	assert.Equal(t, "billing@example.com", result.Billing.Email)
+	assert.Equal(t, "2026-09-19T12:45:42Z", result.Expiration)
+	assert.Equal(t, []string{"ns1.example.com"}, result.NameServers)
+	assert.Equal(t, []string{ProviderWhoxy}, result.Sources)
+}
+
+func TestWhoxyResolver_InvalidRDAPIsNotAnEmptySuccess(t *testing.T) {
+	for _, test := range []struct{ name, raw string }{
+		{name: "malformed", raw: `{"objectClassName":"domain"`},
+		{name: "not a domain", raw: `{"objectClassName":"entity","handle":"146"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := newWhoxyTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"status":1,"raw_whois":` + jsonQuote(t, test.raw) + `}`))
+			})
+			_, err := resolver.LookupDomain(t.Context(), "example.com")
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestWhoxyResolver_StructuredFields(t *testing.T) {
+	for _, test := range []struct{ name, raw string }{
+		{name: "no raw record"},
+		{name: "supplements raw record", raw: whoxyRawRecord},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := newWhoxyTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{
+					"status":1, "raw_whois":` + jsonQuote(t, test.raw) + `,
+					"domain_registrar":{"registrar_name":"Structured Registrar"},
+					"expiry_date":"2026-09-19",
+					"registrant_contact":{"full_name":"Structured Name"},
+					"administrative_contact":{"phone_number":"+1.2125550100"},
+					"technical_contact":{"email_address":"tech@example.com"},
+					"billing_contact":{"email_address":"billing@example.com"}
+				}`))
+			})
+			result, err := resolver.LookupDomain(t.Context(), "example.com")
+			require.NoError(t, err)
+			assert.Equal(t, "+1.2125550100", result.Admin.Phone)
+			assert.Equal(t, "tech@example.com", result.Tech.Email)
+			assert.Equal(t, "billing@example.com", result.Billing.Email)
+			assert.Equal(t, []string{ProviderWhoxy}, result.Sources)
+			if test.raw == "" {
+				assert.Equal(t, "Structured Registrar", result.Registrar)
+				assert.Equal(t, "Structured Name", result.Registrant.Name)
+				assert.Equal(t, "2026-09-19", result.Expiration)
+				return
+			}
+			assert.Equal(t, "Example Registrar, Inc.", result.Registrar)
+			assert.Equal(t, "Jane Doe", result.Registrant.Name)
+		})
+	}
+}
+
 func TestWhoxyResolver_AppliesDNSPTFallback(t *testing.T) {
 	raw := "Generator: test\nRegistry WHOIS: whois.dns.pt\n\n" + readDomainFixture(t, "dns_pt.raw")
 	r := newWhoxyTestResolver(t, func(w http.ResponseWriter, _ *http.Request) {

@@ -38,8 +38,7 @@ func (r *RDAPClient) LookupDomain(ctx context.Context, domain string) (result Do
 	return result, nil
 }
 
-// rdapLookup performs an RDAP domain lookup, following registrar "related"
-// links when the registry response lacks registrant data (common under GDPR).
+// Registry records can omit contact roles even when a registrant is present.
 func rdapLookup(ctx context.Context, httpClient *http.Client, domain string) (DomainResult, error) {
 	client := &rdap.Client{}
 	if httpClient != nil {
@@ -64,10 +63,7 @@ func rdapLookup(ctx context.Context, httpClient *http.Client, domain string) (Do
 
 	result := mapRDAPToResult(domain, domainResp)
 
-	// Follow registrar link if registrant data is missing.
-	if result.Registrant.IsEmpty() {
-		enrichFromRegistrar(ctx, client, &result, domainResp)
-	}
+	enrichFromRegistrar(ctx, client, &result, domainResp)
 	result.Normalize()
 
 	return result, nil
@@ -132,36 +128,29 @@ func rdapDNSSEC(secureDNS *rdap.SecureDNS) string {
 }
 
 func enrichFromRegistrar(ctx context.Context, client *rdap.Client, result *DomainResult, domainResp *rdap.Domain) {
-	var registrarURL string
+	// Follow one registry-to-registrar hop, trying alternatives on failure, not a recursive link crawl.
 	for _, link := range domainResp.Links {
-		if link.Rel == "related" && link.Type == "application/rdap+json" {
-			registrarURL = link.Href
-			break
+		if ctx.Err() != nil {
+			return
 		}
-	}
-	if registrarURL == "" {
+		if link.Rel != "related" || link.Type != "application/rdap+json" {
+			continue
+		}
+		parsed, err := url.Parse(link.Href)
+		if err != nil || parsed.Host == "" {
+			continue
+		}
+		req := &rdap.Request{Type: rdap.RawRequest, Server: parsed, FetchRoles: []string{"all"}}
+		resp, err := client.Do(req.WithContext(ctx))
+		if err != nil {
+			continue
+		}
+		d, ok := resp.Object.(*rdap.Domain)
+		if !ok {
+			continue
+		}
+		result.Merge(mapRDAPToResult(result.Domain, d))
 		return
-	}
-	parsed, err := url.Parse(registrarURL)
-	if err != nil {
-		return
-	}
-
-	req := &rdap.Request{Type: rdap.RawRequest, Server: parsed}
-	req = req.WithContext(ctx)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return
-	}
-	d, ok := resp.Object.(*rdap.Domain)
-	if !ok {
-		return
-	}
-
-	registrant := extractContact(d.Entities, "registrant")
-	if registrant != (Contact{}) {
-		result.Registrant = mergeContact(result.Registrant, registrant)
 	}
 }
 
