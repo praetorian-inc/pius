@@ -128,9 +128,11 @@ func TestRegistrantOrg(t *testing.T) {
 	c := Contact{Organization: "Acme Corp", Name: "Domain Admin"}
 	assert.Equal(t, "Acme Corp", RegistrantOrg(c, "example.com"))
 
-	// ccTLD name promotion: .cn puts holder in the Name field.
+	// ccTLD name promotion: allowlisted registries put the holder in the Name field.
 	c2 := Contact{Name: "Acme Holdings Ltd."}
-	assert.Equal(t, "Acme Holdings Ltd.", RegistrantOrg(c2, "acme.cn"))
+	for _, domain := range []string{"acme.cn", "acme.ie", "acme.com.sg", "acme.com.pe"} {
+		assert.Equal(t, "Acme Holdings Ltd.", RegistrantOrg(c2, domain))
+	}
 
 	// No org, no name promotion for .com.
 	c3 := Contact{Name: "John Smith"}
