@@ -221,6 +221,7 @@ var registrantNameCCTLDs = []string{
 	".cn", ".hr", ".jp", ".kr",
 	".fr", ".re", ".pm", ".tf", ".wf", ".yt",
 	".ca", ".dk", ".ee", ".fi", ".gg",
+	".ie", ".sg", ".pe",
 	".xn--fiqs8s", ".cl",
 }
 
