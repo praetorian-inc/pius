@@ -12,6 +12,7 @@ require (
 	github.com/likexian/whois-parser v1.24.21
 	github.com/miekg/dns v1.1.72
 	github.com/openrdap/rdap v0.9.1
+	github.com/praetorian-inc/capability-sdk v0.0.0-20260908174325-de5f920e8132
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/twmb/murmur3 v1.1.8
@@ -47,7 +48,7 @@ require (
 	github.com/likexian/gokit v0.25.16 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/xhit/go-str2duration/v2 v2.1.0 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/mod v0.33.0 // indirect

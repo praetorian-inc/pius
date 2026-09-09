@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "surfaceHash": "sha256:23b50fcac7ff97d0349d714bd83216a1d67138d23f38b50d82935d48528b2c77",
+  "commands": [
+    {
+      "path": "pius",
+      "use": "pius",
+      "short": "Organizational asset discovery tool",
+      "runnable": false
+    },
+    {
+      "path": "pius list",
+      "use": "list",
+      "short": "List available plugins",
+      "runnable": true
+    },
+    {
+      "path": "pius run",
+      "use": "run",
+      "short": "Discover assets for an organization",
+      "runnable": true,
+      "flags": [
+        {
+          "name": "asn",
+          "type": "string",
+          "usage": "Known ASN hint, e.g. AS12345 (optional)"
+        },
+        {
+          "name": "cidr",
+          "type": "string",
+          "usage": "Known CIDR range, e.g. 8.8.8.0/24 (optional)"
+        },
+        {
+          "name": "concurrency",
+          "type": "int",
+          "default": "5",
+          "usage": "Max concurrent plugins"
+        },
+        {
+          "name": "disable",
+          "type": "string",
+          "usage": "Comma-separated plugin blacklist"
+        },
+        {
+          "name": "doh-deploy-gateways",
+          "type": "bool",
+          "default": "false",
+          "usage": "Auto-deploy AWS API Gateways pointing to DoH servers"
+        },
+        {
+          "name": "doh-gateways",
+          "type": "string",
+          "usage": "Comma-separated AWS API Gateway URLs for DoH"
+        },
+        {
+          "name": "doh-servers",
+          "type": "string",
+          "usage": "Comma-separated DoH server URLs"
+        },
+        {
+          "name": "doh-wordlist",
+          "type": "string",
+          "usage": "Path to subdomain wordlist for DoH enumeration (default: embedded)"
+        },
+        {
+          "name": "domain",
+          "shorthand": "d",
+          "type": "string",
+          "usage": "Known domain hint (optional)"
+        },
+        {
+          "name": "ip",
+          "type": "string",
+          "usage": "Known IP address, e.g. 8.8.8.8 (optional)"
+        },
+        {
+          "name": "mode",
+          "type": "string",
+          "default": "passive",
+          "usage": "Plugin mode filter: passive|active|all"
+        },
+        {
+          "name": "org",
+          "type": "string",
+          "usage": "Organization name to search (required)"
+        },
+        {
+          "name": "output",
+          "shorthand": "o",
+          "type": "string",
+          "default": "terminal",
+          "usage": "Output format: terminal|json|ndjson"
+        },
+        {
+          "name": "plugins",
+          "type": "string",
+          "usage": "Comma-separated plugin whitelist (default: all)"
+        }
+      ]
+    }
+  ]
+}
