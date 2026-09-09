@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 
 	"github.com/miekg/dns"
@@ -18,12 +19,26 @@ func init() {
 	})
 }
 
+// ZoneTransferDNS is the embedder seam for NS discovery and AXFR.
+// Guard's dnscollector.DNSCollector satisfies this without Pius importing chariot.
+type ZoneTransferDNS interface {
+	LookupNS(domain string) ([]string, error)
+	AttemptAXFR(zone, ns string) ([]string, error)
+}
+
 // DNSZoneTransferPlugin attempts AXFR zone transfers against the target domain's
 // authoritative nameservers. Most nameservers refuse AXFR, but misconfigured ones
 // will return the entire zone -- a significant information disclosure finding.
 type DNSZoneTransferPlugin struct {
 	// nameservers overrides NS lookup for testing. If nil, discovered via DNS.
 	nameservers []string
+	dns         ZoneTransferDNS
+}
+
+// NewDNSZoneTransferPlugin builds the plugin around a caller-supplied DNS
+// collector. A nil dns keeps the CLI miekg path (init() zero-value).
+func NewDNSZoneTransferPlugin(dns ZoneTransferDNS) *DNSZoneTransferPlugin {
+	return &DNSZoneTransferPlugin{dns: dns}
 }
 
 func (p *DNSZoneTransferPlugin) Name() string { return "dns-zone-transfer" }
@@ -47,7 +62,7 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 	nameservers := p.nameservers
 	if len(nameservers) == 0 {
 		var err error
-		nameservers, err = lookupNS(ctx, domain)
+		nameservers, err = p.discoverNS(ctx, domain)
 		if err != nil {
 			slog.Debug("dns-zone-transfer: NS lookup failed", "domain", domain, "error", err)
 			return nil, nil
@@ -58,7 +73,10 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 	var findings []plugins.Finding
 
 	for _, ns := range nameservers {
-		records, err := attemptAXFR(ctx, domain, ns)
+		if ctx.Err() != nil {
+			break
+		}
+		records, err := p.transfer(ctx, domain, ns)
 		if err != nil {
 			slog.Debug("dns-zone-transfer: AXFR failed", "ns", ns, "domain", domain, "error", err)
 			continue
@@ -93,6 +111,31 @@ func (p *DNSZoneTransferPlugin) Run(ctx context.Context, input plugins.Input) ([
 	return findings, nil
 }
 
+func (p *DNSZoneTransferPlugin) discoverNS(ctx context.Context, domain string) ([]string, error) {
+	if p.dns != nil {
+		hosts, err := p.dns.LookupNS(domain)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]string, 0, len(hosts))
+		for _, h := range hosts {
+			out = append(out, net.JoinHostPort(strings.TrimSuffix(h, "."), "53"))
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("dns-zone-transfer: no NS records for %s", domain)
+		}
+		return out, nil
+	}
+	return lookupNS(ctx, domain)
+}
+
+func (p *DNSZoneTransferPlugin) transfer(ctx context.Context, domain, ns string) ([]string, error) {
+	if p.dns != nil {
+		return p.dns.AttemptAXFR(domain, ns)
+	}
+	return attemptAXFR(ctx, domain, ns)
+}
+
 const defaultDNSResolver = "8.8.8.8:53"
 
 // lookupNS discovers authoritative nameservers for domain using system resolver.
@@ -105,8 +148,7 @@ func lookupNS(ctx context.Context, domain string) ([]string, error) {
 	var nameservers []string
 	for _, ans := range r.Answer {
 		if ns, ok := ans.(*dns.NS); ok {
-			// Ensure host:port format for AXFR
-			nameservers = append(nameservers, strings.TrimSuffix(ns.Ns, ".")+":53")
+			nameservers = append(nameservers, net.JoinHostPort(strings.TrimSuffix(ns.Ns, "."), "53"))
 		}
 	}
 
