@@ -2,6 +2,7 @@ package domains
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 
@@ -186,4 +187,97 @@ func TestDNSZoneTransferPlugin_Run_Refused(t *testing.T) {
 	// Should return nil, nil (refused is not an error -- just no results)
 	assert.NoError(t, err)
 	assert.Empty(t, findings)
+}
+
+// fakeZoneTransferDNS records LookupNS/AttemptAXFR so tests prove the injected
+// seam is used instead of live miekg. Unroutable fallback: if the seam is
+// ignored, these methods never run and the plugin would hit the network.
+type fakeZoneTransferDNS struct {
+	lookupNS    func(domain string) ([]string, error)
+	attemptAXFR func(zone, ns string) ([]string, error)
+	nsCalls     []string
+	axfrCalls   []string
+}
+
+func (f *fakeZoneTransferDNS) LookupNS(domain string) ([]string, error) {
+	f.nsCalls = append(f.nsCalls, domain)
+	return f.lookupNS(domain)
+}
+
+func (f *fakeZoneTransferDNS) AttemptAXFR(zone, ns string) ([]string, error) {
+	f.axfrCalls = append(f.axfrCalls, zone+"@"+ns)
+	return f.attemptAXFR(zone, ns)
+}
+
+func TestDNSZoneTransferPlugin_Run_InjectedDNS_EnumeratesDomains(t *testing.T) {
+	fake := &fakeZoneTransferDNS{
+		lookupNS: func(domain string) ([]string, error) {
+			assert.Equal(t, "example.com", domain)
+			return []string{"ns1.example.com."}, nil
+		},
+		attemptAXFR: func(zone, ns string) ([]string, error) {
+			assert.Equal(t, "example.com", zone)
+			assert.Equal(t, "ns1.example.com:53", ns) // JoinHostPort, trailing dot stripped
+			return []string{"example.com", "www.example.com", "mail.example.com", "www.example.com"}, nil
+		},
+	}
+	p := NewDNSZoneTransferPlugin(fake)
+
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+	require.NoError(t, err)
+	require.Len(t, findings, 2)
+
+	got := map[string]bool{}
+	for _, f := range findings {
+		assert.Equal(t, plugins.FindingDomain, f.Type)
+		assert.Equal(t, "dns-zone-transfer", f.Source)
+		assert.Equal(t, "axfr", f.Data["method"])
+		assert.NotContains(t, f.Data, "confidence")
+		require.Len(t, f.Confidences, 1)
+		assert.Equal(t, confDNSZoneTransferAXFR, f.Confidences[0].Score)
+		got[f.Value] = true
+	}
+	assert.True(t, got["www.example.com"])
+	assert.True(t, got["mail.example.com"])
+	assert.False(t, got["example.com"], "apex must be skipped")
+	assert.Equal(t, []string{"example.com"}, fake.nsCalls)
+	require.Len(t, fake.axfrCalls, 1)
+}
+
+func TestDNSZoneTransferPlugin_Run_InjectedDNS_NSLookupError_FailClosed(t *testing.T) {
+	fake := &fakeZoneTransferDNS{
+		lookupNS:    func(string) ([]string, error) { return nil, fmt.Errorf("nxdomain") },
+		attemptAXFR: func(string, string) ([]string, error) { require.Fail(t, "AXFR must not run"); return nil, nil },
+	}
+	findings, err := NewDNSZoneTransferPlugin(fake).Run(context.Background(), plugins.Input{Domain: "example.com"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
+func TestDNSZoneTransferPlugin_Run_InjectedDNS_AXFRError_FailClosed(t *testing.T) {
+	fake := &fakeZoneTransferDNS{
+		lookupNS:    func(string) ([]string, error) { return []string{"ns1.example.com"}, nil },
+		attemptAXFR: func(string, string) ([]string, error) { return nil, fmt.Errorf("refused") },
+	}
+	findings, err := NewDNSZoneTransferPlugin(fake).Run(context.Background(), plugins.Input{Domain: "example.com"})
+	assert.NoError(t, err)
+	assert.Empty(t, findings)
+}
+
+func TestDNSZoneTransferPlugin_Run_InjectedDNS_NameserverOverrideSkipsLookupNS(t *testing.T) {
+	fake := &fakeZoneTransferDNS{
+		lookupNS: func(string) ([]string, error) { require.Fail(t, "LookupNS must be skipped"); return nil, nil },
+		attemptAXFR: func(zone, ns string) ([]string, error) {
+			assert.Equal(t, "127.0.0.1:9", ns)
+			return []string{"www.example.com"}, nil
+		},
+	}
+	p := NewDNSZoneTransferPlugin(fake)
+	p.nameservers = []string{"127.0.0.1:9"}
+	findings, err := p.Run(context.Background(), plugins.Input{Domain: "example.com"})
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "www.example.com", findings[0].Value)
+	assert.Equal(t, plugins.FindingDomain, findings[0].Type)
+	assert.Empty(t, fake.nsCalls)
 }
