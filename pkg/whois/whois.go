@@ -89,8 +89,10 @@ func (w *WHOIS) doDomainLookup(ctx context.Context, domain string, r WHOISDomain
 		return false
 	}
 
+	before := publicFieldCount(state.result)
 	state.result.Merge(res)
 	state.result.Domain = domain
+	logContribution(ctx, r.Name(), state.result, before)
 	return state.result.isComplete(strict)
 }
 
@@ -142,4 +144,39 @@ func ParseExpiration(expirationDate string) (time.Duration, bool) {
 		}
 	}
 	return 0, false
+}
+
+func logContribution(ctx context.Context, name string, result DomainResult, before int) {
+	slog.InfoContext(ctx, "whois lookup contribution",
+		"domain", result.Domain, "resolver", name,
+		"added_fields", publicFieldCount(result)-before)
+}
+
+func publicFieldCount(result DomainResult) int {
+	count := countPublicValues(result.Registrar, result.Created, result.Updated,
+		result.Expiration, result.DNSSEC, result.WhoisServer)
+	if len(result.NameServers) > 0 {
+		count++
+	}
+	if len(result.Status) > 0 {
+		count++
+	}
+	for _, contact := range result.AllContacts() {
+		count += countPublicValues(contact.Organization, contact.Name, contact.Phone,
+			contact.Country, contact.Province, contact.City, contact.Street, contact.PostalCode)
+		if hasPublicValue(contact.Email) && IsEmail(contact.Email) {
+			count++
+		}
+	}
+	return count
+}
+
+func countPublicValues(values ...string) int {
+	count := 0
+	for _, value := range values {
+		if hasPublicValue(value) {
+			count++
+		}
+	}
+	return count
 }

@@ -63,6 +63,63 @@ func TestEnrichFromRegistrar_PreservesPartialContact(t *testing.T) {
 	assert.Equal(t, "+1.4155550100", result.Registrant.Phone)
 }
 
+func TestEnrichFromRegistrar_MergesFullRecord(t *testing.T) {
+	fixture := readDomainFixture(t, "rdap_contacts.json")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/rdap+json")
+		_, _ = w.Write([]byte(fixture))
+	}))
+	t.Cleanup(server.Close)
+
+	result := DomainResult{
+		Domain: "example.com", Registrar: "Registry Registrar",
+		Registrant: Contact{Organization: PrivacyRedaction},
+		Admin:      Contact{Name: "Existing Admin"},
+	}
+	enrichFromRegistrar(t.Context(), &rdap.Client{HTTP: server.Client()}, &result, &rdap.Domain{
+		Links: []rdap.Link{{Rel: "related", Type: "application/rdap+json", Href: server.URL}},
+	})
+
+	assert.Equal(t, "Registry Registrar", result.Registrar)
+	assert.Equal(t, PrivacyRedaction, result.Registrant.Organization)
+	assert.Equal(t, "Existing Admin", result.Admin.Name)
+	assert.Equal(t, "admin@example.com", result.Admin.Email)
+	assert.Equal(t, "tech@example.com", result.Tech.Email)
+	assert.Equal(t, "billing@example.com", result.Billing.Email)
+	assert.Equal(t, "2026-09-19T12:45:42Z", result.Expiration)
+	assert.Equal(t, []string{"ns1.example.com"}, result.NameServers)
+}
+
+func TestEnrichFromRegistrar_TriesNextRelatedLinkAfterFailure(t *testing.T) {
+	fixture := readDomainFixture(t, "rdap_contacts.json")
+	paths := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path != "/registrar" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/rdap+json")
+		_, _ = w.Write([]byte(fixture))
+	}))
+	t.Cleanup(server.Close)
+
+	result := DomainResult{Domain: "example.com"}
+	enrichFromRegistrar(t.Context(), &rdap.Client{HTTP: server.Client()}, &result, &rdap.Domain{
+		Links: []rdap.Link{
+			{Rel: "self", Type: "application/rdap+json", Href: server.URL + "/self"},
+			{Rel: "related", Type: "text/html", Href: server.URL + "/html"},
+			{Rel: "related", Type: "application/rdap+json", Href: server.URL + "/broken"},
+			{Rel: "related", Type: "application/rdap+json", Href: server.URL + "/registrar"},
+			{Rel: "related", Type: "application/rdap+json", Href: server.URL + "/unused"},
+		},
+	})
+
+	assert.Equal(t, []string{"/broken", "/registrar"}, paths)
+	assert.Equal(t, "Example Registrar", result.Registrar)
+	assert.Equal(t, "tech@example.com", result.Tech.Email)
+}
+
 func TestContactFromVCard_CleansIdentity(t *testing.T) {
 	tests := []struct {
 		name         string

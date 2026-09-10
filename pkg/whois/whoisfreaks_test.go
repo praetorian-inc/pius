@@ -181,6 +181,38 @@ func TestWhoisFreaksLookup_Success(t *testing.T) {
 	assert.Equal(t, "+1.3125557890", result.Billing.Phone)
 }
 
+func TestWhoisFreaksLookup_MergesRegistryData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"status":true,"domain_name":"privatefly.com","domain_registered":"yes",
+			"expiry_date":"2026-09-25",
+			"registrant_contact":{"name":"Registration Private","company":"Domains By Proxy, LLC"},
+			"technical_contact":{"phone":"+1.2125550100"},
+			"registry_data":{
+				"domain_name":"PRIVATEFLY.COM","domain_registered":"yes",
+				"expiry_date":"2027-09-25",
+				"domain_registrar":{"registrar_name":"GoDaddy.com, LLC"},
+				"name_servers":["ns1.example.com"],
+				"technical_contact":{"email_address":"tech@example.com"}
+			}
+		}`))
+	}))
+	t.Cleanup(server.Close)
+	client := NewWhoisFreaksClient(server.Client(), "test-key")
+	client.baseURL = server.URL
+
+	result, err := client.LookupDomain(t.Context(), "privatefly.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, "GoDaddy.com, LLC", result.Registrar)
+	assert.Equal(t, "2026-09-25", result.Expiration)
+	assert.Equal(t, PrivacyRedaction, result.Registrant.Organization)
+	assert.Equal(t, "+1.2125550100", result.Tech.Phone)
+	assert.Equal(t, "tech@example.com", result.Tech.Email)
+	assert.Equal(t, []string{"ns1.example.com"}, result.NameServers)
+	assert.Equal(t, []string{ProviderWhoisFreaks}, result.Sources)
+}
+
 // TestWhoisFreaksLookup_UnregisteredDomain verifies that a response with
 // domain_registered:"no" produces a Result with Unregistered=true, the domain
 // set, and all other fields at zero values.
