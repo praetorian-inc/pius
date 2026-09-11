@@ -12,7 +12,7 @@ require (
 	github.com/likexian/whois-parser v1.24.21
 	github.com/miekg/dns v1.1.72
 	github.com/openrdap/rdap v0.9.1
-	github.com/praetorian-inc/capability-sdk v0.0.0-20260908174325-de5f920e8132
+	github.com/praetorian-inc/capability-sdk v0.0.0-20260911152927-8c267220a40d
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/twmb/murmur3 v1.1.8

@@ -81,8 +81,8 @@ github.com/orisano/pixelmatch v0.0.0-20220722002657-fb0b55479cde h1:x0TT0RDC7UhA
 github.com/orisano/pixelmatch v0.0.0-20220722002657-fb0b55479cde/go.mod h1:nZgzbfBr3hhjoZnS66nKrHmduYNpc34ny7RK4z5/HM0=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
-github.com/praetorian-inc/capability-sdk v0.0.0-20260908174325-de5f920e8132 h1:mtInkXf41r5zs/oGaQwC5lITuhQBGZWS0E0wda8anPI=
-github.com/praetorian-inc/capability-sdk v0.0.0-20260908174325-de5f920e8132/go.mod h1:GIGyQzJdEX1VoKD89/z10nZOrwqSYqyaiktBcwFLXsk=
+github.com/praetorian-inc/capability-sdk v0.0.0-20260911152927-8c267220a40d h1:74+j2086NBpKiR5suMbkMsRwyO7V9mcG5apmQRZAmys=
+github.com/praetorian-inc/capability-sdk v0.0.0-20260911152927-8c267220a40d/go.mod h1:GIGyQzJdEX1VoKD89/z10nZOrwqSYqyaiktBcwFLXsk=
 github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
 github.com/spf13/cobra v1.10.2 h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU=
 github.com/spf13/cobra v1.10.2/go.mod h1:7C1pvHqHw5A4vrJfjNwvOdzYu0Gml16OCs2GRiTUUS4=
