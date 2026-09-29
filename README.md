@@ -120,6 +120,21 @@ pius run --org "Acme Corp" --domain acme.com --mode all
 pius list
 ```
 
+### Subcommands
+
+<!-- BEGIN generated: cli-subcommands -->
+Pius organizes its functionality into these focused subcommands:
+
+```bash
+pius list # List available plugins
+pius run  # Discover assets for an organization
+```
+<!-- END generated: cli-subcommands -->
+
+<!-- BEGIN generated: cli-aliases -->
+The full reference — every subcommand, alias and flag, including the ones hidden from `--help` — is generated into [docs/CLI.md](docs/CLI.md).
+<!-- END generated: cli-aliases -->
+
 ## Plugins
 
 ### Domain Plugins
