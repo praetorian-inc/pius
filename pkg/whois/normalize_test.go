@@ -61,6 +61,37 @@ func TestCorroborate(t *testing.T) {
 		{"unrelated orgs", "Alpha Holdings AG", "Beta Systems AG", "mismatch"},
 		{"same name different suffix", "Acme LLC", "Acme", "match"},
 
+		// ENG-5393: dotted legal suffixes survive tokenization as single-letter
+		// tokens ("L.L.C." arrives as ["l","l","c"]), so the suffix never reaches
+		// data.LegalSuffixes and is never stripped. Those leftover letters are
+		// private tokens on ONE side only, which both depresses the Jaccard score
+		// AND defeats the TokenSetContained guard — so these pairs returned an
+		// affirmative "mismatch", the worst available verdict, for two orgs that
+		// merely differ in specificity. Collapsing the dotted run first turns that
+		// false contradiction into an honest "unverifiable".
+		//
+		// {acme} vs {acme, holdings, group, division} is Jaccard 1/4 = 0.25 — still
+		// under the 0.60 match floor, and correctly so: the fix removes the false
+		// mismatch, it does not manufacture a match out of a containment. Without
+		// the collapse this scored 1/6 = 0.167 with a stray "l"/"c" on the pivot
+		// side, so it read as "mismatch".
+		{"dotted suffix against longer org is unverifiable, not a mismatch", "Acme L.L.C.", "Acme Holdings Group Division", "unverifiable"},
+		// Same shape with a two-letter suffix: 1/6 = 0.167 "mismatch" before, 1/4 =
+		// 0.25 "unverifiable" after.
+		{"dotted two-letter suffix against longer org is unverifiable", "Globex S.A.", "Globex Worldwide Trading Group", "unverifiable"},
+
+		// Where the two sides really are the same org, the collapse does promote
+		// the verdict to "match". "us" is not a legal suffix so it survives as a
+		// content token, leaving {us, steel} on both sides — Jaccard 1.0. Without
+		// the collapse the pivot is {u, s, steel} against {us, steel}: 1/4 = 0.25,
+		// non-contained, i.e. "mismatch".
+		{"dotted country prefix matches its undotted spelling", "U.S. Steel Corp.", "US Steel", "match"},
+		// Both sides reduce to {acme}. Without the collapse the pivot is
+		// {acme, l, c} against {acme}: 1/3 = 0.333, which is contained-adjacent
+		// enough to land on "unverifiable" rather than "mismatch" — so this row
+		// pins unverifiable -> match, not mismatch -> match.
+		{"dotted suffix against bare name", "Acme L.L.C.", "Acme", "match"},
+
 		// ENG-5172: a single-token pivot org merely CONTAINED in a longer resolved
 		// registrant must not claim a match. {acme} vs {acme, enterprises} is
 		// Jaccard 1/2 = 0.5, below the 0.60 floor, so it needs review. The old
@@ -111,6 +142,14 @@ func TestOrgSimilarity(t *testing.T) {
 	assert.InDelta(t, 0.0, OrgSimilarity("Alpha", "Beta"), 0.01)
 	assert.InDelta(t, 0.0, OrgSimilarity("", "Alpha"), 0.01)
 
+	// ENG-5393: collapsing the dotted run lets the legal suffix be stripped, so
+	// the leftover single letters stop counting as distinguishing tokens. This is
+	// a containment pair, not an equality — {acme} vs {acme, holdings, group,
+	// division} is 1/4 = 0.25. Before the collapse it was 1/6 = 0.167.
+	assert.InDelta(t, 0.25, OrgSimilarity("Acme L.L.C.", "Acme Holdings Group Division"), 0.01)
+	// A genuine equality: "us" is not a legal suffix, so both sides reduce to
+	// {us, steel} and score 1.0. Before the collapse this was 1/4 = 0.25.
+	assert.InDelta(t, 1.0, OrgSimilarity("U.S. Steel Corp.", "US Steel"), 0.01)
 	// ENG-5172: containment is no longer scored as identity. Under the previous
 	// containment metric every one of these returned 1.0.
 	assert.InDelta(t, 0.5, OrgSimilarity("Acme", "Acme Enterprises"), 0.01)
@@ -121,6 +160,74 @@ func TestOrgSimilarity(t *testing.T) {
 	// An all-suffix org has no comparable tokens left, so similarity is 0 rather
 	// than a spurious match on the shared "ltd"/"corp" tokens.
 	assert.InDelta(t, 0.0, OrgSimilarity("Co., Ltd.", "Acme Corp"), 0.01)
+}
+
+func TestNormalizeOrgTokens(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		// A dotted run collapses to bare letters, so the legal suffix reaches
+		// data.LegalSuffixes as one token ("llc", "sa") instead of arriving as
+		// single letters that never match and then linger as private tokens.
+		{"dotted legal suffix", "Acme L.L.C.", []string{"acme"}},
+		{"undotted legal suffix", "Acme LLC", []string{"acme"}},
+		// "us" is not a legal suffix, so it survives as a content token — which
+		// is what lets this match a plain "US Steel".
+		{"dotted country prefix kept as content", "U.S. Steel Corp.", []string{"us", "steel"}},
+		{"dotted two-letter suffix", "Globex S.A.", []string{"globex"}},
+		{"undotted legal suffix without run", "Acme Inc.", []string{"acme"}},
+		{"dotted acronym that is not a suffix", "A.B.C. Holdings", []string{"abc", "holdings"}},
+
+		// Review findings (ENG-5393). Both of these are why the pattern ends on
+		// `[a-z]\b` rather than counting letter-period pairs with `{2,}`.
+
+		// A two-letter suffix written WITHOUT its trailing period carries only one
+		// period, so a `{2,}` letter-period quantifier skips the run entirely and
+		// the suffix is never stripped — leaving ["globex","s","a"], the exact
+		// defect this ticket exists to fix. The closing letter needs no period of
+		// its own, so the bounded form collapses it.
+		{"dotted two-letter suffix without trailing period", "Globex S.A", []string{"globex"}},
+		// Without a right-hand boundary the run runs on into the following word
+		// and yields the single token "usarmy". Ending the match on a letter that
+		// ends a word stops the run at "U.S" and leaves ".Army" for Tokenize.
+		{"dotted prefix glued to a following word", "U.S.Army", []string{"us", "army"}},
+
+		// Regression rows. The rule is restricted to dotted acronym runs; a
+		// blanket period strip would break each of these. Keep them if the regex
+		// is ever "simplified".
+
+		// Loosened to a blanket strip this merges across the period into the
+		// single token "acmecorp", so "corp" never reaches the suffix list.
+		{"period separating two words", "Acme.Corp", []string{"acme"}},
+		// Same failure mode: a blanket strip yields "acmecom" rather than two
+		// tokens.
+		{"domain-shaped org", "acme.com", []string{"acme", "com"}},
+		// Pins the trailing `[a-z]\b`. "J." is a letter-period pair, but the "C"
+		// that follows is glued to "rew", so there is no word boundary for the
+		// run to close on and no second letter-period pair to consume — the match
+		// fails and the period survives as a separator. Drop the `\b` (or the
+		// closing `[a-z]`) and this collapses to the one token "jcrew".
+		{"single letter joined to a word", "J.Crew", []string{"j", "crew"}},
+		// A lone initial is left alone and keeps its own "q" token: "Q." is
+		// followed by a space, so again there is no letter on a word boundary to
+		// close the run on.
+		{"single initial left intact", "John Q. Public", []string{"john", "q", "public"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, normalizeOrgTokens(tt.input))
+		})
+	}
+
+	// The headline acceptance criterion: the dotted and undotted spellings must
+	// not merely each be correct, they must reduce to the same token set.
+	t.Run("dotted and undotted spellings are equivalent", func(t *testing.T) {
+		dotted := normalizeOrgTokens("Acme L.L.C.")
+		assert.Equal(t, normalizeOrgTokens("Acme LLC"), dotted)
+		assert.Equal(t, []string{"acme"}, dotted)
+	})
 }
 
 func TestRegistrantOrg(t *testing.T) {
