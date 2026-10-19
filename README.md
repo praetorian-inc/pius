@@ -4,7 +4,7 @@
 
 > Discover domains, subdomains, and IP ranges (CIDRs) owned by any organization using certificate transparency, RIR registries, passive DNS, and 26 extensible plugins.
 
-[![CI](https://github.com/praetorian-inc/pius/actions/workflows/ci.yaml/badge.svg)](https://github.com/praetorian-inc/pius/actions/workflows/ci.yaml)
+[![CI](https://github.com/praetorian-inc/pius/actions/workflows/ci.yml/badge.svg)](https://github.com/praetorian-inc/pius/actions/workflows/ci.yml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/praetorian-inc/pius)](go.mod)
 [![License](https://img.shields.io/github/license/praetorian-inc/pius)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/praetorian-inc/pius)](https://goreportcard.com/report/github.com/praetorian-inc/pius)
